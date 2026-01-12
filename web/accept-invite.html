@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="0; url=/#/accept-invite?facilityId=PLACEHOLDER_FACILITY_ID&inviteId=PLACEHOLDER_INVITE_ID">
+  <script>
+    // Get query parameters from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const facilityId = urlParams.get('facilityId');
+    const inviteId = urlParams.get('inviteId');
+    
+    if (facilityId && inviteId) {
+      // Redirect to the Flutter app with hash routing
+      window.location.href = '/#/accept-invite?facilityId=' + encodeURIComponent(facilityId) + '&inviteId=' + encodeURIComponent(inviteId);
+    } else {
+      // If parameters are missing, redirect to home
+      window.location.href = '/';
+    }
+  </script>
+  <title>Accepting Invitation...</title>
+</head>
+<body>
+  <p>Redirecting to accept invitation...</p>
+  <p>If you are not redirected automatically, <a href="/">click here</a>.</p>
+</body>
+</html>
+

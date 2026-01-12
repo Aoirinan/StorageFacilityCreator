@@ -1,0 +1,34 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    
+    // Per-user uploads
+    match /uploads/{uid}/{allPaths=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+    
+    // Facility files - owner access only (covers contracts, DNR evidence, documents, invoices, etc.)
+    // Path: facilities/{facilityId}/contracts/{contractId}/{fileName}
+    // Path: facilities/{facilityId}/documents/{documentId}/{fileName}
+    // Path: facilities/{facilityId}/invoices/{invoiceId}/invoice.pdf
+    match /facilities/{facilityId}/{allPaths=**} {
+      allow read, write: if signedIn() && 
+        get(/databases/(default)/documents/facilities/$(facilityId)).data.ownerUid == request.auth.uid;
+    }
+    
+    // Storage templates - DEPRECATED/UNUSED
+    // Contract templates are now stored in Firestore (facilities/{facilityId}/contractTemplates)
+    // If Storage templates are needed in future, move to facilities/{facilityId}/templates/
+    // match /templates/{templateId}/{allPaths=**} {
+    //   allow read: if signedIn();
+    //   allow write: if signedIn();
+    // }
+    
+    // If Storage templates are needed, use facility-scoped path:
+    // match /facilities/{facilityId}/templates/{templateId}/{allPaths=**} {
+    //   allow read, write: if signedIn() && 
+    //     get(/databases/(default)/documents/facilities/$(facilityId)).data.ownerUid == request.auth.uid;
+    // }
+  }
+}

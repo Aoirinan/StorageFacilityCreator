@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Welcome to {{facilityName}}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .logo {
+            max-width: 200px;
+            max-height: 80px;
+            margin-bottom: 15px;
+        }
+        .header h2 {
+            color: #2563eb;
+            margin: 10px 0;
+            font-size: 28px;
+        }
+        .content {
+            padding: 25px 0;
+        }
+        .content p {
+            margin-bottom: 15px;
+            font-size: 15px;
+        }
+        .highlight {
+            font-weight: bold;
+            color: #2563eb;
+        }
+        .info-box {
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #2563eb;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 25px;
+            border-top: 2px solid #eee;
+            color: #777;
+            font-size: 13px;
+            margin-top: 30px;
+        }
+        @media only screen and (max-width: 600px) {
+            .container {
+                width: 100%;
+                margin: 0;
+                border-radius: 0;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            {{#if facilityLogoUrl}}
+            <img src="{{facilityLogoUrl}}" alt="{{facilityName}}" class="logo">
+            {{/if}}
+            <h2>Welcome to {{facilityName}}!</h2>
+            <p style="color: #666; margin: 0;">We're excited to have you as a tenant</p>
+        </div>
+        <div class="content">
+            <p>Dear {{tenantName}},</p>
+            <p>Thank you for choosing {{facilityName}}! We're delighted to welcome you as a valued tenant. This email contains all the important information you'll need to get started.</p>
+            
+            {{#if unitNumber}}
+            <div class="info-box">
+                <p style="margin: 5px 0;"><strong>Your Unit:</strong> <span class="highlight">Unit {{unitNumber}}</span></p>
+            </div>
+            {{/if}}
+            
+            {{#if welcomeMessage}}
+            <div class="info-box" style="background-color: #fff9e6; border-left-color: #ffc107;">
+                <p style="margin: 0; font-style: italic;">{{welcomeMessage}}</p>
+            </div>
+            {{/if}}
+            
+            {{#if portalAccessCode}}
+            <div class="info-box">
+                <h3 style="color: #4CAF50; margin-top: 0; margin-bottom: 15px;">📱 Tenant Portal Access</h3>
+                <p>Your Portal Access Code: <strong style="font-size: 20px; color: #4CAF50; letter-spacing: 2px;">{{portalAccessCode}}</strong></p>
+            </div>
+            {{/if}}
+            
+            {{#if gateAccessCode}}
+            <div class="info-box">
+                <h3 style="color: #2196F3; margin-top: 0; margin-bottom: 15px;">🚪 Gate Access Information</h3>
+                <p>Your Gate Access Code: <strong style="font-size: 20px; color: #2196F3; letter-spacing: 2px;">{{gateAccessCode}}</strong></p>
+            </div>
+            {{/if}}
+            
+            <div style="margin-top: 30px; padding: 15px; background-color: #f0f8ff; border-radius: 5px;">
+                <p style="margin: 0; font-size: 14px;"><strong>Need Help?</strong></p>
+                <p style="margin: 5px 0 0 0; font-size: 14px;">If you have any questions, please contact us at {{facilityEmail}} or {{facilityPhone}}.</p>
+            </div>
+        </div>
+        <div class="footer">
+            <p style="margin: 5px 0;"><strong>Best regards,</strong><br>{{facilityName}} Management Team</p>
+            {{#if facilityAddress}}
+            <p style="margin: 5px 0; font-size: 12px;">{{facilityAddress}}</p>
+            {{/if}}
+            <p style="margin: 10px 0 0 0; font-size: 11px; color: #999;">This is an automated message from {{facilityName}}.</p>
+        </div>
+    </div>
+</body>
+</html>
+

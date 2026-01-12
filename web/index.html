@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+  <meta name="description" content="Storage Facility Creator - Manage your storage facilities with ease">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="SFC App">
+  <meta name="apple-touch-fullscreen" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>SFC App - Storage Facility Creator</title>
+  <!-- Manifest removed - PWA installability disabled for web-only SaaS -->
+  <!-- Canonical domain -->
+  <link rel="canonical" href="https://storagefacilitycreator.com">
+  
+  <!-- Stripe.js for Payment Elements (Phase 11: Stripe Embedded UI) -->
+  <script src="https://js.stripe.com/v3/"></script>
+  
+  <!-- AGGRESSIVE CACHE BUSTING - FORCE NEW CODE -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0, private">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+</head>
+<body>
+  <script>
+    // FORCE disable Flutter service worker and clear ALL caches
+    (function() {
+      'use strict';
+      const VERSION = 'FINAL_DEPLOY_V1_' + Date.now();
+      console.log('🚀🚀🚀 ' + VERSION + ' - FORCE CLEAR ALL CACHES');
+      window.MAP_DEPLOY_VERSION = VERSION;
+      window.MAP_LABEL_SHOULD_BE = 'MAP';
+      
+      // Disable Flutter service worker registration
+      window._flutter_web_disable_sw = true;
+      
+      // Unregister ALL service workers IMMEDIATELY
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          console.log('🔧 Found ' + registrations.length + ' service workers - UNREGISTERING ALL');
+          const promises = registrations.map(function(registration) {
+            return registration.unregister().then(function(success) {
+              console.log('✅ Service worker unregistered:', success);
+              return success;
+            }).catch(function(err) {
+              console.error('❌ Error unregistering:', err);
+              return false;
+            });
+          });
+          return Promise.all(promises);
+        }).then(function() {
+          console.log('✅ All service workers cleared');
+        });
+      }
+      
+      // Delete ALL caches (only Cache Storage, not localStorage/sessionStorage)
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          console.log('🔧 Found ' + names.length + ' caches - DELETING ALL');
+          const promises = names.map(function(name) {
+            return caches.delete(name).then(function(success) {
+              console.log('✅ Cache deleted:', name, success);
+              return success;
+            });
+          });
+          return Promise.all(promises);
+        }).then(function() {
+          console.log('✅ All caches cleared');
+        });
+      }
+      
+      // Note: localStorage/sessionStorage NOT cleared - only service workers and Cache API
+      // This preserves user preferences (locale, etc.) while preventing PWA installability
+      
+      // Global error handler to catch and suppress known non-critical errors
+      window.addEventListener('error', function(event) {
+        const errorMsg = event.error?.message || event.error?.toString() || '';
+        const errorStack = event.error?.stack || '';
+        
+        // Suppress focus-related errors that don't break functionality
+        if (errorMsg.includes('focus') || errorMsg.includes('Focus') || errorMsg.includes('js_helper') ||
+            errorStack.includes('focus_manager') || errorStack.includes('focus_traversal') || errorStack.includes('js_helper')) {
+          console.warn('⚠️ Focus error caught and suppressed:', errorMsg);
+          event.preventDefault();
+          return true;
+        }
+        
+        // Suppress App Check 400 errors (expected until Firebase Console is configured)
+        // These are non-critical and will be fixed when secret key is configured
+        if (errorMsg.includes('exchangeRecaptchaV3Token') || 
+            errorMsg.includes('AppCheck') && (errorMsg.includes('400') || errorMsg.includes('Bad Request')) ||
+            errorStack.includes('exchangeRecaptchaV3Token') ||
+            errorStack.includes('app-check') && (errorStack.includes('400') || errorStack.includes('Bad Request'))) {
+          // These errors are logged by Firebase SDK, no need to log again
+          // They're expected until reCAPTCHA secret key is configured in Firebase Console
+          event.preventDefault();
+          return true;
+        }
+        
+        // Suppress Firestore BloomFilter errors (non-critical SDK warnings)
+        // These are internal Firestore optimization warnings that don't affect functionality
+        if (errorMsg.includes('BloomFilter') || errorMsg.includes('BloomFilterError') ||
+            errorStack.includes('BloomFilter') || errorStack.includes('BloomFilterError')) {
+          // These are Firestore SDK internal warnings - suppress to reduce console noise
+          // They don't affect functionality, just query optimization warnings
+          event.preventDefault();
+          return true;
+        }
+        
+        // Log other errors but don't break the app
+        console.error('❌ Uncaught error:', event.error);
+        return false;
+      });
+      
+      // Catch unhandled promise rejections
+      window.addEventListener('unhandledrejection', function(event) {
+        const reason = event.reason?.toString() || '';
+        
+        // Suppress App Check 400 errors in promise rejections
+        if (reason.includes('exchangeRecaptchaV3Token') || 
+            (reason.includes('AppCheck') && (reason.includes('400') || reason.includes('Bad Request')))) {
+          // Expected until Firebase Console is configured - suppress to avoid console noise
+          event.preventDefault();
+          return;
+        }
+        
+        // Suppress Firestore BloomFilter errors in promise rejections
+        if (reason.includes('BloomFilter') || reason.includes('BloomFilterError')) {
+          // Non-critical Firestore SDK warning - suppress to reduce console noise
+          event.preventDefault();
+          return;
+        }
+        
+        console.warn('⚠️ Unhandled promise rejection:', event.reason);
+        event.preventDefault();
+      });
+    })();
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

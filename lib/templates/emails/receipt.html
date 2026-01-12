@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment Receipt - {{facilityName}}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .logo {
+            max-width: 200px;
+            max-height: 80px;
+            margin-bottom: 15px;
+        }
+        .header h2 {
+            color: #10b981;
+            margin: 10px 0;
+            font-size: 28px;
+        }
+        .receipt-box {
+            background-color: #f0fdf4;
+            border: 2px solid #10b981;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+            text-align: center;
+        }
+        .amount {
+            font-size: 36px;
+            font-weight: bold;
+            color: #10b981;
+            margin: 10px 0;
+        }
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .details-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .details-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 25px;
+            border-top: 2px solid #eee;
+            color: #777;
+            font-size: 13px;
+            margin-top: 30px;
+        }
+        @media only screen and (max-width: 600px) {
+            .container {
+                width: 100%;
+                margin: 0;
+                border-radius: 0;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            {{#if facilityLogoUrl}}
+            <img src="{{facilityLogoUrl}}" alt="{{facilityName}}" class="logo">
+            {{/if}}
+            <h2>Payment Receipt</h2>
+            <p style="color: #666; margin: 0;">{{facilityName}}</p>
+        </div>
+        <div class="content">
+            <p>Dear {{tenantName}},</p>
+            <p>Thank you for your payment. We have successfully processed your transaction.</p>
+            
+            <div class="receipt-box">
+                <p style="margin: 0; font-size: 14px; color: #666;">Amount Paid</p>
+                <div class="amount">${{amount}}</div>
+                <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">Payment Date: {{paymentDate}}</p>
+            </div>
+            
+            <table class="details-table">
+                <tr>
+                    <td>Payment Method:</td>
+                    <td>{{paymentMethod}}</td>
+                </tr>
+                <tr>
+                    <td>Transaction ID:</td>
+                    <td>{{transactionId}}</td>
+                </tr>
+                {{#if referenceNumber}}
+                <tr>
+                    <td>Reference Number:</td>
+                    <td>{{referenceNumber}}</td>
+                </tr>
+                {{/if}}
+                {{#if unitNumber}}
+                <tr>
+                    <td>Unit:</td>
+                    <td>{{unitNumber}}</td>
+                </tr>
+                {{/if}}
+                {{#if description}}
+                <tr>
+                    <td>Description:</td>
+                    <td>{{description}}</td>
+                </tr>
+                {{/if}}
+            </table>
+            
+            {{#if balanceRemaining}}
+            <div style="background-color: #fef3c7; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+                <p style="margin: 0; font-size: 14px;"><strong>Remaining Balance:</strong> ${{balanceRemaining}}</p>
+            </div>
+            {{/if}}
+            
+            <p style="margin-top: 25px;">This receipt serves as confirmation of your payment. Please keep this for your records.</p>
+        </div>
+        <div class="footer">
+            <p style="margin: 5px 0;"><strong>{{facilityName}}</strong></p>
+            {{#if facilityAddress}}
+            <p style="margin: 5px 0; font-size: 12px;">{{facilityAddress}}</p>
+            {{/if}}
+            {{#if facilityPhone}}
+            <p style="margin: 5px 0; font-size: 12px;">Phone: {{facilityPhone}}</p>
+            {{/if}}
+            {{#if facilityEmail}}
+            <p style="margin: 5px 0; font-size: 12px;">Email: {{facilityEmail}}</p>
+            {{/if}}
+            <p style="margin: 10px 0 0 0; font-size: 11px; color: #999;">This is an automated receipt from {{facilityName}}.</p>
+        </div>
+    </div>
+</body>
+</html>
+

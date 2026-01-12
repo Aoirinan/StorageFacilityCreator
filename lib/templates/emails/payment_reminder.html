@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment Due Reminder</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            line-height: 1.6;
+            color: #333;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            border-top: 5px solid #4CAF50;
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .header h2 {
+            color: #4CAF50;
+            margin: 0;
+            font-size: 24px;
+        }
+        .content {
+            padding: 20px 0;
+        }
+        .content p {
+            margin-bottom: 15px;
+        }
+        .button {
+            display: block;
+            width: 200px;
+            margin: 20px auto;
+            padding: 12px 20px;
+            background-color: #4CAF50;
+            color: #ffffff;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .button:hover {
+            background-color: #45a049;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #777;
+            font-size: 12px;
+        }
+        .highlight {
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .details {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #4CAF50;
+        }
+        .details h3 {
+            margin-top: 0;
+            color: #4CAF50;
+            font-size: 18px;
+        }
+        .details p {
+            margin: 8px 0;
+        }
+        .amount {
+            font-size: 24px;
+            font-weight: bold;
+            color: #e74c3c;
+        }
+        @media only screen and (max-width: 600px) {
+            .container {
+                width: 100%;
+                margin: 0;
+                border-radius: 0;
+                box-shadow: none;
+            }
+            .button {
+                width: 100%;
+                margin: 20px 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>Payment Due Reminder</h2>
+            <p>from {{facilityName}}</p>
+        </div>
+        <div class="content">
+            <p>Dear {{tenantName}},</p>
+            
+            <p>This is a friendly reminder regarding your payment for your storage unit at {{facilityName}}.</p>
+            
+            <div class="details">
+                <h3>Payment Details</h3>
+                <p><strong>Unit Number:</strong> <span class="highlight">{{unitNumber}}</span></p>
+                <p><strong>Amount Due:</strong> <span class="amount">${{amount}}</span></p>
+                <p><strong>Due Date:</strong> <span class="highlight">{{dueDate}}</span></p>
+            </div>
+            
+            <p>{{message}}</p>
+            
+            <p>Please ensure your payment is made on time to avoid any late fees. You can make your payment through our online portal or contact our office for assistance.</p>
+            
+            <a href="{{paymentPortalUrl}}" class="button">Make Payment Online</a>
+            
+            <p>If you have already made this payment, please disregard this reminder.</p>
+            
+            <p>Thank you for your prompt attention to this matter.</p>
+            
+            <p>Best regards,<br>
+            <strong>{{facilityName}} Management Team</strong></p>
+        </div>
+        <div class="footer">
+            <p>This is an automated message from the Storage Facility Creator system.</p>
+            <p>If you have any questions, please contact us at {{contactInfo}}</p>
+        </div>
+    </div>
+</body>
+</html>

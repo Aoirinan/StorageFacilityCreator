@@ -1,0 +1,70 @@
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import '../../theme/app_theme.dart';
+
+/// Simple donut chart widget for displaying metrics
+class DonutChart extends StatelessWidget {
+  final double value; // 0.0 to 1.0
+  final String label;
+  final Color? color;
+  final double size;
+
+  const DonutChart({
+    super.key,
+    required this.value,
+    required this.label,
+    this.color,
+    this.size = 120,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chartColor = color ?? AppTheme.primaryBlue;
+    final clampedValue = value.clamp(0.0, 1.0);
+    final percentage = (clampedValue * 100).round();
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Background circle
+          SizedBox(
+            width: size,
+            height: size,
+            child: CircularProgressIndicator(
+              value: clampedValue,
+              strokeWidth: 12,
+              backgroundColor: AppTheme.borderLight,
+              valueColor: AlwaysStoppedAnimation<Color>(chartColor),
+            ),
+          ),
+          // Center text
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$percentage%',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: AppTheme.textSecondary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+

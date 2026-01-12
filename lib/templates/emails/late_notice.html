@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment Overdue Notice - {{facilityName}}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .logo {
+            max-width: 200px;
+            max-height: 80px;
+            margin-bottom: 15px;
+        }
+        .header h2 {
+            color: #dc2626;
+            margin: 10px 0;
+            font-size: 28px;
+        }
+        .warning-box {
+            background-color: #fef2f2;
+            border: 2px solid #dc2626;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+        }
+        .amount {
+            font-size: 32px;
+            font-weight: bold;
+            color: #dc2626;
+            margin: 10px 0;
+        }
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .details-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .details-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .action-box {
+            background-color: #f0f8ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #2563eb;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 25px;
+            border-top: 2px solid #eee;
+            color: #777;
+            font-size: 13px;
+            margin-top: 30px;
+        }
+        @media only screen and (max-width: 600px) {
+            .container {
+                width: 100%;
+                margin: 0;
+                border-radius: 0;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            {{#if facilityLogoUrl}}
+            <img src="{{facilityLogoUrl}}" alt="{{facilityName}}" class="logo">
+            {{/if}}
+            <h2>Payment Overdue Notice</h2>
+            <p style="color: #666; margin: 0;">{{facilityName}}</p>
+        </div>
+        <div class="content">
+            <p>Dear {{tenantName}},</p>
+            <p>This notice is to inform you that your account has an overdue balance. Please remit payment as soon as possible to avoid additional late fees and potential service interruptions.</p>
+            
+            <div class="warning-box">
+                <p style="margin: 0; font-size: 14px; color: #666;">Total Amount Due</p>
+                <div class="amount">${{amountDue}}</div>
+                <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">Days Overdue: {{daysLate}}</p>
+            </div>
+            
+            <table class="details-table">
+                <tr>
+                    <td>Original Due Date:</td>
+                    <td>{{originalDueDate}}</td>
+                </tr>
+                <tr>
+                    <td>Current Balance:</td>
+                    <td>${{amountDue}}</td>
+                </tr>
+                {{#if lateFee}}
+                <tr>
+                    <td>Late Fee:</td>
+                    <td>${{lateFee}}</td>
+                </tr>
+                {{/if}}
+                {{#if unitNumber}}
+                <tr>
+                    <td>Unit:</td>
+                    <td>{{unitNumber}}</td>
+                </tr>
+                {{/if}}
+            </table>
+            
+            {{#if nextLateFeeDate}}
+            <div style="background-color: #fef3c7; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+                <p style="margin: 0; font-size: 14px;"><strong>Important:</strong> An additional late fee of ${{nextLateFeeAmount}} will be applied on {{nextLateFeeDate}} if payment is not received.</p>
+            </div>
+            {{/if}}
+            
+            <div class="action-box">
+                <p style="margin: 0; font-size: 14px;"><strong>Payment Options:</strong></p>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li>Pay online through your tenant portal</li>
+                    <li>Call us at {{facilityPhone}} to make a payment over the phone</li>
+                    <li>Visit our office during business hours</li>
+                </ul>
+            </div>
+            
+            <p style="margin-top: 25px;">If you have already made a payment, please disregard this notice. If you are experiencing financial difficulties, please contact us immediately to discuss payment arrangements.</p>
+        </div>
+        <div class="footer">
+            <p style="margin: 5px 0;"><strong>{{facilityName}}</strong></p>
+            {{#if facilityAddress}}
+            <p style="margin: 5px 0; font-size: 12px;">{{facilityAddress}}</p>
+            {{/if}}
+            {{#if facilityPhone}}
+            <p style="margin: 5px 0; font-size: 12px;">Phone: {{facilityPhone}}</p>
+            {{/if}}
+            {{#if facilityEmail}}
+            <p style="margin: 5px 0; font-size: 12px;">Email: {{facilityEmail}}</p>
+            {{/if}}
+            <p style="margin: 10px 0 0 0; font-size: 11px; color: #999;">This is an automated notice from {{facilityName}}.</p>
+        </div>
+    </div>
+</body>
+</html>
+

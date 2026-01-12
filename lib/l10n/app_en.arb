@@ -1,0 +1,46 @@
+{
+  "@@locale": "en",
+  "appTitle": "SFC App - Storage Facility Creator",
+  "@appTitle": {
+    "description": "The application title"
+  },
+  "dashboard": "Dashboard",
+  "facilities": "Facilities",
+  "tenants": "Tenants",
+  "units": "Units",
+  "payments": "Payments",
+  "reports": "Reports",
+  "settings": "Settings",
+  "language": "Language",
+  "english": "English",
+  "spanish": "Spanish",
+  "french": "French",
+  "german": "German",
+  "chinese": "Chinese",
+  "japanese": "Japanese",
+  "selectLanguage": "Select Language",
+  "@selectLanguage": {
+    "description": "Label for language selection dropdown"
+  },
+  "save": "Save",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "edit": "Edit",
+  "create": "Create",
+  "search": "Search",
+  "filter": "Filter",
+  "export": "Export",
+  "loading": "Loading...",
+  "error": "Error",
+  "success": "Success",
+  "name": "Name",
+  "email": "Email",
+  "phone": "Phone",
+  "address": "Address",
+  "status": "Status",
+  "actions": "Actions",
+  "noData": "No data available",
+  "retry": "Retry",
+  "close": "Close"
+}
+

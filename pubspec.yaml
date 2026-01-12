@@ -1,0 +1,95 @@
+name: sfcapp
+description: Storage Facility Creator - A comprehensive facility management app
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management (Riverpod 2.x - compatible with StateNotifierProvider)
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+  state_notifier: ^1.0.0
+
+  # Navigation
+  go_router: ^17.0.1
+
+  # Firebase - Updated to web-compatible versions
+  firebase_core: ^4.3.0
+  firebase_auth: ^6.1.3
+  cloud_firestore: ^6.1.1
+  firebase_storage: ^13.0.5
+  cloud_functions: ^6.0.5
+  firebase_app_check: ^0.4.1+3
+
+  # File handling
+  file_picker: ^10.3.8
+  image_picker: ^1.0.4
+  path_provider: ^2.1.1
+
+  # CSV handling
+  csv: ^6.0.0
+
+  # PDF and printing
+  pdf: ^3.10.4
+  printing: ^5.11.0
+
+  # Signature capture
+  signature: ^6.3.0
+
+  # WebView
+  webview_flutter: ^4.13.1
+
+  # HTTP client
+  dio: ^5.3.2
+  http: ^1.6.0
+  url_launcher: ^6.2.4
+  
+  # Crypto for SES authentication
+  crypto: ^3.0.3
+
+  # Payment processing
+  stripe_platform_interface: ^12.1.1
+  stripe_android: ^12.1.0
+  stripe_ios: ^12.1.0
+  # Web support for JavaScript interop (for Stripe Elements)
+  js: ^0.7.1  # For JavaScript interop on Flutter web
+
+  # Local storage
+  shared_preferences: ^2.5.4
+
+  # Date formatting
+  intl: ^0.20.2
+
+  # Localization
+  flutter_localizations:
+    sdk: flutter
+
+  # Observability
+  sentry_flutter: ^9.9.2
+
+  # UI
+  cupertino_icons: ^1.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  riverpod_generator: ^2.6.5
+  build_runner: ^2.5.4
+  riverpod_lint: ^2.6.5
+  firebase_core_platform_interface: ^6.0.2
+  firebase_auth_mocks: ^0.15.1
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - lib/templates/reminders/
+    - lib/templates/emails/

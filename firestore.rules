@@ -1,0 +1,853 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function facilityDoc(facilityId) {
+      let facility = get(/databases/$(database)/documents/facilities/$(facilityId));
+      return facility.data;
+    }
+
+    function facilityExists(facilityId) {
+      return exists(/databases/$(database)/documents/facilities/$(facilityId));
+    }
+
+    function facilityRole(facilityId) {
+      return facilityExists(facilityId) && facilityDoc(facilityId).roles != null && facilityDoc(facilityId).roles[request.auth.uid] != null
+        ? facilityDoc(facilityId).roles[request.auth.uid]
+        : null;
+    }
+
+    function isFacilityOwnerOrManager(facilityId) {
+      return isAuthenticated() && facilityExists(facilityId) && (
+        facilityDoc(facilityId).ownerUid == request.auth.uid ||
+        (facilityDoc(facilityId).managers != null && facilityDoc(facilityId).managers[request.auth.uid] == true) ||
+        facilityRole(facilityId) == 'owner' ||
+        facilityRole(facilityId) == 'manager'
+      );
+    }
+
+    function isFacilityStaff(facilityId) {
+      return isFacilityOwnerOrManager(facilityId) ||
+        facilityRole(facilityId) == 'manager' ||
+        facilityRole(facilityId) == 'employee';
+    }
+
+    function authEmailLower() {
+      return request.auth != null && request.auth.token.email != null
+        ? request.auth.token.email
+        : null;
+    }
+
+    function isSuperAdmin() {
+      let email = authEmailLower();
+      // Check if email matches super admin emails (Firebase Auth emails are typically lowercase)
+      // 
+      // NOTE: Super admin emails must be kept in sync with:
+      // - lib/services/superadmin_service.dart (superAdminEmails)
+      // - functions/src/index.ts (SUPER_ADMIN_EMAILS)
+      // 
+      // To add/remove super admins, update all three locations.
+      return email != null && (
+        email == 'russell_forsyth_1992@outlook.com' ||
+        email == 'russellforsyth09091992@gmail.com'
+      );
+    }
+
+    function stringMatchesTime(value) {
+      return value is string &&
+        value.size() == 5 &&
+        value.substring(2, 3) == ":" &&
+        value.substring(0, 2).matches('^([01][0-9]|2[0-3])$') &&
+        value.substring(3, 5).matches('^([0-5][0-9])$');
+    }
+
+    function isValidReminderChannels(channels) {
+      return channels is list &&
+        channels.size() > 0 &&
+        channels.hasOnly(['email', 'sms', 'push', 'inApp']);
+    }
+
+    function isValidConversationCreate(facilityId) {
+      // Private conversation validation (if isPrivate == true)
+      let isPrivateConv = request.resource.data.isPrivate == true;
+      let isGroupConv = !('isPrivate' in request.resource.data) || request.resource.data.isPrivate == false;
+      
+      // Validate private conversation requirements
+      let privateValid = isPrivateConv && 
+        request.resource.data.keys().hasAll([
+          'facilityId',
+          'title',
+          'createdAt',
+          'createdByUid',
+          'createdByEmail',
+          'createdByName',
+          'isActive',
+          'isPrivate',
+          'participantUids',
+          'participantNames'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.isPrivate == true &&
+        request.resource.data.participantUids is list &&
+        request.resource.data.participantUids.size() == 2 &&
+        request.resource.data.participantUids.hasAny([request.auth.uid]) &&
+        request.resource.data.participantNames is map &&
+        request.resource.data.participantNames.keys().hasAll(request.resource.data.participantUids);
+      
+      // Validate group conversation requirements (default)
+      let groupValid = isGroupConv &&
+        request.resource.data.keys().hasAll([
+          'facilityId',
+          'title',
+          'createdAt',
+          'createdByUid',
+          'createdByEmail',
+          'createdByName',
+          'isActive'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        (!('isPrivate' in request.resource.data) || request.resource.data.isPrivate == false);
+      
+      return privateValid || groupValid;
+    }
+    
+    function isPrivateConversationParticipant(facilityId, conversationId) {
+      return exists(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)) &&
+             get(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)).data.isPrivate == true &&
+             get(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)).data.participantUids.hasAny([request.auth.uid]);
+    }
+
+    function isValidMessageCreate(facilityId, conversationId) {
+      return request.resource.data.keys().hasAll([
+        'conversationId',
+        'facilityId',
+        'text',
+        'createdAt',
+        'senderUid',
+        'senderEmail',
+        'senderName',
+        'readBy',
+        'isActive'
+      ]) &&
+        request.resource.data.conversationId == conversationId &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.senderUid == request.auth.uid;
+    }
+
+    function isAccountOwner(accountId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        get(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)).data.ownerUid == request.auth.uid;
+    }
+    
+    // Users can only access their own user document
+    match /users/{uid} {
+      // Super admins can read/write all user documents
+      allow read, write: if isSuperAdmin();
+      
+      // Users can read/write their own document
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      
+      // REMOVED: Global read access for invites (security issue)
+      // Invite lookups now use Cloud Function: lookupUserByEmail
+      // This ensures secure, controlled user lookups with minimal data exposure
+    }
+    
+    // Facility Creator Accounts - users can only access their own account
+    match /facilityCreatorAccounts/{accountId} {
+      // Allow read if user owns this account
+      allow read: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      
+      // Allow create if ownerUid matches current user
+      allow create: if request.auth != null && 
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['ownerUid', 'ownerEmail', 'ownerName', 'subscriptionStatus', 'createdAt', 'updatedAt']);
+      
+      // Allow update only by owner
+      allow update: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      
+      // Allow delete only by owner
+      allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+
+      // Security Collections - account-scoped (Phase 2)
+      match /security_events/{eventId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+
+      match /security_alerts/{alertId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+
+      match /security_settings/{settingId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+    }
+    
+    // Facilities - owner-based access with proper validation
+    match /facilities/{facilityId} {
+      // Allow read if user owns the facility or is a manager
+      allow read: if request.auth != null && 
+        (resource.data.ownerUid == request.auth.uid || 
+         resource.data.managers[request.auth.uid] != null ||
+         resource.data.roles[request.auth.uid] != null);
+      
+      // Allow create only if ownerUid is set to current user and required fields present
+      allow create: if request.auth != null && 
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['name', 'ownerUid', 'createdAt', 'active']) &&
+        request.resource.data.active == true;
+      
+      // Allow update by owner or super admin
+      allow update: if request.auth != null && (
+        isSuperAdmin() ||
+        resource.data.ownerUid == request.auth.uid
+      );
+      
+      // Allow delete only by owner
+      allow delete: if request.auth != null && 
+        resource.data.ownerUid == request.auth.uid;
+      
+      // Sub-collections under facilities
+      match /tenants/{tenantId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+
+        // Contact logs subcollection
+        match /contactLogs/{logId} {
+          allow read: if isFacilityStaff(facilityId);
+          allow create: if isFacilityStaff(facilityId) &&
+            request.resource.data.keys().hasAll([
+              'tenantId',
+              'facilityId',
+              'type',
+              'direction',
+              'contactDate',
+              'contactedBy',
+              'isAutoGenerated',
+              'createdAt'
+            ]) &&
+            request.resource.data.tenantId == tenantId &&
+            request.resource.data.facilityId == facilityId &&
+            request.resource.data.contactedBy == request.auth.uid &&
+            request.resource.data.type is string &&
+            request.resource.data.direction is string &&
+            request.resource.data.contactDate is timestamp;
+          allow update: if isFacilityStaff(facilityId) &&
+            (!('tenantId' in request.resource.data) || request.resource.data.tenantId == tenantId) &&
+            (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+          allow delete: if isFacilityOwnerOrManager(facilityId);
+        }
+
+        // Payment methods subcollection
+        match /paymentMethods/{methodId} {
+          allow read: if isFacilityStaff(facilityId);
+          allow create: if isFacilityStaff(facilityId) &&
+            request.resource.data.keys().hasAll([
+              'tenantId',
+              'facilityId',
+              'type',
+              'isDefault',
+              'autopayEnabled',
+              'isActive',
+              'createdAt',
+              'createdBy'
+            ]) &&
+            request.resource.data.tenantId == tenantId &&
+            request.resource.data.facilityId == facilityId &&
+            request.resource.data.createdBy == request.auth.uid &&
+            request.resource.data.type is string &&
+            request.resource.data.isDefault is bool &&
+            request.resource.data.autopayEnabled is bool &&
+            request.resource.data.isActive is bool;
+          allow update: if isFacilityStaff(facilityId) &&
+            (!('tenantId' in request.resource.data) || request.resource.data.tenantId == tenantId) &&
+            (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+            (!('type' in request.resource.data) || request.resource.data.type is string);
+          allow delete: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+      
+      match /units/{unitId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+      
+      // Rate limit counters (per facility)
+      match /rateLimits/{windowId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if isFacilityOwnerOrManager(facilityId);
+      }
+      
+      match /payments/{paymentId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /contracts/{contractId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'facilityOwnerUid',
+            'tenantId',
+            'title',
+            'type',
+            'status',
+            'createdAt',
+            'createdBy',
+            'isActive'
+          ]) &&
+          request.resource.data.facilityOwnerUid == facilityDoc(facilityId).ownerUid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.type is string &&
+          request.resource.data.status is string &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId);
+        // Move-out operations require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            // Allow move-out status updates
+            (!('moveOutStatus' in request.resource.data) || request.resource.data.moveOutStatus is string) &&
+            (!('moveOutDate' in request.resource.data) || request.resource.data.moveOutDate is timestamp) &&
+            (!('moveOutCharges' in request.resource.data) || request.resource.data.moveOutCharges is number) &&
+            (!('moveOutRefund' in request.resource.data) || request.resource.data.moveOutRefund is number)
+          );
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Leases collection (if separate from contracts)
+      match /leases/{leaseId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'tenantId',
+            'unitId',
+            'moveInDate',
+            'rentAmount',
+            'status',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.status is string &&
+          request.resource.data.moveInDate is timestamp &&
+          request.resource.data.rentAmount is number;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          (!('unitId' in request.resource.data) || request.resource.data.unitId == resource.data.unitId);
+        // Move-out operations require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('moveOutDate' in request.resource.data) || request.resource.data.moveOutDate is timestamp) &&
+            (!('status' in request.resource.data) || request.resource.data.status in ['active', 'terminated', 'expired'])
+          );
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /mapShapes/{shapeId} {
+        // Allow read/write if user owns the facility or is a manager
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Audit logs for sensitive actions
+      match /auditLogs/{logId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /reminders/{reminderId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'tenantId',
+            'facilityId',
+            'type',
+            'channels',
+            'title',
+            'message',
+            'scheduledFor',
+            'status',
+            'createdAt',
+            'updatedAt',
+            'createdBy',
+            'isActive'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          isValidReminderChannels(request.resource.data.channels);
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('channels' in request.resource.data) || isValidReminderChannels(request.resource.data.channels)) &&
+          (!('scheduledFor' in request.resource.data) || request.resource.data.scheduledFor is timestamp);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+
+      match /reminderSchedules/{scheduleId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'name',
+            'type',
+            'channels',
+            'sendMode',
+            'offsetDays',
+            'sendTime',
+            'autoSend',
+            'isActive',
+            'titleTemplate',
+            'messageTemplate',
+            'createdAt',
+            'updatedAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          isValidReminderChannels(request.resource.data.channels) &&
+          request.resource.data.offsetDays is int &&
+          stringMatchesTime(request.resource.data.sendTime);
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('channels' in request.resource.data) || isValidReminderChannels(request.resource.data.channels)) &&
+          (!('offsetDays' in request.resource.data) || request.resource.data.offsetDays is int) &&
+          (!('sendTime' in request.resource.data) ||
+            request.resource.data.sendTime == null ||
+            stringMatchesTime(request.resource.data.sendTime));
+        allow delete: if isFacilityStaff(facilityId);
+      }
+
+      match /gateAccess/{accessId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'accessCode',
+            'isActive',
+            'createdAt',
+            'updatedAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.accessCode is string &&
+          request.resource.data.accessCode.size() > 0 &&
+          (!('allowedDays' in request.resource.data) ||
+            request.resource.data.allowedDays == null ||
+            (request.resource.data.allowedDays is list &&
+              request.resource.data.allowedDays.hasOnly(['Mon','Tue','Wed','Thu','Fri','Sat','Sun']))) &&
+          (!('allowedStartTime' in request.resource.data) ||
+            request.resource.data.allowedStartTime == null ||
+            stringMatchesTime(request.resource.data.allowedStartTime)) &&
+          (!('allowedEndTime' in request.resource.data) ||
+            request.resource.data.allowedEndTime == null ||
+            stringMatchesTime(request.resource.data.allowedEndTime));
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('accessCode' in request.resource.data) ||
+            (request.resource.data.accessCode is string && request.resource.data.accessCode.size() > 0)) &&
+          (!('allowedDays' in request.resource.data) ||
+            request.resource.data.allowedDays == null ||
+            (request.resource.data.allowedDays is list &&
+              request.resource.data.allowedDays.hasOnly(['Mon','Tue','Wed','Thu','Fri','Sat','Sun']))) &&
+          (!('allowedStartTime' in request.resource.data) ||
+            request.resource.data.allowedStartTime == null ||
+            stringMatchesTime(request.resource.data.allowedStartTime)) &&
+          (!('allowedEndTime' in request.resource.data) ||
+            request.resource.data.allowedEndTime == null ||
+            stringMatchesTime(request.resource.data.allowedEndTime)) &&
+          (!('updatedBy' in request.resource.data) || request.resource.data.updatedBy == request.auth.uid);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+
+      match /emailUsage/{usageId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityStaff(facilityId);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+
+      match /invites/{inviteId} {
+        allow read: if isSuperAdmin() ||
+          isFacilityOwnerOrManager(facilityId) ||
+          (authEmailLower() != null && resource.data.emailLower == authEmailLower());
+        allow create: if isSuperAdmin() ||
+          (isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'email',
+            'emailLower',
+            'roleType',
+            'status',
+            'invitedAt',
+            'invitedBy'
+          ]) &&
+          request.resource.data.roleType is string &&
+          request.resource.data.status == 'pending' &&
+          request.resource.data.invitedBy == request.auth.uid &&
+          request.resource.data.invitedAt is timestamp);
+        allow update: if isSuperAdmin() ||
+          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId)) ||
+          (
+            authEmailLower() != null &&
+            resource.data.emailLower == authEmailLower() &&
+            request.resource.data.emailLower == resource.data.emailLower &&
+            request.resource.data.roleType == resource.data.roleType &&
+            request.resource.data.invitedAt == resource.data.invitedAt &&
+            request.resource.data.invitedBy == resource.data.invitedBy &&
+            (!('invitedByEmail' in resource.data) || request.resource.data.invitedByEmail == resource.data.invitedByEmail) &&
+            request.resource.data.status == 'accepted' &&
+            request.resource.data.acceptedBy == request.auth.uid &&
+            request.resource.data.acceptedAt is timestamp
+          );
+        allow delete: if isSuperAdmin() || 
+          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId));
+      }
+
+      match /digests/{digestId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+
+        match /items/{itemId} {
+          allow read, write: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      match /dnr/{dnrId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Team messaging (conversations and messages) - facility staff can read/write
+      // Private conversations: only participants can access
+      // Group conversations: all facility staff can access
+      match /conversations/{conversationId} {
+        // Read: facility staff can read all conversations, OR participants can read private conversations
+        allow read: if isFacilityStaff(facilityId) || 
+                       isPrivateConversationParticipant(facilityId, conversationId);
+        
+        // Create: facility staff can create conversations (validated by isValidConversationCreate)
+        allow create: if isFacilityStaff(facilityId) && isValidConversationCreate(facilityId);
+        
+        // Update: facility staff can update, OR participants can update their private conversation
+        allow update: if isFacilityStaff(facilityId) || 
+                         isPrivateConversationParticipant(facilityId, conversationId);
+        
+        // Delete: only owners/managers can delete (more restrictive)
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+
+        match /messages/{messageId} {
+          // Read: facility staff can read all messages, OR participants can read private conversation messages
+          allow read: if isFacilityStaff(facilityId) || 
+                         isPrivateConversationParticipant(facilityId, conversationId);
+          
+          // Create: facility staff can create messages (validated by isValidMessageCreate)
+          allow create: if isFacilityStaff(facilityId) && isValidMessageCreate(facilityId, conversationId);
+          
+          // Update: facility staff can update, OR sender can update their own message
+          allow update: if isFacilityStaff(facilityId) || 
+                           (resource.data.senderUid == request.auth.uid);
+          
+          // Delete: only owners/managers can delete messages
+          allow delete: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      // SMS conversations - facility owner or manager access
+      match /smsConversations/{conversationId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create, update, delete: if isFacilityOwnerOrManager(facilityId);
+
+        match /messages/{messageId} {
+          allow read: if isFacilityOwnerOrManager(facilityId);
+          allow create, update, delete: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      match /map/{mapId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /auditLogs/{logId} {
+        // Read: Staff can read audit logs for their facility
+        allow read: if isFacilityStaff(facilityId);
+        // Write: Only system/authorized operations can create audit logs
+        // Audit logs should be immutable once created
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'action',
+            'entityType',
+            'entityId',
+            'userId',
+            'userEmail',
+            'timestamp',
+            'changes',
+            'metadata'
+          ]) &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.action is string &&
+          request.resource.data.entityType is string &&
+          request.resource.data.timestamp is timestamp;
+        // Audit logs should not be updated or deleted (immutable)
+        allow update: if false; // Audit logs are immutable
+        allow delete: if isSuperAdmin(); // Only super admins can delete audit logs (for compliance)
+      }
+
+      match /billing/{billingId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /ledgers/{ledgerId} {
+        // Read: Staff can read ledger entries
+        allow read: if isFacilityStaff(facilityId);
+        // Create: Staff can create ledger entries, but refunds require owner/manager
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'tenantId',
+            'facilityId',
+            'type',
+            'amount',
+            'entryDate',
+            'status',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.amount is number &&
+          request.resource.data.type is string &&
+          request.resource.data.status is string &&
+          // Refunds require owner/manager permission
+          (request.resource.data.type != 'refund' || isFacilityOwnerOrManager(facilityId));
+        // Update: Only owner/manager can update ledger entries (for corrections)
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          // Voiding entries requires owner/manager
+          (!('status' in request.resource.data) || 
+            (request.resource.data.status == 'voided' && isFacilityOwnerOrManager(facilityId)) ||
+            request.resource.data.status == resource.data.status);
+        // Delete: Only owner/manager can delete (should be rare, prefer voiding)
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /invoices/{invoiceId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /deposits/{depositId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Insurance Plans - facility-scoped (Phase 2)
+      match /insurancePlans/{planId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'monthlyPrice', 'coverageAmount', 'active', 'createdAt', 'updatedAt']);
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /liens/{lienId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /claims/{claimId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'tenantId',
+            'incidentDate',
+            'claimType',
+            'status',
+            'claimAmount',
+            'deductibleAmount',
+            'description',
+            'filedDate',
+            'createdBy',
+            'createdAt'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.claimType is string &&
+          request.resource.data.status is string &&
+          request.resource.data.claimAmount is number &&
+          request.resource.data.deductibleAmount is number &&
+          request.resource.data.incidentDate is timestamp &&
+          request.resource.data.filedDate is timestamp;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          // Only owner/manager can change status
+          (!('status' in request.resource.data) || isFacilityOwnerOrManager(facilityId));
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /products/{productId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /sales/{saleId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /transfers/{transferId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /documents/{documentId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'fileName',
+            'fileUrl',
+            'fileSize',
+            'mimeType',
+            'documentType',
+            'category',
+            'uploadedAt',
+            'uploadedBy',
+            'isActive'
+          ]) &&
+          request.resource.data.uploadedBy == request.auth.uid &&
+          request.resource.data.fileName is string &&
+          request.resource.data.fileUrl is string &&
+          request.resource.data.fileSize is number &&
+          request.resource.data.mimeType is string &&
+          request.resource.data.documentType is string &&
+          request.resource.data.category is string &&
+          request.resource.data.uploadedAt is timestamp &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Contract Templates - facility-scoped (Phase 2)
+      match /contractTemplates/{templateId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'content', 'createdAt', 'isActive', 'facilityId']) &&
+          request.resource.data.createdBy == request.auth.uid;
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // DNR Entries - facility-scoped (Phase 2)
+      match /dnr/{dnrId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'active', 'addedAt', 'addedByUid', 'facilityId']);
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+    }
+    
+    // DNR entries in facility subcollections - facility owner access
+    // REMOVED: Global dnr_entries collection (security issue - line 642-648)
+    // DNR entries are now facility-scoped: facilities/{facilityId}/dnr/{dnrId}
+    // See facility-scoped DNR rules below
+    
+    // Collection group query for DNR entries across all facilities
+    // Business requirement: All facilities should see DNR entries from other facilities
+    // This allows cross-facility DNR visibility for all authenticated users with subscriptions
+    match /{path=**}/dnr/{dnrId} {
+      // Allow read if path contains 'facilities/' and user is authenticated
+      // This enables global DNR visibility across all facilities via collection group queries
+      // The path pattern matches any document in facilities/{facilityId}/dnr/{dnrId}
+      allow read: if request.auth != null && (
+        path.matches('facilities/.*') ||
+        path.matches('.*/facilities/.*')
+      );
+    }
+    
+    // REMOVED: Global contract_templates collection (security issue - line 655-658)
+    // Contract templates are now facility-scoped: facilities/{facilityId}/contractTemplates/{templateId}
+    // See facility-scoped contract template rules below
+    
+    // Legacy unit_maps collection - DEPRECATED, not used
+    // New model uses facilities/{facilityId}/mapShapes (already scoped)
+    // match /unit_maps/{mapId} {
+    //   allow read, write: if request.auth != null && 
+    //     (resource.data.ownerUid == request.auth.uid ||
+    //      request.resource.data.ownerUid == request.auth.uid);
+    // }
+    
+    // REMOVED: Global security_events, security_alerts, security_settings collections (security issue - lines 668-684)
+    // Security collections are now account-scoped: facilityCreatorAccounts/{accountId}/security_*/
+    // See account-scoped security rules below
+    
+    // System configuration - super admin only
+    // Currently only used for system billing defaults (configs/system)
+    match /configs/{configId} {
+      // Only super admins can read/write system configs
+      allow read, write: if request.auth != null && isSuperAdmin();
+    }
+    
+    // User roles collection - for permission system
+    match /user_roles/{roleId} {
+      // Super admins can read/write all roles
+      allow read, write: if isSuperAdmin();
+      
+      // Users can read their own roles
+      allow read: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      
+      // Facility owners/managers can read roles for their facilities
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+        (
+          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true
+        );
+      
+      // Allow create if user is super admin, facility owner, or has manageUsers permission
+      allow create: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          request.resource.data.userId is string &&
+          request.resource.data.facilityId is string &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy == request.auth.uid &&
+          exists(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.managers[request.auth.uid] == true
+          )
+        )
+      );
+      
+      // Allow update/delete if super admin, facility owner, or assigned by current user
+      allow update, delete: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
+            resource.data.assignedBy == request.auth.uid
+          )
+        )
+      );
+    }
+    
+  }
+}
