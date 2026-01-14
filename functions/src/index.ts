@@ -10,20 +10,25 @@ interface TenantPortalRequest {
 }
 
 // Define environment parameters for SendGrid
-const SENDGRID_API_KEY = defineString('SENDGRID_API_KEY');
-const SENDGRID_FROM_EMAIL = defineString('SENDGRID_FROM_EMAIL');
+const SENDGRID_API_KEY = defineSecret('SENDGRID_API_KEY');
+const SENDGRID_SENDER_EMAIL = defineString('SENDGRID_SENDER_EMAIL');
+const SENDGRID_FROM_EMAIL = SENDGRID_SENDER_EMAIL;
 const SENDGRID_FROM_NAME = defineString('SENDGRID_FROM_NAME', { default: 'Storage Facility Creator' });
 
 // Define environment parameters for Stripe
-const STRIPE_SECRET_KEY = defineString('STRIPE_SECRET_KEY');
-const STRIPE_WEBHOOK_SECRET = defineString('STRIPE_WEBHOOK_SECRET');
+const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
+const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
 // Use process.env for STRIPE_CONNECT_CLIENT_ID to avoid deployment requirement
 // It's stored as a secret: ca_TWVomtZkyvI6Ie1ZLDJhjLiWHIwjtAwB
 
-// Define secrets for Twilio
-const TWILIO_ACCOUNT_SID = defineSecret('TWILIO_ACCOUNT_SID');
+// Define parameters for Twilio
+const TWILIO_ACCOUNT_SID = defineString('TWILIO_ACCOUNT_SID');
 const TWILIO_AUTH_TOKEN = defineSecret('TWILIO_AUTH_TOKEN');
-const TWILIO_PHONE_NUMBER = defineSecret('TWILIO_PHONE_NUMBER');
+const TWILIO_PHONE_NUMBER = defineString('TWILIO_PHONE_NUMBER');
+
+const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET];
+const SENDGRID_SECRETS = [SENDGRID_API_KEY];
+const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
 
 // Super admin email list
 // Can be configured via SUPER_ADMIN_EMAILS environment variable (comma-separated)
@@ -89,6 +94,10 @@ function initializeSendGrid(): void {
     if (!apiKey) {
       throw new Error('SENDGRID_API_KEY environment variable is not set');
     }
+    const fromEmail = SENDGRID_FROM_EMAIL.value();
+    if (!fromEmail) {
+      throw new Error('SENDGRID_SENDER_EMAIL environment variable is not set');
+    }
     sgMail.setApiKey(apiKey);
     sendGridInitialized = true;
   }
@@ -119,7 +128,7 @@ interface DigestRequest {
 /**
  * Send individual email via SendGrid
  */
-export const sendEmail = functions.https.onCall(async (data: EmailRequest, context) => {
+export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: EmailRequest, context) => {
   // Verify authentication
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to send emails');
@@ -377,7 +386,7 @@ export const sendEmail = functions.https.onCall(async (data: EmailRequest, conte
 /**
  * Send digest email with multiple reminders via SendGrid
  */
-export const sendDigest = functions.https.onCall(async (data: DigestRequest, context) => {
+export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: DigestRequest, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to send digest emails');
   }
@@ -471,7 +480,7 @@ export const sendDigest = functions.https.onCall(async (data: DigestRequest, con
 /**
  * Scheduled function to send daily digest emails at 8am CST
  */
-export const sendDailyDigests = functions.pubsub
+export const sendDailyDigests = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 8 * * *') // 8am CST daily
   .timeZone('America/Chicago')
   .onRun(async (context) => {
@@ -840,7 +849,7 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
  * Create payment checkout for tenant portal
  * Uses email + accessCode for authentication (no Firebase Auth required)
  */
-export const createTenantPortalPaymentCheckout = functions.https.onCall(async (data: any, context) => {
+export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow({ app: (data as any)?._appCheckToken ? {} as any : undefined } as any);
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
@@ -953,7 +962,7 @@ interface SMSRequest {
  * Automatically falls back to email if SMS limits are exceeded
  */
 export const sendSMS = functions.runWith({
-  secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER],
+  secrets: [...TWILIO_SECRETS, ...SENDGRID_SECRETS],
 }).https.onCall(async (data: SMSRequest, context) => {
   // Verify authentication
   if (!context.auth) {
@@ -1921,7 +1930,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
 /**
  * Process payment via Stripe for autopay or manual payments
  */
-export const processStripePayment = functions.https.onCall(async (data: any, context) => {
+export const processStripePayment = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
@@ -2230,7 +2239,7 @@ export const scheduledGenerateMonthlyRentCharges = functions.pubsub
  * Scheduled function to process delinquency automation daily
  * Runs at 3:00 AM UTC every day
  */
-export const processDelinquencyAutomation = functions.pubsub
+export const processDelinquencyAutomation = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 3 * * *')
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -2653,7 +2662,7 @@ ${facilityData?.name || 'Management Team'}
  * Process refund via Stripe
  * Used for move-out refunds and other refund scenarios
  */
-export const processRefund = functions.https.onCall(async (data: any, context) => {
+export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
@@ -2776,7 +2785,7 @@ export const processRefund = functions.https.onCall(async (data: any, context) =
  * Process move-out workflow
  * Handles move-out in a transaction-safe way: updates contract, frees unit, calculates charges/refunds
  */
-export const processMoveOut = functions.https.onCall(async (data: any, context) => {
+export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
@@ -3037,7 +3046,7 @@ export const processMoveOut = functions.https.onCall(async (data: any, context) 
  * - Updates unit status and reservation status
  * - Generates gate access code
  */
-export const completePublicMoveIn = functions.https.onCall(async (data: any) => {
+export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
   // App Check enforced for public move-in flows
   if (!(data as any)?._appCheckToken) {
     throw new functions.https.HttpsError(
@@ -3393,7 +3402,7 @@ export const completePublicMoveIn = functions.https.onCall(async (data: any) => 
   };
 });
 
-export const processAutopayPayments = functions.pubsub
+export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRETS }).pubsub
   .schedule('0 2 * * *') // Daily at 2:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -3660,7 +3669,7 @@ export const resetMonthlySMSUsage = functions.pubsub.schedule('0 0 1 * *').timeZ
  * Runs daily to check new move-ins and auto-enroll tenants in TPP after 14 days if no insurance proof
  * Scheduled to run at 4:00 AM UTC daily
  */
-export const autoProtectMoveIn = functions.pubsub
+export const autoProtectMoveIn = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 4 * * *') // Daily at 4:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -3828,7 +3837,7 @@ export const autoProtectMoveIn = functions.pubsub
  * Runs monthly to audit existing tenants and notify/enroll them in TPP if no insurance
  * Scheduled to run on the 1st of each month at 5:00 AM UTC
  */
-export const autoProtectAudit = functions.pubsub
+export const autoProtectAudit = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 5 1 * *') // 1st of each month at 5:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -4013,7 +4022,7 @@ export const autoProtectAudit = functions.pubsub
  * Runs daily to check if tenants who were notified have passed the grace period
  * Scheduled to run at 4:30 AM UTC daily (after Auto-Protect Move-In)
  */
-export const checkInsuranceCompliance = functions.pubsub
+export const checkInsuranceCompliance = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('30 4 * * *') // Daily at 4:30 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -4139,7 +4148,7 @@ export const checkInsuranceCompliance = functions.pubsub
  * Callable function: Submit Insurance Claim
  * Allows facility staff to submit an insurance claim for a tenant
  */
-export const submitClaim = functions.https.onCall(async (data: any, context) => {
+export const submitClaim = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(async (data: any, context) => {
   // Verify authentication
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
@@ -4315,7 +4324,7 @@ export const submitClaim = functions.https.onCall(async (data: any, context) => 
  * Sends payment reminders to tenants 3 days before their due date
  * Runs daily at 9:00 AM UTC
  */
-export const processPaymentReminders = functions.pubsub
+export const processPaymentReminders = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 9 * * *') // Daily at 9:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -4676,11 +4685,67 @@ async function checkAndIncrementSMSUsage(
 // STRIPE SUBSCRIPTION FUNCTIONS
 // ============================================
 
+interface CheckoutSessionRequest {
+  amount: number;
+  currency?: string;
+  successUrl: string;
+  cancelUrl: string;
+  description?: string;
+  customerEmail?: string;
+}
+
+/**
+ * Example: create a Stripe Checkout session for one-time payments
+ */
+export const createCheckoutSession = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: CheckoutSessionRequest, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+
+  const {
+    amount,
+    currency = 'usd',
+    successUrl,
+    cancelUrl,
+    description = 'Storage Facility Payment',
+    customerEmail,
+  } = data;
+
+  if (!amount || amount <= 0 || !successUrl || !cancelUrl) {
+    throw new functions.https.HttpsError('invalid-argument', 'amount, successUrl, and cancelUrl are required');
+  }
+
+  const stripe = getStripeClient();
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [
+      {
+        price_data: {
+          currency,
+          product_data: { name: description },
+          unit_amount: Math.round(amount * 100),
+        },
+        quantity: 1,
+      },
+    ],
+    customer_email: customerEmail,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  });
+
+  return {
+    checkoutUrl: session.url,
+    sessionId: session.id,
+  };
+});
+
 /**
  * Create Stripe Checkout session for facility-based subscription
  * Pricing: $25/month base (first facility) + $20/month per additional facility
  */
-export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60, memory: '256MB' }).https.onCall(async (data: any, context) => {
+export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60, memory: '256MB', secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -4918,7 +4983,7 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
 /**
  * Create Stripe Customer Portal session for managing subscription
  */
-export const createCustomerPortalSession = functions.https.onCall(async (data: any, context) => {
+export const createCustomerPortalSession = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -4971,7 +5036,7 @@ export const createCustomerPortalSession = functions.https.onCall(async (data: a
  * Update subscription quantity based on facility count
  * Called when facilities are added or removed
  */
-export const updateSubscriptionQuantity = functions.https.onCall(async (data: any, context) => {
+export const updateSubscriptionQuantity = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -5125,7 +5190,7 @@ export const getSubscriptionStatus = functions.https.onCall(async (data: any, co
 /**
  * Stripe webhook handler for subscription events
  */
-export const stripeWebhook = functions.https.onRequest(async (req, res) => {
+export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).https.onRequest(async (req, res) => {
   const sig = req.headers['stripe-signature'] as string;
 
   if (!sig) {
@@ -5632,7 +5697,7 @@ async function markStripeEventProcessed(eventId: string, eventType: string): Pro
  * Create a Stripe Connect account for a facility
  * This creates a Standard Connect account that facility owners will complete onboarding for
  */
-export const createStripeConnectAccount = functions.https.onCall(async (data: any, context) => {
+export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -5709,7 +5774,7 @@ export const createStripeConnectAccount = functions.https.onCall(async (data: an
  * Create an account link for Stripe Connect onboarding
  * This returns a URL that the facility owner visits to complete onboarding
  */
-export const createStripeConnectAccountLink = functions.https.onCall(async (data: any, context) => {
+export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -5765,7 +5830,7 @@ export const createStripeConnectAccountLink = functions.https.onCall(async (data
  * Check Stripe Connect account status
  * Returns the current status of the connected account
  */
-export const getStripeConnectAccountStatus = functions.https.onCall(async (data: any, context) => {
+export const getStripeConnectAccountStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -5838,7 +5903,7 @@ export const getStripeConnectAccountStatus = functions.https.onCall(async (data:
  * Create a payment checkout session for tenant rent payment
  * Routes payment to the facility owner's Stripe Connect account (0% platform fee)
  */
-export const createTenantPaymentCheckout = functions.https.onCall(async (data: any, context) => {
+export const createTenantPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -5931,7 +5996,7 @@ export const createTenantPaymentCheckout = functions.https.onCall(async (data: a
  * Create a payment checkout session for public payment links
  * No authentication required - uses token-based validation
  */
-export const createPublicPaymentCheckout = functions.https.onCall(async (data: any, context) => {
+export const createPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   // Note: No auth check - public access via token
   const { token } = data;
 

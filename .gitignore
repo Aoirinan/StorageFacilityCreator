@@ -33,6 +33,15 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Firebase / local env
+.firebase/
+.env
+.env.*
+*.local
+firebase-debug.log
+firestore-debug.log
+storage-debug.log
+
 # Symbolication related
 app.*.symbols
 

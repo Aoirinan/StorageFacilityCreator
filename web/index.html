@@ -26,7 +26,8 @@
   <link rel="canonical" href="https://storagefacilitycreator.com">
   
   <!-- Service worker cleanup - runs early to unregister any existing service workers -->
-  <script src="service-worker-clear.js"></script>
+  <!-- Using async to load in parallel without blocking, but execute immediately when ready -->
+  <script src="service-worker-clear.js" async></script>
   
   <!-- Stripe.js for Payment Elements (Phase 11: Stripe Embedded UI) -->
   <script src="https://js.stripe.com/v3/"></script>
