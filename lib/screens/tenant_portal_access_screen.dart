@@ -2,14 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../providers/tenant_portal_provider.dart';
-import '../services/tenant_portal_service.dart';
-import '../models/tenant_portal_models.dart';
-import 'tenant_portal_screen.dart';
-import '../services/home_button_service.dart';
-import '../theme/app_theme.dart';
-import '../router/app_router.dart';
-import '../router/app_route.dart';
+import 'package:sfcapp/providers/tenant_portal_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/screens/tenant_portal_screen.dart';
+import 'package:sfcapp/services/home_button_service.dart';
+import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 class TenantPortalAccessScreen extends ConsumerStatefulWidget {
   const TenantPortalAccessScreen({super.key});

@@ -18,7 +18,11 @@ import 'test_firestore_rules.dart';
 import 'widgets/error_banner.dart';
 import 'config/firebase_emulator_config.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'services/app_check_service.dart';
+
+// Static flag to ensure App Check is activated exactly once (DEPRECATED - use AppCheckService.isActivated instead)
+bool _appCheckActivated = false;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,20 +33,6 @@ void main() async {
     message: 'Main entry, WidgetsFlutterBinding.ensureInitialized complete',
   );
   // #endregion
-  Future<void> startApp() async {
-    // #region agent log
-    DebugLogger.log(
-      hypothesisId: 'H0',
-      location: 'main.dart:startApp',
-      message: 'Starting runApp',
-    );
-    // #endregion
-    runApp(const ProviderScope(child: SFCApp()));
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeBackgroundServices();
-    });
-  }
-  
   // Catch and log any unhandled errors
   FlutterError.onError = (FlutterErrorDetails details) {
     if (kDebugMode) {
@@ -102,12 +92,45 @@ void main() async {
     print('ℹ️ Using production Firebase (set USE_EMULATORS=true to use emulators)');
   }
   
+  /// Activate Firebase App Check exactly once
+  /// 
+  /// Uses AppCheckService.activate() which has built-in guards against double initialization
+  Future<void> _activateAppCheckOnce() async {
+    // Double-check: if AppCheckService is already activated, skip (prevents duplicate activation)
+    if (AppCheckService.isActivated || _appCheckActivated) {
+      if (kDebugMode) {
+        print('⚠️ App Check already activated (AppCheckService.isActivated=${AppCheckService.isActivated}, _appCheckActivated=$_appCheckActivated), skipping duplicate activation');
+      }
+      return;
+    }
+
+    try {
+      // Use the centralized AppCheckService to keep web + debug behavior consistent.
+      // AppCheckService.activate() has its own guard against duplicate initialization
+      await AppCheckService.activate(
+        webSiteKey: '6LeQ_0osAAAAAHiMJCujnzWG8ldPZhrKbgADZ2wH',
+        forceEnable: true,
+      );
+      _appCheckActivated = true; // Also set local flag for backward compatibility
+      if (kDebugMode) {
+        print('✅ Firebase App Check activated with reCAPTCHA v3');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Failed to activate App Check: $e');
+      }
+      // Don't set _appCheckActivated = true on error, so retry can work
+      rethrow;
+    }
+  }
+  
   Future<void> bootstrapFirebaseAndApp() async {
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-      await _activateAppCheck();
+
+    await _activateAppCheckOnce();
     // #region agent log
     DebugLogger.log(
       hypothesisId: 'H1',
@@ -121,7 +144,17 @@ void main() async {
     if (kDebugMode) {
       print('🚀 Starting SFC App - Storage Facility Creator');
     }
-    await startApp();
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H0',
+      location: 'main.dart:runApp',
+      message: 'Starting runApp',
+    );
+    // #endregion
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeBackgroundServices();
+    });
+    runApp(const ProviderScope(child: SFCApp()));
   } catch (e, stackTrace) {
     // #region agent log
     DebugLogger.log(
@@ -143,11 +176,23 @@ void main() async {
           await Firebase.initializeApp(
             options: DefaultFirebaseOptions.currentPlatform,
           );
-            await _activateAppCheck();
+
+          await _activateAppCheckOnce();
+
           if (kDebugMode) {
             print('✅ Firebase initialized successfully (retry)');
           }
-          await startApp();
+          // #region agent log
+          DebugLogger.log(
+            hypothesisId: 'H0',
+            location: 'main.dart:runApp.retry',
+            message: 'Starting runApp (retry)',
+          );
+          // #endregion
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _initializeBackgroundServices();
+          });
+          runApp(const ProviderScope(child: SFCApp()));
         } catch (retryError, retryStack) {
           ErrorReporter.reportError(retryError, retryStack, context: 'Firebase.initializeApp.retry');
           if (kDebugMode) {
@@ -204,62 +249,6 @@ void _initializeBackgroundServices() {
   }
 }
 
-Future<void> _activateAppCheck() async {
-  // App Check activation with environment-based provider selection
-  // Production: reCAPTCHA v3 (requires APPCHECK_SITE_KEY)
-  // Development: Debug provider (automatic for localhost)
-  // Toggle via dart-define: --dart-define=ENABLE_APPCHECK=true --dart-define=APPCHECK_SITE_KEY=<key>
-  const enableAppCheck = bool.fromEnvironment('ENABLE_APPCHECK', defaultValue: false);
-  String webSiteKey = const String.fromEnvironment('APPCHECK_SITE_KEY', defaultValue: '');
-
-  // Auto-enable App Check for production domain if not explicitly disabled
-  // Production site key: 6LdfgkYsAAAAACukbDsZuvURRCPqcioby-bm3adD
-  // Site keys are public and safe to include in client code
-  bool shouldActivate = enableAppCheck;
-  
-  // Always log for visibility (not just debug mode)
-  print('🔍 [AppCheck] Initialization check: enableAppCheck=$enableAppCheck, kIsWeb=$kIsWeb, webSiteKey=${webSiteKey.isNotEmpty ? "SET" : "EMPTY"}');
-  
-  if (!enableAppCheck && kIsWeb) {
-    // Auto-enable App Check for all web builds (production site key)
-    // This ensures App Check is always enabled for production deployments
-    print('🔧 [AppCheck] Auto-enabling App Check with production site key');
-    webSiteKey = '6LdfgkYsAAAAACukbDsZuvURRCPqcioby-bm3adD';
-    shouldActivate = true; // Force activation if we have a site key
-  }
-
-  // If still no site key after auto-detection, skip App Check
-  if (!shouldActivate || webSiteKey.isEmpty) {
-    print('⚠️ [AppCheck] Skipping activation - shouldActivate=$shouldActivate, webSiteKey.isEmpty=${webSiteKey.isEmpty}');
-    return;
-  }
-  
-  print('✅ [AppCheck] Proceeding with activation - site key: ${webSiteKey.substring(0, 8)}...');
-
-  try {
-    // Use centralized AppCheckService
-    print('🚀 [AppCheck] Calling AppCheckService.activate with forceEnable=$shouldActivate');
-    await AppCheckService.activate(
-      webSiteKey: webSiteKey.isNotEmpty ? webSiteKey : null,
-      forceEnable: shouldActivate,
-    );
-    
-    // Always log activation status (not just in debug mode)
-    if (AppCheckService.isActivated) {
-      final stats = AppCheckService.getMonitoringStats();
-      print('✅ [AppCheck] Activation successful! Stats: $stats');
-    } else {
-      print('⚠️ [AppCheck] Activation completed but isActivated=false');
-    }
-  } catch (e, stack) {
-    // Error already logged by AppCheckService, but log here too for visibility
-    print('❌ [AppCheck] Activation failed: $e');
-    print('   Stack: $stack');
-    ErrorReporter.reportError(e, stack, context: 'AppCheck.activate');
-    print('⚠️ [AppCheck] App will continue but App Check protected calls may fail');
-    // Don't rethrow - allow app to continue
-  }
-}
 
 void _showFirebaseInitErrorUI({
   required Object error,

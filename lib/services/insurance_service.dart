@@ -1,8 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
-import '../models/insurance_plan_model.dart';
-import '../models/tenant_insurance_model.dart';
+import 'package:sfcapp/models/insurance_plan_model.dart';
+import 'package:sfcapp/models/tenant_insurance_model.dart';
 
 class InsuranceService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

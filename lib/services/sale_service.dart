@@ -1,13 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/sale_model.dart';
-import '../models/product_model.dart';
-import '../models/ledger_entry_model.dart';
-import '../services/inventory_service.dart';
-import '../services/ledger_service.dart';
-import '../services/deposit_service.dart';
-import '../services/audit_service.dart';
+import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/sale_model.dart';
+import 'package:sfcapp/services/inventory_service.dart';
+import 'package:sfcapp/services/ledger_service.dart';
 
 /// Service for managing sales (POS)
 class SaleService {

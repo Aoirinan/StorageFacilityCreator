@@ -1,11 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/pricing_rule_model.dart';
-import '../models/unit_model.dart';
-import '../services/unit_service.dart';
-import '../services/facility_service.dart';
-import '../models/facility_model.dart';
+import 'package:sfcapp/models/pricing_rule_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 
 /// Service for dynamic pricing calculations and recommendations
 class DynamicPricingService {

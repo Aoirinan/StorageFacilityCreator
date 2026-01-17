@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import '../models/reminder_schedule_model.dart';
-import '../providers/reminder_schedule_provider.dart';
-import '../models/reminder_model.dart';
-import '../models/permission_model.dart';
-import '../services/permission_service.dart';
-import '../theme/app_theme.dart';
+import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/models/reminder_model.dart';
+import 'package:sfcapp/models/reminder_schedule_model.dart';
+import 'package:sfcapp/providers/reminder_schedule_provider.dart';
+import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 class ReminderScheduleScreen extends ConsumerStatefulWidget {
   final String facilityId;

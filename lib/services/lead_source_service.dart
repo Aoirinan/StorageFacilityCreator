@@ -1,8 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
-import '../models/lead_source_model.dart';
-import '../models/tenant_model.dart';
-import '../services/tenant_service.dart';
+import 'package:sfcapp/models/lead_source_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 
 /// Service for lead source analytics and reporting
 class LeadSourceService {

@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/billing_model.dart';
+import 'package:sfcapp/models/billing_model.dart';
 
 /// Service for managing facility billing and email usage tracking
 class BillingService {

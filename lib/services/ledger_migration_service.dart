@@ -36,13 +36,9 @@ class LedgerMigrationService {
         print('📊 [Migration] Found ${payments.length} payments to migrate');
       }
 
-      final report = MigrationReport(
-        facilityId: facilityId,
-        totalPayments: payments.length,
-        migrated: 0,
-        skipped: 0,
-        errors: [],
-      );
+      var migrated = 0;
+      var skipped = 0;
+      final errors = <String>[];
 
       for (final payment in payments) {
         try {
@@ -60,7 +56,7 @@ class LedgerMigrationService {
             if (kDebugMode) {
               print('⏭️ [Migration] Payment ${payment.id} already migrated, skipping');
             }
-            report.skipped++;
+            skipped++;
             continue;
           }
 
@@ -102,18 +98,26 @@ class LedgerMigrationService {
             }
           }
 
-          report.migrated++;
+          migrated++;
 
-          if (kDebugMode && report.migrated % 10 == 0) {
-            print('✅ [Migration] Migrated ${report.migrated}/${payments.length} payments');
+          if (kDebugMode && migrated % 10 == 0) {
+            print('✅ [Migration] Migrated $migrated/${payments.length} payments');
           }
         } catch (e) {
           if (kDebugMode) {
             print('❌ [Migration] Error migrating payment ${payment.id}: $e');
           }
-          report.errors.add('Payment ${payment.id}: $e');
+          errors.add('Payment ${payment.id}: $e');
         }
       }
+
+      final report = MigrationReport(
+        facilityId: facilityId,
+        totalPayments: payments.length,
+        migrated: migrated,
+        skipped: skipped,
+        errors: errors,
+      );
 
       if (kDebugMode) {
         print('✅ [Migration] Migration complete:');

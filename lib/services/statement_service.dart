@@ -191,7 +191,7 @@ class StatementService {
                   decoration: pw.BoxDecoration(color: PdfColors.yellow100),
                   child: pw.Text(
                     'Balance Forward: ${_formatCurrency(balanceForward)}',
-                    style: const pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
+                    style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
                   ),
                 ),
               ],

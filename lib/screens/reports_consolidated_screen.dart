@@ -1,27 +1,26 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import 'package:intl/intl.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:printing/printing.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:typed_data';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../models/facility_model.dart';
-import '../providers/facility_provider.dart';
-import '../providers/auth_provider.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/reports_service.dart';
-import '../models/report_models.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../utils/error_message_helper.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:printing/printing.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/report_models.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/reports_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 // Conditional import for web-only CSV download
-import 'reports_consolidated_stub.dart'
-    if (dart.library.html) 'reports_consolidated_web.dart' as platform;
+import 'package:sfcapp/screens/reports_consolidated_stub.dart'
+    if (dart.library.html) 'package:sfcapp/screens/reports_consolidated_web.dart'
+    as platform;
 
 enum ReportType {
   financial,

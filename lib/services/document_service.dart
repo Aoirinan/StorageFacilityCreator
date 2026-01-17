@@ -1,11 +1,10 @@
-import 'dart:io' if (dart.library.html) 'dart:html' as html;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
-import '../models/document_attachment_model.dart';
-import 'audit_service.dart';
+import 'package:sfcapp/models/document_attachment_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 /// Service for managing document attachments
 class DocumentService {

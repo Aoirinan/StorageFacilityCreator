@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../services/subscription_guard_service.dart';
-import '../theme/app_theme.dart';
-import '../router/app_router.dart';
-import '../router/app_route.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/services/subscription_guard_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 /// Banner widget that displays subscription warnings (past due, cancelled, etc.)
 /// Should be displayed at the top of protected screens

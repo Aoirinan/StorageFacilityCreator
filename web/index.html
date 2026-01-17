@@ -25,10 +25,6 @@
   <!-- Canonical domain -->
   <link rel="canonical" href="https://storagefacilitycreator.com">
   
-  <!-- Service worker cleanup - runs early to unregister any existing service workers -->
-  <!-- Using async to load in parallel without blocking, but execute immediately when ready -->
-  <script src="service-worker-clear.js" async></script>
-  
   <!-- Stripe.js for Payment Elements (Phase 11: Stripe Embedded UI) -->
   <script src="https://js.stripe.com/v3/"></script>
   
@@ -39,55 +35,8 @@
 </head>
 <body>
   <script>
-    // FORCE disable Flutter service worker and clear ALL caches
     (function() {
       'use strict';
-      const VERSION = 'FINAL_DEPLOY_V1_' + Date.now();
-      console.log('🚀🚀🚀 ' + VERSION + ' - FORCE CLEAR ALL CACHES');
-      window.MAP_DEPLOY_VERSION = VERSION;
-      window.MAP_LABEL_SHOULD_BE = 'MAP';
-      
-      // Disable Flutter service worker registration
-      window._flutter_web_disable_sw = true;
-      
-      // Unregister ALL service workers IMMEDIATELY
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(registrations) {
-          console.log('🔧 Found ' + registrations.length + ' service workers - UNREGISTERING ALL');
-          const promises = registrations.map(function(registration) {
-            return registration.unregister().then(function(success) {
-              console.log('✅ Service worker unregistered:', success);
-              return success;
-            }).catch(function(err) {
-              console.error('❌ Error unregistering:', err);
-              return false;
-            });
-          });
-          return Promise.all(promises);
-        }).then(function() {
-          console.log('✅ All service workers cleared');
-        });
-      }
-      
-      // Delete ALL caches (only Cache Storage, not localStorage/sessionStorage)
-      if ('caches' in window) {
-        caches.keys().then(function(names) {
-          console.log('🔧 Found ' + names.length + ' caches - DELETING ALL');
-          const promises = names.map(function(name) {
-            return caches.delete(name).then(function(success) {
-              console.log('✅ Cache deleted:', name, success);
-              return success;
-            });
-          });
-          return Promise.all(promises);
-        }).then(function() {
-          console.log('✅ All caches cleared');
-        });
-      }
-      
-      // Note: localStorage/sessionStorage NOT cleared - only service workers and Cache API
-      // This preserves user preferences (locale, etc.) while preventing PWA installability
-      
       // Global error handler to catch and suppress known non-critical errors
       window.addEventListener('error', function(event) {
         const errorMsg = event.error?.message || event.error?.toString() || '';
@@ -101,8 +50,11 @@
           return true;
         }
         
+        // TEMPORARILY DISABLED: App Check error suppression for debugging
+        // Re-enable after fixing the root cause
         // Suppress App Check 400 errors (expected until Firebase Console is configured)
         // These are non-critical and will be fixed when secret key is configured
+        /*
         if (errorMsg.includes('exchangeRecaptchaV3Token') || 
             errorMsg.includes('AppCheck') && (errorMsg.includes('400') || errorMsg.includes('Bad Request')) ||
             errorStack.includes('exchangeRecaptchaV3Token') ||
@@ -112,6 +64,7 @@
           event.preventDefault();
           return true;
         }
+        */
         
         // Suppress Firestore BloomFilter errors (non-critical SDK warnings)
         // These are internal Firestore optimization warnings that don't affect functionality
@@ -132,13 +85,17 @@
       window.addEventListener('unhandledrejection', function(event) {
         const reason = event.reason?.toString() || '';
         
+        // TEMPORARILY DISABLED: App Check error suppression for debugging
+        // Re-enable after fixing the root cause
         // Suppress App Check 400 errors in promise rejections
+        /*
         if (reason.includes('exchangeRecaptchaV3Token') || 
             (reason.includes('AppCheck') && (reason.includes('400') || reason.includes('Bad Request')))) {
           // Expected until Firebase Console is configured - suppress to avoid console noise
           event.preventDefault();
           return;
         }
+        */
         
         // Suppress Firestore BloomFilter errors in promise rejections
         if (reason.includes('BloomFilter') || reason.includes('BloomFilterError')) {

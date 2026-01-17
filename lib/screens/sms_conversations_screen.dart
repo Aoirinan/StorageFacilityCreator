@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import '../models/sms_conversation_model.dart';
-import '../services/sms_conversation_service.dart';
-import '../services/tenant_service.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../widgets/sms_conversation_widget.dart';
-import '../services/modern_navigation_service.dart';
-import '../utils/error_message_helper.dart';
+import 'package:sfcapp/models/sms_conversation_model.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/sms_conversation_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/sms_conversation_widget.dart';
 
 /// Provider for SMS conversations
 final smsConversationsProvider = FutureProvider.family<List<SMSConversationModel>, String>((ref, facilityId) async {

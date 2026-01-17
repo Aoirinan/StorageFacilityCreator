@@ -1,12 +1,11 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../models/advanced_search_filter_model.dart';
-import '../services/advanced_search_service.dart';
-import '../theme/app_theme.dart';
-import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
+import 'package:sfcapp/models/advanced_search_filter_model.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/services/advanced_search_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 /// Advanced search widget/dialog
 class AdvancedSearchWidget extends ConsumerStatefulWidget {
@@ -243,21 +242,21 @@ class _AdvancedSearchWidgetState extends ConsumerState<AdvancedSearchWidget> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        DropdownButtonFormField<String>(
+        DropdownButtonFormField<String?>(
           value: _sortBy,
           decoration: const InputDecoration(
             labelText: 'Sort By',
             border: OutlineInputBorder(),
           ),
           items: [
-            const DropdownMenuItem<String>(
+            const DropdownMenuItem<String?>(
               value: null,
               child: Text('No Sorting'),
             ),
             ...sortFields.map((field) {
-              return DropdownMenuItem<String>(
+              return DropdownMenuItem<String?>(
                 value: field['value'],
-                child: Text(field['label']),
+                child: Text(field['label'] ?? ''),
               );
             }),
           ],

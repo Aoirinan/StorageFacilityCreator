@@ -1,15 +1,14 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import '../services/facility_service.dart';
-import '../services/unit_service.dart';
-import '../providers/facility_provider.dart';
-import '../providers/auth_provider.dart';
-import '../models/unit_model.dart';
-import '../models/facility_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/search_provider.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 class YieldManagementScreen extends ConsumerStatefulWidget {
   const YieldManagementScreen({super.key});
@@ -41,23 +40,16 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/yield',
-      title: 'Yield Management',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: _selectedFacilityId == null
-          ? _buildNoFacilityMessage()
-          : Column(
-              children: [
-                _buildFacilitySelector(),
-                Expanded(
-                  child: _buildYieldAnalysis(),
-                ),
-              ],
-            ),
-    );
+    return _selectedFacilityId == null
+        ? _buildNoFacilityMessage()
+        : Column(
+            children: [
+              _buildFacilitySelector(),
+              Expanded(
+                child: _buildYieldAnalysis(),
+              ),
+            ],
+          );
   }
 
   Widget _buildNoFacilityMessage() {

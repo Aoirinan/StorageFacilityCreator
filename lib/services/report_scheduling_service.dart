@@ -2,10 +2,9 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/scheduled_report_model.dart';
-import '../services/reports_service.dart';
-import '../services/email_cloud_service.dart';
-import '../services/reports_service.dart' as reports;
+import 'package:sfcapp/models/scheduled_report_model.dart';
+import 'package:sfcapp/services/email_cloud_service.dart';
+import 'package:sfcapp/services/reports_service.dart' as reports;
 
 /// Service for scheduling and delivering reports
 class ReportSchedulingService {
@@ -349,16 +348,16 @@ class ReportSchedulingService {
 
       switch (reportType) {
         case ScheduledReportType.financial:
-          final reportData = await ReportsService.fetchPaymentsReport(
+          final reportData = await reports.ReportsService.fetchPaymentsReport(
             facilityId: facilityId,
             from: from,
             to: to,
           );
           if (format == ReportExportFormat.csv) {
-            return ReportsService.exportToCsv(reportData);
+            return reports.ReportsService.exportToCsv(reportData);
           } else if (format == ReportExportFormat.pdf) {
             // PDF export returns bytes, convert to base64 for email attachment
-            final pdfBytes = await ReportsService.exportPaymentsToPdf(
+            final pdfBytes = await reports.ReportsService.exportPaymentsToPdf(
               reportData: reportData,
               facilityId: facilityId,
               from: from,
@@ -367,63 +366,63 @@ class ReportSchedulingService {
             return 'PDF:' + base64.encode(pdfBytes); // Prefix to identify PDF format
           }
           // Default to CSV
-          return ReportsService.exportToCsv(reportData);
+          return reports.ReportsService.exportToCsv(reportData);
 
         case ScheduledReportType.arAging:
-          final report = await ReportsService.generateARAgingReport(facilityId: facilityId);
+          final report = await reports.ReportsService.generateARAgingReport(facilityId: facilityId);
           if (format == ReportExportFormat.csv) {
-            return ReportsService.exportARAgingToCsv(report);
+            return reports.ReportsService.exportARAgingToCsv(report);
           } else if (format == ReportExportFormat.pdf) {
-            final pdfBytes = await ReportsService.exportARAgingToPdf(
+            final pdfBytes = await reports.ReportsService.exportARAgingToPdf(
               report: report,
               facilityId: facilityId,
             );
             return 'PDF:' + base64.encode(pdfBytes);
           }
-          return ReportsService.exportARAgingToCsv(report);
+          return reports.ReportsService.exportARAgingToCsv(report);
 
         case ScheduledReportType.occupancy:
-          final metrics = await ReportsService.generateOccupancyReport(facilityId: facilityId);
+          final metrics = await reports.ReportsService.generateOccupancyReport(facilityId: facilityId);
           if (format == ReportExportFormat.csv) {
-            return ReportsService.exportOccupancyToCsv(metrics);
+            return reports.ReportsService.exportOccupancyToCsv(metrics);
           } else if (format == ReportExportFormat.pdf) {
-            final pdfBytes = await ReportsService.exportOccupancyToPdf(
+            final pdfBytes = await reports.ReportsService.exportOccupancyToPdf(
               metrics: metrics,
               facilityId: facilityId,
             );
             return 'PDF:' + base64.encode(pdfBytes);
           }
-          return ReportsService.exportOccupancyToCsv(metrics);
+          return reports.ReportsService.exportOccupancyToCsv(metrics);
 
         case ScheduledReportType.delinquency:
-          final summary = await ReportsService.generateDelinquencyReport(facilityId: facilityId);
+          final summary = await reports.ReportsService.generateDelinquencyReport(facilityId: facilityId);
           if (format == ReportExportFormat.csv) {
-            return ReportsService.exportDelinquencyToCsv(summary);
+            return reports.ReportsService.exportDelinquencyToCsv(summary);
           } else if (format == ReportExportFormat.pdf) {
-            final pdfBytes = await ReportsService.exportDelinquencyToPdf(
+            final pdfBytes = await reports.ReportsService.exportDelinquencyToPdf(
               summary: summary,
               facilityId: facilityId,
             );
             return 'PDF:' + base64.encode(pdfBytes);
           }
-          return ReportsService.exportDelinquencyToCsv(summary);
+          return reports.ReportsService.exportDelinquencyToCsv(summary);
 
         case ScheduledReportType.deposits:
-          final summary = await ReportsService.generateDepositReport(
+          final summary = await reports.ReportsService.generateDepositReport(
             facilityId: facilityId,
             startDate: from,
             endDate: to,
           );
           if (format == ReportExportFormat.csv) {
-            return ReportsService.exportDepositToCsv(summary);
+            return reports.ReportsService.exportDepositToCsv(summary);
           } else if (format == ReportExportFormat.pdf) {
-            final pdfBytes = await ReportsService.exportDepositToPdf(
+            final pdfBytes = await reports.ReportsService.exportDepositToPdf(
               summary: summary,
               facilityId: facilityId,
             );
             return 'PDF:' + base64.encode(pdfBytes);
           }
-          return ReportsService.exportDepositToCsv(summary);
+          return reports.ReportsService.exportDepositToCsv(summary);
 
         case ScheduledReportType.communicationAnalytics:
         case ScheduledReportType.all:

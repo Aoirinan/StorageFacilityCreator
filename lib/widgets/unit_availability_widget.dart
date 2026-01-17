@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import '../services/public_rental_service.dart';
-import '../models/unit_model.dart';
-import '../theme/app_theme.dart';
-import 'package:intl/intl.dart';
+import 'package:flutter/material.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/public_rental_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 /// Embeddable widget for displaying unit availability
 /// Can be embedded on external websites

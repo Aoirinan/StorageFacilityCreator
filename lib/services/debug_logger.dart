@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 /// Minimal NDJSON logger for debug runs.
 /// Writes to c:\dev\SFCApp\.cursor\debug.log when kDebugMode is true.
 class DebugLogger {
-  static const _logPath = r'c:\dev\SFCApp\.cursor\debug.log';
+  static const _logPath = r'c:\dev\StorageFacilityCreator\.cursor\debug.log';
   static const _sessionId = 'debug-session';
 
   static void log({

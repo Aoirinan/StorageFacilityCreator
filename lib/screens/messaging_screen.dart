@@ -81,113 +81,36 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loadingPermissions) {
-      return ModernPageWrapper(
-        currentRoute: '/messages',
-        title: 'Messaging',
-        onNavigate: (route) {
-          ModernNavigationService.navigateToRoute(context, route);
-        },
-        child: const Center(child: CircularProgressIndicator()),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     if (!_canViewConversations) {
-      return ModernPageWrapper(
-        currentRoute: '/messages',
-        title: 'Messaging',
-        onNavigate: (route) {
-          ModernNavigationService.navigateToRoute(context, route);
-        },
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.lock_outline, size: 64, color: AppTheme.warning),
-                const SizedBox(height: 16),
-                Text(
-                  'Messaging access restricted',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _permissionReason ??
-                      'You do not have permission to view conversations for this facility.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_outline, size: 64, color: AppTheme.warning),
+              const SizedBox(height: 16),
+              Text(
+                'Messaging access restricted',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _permissionReason ??
+                    'You do not have permission to view conversations for this facility.',
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
+              ),
+            ],
           ),
         ),
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/messages',
-      title: 'Messaging',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (_selectedTab == 0)
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.add),
-            tooltip: 'New message',
-            onSelected: (value) {
-              if (value == 'private') {
-                _showNewPrivateMessageDialog();
-              } else if (value == 'group') {
-                // Only allow group conversations if user has manage permissions
-                if (_canManageConversations) {
-                  _showCreateConversationDialog();
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(_permissionReason ?? 'You need permission to create group conversations.'),
-                    ),
-                  );
-                }
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'private',
-                child: Row(
-                  children: [
-                    Icon(Icons.person, size: 20),
-                    SizedBox(width: 8),
-                    Text('New Private Message'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'group',
-                enabled: _canManageConversations,
-                child: Row(
-                  children: [
-                    Icon(Icons.group, size: 20),
-                    SizedBox(width: 8),
-                    Text('New Group Conversation'),
-                    if (!_canManageConversations)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: Icon(Icons.lock_outline, size: 14, color: AppTheme.textTertiary),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        if (_selectedTab == 1)
-          IconButton(
-            icon: const Icon(Icons.sms),
-            tooltip: 'Send new SMS',
-            onPressed: _showSendSMSDialog,
-          ),
-      ],
-      child: Column(
+    return Column(
         children: [
           // Tabs
           Container(

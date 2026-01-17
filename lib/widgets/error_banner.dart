@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
-import '../services/error_reporter.dart';
+import 'package:sfcapp/services/error_reporter.dart';
 
 /// A lightweight error banner widget that displays user-friendly error messages
 /// for uncaught errors. This prevents blank screens and provides actionable feedback.

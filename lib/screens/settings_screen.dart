@@ -1,25 +1,16 @@
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
-import 'dart:convert';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
-import '../services/facility_service.dart';
-import 'auth/login_screen.dart';
-import 'subscription_test_screen.dart';
-import 'permission_management_screen.dart';
-import 'ai_assistant_screen.dart';
-import 'stripe_connect_onboarding_screen.dart';
-import 'notification_settings_screen.dart';
-import 'profile_edit_screen.dart';
-import 'appearance_settings_screen.dart';
-import '../router/app_router.dart';
-import '../router/app_route.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/screens/permission_management_screen.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 // #region agent log
 void _debugLog(String location, String message, Map<String, dynamic> data, String hypothesisId) {
@@ -59,14 +50,8 @@ class SettingsScreen extends ConsumerWidget {
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/settings',
-      title: 'Settings',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: KeyboardScrollable(
-        child: ListView(
+    return KeyboardScrollable(
+      child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
           // Account Section
@@ -353,7 +338,6 @@ class SettingsScreen extends ConsumerWidget {
             ],
           ),
         ],
-      ),
       ),
     );
   }

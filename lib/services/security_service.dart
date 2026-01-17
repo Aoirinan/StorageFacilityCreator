@@ -1,8 +1,7 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../models/security_model.dart';
+import 'package:sfcapp/models/security_model.dart';
 
 class SecurityService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

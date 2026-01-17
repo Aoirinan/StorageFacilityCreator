@@ -1,13 +1,10 @@
-import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/payment_model.dart';
-import '../models/contract_model.dart';
-import '../models/tenant_model.dart';
-import '../models/ledger_entry_model.dart';
-import '../services/email_service.dart';
-import '../services/ledger_service.dart';
+import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/services/email_service.dart';
+import 'package:sfcapp/services/ledger_service.dart';
 
 class PaymentService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import '../services/stripe_service.dart';
-import '../models/facility_model.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../utils/error_message_helper.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/stripe_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 /// Screen for facility owners to connect their Stripe account
 /// This enables them to receive tenant rent payments directly

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../models/sms_template_model.dart';
-import '../services/template_service.dart';
+import 'package:sfcapp/models/sms_template_model.dart';
+import 'package:sfcapp/services/template_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 /// Screen for managing SMS templates
 class SMSTemplateManagementScreen extends StatefulWidget {

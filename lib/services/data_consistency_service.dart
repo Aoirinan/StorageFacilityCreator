@@ -1,12 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/facility_model.dart';
-import '../models/tenant_model.dart';
-import '../models/payment_model.dart';
-import '../models/contract_model.dart';
-import '../models/unit_model.dart';
-import 'error_handling_service.dart';
+import 'package:sfcapp/models/contract_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/error_handling_service.dart';
 
 class DataConsistencyService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

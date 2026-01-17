@@ -1,9 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
-import '../models/communication_analytics_model.dart';
-import '../services/email_usage_service.dart';
-import '../services/sms_usage_service.dart';
-import '../services/email_tracking_service.dart';
+import 'package:sfcapp/models/communication_analytics_model.dart';
+import 'package:sfcapp/services/email_tracking_service.dart';
+import 'package:sfcapp/services/email_usage_service.dart';
+import 'package:sfcapp/services/sms_usage_service.dart';
 
 /// Service for communication analytics and cost tracking
 class CommunicationAnalyticsService {

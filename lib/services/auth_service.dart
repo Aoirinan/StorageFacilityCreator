@@ -1,7 +1,9 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import 'permission_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/services/app_check_service.dart';
+import 'package:sfcapp/services/debug_logger.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -18,7 +20,42 @@ class AuthService {
     required String email,
     required String password,
   }) async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H2',
+      location: 'auth_service.dart:signInWithEmailAndPassword.entry',
+      message: 'Sign-in attempt started',
+      data: {'emailProvided': email.isNotEmpty, 'passwordProvided': password.isNotEmpty},
+    );
+    // #endregion
     try {
+      // Check App Check token availability before auth request (H1, H2, H4)
+      // Force refresh token if it's old to prevent expiration issues
+      // #region agent log
+      final appCheckStats = AppCheckService.getMonitoringStats();
+      // Force refresh if token might be expired or close to expiration
+      final appCheckToken = await AppCheckService.getToken(forceRefresh: true);
+      DebugLogger.log(
+        hypothesisId: 'H2',
+        location: 'auth_service.dart:signInWithEmailAndPassword.beforeAuth',
+        message: 'App Check status before auth request',
+        data: {
+          'appCheckActivated': appCheckStats['isActivated'] ?? false,
+          'tokenAvailable': appCheckToken != null,
+          'tokenLength': appCheckToken?.length ?? 0,
+          'tokenSuccessCount': appCheckStats['tokenSuccessCount'] ?? 0,
+          'tokenFailureCount': appCheckStats['tokenFailureCount'] ?? 0,
+        },
+      );
+      // #endregion
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'auth_service.dart:signInWithEmailAndPassword.requestParams',
+        message: 'Auth request parameters',
+        data: {'emailLength': email.length, 'passwordLength': password.length},
+      );
+      // #endregion
       final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
@@ -26,6 +63,14 @@ class AuthService {
       if (kDebugMode) {
         print('✅ User signed in: ${credential.user?.email}');
       }
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H2',
+        location: 'auth_service.dart:signInWithEmailAndPassword.success',
+        message: 'Sign-in succeeded',
+        data: {'userEmail': credential.user?.email},
+      );
+      // #endregion
       
       // Update last login timestamp
       await updateLastLogin();
@@ -35,6 +80,18 @@ class AuthService {
       if (kDebugMode) {
         print('❌ Sign in error: ${e.message}');
       }
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H2',
+        location: 'auth_service.dart:signInWithEmailAndPassword.error',
+        message: 'Sign-in failed with FirebaseAuthException',
+        data: {
+          'errorCode': e.code,
+          'errorMessage': e.message,
+          'errorType': 'FirebaseAuthException',
+        },
+      );
+      // #endregion
       rethrow;
     }
   }

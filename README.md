@@ -17,6 +17,7 @@ Flutter web app for Storage Facility Creator.
 - Build with cache busting: `./build_web_with_cache_bust.ps1`
 - Outputs to `build/web` with hashed assets.
 - Serve locally: `flutter run -d chrome --release`.
+- Release build (skip WASM dry run): `flutter build web --release --no-wasm-dry-run`.
 - Deploy: upload `build/web` to hosting of choice (Firebase Hosting/CDN) and ensure cache headers respect hashes.
 
 ## Common Web Tips

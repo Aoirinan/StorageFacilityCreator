@@ -1,17 +1,14 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:math';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
-import '../models/tenant_model.dart';
-import '../providers/tenant_provider.dart';
-import '../constants/location_options.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
-import '../widgets/keyboard_scrollable.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sfcapp/constants/location_options.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 class TenantEditScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;

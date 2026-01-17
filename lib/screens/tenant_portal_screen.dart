@@ -1,18 +1,16 @@
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:webview_flutter/webview_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
-
-import '../models/payment_model.dart';
-import '../models/tenant_portal_models.dart';
-import '../providers/tenant_portal_provider.dart';
-import '../services/tenant_portal_service.dart';
-import '../services/stripe_service.dart';
-import '../theme/app_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/tenant_portal_models.dart';
+import 'package:sfcapp/providers/tenant_portal_provider.dart';
+import 'package:sfcapp/services/stripe_service.dart';
+import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 class TenantPortalScreen extends ConsumerStatefulWidget {
   final TenantPortalLookup lookup;

@@ -2,12 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import '../models/scheduled_report_model.dart';
-import '../services/report_scheduling_service.dart';
-import '../providers/facility_provider.dart';
-import '../providers/search_provider.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/models/scheduled_report_model.dart';
+import 'package:sfcapp/providers/search_provider.dart';
+import 'package:sfcapp/services/report_scheduling_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 /// Screen for managing scheduled reports
 class ReportSchedulingManagementScreen extends ConsumerStatefulWidget {

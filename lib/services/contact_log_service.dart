@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/contact_log_model.dart';
-import 'audit_service.dart';
+import 'package:sfcapp/models/contact_log_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 /// Service for managing tenant contact logs
 class ContactLogService {

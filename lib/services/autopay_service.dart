@@ -1,15 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/payment_method_model.dart';
-import '../models/ledger_entry_model.dart';
-import '../models/tenant_model.dart';
-import 'payment_method_service.dart';
-import 'ledger_service.dart';
-import 'tenant_service.dart';
-import 'audit_service.dart';
-import 'facility_service.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/payment_method_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/payment_method_service.dart';
 
 /// Service for processing autopay payments
 class AutopayService {
@@ -197,7 +196,7 @@ class AutopayService {
     }
 
     // Otherwise, charge full balance
-    final balance = await LedgerService.getLedgerBalance(
+    var balance = await LedgerService.getLedgerBalance(
       tenantId: tenant.id,
       facilityId: tenant.facilityId,
     );
@@ -353,11 +352,15 @@ class PaymentProcessingResult {
   final bool success;
   final String? transactionId;
   final String? error;
+  final bool? requiresAction;
+  final String? clientSecret;
 
   PaymentProcessingResult({
     required this.success,
     this.transactionId,
     this.error,
+    this.requiresAction,
+    this.clientSecret,
   });
 }
 

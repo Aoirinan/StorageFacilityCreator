@@ -1,9 +1,10 @@
+import 'dart:html' as html;
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter/foundation.dart';
-import 'error_reporter.dart';
+import 'package:sfcapp/services/error_reporter.dart';
+import 'package:sfcapp/services/debug_logger.dart';
 
 // Web-only import - only used when kIsWeb is true
-import 'dart:html' as html;
 
 /// Centralized Firebase App Check service with environment-based activation
 /// 
@@ -102,6 +103,12 @@ class AppCheckService {
     String? webSiteKey,
     bool forceEnable = false,
   }) async {
+    // CRITICAL: Guard against double initialization - Firebase throws "already-initialized" error
+    if (_isActivated) {
+      print('⚠️ [AppCheckService] Already activated - skipping duplicate activation');
+      return;
+    }
+    
     const enableAppCheck = bool.fromEnvironment('ENABLE_APPCHECK', defaultValue: false);
     
     // Always log for visibility
@@ -137,13 +144,17 @@ class AppCheckService {
 
     // Web platform
     _isDebugMode = _shouldUseDebugProvider();
+    _hostname = _getHostname(); // Ensure hostname is set
 
     // For web, we always use ReCaptchaV3Provider
     // Debug mode is handled via debug tokens registered in Firebase Console
     final siteKey = webSiteKey ?? 
         const String.fromEnvironment('APPCHECK_SITE_KEY', defaultValue: '');
 
-    print('🔍 [AppCheckService] Web platform detected - siteKey=${siteKey.isNotEmpty ? "${siteKey.substring(0, 8)}..." : "EMPTY"}, _isDebugMode=$_isDebugMode');
+    print('🔍 [AppCheckService] Web platform detected');
+    print('   Site Key: ${siteKey.isNotEmpty ? "${siteKey.substring(0, 8)}..." : "EMPTY"}');
+    print('   Hostname: $_hostname');
+    print('   Is Debug Mode: $_isDebugMode');
 
     if (siteKey.isEmpty) {
       final error = 'APPCHECK_SITE_KEY not provided for App Check';
@@ -166,9 +177,13 @@ class AppCheckService {
 
     try {
       print('🚀 [AppCheckService] Activating Firebase App Check with ReCaptchaV3Provider...');
+      print('   Site Key: ${siteKey.substring(0, 8)}...');
+      print('   Hostname: $_hostname');
       await FirebaseAppCheck.instance.activate(
         webProvider: ReCaptchaV3Provider(siteKey),
       );
+      // Enable token auto-refresh to prevent expired tokens
+      // Note: isTokenAutoRefreshEnabled defaults to true in newer SDK versions
       _isActivated = true;
       _currentProvider = _isDebugMode ? 'recaptcha-v3-debug' : 'recaptcha-v3';
 
@@ -178,6 +193,19 @@ class AppCheckService {
       print('   Provider: reCAPTCHA v3');
       print('   Site Key: ${siteKey.substring(0, 8)}...');
       print('   isActivated: $_isActivated');
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H3',
+        location: 'app_check_service.dart:activate.success',
+        message: 'App Check activated',
+        data: {
+          'hostname': _hostname,
+          'siteKeyPrefix': siteKey.substring(0, 8),
+          'isActivated': _isActivated,
+          'isDebugMode': _isDebugMode,
+        },
+      );
+      // #endregion
       
       if (_isDebugMode) {
         print('');
@@ -230,8 +258,9 @@ class AppCheckService {
           }
         }
       } else {
-        // Verify token generation for production
-        _verifyTokenGeneration();
+        // Verify token generation for production and ensure we have a fresh token
+        // Force refresh to get a new token (prevents using expired tokens)
+        _verifyTokenGeneration(forceRefresh: true);
       }
     } catch (e, stack) {
       // Always log errors (not just in debug mode)
@@ -248,25 +277,85 @@ class AppCheckService {
     }
   }
 
+  /// Check if token needs refresh (if it's older than 5.6 days, refresh it)
+  /// Firebase App Check tokens have 7-day TTL (604800 seconds), so refresh at ~80% of TTL
+  /// This ensures we always have a valid token before expiration while minimizing unnecessary refreshes
+  static bool _shouldRefreshToken() {
+    if (_lastTokenRefresh == null) return true; // Never refreshed, need to get one
+    final age = DateTime.now().difference(_lastTokenRefresh!);
+    // Refresh if token is older than ~134 hours (5.6 days = ~80% of 7-day TTL)
+    // This ensures we refresh before expiration while avoiding frequent refreshes
+    return age.inHours >= 134;
+  }
+
   /// Get App Check token with error handling
   /// 
+  /// Automatically refreshes if token is expired or close to expiration
   /// Returns null if token acquisition fails (non-blocking)
   static Future<String?> getToken({bool forceRefresh = false}) async {
+    // Auto-refresh if token is old (prevent expiration issues)
+    final shouldRefresh = forceRefresh || _shouldRefreshToken();
+    if (shouldRefresh && !forceRefresh) {
+      print('🔄 [AppCheck] Token age check: ${_lastTokenRefresh != null ? DateTime.now().difference(_lastTokenRefresh!).inHours : "N/A"} hours - forcing refresh');
+    }
+    
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H1',
+      location: 'app_check_service.dart:getToken.entry',
+      message: 'getToken called',
+      data: {
+        'forceRefresh': forceRefresh,
+        'shouldRefresh': shouldRefresh,
+        'isActivated': _isActivated,
+        'lastRefreshHoursAgo': _lastTokenRefresh != null ? DateTime.now().difference(_lastTokenRefresh!).inHours : null,
+      },
+    );
+    // #endregion
     if (!_isActivated) {
       if (kDebugMode) {
         print('⚠️ [AppCheck] Token requested but App Check not activated');
       }
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'app_check_service.dart:getToken.notActivated',
+        message: 'Token request failed - not activated',
+      );
+      // #endregion
       return null;
     }
 
     try {
-      final token = await FirebaseAppCheck.instance.getToken(forceRefresh);
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'app_check_service.dart:getToken.beforeRequest',
+        message: 'Requesting token from FirebaseAppCheck',
+        data: {'forceRefresh': forceRefresh},
+      );
+      // #endregion
+      final token = await FirebaseAppCheck.instance.getToken(shouldRefresh);
+      final refreshTime = DateTime.now();
       _tokenSuccessCount++;
-      _lastTokenRefresh = DateTime.now();
+      final oldTokenAge = _lastTokenRefresh != null ? refreshTime.difference(_lastTokenRefresh!).inHours : null;
+      _lastTokenRefresh = refreshTime;
+      
+      if (shouldRefresh && oldTokenAge != null) {
+        print('✅ [AppCheck] Token refreshed (previous token was $oldTokenAge hours old)');
+      }
 
       if (kDebugMode) {
         print('✅ [AppCheck] Token retrieved successfully');
       }
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'app_check_service.dart:getToken.success',
+        message: 'Token retrieved successfully',
+        data: {'tokenLength': token?.length ?? 0, 'tokenNotNull': token != null},
+      );
+      // #endregion
 
       return token;
     } catch (e, stack) {
@@ -290,13 +379,20 @@ class AppCheckService {
       };
 
       if (isConfigurationError) {
-        // This is expected - reCAPTCHA secret key needs to be configured in Firebase Console
-        // Log as info, not error, to avoid noise
-        if (kDebugMode) {
-          print('⚠️ [AppCheck] Token retrieval failed - reCAPTCHA secret key not configured in Firebase Console');
-          print('   This is expected until App Check is fully configured');
-          print('   Fix: https://console.firebase.google.com/project/storage-facility-creator/appcheck');
-        }
+        // ALWAYS log this in production - it's causing auth failures
+        print('❌ [AppCheck] Token exchange FAILED with 400 error');
+        print('   Error: ${e.toString()}');
+        print('   🔍 This means reCAPTCHA token cannot be exchanged for App Check token');
+        print('   📋 Most likely cause: Secret key in Firebase Console does NOT match site key');
+        print('   🔧 FIX:');
+        print('      1. Go to reCAPTCHA Admin: https://www.google.com/recaptcha/admin');
+        print('      2. Find site key: 6LeQ_0osAAAAAHiMJCujnzWG8ldPZhrKbgADZ2wH');
+        print('      3. Copy the SECRET KEY (not site key) from that page');
+        print('      4. Go to Firebase Console > App Check > Apps > [Your Web App]');
+        print('      5. Paste the SECRET KEY into reCAPTCHA v3 provider settings');
+        print('      6. Save and wait 2-3 minutes for propagation');
+        print('   📋 Firebase Console: https://console.firebase.google.com/project/storage-facility-creator/appcheck');
+        print('   ⚠️  Until fixed, Auth will fail if enforcement is enabled');
         
         // Report as info, not error, since this is a configuration issue
         ErrorReporter.reportInfo(
@@ -320,35 +416,85 @@ class AppCheckService {
       }
 
       // Return null instead of throwing (non-blocking)
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'app_check_service.dart:getToken.error',
+        message: 'Token retrieval failed',
+        data: {'error': e.toString(), 'isConfigurationError': isConfigurationError},
+      );
+      // #endregion
       return null;
     }
   }
 
   /// Verify token generation works after activation
   /// This is non-blocking and won't throw errors
-  static Future<void> _verifyTokenGeneration() async {
+  static Future<void> _verifyTokenGeneration({bool forceRefresh = false}) async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H1',
+      location: 'app_check_service.dart:_verifyTokenGeneration.entry',
+      message: 'Starting token generation verification',
+    );
+    // #endregion
     try {
-      final token = await getToken().timeout(
+      final token = await getToken(forceRefresh: forceRefresh).timeout(
         const Duration(seconds: 5),
         onTimeout: () {
           if (kDebugMode) {
             print('⚠️ [AppCheck] Token generation verification timed out');
           }
+          // #region agent log
+          DebugLogger.log(
+            hypothesisId: 'H1',
+            location: 'app_check_service.dart:_verifyTokenGeneration.timeout',
+            message: 'Token generation verification timed out',
+          );
+          // #endregion
           return null;
         },
       );
       if (token != null) {
-        if (kDebugMode) {
-          print('✅ [AppCheck] Token generation verified');
-        }
+        print('✅ [AppCheck] Token generation verified (length: ${token.length})');
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H1',
+          location: 'app_check_service.dart:_verifyTokenGeneration.success',
+          message: 'Token generation verified successfully',
+          data: {'tokenLength': token.length},
+        );
+        // #endregion
       } else {
-        // This is expected if reCAPTCHA secret key is not configured in Firebase Console
-        // Don't log as error - it's a configuration issue, not a code issue
-        if (kDebugMode) {
-          print('⚠️ [AppCheck] Token generation verification returned null');
-          print('   This is expected if reCAPTCHA secret key is not configured in Firebase Console');
-          print('   See: https://console.firebase.google.com/project/storage-facility-creator/appcheck');
-        }
+        // CRITICAL: Always log this in production because it affects Auth if enforcement is ON
+        print('⚠️ [AppCheck] Token generation verification returned NULL');
+        print('   ⚠️ This WILL cause Auth to fail with 400 if App Check enforcement is enabled');
+        print('   📊 Your metrics show 56% unverified requests (33% unknown origin, 16% invalid)');
+        print('   🔍 DIAGNOSIS: Token generation is failing (returning null)');
+        print('   📋 Current hostname: $_hostname');
+        print('   🔧 TROUBLESHOOTING STEPS:');
+        print('   ────────────────────────────────────────────────────────────────────');
+        print('   1️⃣  Verify domain authorization:');
+        print('      • Domain IS authorized (confirmed: storage-facility-creator.web.app)');
+        print('      • Check if hostname matches exactly: $_hostname');
+        print('   ────────────────────────────────────────────────────────────────────');
+        print('   2️⃣  Check Firebase Console > App Check > Apps:');
+        print('      • Verify reCAPTCHA v3 provider secret key matches site key');
+        print('      • Site key in code: 6LeQ_0os...');
+        print('      • Secret key must be from SAME reCAPTCHA key pair');
+        print('   ────────────────────────────────────────────────────────────────────');
+        print('   3️⃣  Check browser console Network tab:');
+        print('      • Look for requests to: content-firebaseappcheck.googleapis.com');
+        print('      • Check response for error messages about token exchange');
+        print('   📋 Firebase: https://console.firebase.google.com/project/storage-facility-creator/appcheck');
+        print('   💡 TEMPORARY: Keep enforcement OFF until token generation succeeds');
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H1',
+          location: 'app_check_service.dart:_verifyTokenGeneration.null',
+          message: 'Token generation verification returned null (likely config issue)',
+        );
+        // #endregion
       }
     } catch (e, stack) {
       // Catch any unexpected errors and log them, but don't propagate

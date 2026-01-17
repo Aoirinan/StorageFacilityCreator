@@ -61,48 +61,33 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> with SingleTi
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/insurance',
-      title: 'Insurance Management',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (_selectedFacilityId != null)
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'Create Insurance Plan',
-            onPressed: () => _showCreatePlanDialog(),
-          ),
-      ],
-      child: _selectedFacilityId == null
-          ? _buildNoFacilityMessage()
-          : Column(
-              children: [
-                _buildFacilitySelector(),
-                TabBar(
+    return _selectedFacilityId == null
+        ? _buildNoFacilityMessage()
+        : Column(
+            children: [
+              _buildFacilitySelector(),
+              TabBar(
+                controller: _tabController,
+                tabs: const [
+                  Tab(text: 'Plans', icon: Icon(Icons.shield)),
+                  Tab(text: 'Tenants', icon: Icon(Icons.people)),
+                  Tab(text: 'Settings', icon: Icon(Icons.settings)),
+                  Tab(text: 'Reports', icon: Icon(Icons.assessment)),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
                   controller: _tabController,
-                  tabs: const [
-                    Tab(text: 'Plans', icon: Icon(Icons.shield)),
-                    Tab(text: 'Tenants', icon: Icon(Icons.people)),
-                    Tab(text: 'Settings', icon: Icon(Icons.settings)),
-                    Tab(text: 'Reports', icon: Icon(Icons.assessment)),
+                  children: [
+                    _buildPlansTab(),
+                    _buildTenantsTab(),
+                    _buildSettingsTab(),
+                    _buildReportsTab(),
                   ],
                 ),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabController,
-                    children: [
-                      _buildPlansTab(),
-                      _buildTenantsTab(),
-                      _buildSettingsTab(),
-                      _buildReportsTab(),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-    );
+              ),
+            ],
+          );
   }
 
   Widget _buildNoFacilityMessage() {

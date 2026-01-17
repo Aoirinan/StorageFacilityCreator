@@ -1,4 +1,3 @@
-import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 
 /// Direct SES email service for testing without Cloud Functions

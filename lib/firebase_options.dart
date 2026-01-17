@@ -37,7 +37,7 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyBM0twaCguZzkZlfGz2DXPL1qBQneQMMU8',
+    apiKey: 'AIzaSyA4VshUYPFyQSUIBvfjPZJ3VeRRXim5Cjo',
     appId: '1:255655613485:web:d4a3488682e7fccc0bd4a4',
     messagingSenderId: '255655613485',
     projectId: 'storage-facility-creator',

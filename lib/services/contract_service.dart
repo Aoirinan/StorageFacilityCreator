@@ -1,11 +1,11 @@
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
-import '../models/contract_model.dart';
-import '../models/contract_template_model.dart';
-import 'facility_limits_service.dart';
+import 'package:sfcapp/models/contract_model.dart';
+import 'package:sfcapp/models/contract_template_model.dart';
+import 'package:sfcapp/services/facility_limits_service.dart';
 
 class ContractService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

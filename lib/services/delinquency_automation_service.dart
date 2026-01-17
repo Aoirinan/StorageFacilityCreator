@@ -1,18 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/delinquency_stage_model.dart';
-import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
-import '../models/ledger_entry_model.dart';
-import '../services/ledger_service.dart';
-import '../services/tenant_service.dart';
-import '../services/facility_service.dart';
-import '../services/late_logic_service.dart';
-import '../services/email_service.dart';
-import '../services/sms_service.dart';
-import '../services/gate_access_service.dart';
-import '../services/audit_service.dart';
+import 'package:sfcapp/models/delinquency_stage_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/services/email_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/gate_access_service.dart';
+import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/sms_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
 
 /// Service for automating delinquency workflows
 class DelinquencyAutomationService {

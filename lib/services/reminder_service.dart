@@ -1,18 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/reminder_model.dart';
-import '../models/reminder_schedule_model.dart';
-import '../services/email_cloud_service.dart';
-import '../services/email_template_service.dart';
-import '../services/email_usage_service.dart';
-import '../services/template_renderer.dart';
-import '../services/billing_service.dart';
-import '../services/reminders_digest_service.dart';
-import '../services/sms_service.dart';
-import '../services/template_integration_service.dart';
-import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/reminder_model.dart';
+import 'package:sfcapp/models/reminder_schedule_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/services/billing_service.dart';
+import 'package:sfcapp/services/email_cloud_service.dart';
+import 'package:sfcapp/services/email_template_service.dart';
+import 'package:sfcapp/services/reminders_digest_service.dart';
+import 'package:sfcapp/services/sms_service.dart';
+import 'package:sfcapp/services/template_integration_service.dart';
 
 class ReminderService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

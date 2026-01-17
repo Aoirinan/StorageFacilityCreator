@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/deposit_model.dart';
-import '../models/payment_model.dart';
+import 'package:sfcapp/models/deposit_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
 
 /// Service for managing deposits
 class DepositService {

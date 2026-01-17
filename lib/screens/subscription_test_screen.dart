@@ -1,16 +1,15 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:go_router/go_router.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/superadmin_service.dart';
-import '../services/stripe_service.dart';
-import '../models/facility_creator_account_model.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
+import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/stripe_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 /// Test screen for subscription checkout and payment testing
 class SubscriptionTestScreen extends StatefulWidget {

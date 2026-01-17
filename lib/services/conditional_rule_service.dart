@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/conditional_rule_model.dart';
-import '../models/reminder_model.dart';
+import 'package:sfcapp/models/conditional_rule_model.dart';
+import 'package:sfcapp/models/reminder_model.dart';
 
 /// Service for managing conditional rules for automation
 class ConditionalRuleService {

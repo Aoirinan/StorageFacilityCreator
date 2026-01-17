@@ -1,13 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/advanced_search_filter_model.dart';
-import '../models/tenant_model.dart';
-import '../models/unit_model.dart';
-import '../models/facility_model.dart';
-import 'facility_service.dart';
-import 'tenant_service.dart';
-import 'unit_service.dart';
+import 'package:sfcapp/models/advanced_search_filter_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 
 /// Advanced search service with multi-criteria filtering
 class AdvancedSearchService {
@@ -308,8 +308,7 @@ class AdvancedSearchService {
       'monthlyRate': unit.monthlyRate,
       'tenantName': unit.tenantName,
       'tenantId': unit.tenantId,
-      'size': unit.size,
-      'type': unit.type,
+      'unitType': unit.unitType,
     };
   }
 

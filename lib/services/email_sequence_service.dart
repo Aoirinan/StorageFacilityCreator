@@ -1,12 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/email_sequence_model.dart';
-import '../services/email_cloud_service.dart';
-import '../services/template_integration_service.dart';
-import '../services/tenant_service.dart';
-import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
+import 'package:sfcapp/models/email_sequence_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/email_cloud_service.dart';
+import 'package:sfcapp/services/template_integration_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
 
 /// Service for managing email sequences (drip campaigns)
 class EmailSequenceService {

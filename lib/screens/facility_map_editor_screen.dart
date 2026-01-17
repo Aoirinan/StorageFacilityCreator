@@ -293,79 +293,60 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     return KeyboardListener(
       focusNode: FocusNode(),
       onKeyEvent: _handleKeyEvent,
-      child: ModernPageWrapper(
-        title: 'Site Map',
-        currentRoute: '/units/map',
-        onNavigate: (route) {
-          if (kDebugMode) {
-            print('🧭 Map screen onNavigate called with route: $route');
-          }
-          if (route == '/units' || route == '/units/map') {
-            // Already on map; ignore to avoid duplicate navigation
-            return;
-          }
-          // Use go instead of navigateToRoute to ensure proper navigation
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && context.mounted) {
-              context.go(route);
-            }
-          });
-        },
-        child: Column(
-          children: [
-            _buildToolbar(),
-            const Divider(height: 1),
-            MapFilterToolbar(
-              selectedStatuses: _statusFilters,
-              onStatusFilterChanged: (statuses) {
+      child: Column(
+        children: [
+          _buildToolbar(),
+          const Divider(height: 1),
+          MapFilterToolbar(
+            selectedStatuses: _statusFilters,
+            onStatusFilterChanged: (statuses) {
+              setState(() {
+                _statusFilters = statuses;
+              });
+            },
+            showLegend: _showLegend,
+            onToggleLegend: () {
+              setState(() {
+                _showLegend = !_showLegend;
+              });
+            },
+          ),
+          if (_selectedUnitIds.isNotEmpty)
+            MapBulkActionsToolbar(
+              selectedUnitIds: _selectedUnitIds.toList(),
+              onClearSelection: () {
                 setState(() {
-                  _statusFilters = statuses;
+                  _selectedUnitIds.clear();
                 });
               },
-              showLegend: _showLegend,
-              onToggleLegend: () {
-                setState(() {
-                  _showLegend = !_showLegend;
-                });
-              },
+              onBulkStatusChange: _handleBulkStatusChange,
+              onBulkDelete: _handleBulkDelete,
             ),
-            if (_selectedUnitIds.isNotEmpty)
-              MapBulkActionsToolbar(
-                selectedUnitIds: _selectedUnitIds.toList(),
-                onClearSelection: () {
-                  setState(() {
-                    _selectedUnitIds.clear();
-                  });
-                },
-                onBulkStatusChange: _handleBulkStatusChange,
-                onBulkDelete: _handleBulkDelete,
-              ),
-            Expanded(
-              child: RepaintBoundary(
-                key: _mapCanvasKey,
-                child: Stack(
-                  children: [
-                    shapesAsync.when(
-                      data: (shapes) => unitsAsync.when(
-                        data: (units) => _buildCanvas(shapes, units),
-                        loading: () => const Center(child: CircularProgressIndicator()),
-                        error: (e, _) => _buildError('Error loading units: $e'),
-                      ),
+          Expanded(
+            child: RepaintBoundary(
+              key: _mapCanvasKey,
+              child: Stack(
+                children: [
+                  shapesAsync.when(
+                    data: (shapes) => unitsAsync.when(
+                      data: (units) => _buildCanvas(shapes, units),
                       loading: () => const Center(child: CircularProgressIndicator()),
-                      error: (e, _) => _buildError('Error loading map: $e'),
+                      error: (e, _) => _buildError('Error loading units: $e'),
                     ),
-                    if (_showLegend)
-                      Positioned(
-                        top: 16,
-                        right: 16,
-                        child: const MapLegend(),
-                      ),
-                  ],
-                ),
+                    loading: () => const Center(child: CircularProgressIndicator()),
+                    error: (e, _) => _buildError('Error loading map: $e'),
+                  ),
+                  if (_showLegend)
+                    Positioned(
+                      top: 16,
+                      right: 16,
+                      child: const MapLegend(),
+                    ),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -618,192 +599,196 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             // Consume the event to prevent InteractiveViewer from handling it
           }
         },
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            if (_isDisposed || !mounted) return;
-            if (_isBulkSelectMode && unit != null) {
-              // Toggle unit selection in bulk mode
-              setState(() {
-                if (_selectedUnitIds.contains(unit.id)) {
-                  _selectedUnitIds.remove(unit.id);
-                } else {
-                  _selectedUnitIds.add(unit.id);
-                }
-              });
-            } else {
-              // Normal mode: select shape and show details
-              _selectShape(shape.id);
-              if (unit != null) {
-                _showUnitDetails(unit);
-              } else {
-                _showUnitAssignmentDialog(shape);
-              }
-            }
-          },
-          onLongPress: () {
-            if (_isDisposed || !mounted) return;
-            _selectShape(shape.id);
-            _showShapeActions(shape, unit);
-          },
-          onPanStart: (details) {
-            if (_isDisposed || !mounted) return;
-            _selectShape(shape.id);
-            setState(() {
-              _draggingShapeId = shape.id;
-              _dragOffset = Offset.zero;
-              _isResizing = false;
-            });
-          },
-          onPanUpdate: (details) {
-            if (_isDisposed || !mounted) return;
-            if (_draggingShapeId == shape.id && !_isResizing) {
-              final matrix = _transformationController.value;
-              final scale = matrix.getMaxScaleOnAxis();
-              
-              setState(() {
-                _dragOffset = Offset(
-                  (_dragOffset?.dx ?? 0) + details.delta.dx / scale,
-                  (_dragOffset?.dy ?? 0) + details.delta.dy / scale,
-                );
-              });
-            }
-          },
-          onPanEnd: (details) {
-            if (_isDisposed || !mounted) return;
-          if (_draggingShapeId == shape.id && _dragOffset != null && !_isResizing) {
-            final newX = (shape.x + _dragOffset!.dx).clamp(0.0, 2000.0 - shape.width);
-            final newY = (shape.y + _dragOffset!.dy).clamp(0.0, 1500.0 - shape.height);
-
-            if (_snapToGrid) {
-              final snappedX = (newX / _gridSize).round() * _gridSize;
-              final snappedY = (newY / _gridSize).round() * _gridSize;
-              
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                x: snappedX.clamp(0.0, 2000.0 - shape.width),
-                y: snappedY.clamp(0.0, 1500.0 - shape.height),
-              );
-            } else {
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                x: newX,
-                y: newY,
-              );
-            }
-          }
-            _clearDragState();
-        },
-          onPanCancel: () => _clearDragState(),
         child: Stack(
           clipBehavior: Clip.none, // Allow resize handles outside bounds
           children: [
-            MouseRegion(
-              cursor: SystemMouseCursors.move,
-              onEnter: (_) {
-                if (unit != null) {
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (_isDisposed || !mounted) return;
+                if (_isBulkSelectMode && unit != null) {
+                  // Toggle unit selection in bulk mode
                   setState(() {
-                    _hoveredUnitId = unit.id;
+                    if (_selectedUnitIds.contains(unit.id)) {
+                      _selectedUnitIds.remove(unit.id);
+                    } else {
+                      _selectedUnitIds.add(unit.id);
+                    }
+                  });
+                } else {
+                  // Normal mode: select shape and show details
+                  _selectShape(shape.id);
+                  if (unit != null) {
+                    _showUnitDetails(unit);
+                  } else {
+                    _showUnitAssignmentDialog(shape);
+                  }
+                }
+              },
+              onLongPress: () {
+                if (_isDisposed || !mounted) return;
+                _selectShape(shape.id);
+                _showShapeActions(shape, unit);
+              },
+              onPanStart: (details) {
+                if (_isDisposed || !mounted) return;
+                if (_isResizing) return;
+                if (kDebugMode) {
+                  debugPrint('[MapEditor] drag start (body) shape=${shape.id}');
+                }
+                _selectShape(shape.id);
+                setState(() {
+                  _draggingShapeId = shape.id;
+                  _dragOffset = Offset.zero;
+                  _isResizing = false;
+                });
+              },
+              onPanUpdate: (details) {
+                if (_isDisposed || !mounted) return;
+                if (_draggingShapeId == shape.id && !_isResizing) {
+                  final matrix = _transformationController.value;
+                  final scale = matrix.getMaxScaleOnAxis();
+
+                  setState(() {
+                    _dragOffset = Offset(
+                      (_dragOffset?.dx ?? 0) + details.delta.dx / scale,
+                      (_dragOffset?.dy ?? 0) + details.delta.dy / scale,
+                    );
                   });
                 }
               },
-              onExit: (_) {
-                setState(() {
-                  _hoveredUnitId = null;
-                });
+              onPanEnd: (details) {
+                if (_isDisposed || !mounted) return;
+                if (_draggingShapeId == shape.id && _dragOffset != null && !_isResizing) {
+                  final newX = (shape.x + _dragOffset!.dx).clamp(0.0, 2000.0 - shape.width);
+                  final newY = (shape.y + _dragOffset!.dy).clamp(0.0, 1500.0 - shape.height);
+
+                  if (_snapToGrid) {
+                    final snappedX = (newX / _gridSize).round() * _gridSize;
+                    final snappedY = (newY / _gridSize).round() * _gridSize;
+
+                    MapLayoutService.updateMapShape(
+                      facilityId: widget.facilityId,
+                      shapeId: shape.id,
+                      x: snappedX.clamp(0.0, 2000.0 - shape.width),
+                      y: snappedY.clamp(0.0, 1500.0 - shape.height),
+                    );
+                  } else {
+                    MapLayoutService.updateMapShape(
+                      facilityId: widget.facilityId,
+                      shapeId: shape.id,
+                      x: newX,
+                      y: newY,
+                    );
+                  }
+                }
+                _clearDragState();
               },
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Container(
-                    width: shape.width,
-                    height: shape.height,
-                    decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.2),
-                      border: Border.all(
-                        color: _selectedUnitIds.contains(unit?.id) 
-                            ? AppTheme.warning 
-                            : borderColor,
-                        width: _selectedUnitIds.contains(unit?.id) ? 3.0 : borderWidth,
+              onPanCancel: () => _clearDragState(),
+              child: MouseRegion(
+                cursor: SystemMouseCursors.move,
+                onEnter: (_) {
+                  if (unit != null) {
+                    setState(() {
+                      _hoveredUnitId = unit.id;
+                    });
+                  }
+                },
+                onExit: (_) {
+                  setState(() {
+                    _hoveredUnitId = null;
+                  });
+                },
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: shape.width,
+                      height: shape.height,
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.2),
+                        border: Border.all(
+                          color: _selectedUnitIds.contains(unit?.id)
+                              ? AppTheme.warning
+                              : borderColor,
+                          width: _selectedUnitIds.contains(unit?.id) ? 3.0 : borderWidth,
+                        ),
+                        borderRadius: BorderRadius.circular(4),
+                        boxShadow: isSelected || _selectedUnitIds.contains(unit?.id)
+                            ? [
+                                BoxShadow(
+                                  color: (_selectedUnitIds.contains(unit?.id)
+                                          ? AppTheme.warning
+                                          : AppTheme.primaryBlue)
+                                      .withOpacity(0.3),
+                                  blurRadius: 8,
+                                  spreadRadius: 2,
+                                ),
+                              ]
+                            : null,
                       ),
-                      borderRadius: BorderRadius.circular(4),
-                      boxShadow: isSelected || _selectedUnitIds.contains(unit?.id)
-                          ? [
-                              BoxShadow(
-                                color: (_selectedUnitIds.contains(unit?.id) 
-                                    ? AppTheme.warning 
-                                    : AppTheme.primaryBlue).withOpacity(0.3),
-                                blurRadius: 8,
-                                spreadRadius: 2,
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (unit != null) ...[
+                              // Display unit number and size (e.g., "301 / 10x10")
+                              Text(
+                                _formatUnitDisplay(unit),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                  color: statusColor,
+                                ),
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ]
-                          : null,
-                    ),
-                    child: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (unit != null) ...[
-                            // Display unit number and size (e.g., "301 / 10x10")
-                            Text(
-                              _formatUnitDisplay(unit),
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                                color: statusColor,
+                              Text(
+                                unit.statusDisplayName,
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: statusColor,
+                                ),
                               ),
-                              textAlign: TextAlign.center,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            Text(
-                              unit.statusDisplayName,
-                              style: TextStyle(
-                                fontSize: 9,
-                                color: statusColor,
+                            ] else
+                              Icon(
+                                Icons.crop_free,
+                                size: 24,
+                                color: AppTheme.textTertiary,
                               ),
-                            ),
-                          ] else
-                            Icon(
-                              Icons.crop_free,
-                              size: 24,
-                              color: AppTheme.textTertiary,
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (_hoveredUnitId == unit?.id && unit != null)
-                    Positioned(
-                      // Position tooltip above the unit, ensuring it doesn't overlap with units above
-                      top: -140,
-                      left: 0,
-                      right: 0,
-                      child: Align(
-                        alignment: Alignment.topCenter,
-                        child: MapUnitTooltip(
-                          unit: unit,
-                          onViewDetails: () {
-                            _showUnitDetails(unit);
-                          },
-                          onEdit: () {
-                            _showUnitAssignmentDialog(shape);
-                          },
+                          ],
                         ),
                       ),
                     ),
-                ],
+                    if (_hoveredUnitId == unit?.id && unit != null)
+                      Positioned(
+                        // Position tooltip above the unit, ensuring it doesn't overlap with units above
+                        top: -140,
+                        left: 0,
+                        right: 0,
+                        child: Align(
+                          alignment: Alignment.topCenter,
+                          child: MapUnitTooltip(
+                            unit: unit,
+                            onViewDetails: () {
+                              _showUnitDetails(unit);
+                            },
+                            onEdit: () {
+                              _showUnitAssignmentDialog(shape);
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             // Resize handles - only show when selected and not dragging
-            if (isSelected && _draggingShapeId == null)
-              ..._buildResizeHandles(shape),
+            if (isSelected && _draggingShapeId == null) ..._buildResizeHandles(shape),
           ],
         ),
-      ),
       ),
     );
   }
@@ -818,10 +803,15 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         left: -handleSize / 2,
         top: -handleSize / 2,
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
+            if (kDebugMode) {
+              debugPrint('[MapEditor] resize start (top-left) shape=${shape.id}');
+            }
             setState(() {
               _isResizing = true;
               _draggingShapeId = shape.id;
+              _dragOffset = null;
             });
           },
           onPanUpdate: (details) {
@@ -846,12 +836,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               );
             }
           },
-          onPanEnd: (details) {
-            setState(() {
-              _isResizing = false;
-              _draggingShapeId = null;
-            });
-          },
+          onPanEnd: (details) => _clearDragState(),
+          onPanCancel: _clearDragState,
           child: MouseRegion(
             cursor: SystemMouseCursors.resizeUpLeftDownRight,
             child: Container(
@@ -871,10 +857,15 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         right: -handleSize / 2,
         top: -handleSize / 2,
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
+            if (kDebugMode) {
+              debugPrint('[MapEditor] resize start (top-right) shape=${shape.id}');
+            }
             setState(() {
               _isResizing = true;
               _draggingShapeId = shape.id;
+              _dragOffset = null;
             });
           },
           onPanUpdate: (details) {
@@ -897,12 +888,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               );
             }
           },
-          onPanEnd: (details) {
-            setState(() {
-              _isResizing = false;
-              _draggingShapeId = null;
-            });
-          },
+          onPanEnd: (details) => _clearDragState(),
+          onPanCancel: _clearDragState,
           child: MouseRegion(
             cursor: SystemMouseCursors.resizeUpRightDownLeft,
             child: Container(
@@ -922,10 +909,15 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         left: -handleSize / 2,
         bottom: -handleSize / 2,
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
+            if (kDebugMode) {
+              debugPrint('[MapEditor] resize start (bottom-left) shape=${shape.id}');
+            }
             setState(() {
               _isResizing = true;
               _draggingShapeId = shape.id;
+              _dragOffset = null;
             });
           },
           onPanUpdate: (details) {
@@ -948,12 +940,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               );
             }
           },
-          onPanEnd: (details) {
-            setState(() {
-              _isResizing = false;
-              _draggingShapeId = null;
-            });
-          },
+          onPanEnd: (details) => _clearDragState(),
+          onPanCancel: _clearDragState,
           child: MouseRegion(
             cursor: SystemMouseCursors.resizeUpRightDownLeft,
             child: Container(
@@ -973,10 +961,15 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         right: -handleSize / 2,
         bottom: -handleSize / 2,
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
+            if (kDebugMode) {
+              debugPrint('[MapEditor] resize start (bottom-right) shape=${shape.id}');
+            }
             setState(() {
               _isResizing = true;
               _draggingShapeId = shape.id;
+              _dragOffset = null;
             });
           },
           onPanUpdate: (details) {
@@ -997,14 +990,10 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               );
             }
           },
-          onPanEnd: (details) {
-            setState(() {
-              _isResizing = false;
-              _draggingShapeId = null;
-            });
-          },
+          onPanEnd: (details) => _clearDragState(),
+          onPanCancel: _clearDragState,
           child: MouseRegion(
-            cursor: SystemMouseCursors.resizeDownRight,
+            cursor: SystemMouseCursors.resizeUpLeftDownRight,
             child: Container(
               width: handleSize,
               height: handleSize,
