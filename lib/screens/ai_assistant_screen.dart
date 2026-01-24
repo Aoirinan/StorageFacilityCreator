@@ -7,6 +7,8 @@ import 'package:sfcapp/services/ai_assistant_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
+const bool kShowAiDebug = kDebugMode;
+
 class AIAssistantScreen extends ConsumerStatefulWidget {
   const AIAssistantScreen({super.key});
 
@@ -58,10 +60,26 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
         isUser: true,
         timestamp: DateTime.now(),
       ));
-      _isLoading = true;
     });
     _messageController.clear();
     _scrollToBottom();
+
+    if (text.length > AIAssistantService.maxInputChars) {
+      setState(() {
+        _messages.add(ChatMessage(
+          text: 'Your message is too long. Please keep it under '
+              '${AIAssistantService.maxInputChars} characters.',
+          isUser: false,
+          timestamp: DateTime.now(),
+        ));
+      });
+      _scrollToBottom();
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
 
     String? facilityContext;
     String? facilityId;
@@ -90,15 +108,26 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
 
       if (useOpenAI) {
         final fid = facilityId;
-        final result = await AIAssistantService.chatWithOpenAI(
-          facilityId: fid,
-          message: text,
-          facilityName: facilityName,
-        );
-        replyText = result.replyText;
-        debugLine = result.debugLine;
-        if (kDebugMode) {
-          debugPrint('AI Assistant (OpenAI): ${result.debugLine}');
+        try {
+          final result = await AIAssistantService.chatWithOpenAI(
+            facilityId: fid,
+            message: text,
+            facilityName: facilityName,
+          );
+          replyText = result.replyText;
+          debugLine = result.debugLine;
+          if (kDebugMode) {
+            debugPrint('AI Assistant (OpenAI): ${result.debugLine}');
+          }
+        } catch (e) {
+          final errorCode = AIAssistantService.getErrorCode(e);
+          if (errorCode == 'failed-precondition') {
+            await Future.delayed(const Duration(milliseconds: 400));
+            replyText = await _getAIResponse(text, facilityContext);
+          } else {
+            replyText = AIAssistantService.getFriendlyErrorMessage(e) ??
+                'Sorry, the AI assistant is unavailable right now. Please try again.';
+          }
         }
       } else {
         await Future.delayed(const Duration(milliseconds: 400));
@@ -106,10 +135,16 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
       }
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('AI Assistant OpenAI error, falling back to tips: $e');
+        debugPrint('AI Assistant error: $e');
       }
-      await Future.delayed(const Duration(milliseconds: 400));
-      replyText = await _getAIResponse(text, facilityContext);
+      final errorCode = AIAssistantService.getErrorCode(e);
+      if (errorCode == 'failed-precondition') {
+        await Future.delayed(const Duration(milliseconds: 400));
+        replyText = await _getAIResponse(text, facilityContext);
+      } else {
+        replyText = AIAssistantService.getFriendlyErrorMessage(e) ??
+            'Sorry, the AI assistant is unavailable right now. Please try again.';
+      }
     }
 
     setState(() {
@@ -344,7 +379,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
                           : AppTheme.textTertiary,
                     ),
                   ),
-                  if (!message.isUser && message.debugLine != null && kDebugMode) ...[
+                  if (!message.isUser && message.debugLine != null && kShowAiDebug) ...[
                     const SizedBox(height: 6),
                     Text(
                       message.debugLine!,

@@ -506,10 +506,10 @@ class PermissionService {
           .get();
 
       for (final doc in querySnapshot.docs) {
-        await doc.reference.update({
+        await doc.reference.set({
           'isActive': false,
           'updatedAt': Timestamp.fromDate(DateTime.now()),
-        });
+        }, SetOptions(merge: true));
       }
 
       await facilityRef.set({

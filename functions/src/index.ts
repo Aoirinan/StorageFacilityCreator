@@ -8718,6 +8718,47 @@ function shouldUseOpenAIChat(facilityId: string, config: AIAssistantConfig): { o
   return { ok: allowlistPassed, allowlistPassed };
 }
 
+async function getFacilityDataForUserOrThrow(
+  uid: string,
+  facilityId: string
+): Promise<Record<string, any>> {
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+
+  const facilityData = (facilityDoc.data() || {}) as Record<string, any>;
+  const ownerUid = facilityData.ownerUid as string | undefined;
+  const roles = (facilityData.roles as Record<string, string>) || {};
+  const managersMap = (facilityData.managers as Record<string, any>) || {};
+
+  let hasAccess =
+    ownerUid === uid ||
+    roles[uid] === 'owner' ||
+    roles[uid] === 'admin' ||
+    roles[uid] === 'manager' ||
+    roles[uid] === 'employee' ||
+    managersMap[uid] === true;
+
+  if (!hasAccess) {
+    const userRolesQuery = await admin
+      .firestore()
+      .collection('user_roles')
+      .where('userId', '==', uid)
+      .where('facilityId', '==', facilityId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+    hasAccess = !userRolesQuery.empty;
+  }
+
+  if (!hasAccess) {
+    throw new functions.https.HttpsError('permission-denied', 'You do not have access to this facility');
+  }
+
+  return facilityData;
+}
+
 /**
  * Enforce per-user rate limit (e.g. 10 requests per user per minute).
  * Uses users/{uid}/rateLimits/{key}_{windowStart}.
@@ -11516,11 +11557,12 @@ export const aiAssistantChat = functions
     }
     enforceAppCheckOrThrow(context);
 
-    const { facilityId, userId, message, conversationId, facilityName } = data as {
+    const { facilityId, userId, message, conversationId, threadId, facilityName } = data as {
       facilityId?: string;
       userId?: string;
       message?: string;
       conversationId?: string;
+      threadId?: string;
       facilityName?: string;
     };
 
@@ -11550,16 +11592,7 @@ export const aiAssistantChat = functions
 
     await enforceUserRateLimit(uid, 'aiAssistantChat', MAX_REQUESTS_PER_USER_PER_MINUTE, 60);
 
-    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-    if (!facilityDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Facility not found');
-    }
-    const facilityData = facilityDoc.data();
-    const ownerUid = facilityData?.ownerUid;
-    const roles = (facilityData?.roles as Record<string, string>) || {};
-    if (ownerUid !== uid && roles[uid] !== 'manager' && roles[uid] !== 'employee' && roles[uid] !== 'owner') {
-      throw new functions.https.HttpsError('permission-denied', 'You do not have access to this facility');
-    }
+    const facilityData = await getFacilityDataForUserOrThrow(uid, facilityId);
 
     const displayName = facilityName || facilityData?.name || 'your facility';
     const systemPrompt = `You are an AI assistant for a self-storage facility management system. Answer questions about facility operations, tenant management, payments, and best practices. Be concise and helpful. Facility: ${displayName}.`;

@@ -73,7 +73,7 @@ class AIAssistantChatResult {
 
   /// Debug line: provider | model | tokens | requestId
   String get debugLine =>
-      'provider: $providerUsed | model: $model | tokens: $tokensUsed | requestId: $requestId';
+      'provider: $providerUsed | model: $model | tokens: $tokensUsed | requestId: $requestId | latency: ${latencyMs}ms';
 }
 
 class AIAssistantService {
@@ -83,9 +83,27 @@ class AIAssistantService {
 
   static const _appConfigPath = 'appConfig';
   static const _aiAssistantDoc = 'aiAssistant';
+  static const int maxInputChars = 2000;
+
+  static AIAssistantConfig? _cachedConfig;
+  static Future<AIAssistantConfig>? _configFuture;
 
   /// Read /appConfig/aiAssistant config.
-  static Future<AIAssistantConfig> getAIAssistantConfig() async {
+  static Future<AIAssistantConfig> getAIAssistantConfig({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedConfig != null) {
+      return _cachedConfig!;
+    }
+    if (!forceRefresh && _configFuture != null) {
+      return _configFuture!;
+    }
+    _configFuture = _loadAIAssistantConfig();
+    final config = await _configFuture!;
+    _cachedConfig = config;
+    _configFuture = null;
+    return config;
+  }
+
+  static Future<AIAssistantConfig> _loadAIAssistantConfig() async {
     try {
       final doc = await _firestore.collection(_appConfigPath).doc(_aiAssistantDoc).get();
       return AIAssistantConfig.fromMap(doc.data());
@@ -102,6 +120,7 @@ class AIAssistantService {
     required String facilityId,
     required String message,
     String? conversationId,
+    String? threadId,
     String? facilityName,
   }) async {
     final user = _auth.currentUser;
@@ -113,9 +132,35 @@ class AIAssistantService {
       'userId': user.uid,
       'message': message,
       if (conversationId != null) 'conversationId': conversationId,
+      if (threadId != null) 'threadId': threadId,
       if (facilityName != null) 'facilityName': facilityName,
     });
     return AIAssistantChatResult.fromMap(Map<String, dynamic>.from(result.data as Map));
+  }
+
+  static String? getFriendlyErrorMessage(Object error) {
+    if (error is FirebaseFunctionsException) {
+      switch (error.code) {
+        case 'resource-exhausted':
+          return 'You\'ve hit the AI request limit. Please wait a minute and try again.';
+        case 'invalid-argument':
+          return error.message ?? 'Your request was invalid. Please try again.';
+        case 'permission-denied':
+          return 'You don\'t have access to this facility\'s AI assistant.';
+        case 'unauthenticated':
+          return 'Please sign in to use the AI assistant.';
+        case 'failed-precondition':
+          return 'AI assistant is not enabled for this facility.';
+      }
+    }
+    return null;
+  }
+
+  static String? getErrorCode(Object error) {
+    if (error is FirebaseFunctionsException) {
+      return error.code;
+    }
+    return null;
   }
 
   /// Send a message to the AI assistant and get response with potential actions
