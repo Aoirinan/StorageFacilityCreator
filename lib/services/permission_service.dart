@@ -100,6 +100,8 @@ class PermissionService {
         // Data Management
         PermissionType.viewReports,
         PermissionType.exportData,
+        PermissionType.manageTemplates,
+        PermissionType.manageAutomation,
       ],
     ),
     RoleType.employee: Role(
@@ -428,19 +430,26 @@ class PermissionService {
       // Check if user already has a role for this facility
       final existingRole = await _getUserRole(userId, facilityId);
       if (existingRole != null) {
-        // Update existing role
-        await _firestore
-            .collection(_userRolesCollection)
-            .doc(existingRole.id)
-            .update({
+        // Upsert: set with merge. existingRole.id can be synthetic (owner-$fid, etc.)
+        // when derived from facility ownership; those docs don't exist yet. set+merge
+        // creates the doc, avoiding [cloud_firestore/not-found] No document to update.
+        final now = DateTime.now();
+        final payload = <String, dynamic>{
+          'userId': userId,
+          'facilityId': facilityId,
           'roleType': roleType.name,
           'assignedBy': assignedBy,
+          'assignedAt': Timestamp.fromDate(existingRole.assignedAt),
           'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt) : null,
-          'updatedAt': Timestamp.fromDate(DateTime.now()),
+          'updatedAt': Timestamp.fromDate(now),
           'isActive': true,
           if (userDisplayName != null) 'userDisplayName': userDisplayName,
           if (userEmail != null) 'userEmail': userEmail,
-        });
+        };
+        await _firestore
+            .collection(_userRolesCollection)
+            .doc(existingRole.id)
+            .set(payload, SetOptions(merge: true));
       } else {
         // Create new role assignment
         await _firestore.collection(_userRolesCollection).add({

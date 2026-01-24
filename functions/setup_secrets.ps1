@@ -58,6 +58,12 @@ Write-Host "🔗 Stripe Connect Configuration" -ForegroundColor Cyan
 firebase functions:secrets:set STRIPE_CONNECT_CLIENT_ID
 
 Write-Host ""
+
+# AI Assistant (OpenAI)
+Write-Host "🤖 AI Assistant (OpenAI) Configuration" -ForegroundColor Cyan
+firebase functions:secrets:set OPENAI_API_KEY
+
+Write-Host ""
 Write-Host "✅ All secrets configured!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan

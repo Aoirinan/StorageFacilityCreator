@@ -322,6 +322,60 @@ service cloud.firestore {
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
 
+      // Lease Templates (for E-sign)
+      match /leaseTemplates/{templateId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'facilityOwnerUid',
+            'name',
+            'provider',
+            'isActive',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.facilityOwnerUid == facilityDoc(facilityId).ownerUid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.provider is string &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // E-sign Envelopes
+      match /esignEnvelopes/{envelopeId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'facilityOwnerUid',
+            'provider',
+            'status',
+            'providerEnvelopeId',
+            'signerName',
+            'signerEmail',
+            'createdAt',
+            'createdBy',
+            'isActive'
+          ]) &&
+          request.resource.data.facilityOwnerUid == facilityDoc(facilityId).ownerUid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.provider is string &&
+          request.resource.data.status is string &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid);
+        // Allow Cloud Functions to update (via service account)
+        allow update: if request.auth != null && request.auth.token.firebase.sign_in_provider == 'custom';
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
       // Leases collection (if separate from contracts)
       match /leases/{leaseId} {
         allow read: if isFacilityStaff(facilityId);
@@ -606,6 +660,14 @@ service cloud.firestore {
         allow read, write: if isFacilityOwnerOrManager(facilityId);
       }
 
+      // Message logs - unified logging for all outbound communications
+      match /messageLogs/{messageLogId} {
+        // Read: Staff can read message logs for their facility
+        allow read: if isFacilityStaff(facilityId);
+        // Write: Only Cloud Functions can write message logs (client writes disallowed for security)
+        allow write: if false; // All writes must go through Cloud Functions
+      }
+
       match /ledgers/{ledgerId} {
         // Read: Staff can read ledger entries
         allow read: if isFacilityStaff(facilityId);
@@ -800,6 +862,12 @@ service cloud.firestore {
     match /configs/{configId} {
       // Only super admins can read/write system configs
       allow read, write: if request.auth != null && isSuperAdmin();
+    }
+
+    // App config (e.g. appConfig/aiAssistant) - read for authenticated users, write super admin only
+    match /appConfig/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && isSuperAdmin();
     }
     
     // User roles collection - for permission system

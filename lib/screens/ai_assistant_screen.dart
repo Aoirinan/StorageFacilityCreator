@@ -1,12 +1,11 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import '../services/facility_service.dart';
-import '../providers/facility_provider.dart';
-import '../providers/auth_provider.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/active_facility_service.dart';
+import 'package:sfcapp/services/ai_assistant_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 class AIAssistantScreen extends ConsumerStatefulWidget {
   const AIAssistantScreen({super.key});
@@ -53,7 +52,6 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty || _isLoading) return;
 
-    // Add user message
     setState(() {
       _messages.add(ChatMessage(
         text: text,
@@ -65,30 +63,61 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
     _messageController.clear();
     _scrollToBottom();
 
-    // Get facility context for better answers
     String? facilityContext;
+    String? facilityId;
+    String? facilityName;
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        final facilities = await FacilityService.getUserFacilities();
-        if (facilities.isNotEmpty) {
-          facilityContext = 'Facility: ${facilities.first.name}, ${facilities.length} total facility(ies)';
+      facilityId = await ActiveFacilityService.getActiveFacilityId();
+      final facilities = await FacilityService.getUserFacilities();
+      if (facilityId == null && facilities.isNotEmpty) {
+        facilityId = facilities.first.id;
+      }
+      if (facilities.isNotEmpty) {
+        facilityContext = 'Facility: ${facilities.first.name}, ${facilities.length} total facility(ies)';
+        final match = facilityId != null
+            ? facilities.where((e) => e.id == facilityId).toList()
+            : <FacilityModel>[];
+        facilityName = match.isNotEmpty ? match.first.name : facilities.first.name;
+      }
+    } catch (_) {}
+
+    String replyText;
+    String? debugLine;
+
+    try {
+      final config = await AIAssistantService.getAIAssistantConfig();
+      final useOpenAI = facilityId != null && config.shouldUseOpenAI(facilityId);
+
+      if (useOpenAI) {
+        final fid = facilityId;
+        final result = await AIAssistantService.chatWithOpenAI(
+          facilityId: fid,
+          message: text,
+          facilityName: facilityName,
+        );
+        replyText = result.replyText;
+        debugLine = result.debugLine;
+        if (kDebugMode) {
+          debugPrint('AI Assistant (OpenAI): ${result.debugLine}');
         }
+      } else {
+        await Future.delayed(const Duration(milliseconds: 400));
+        replyText = await _getAIResponse(text, facilityContext);
       }
     } catch (e) {
-      // Ignore errors in context gathering
+      if (kDebugMode) {
+        debugPrint('AI Assistant OpenAI error, falling back to tips: $e');
+      }
+      await Future.delayed(const Duration(milliseconds: 400));
+      replyText = await _getAIResponse(text, facilityContext);
     }
-
-    // Simulate AI response (replace with actual API call)
-    await Future.delayed(const Duration(milliseconds: 800));
-
-    final response = await _getAIResponse(text, facilityContext);
 
     setState(() {
       _messages.add(ChatMessage(
-        text: response,
+        text: replyText,
         isUser: false,
         timestamp: DateTime.now(),
+        debugLine: debugLine,
       ));
       _isLoading = false;
     });
@@ -193,13 +222,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/ai-assistant',
-      title: 'AI Assistant',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Column(
+    return Column(
         children: [
           Expanded(
             child: ListView.builder(
@@ -270,8 +293,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
             ),
           ),
         ],
-      ),
-    );
+      );
   }
 
   Widget _buildMessageBubble(ChatMessage message) {
@@ -284,7 +306,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
           if (!message.isUser) ...[
             CircleAvatar(
               radius: 16,
-              backgroundColor: AppTheme.primaryBlue.withOpacity(0.1),
+              backgroundColor: AppTheme.primaryBlue.withValues(alpha: 0.1),
               child: Icon(Icons.smart_toy, size: 20, color: AppTheme.primaryBlue),
             ),
             const SizedBox(width: 8),
@@ -322,6 +344,17 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
                           : AppTheme.textTertiary,
                     ),
                   ),
+                  if (!message.isUser && message.debugLine != null && kDebugMode) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      message.debugLine!,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textTertiary,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -359,11 +392,13 @@ class ChatMessage {
   final String text;
   final bool isUser;
   final DateTime timestamp;
+  final String? debugLine;
 
   ChatMessage({
     required this.text,
     required this.isUser,
     required this.timestamp,
+    this.debugLine,
   });
 }
 
