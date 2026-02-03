@@ -37,6 +37,8 @@ migrate_working_dir/
 .firebase/
 .env
 .env.*
+.env.storage-*
+.env.*.local
 *.local
 firebase-debug.log
 firestore-debug.log
@@ -52,3 +54,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Marketing site (Next.js)
+/marketing/node_modules/
+/marketing/.next/

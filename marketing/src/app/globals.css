@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #0f172a;
+  --background: #ffffff;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --surface: #f8fafc;
+  --surface-tint: #f1f5f9;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Focus visible for accessibility */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  @apply outline-2 outline-offset-2 outline-primary;
+}
