@@ -62,4 +62,14 @@ class TextingOnboardingService {
       'facilityId': facilityId,
     });
   }
+
+  static Future<void> setPlatformApproval({
+    required String facilityId,
+    required bool approved,
+  }) async {
+    await _functions.httpsCallable('setTextingPlatformApproval').call({
+      'facilityId': facilityId,
+      'approved': approved,
+    });
+  }
 }

@@ -11,6 +11,7 @@ import * as Sentry from '@sentry/node';
 import OpenAI from 'openai';
 import twilio from 'twilio';
 import * as stripeTenantBilling from './stripe/tenant_billing';
+import * as quickBooksAccounting from './accounting/quickbooks';
 import { diagnosticFixOwnership } from './diagnostic_fix_ownership';
 import {
   computeA2PStatus,
@@ -65,9 +66,16 @@ const TWILIO_DRY_RUN = defineString('TWILIO_DRY_RUN', { default: 'false' });
 // Define parameters for AI Assistant (LLM)
 const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
 
+// Define parameters for QuickBooks Online Accounting integration
+const QUICKBOOKS_CLIENT_ID = defineSecret('QUICKBOOKS_CLIENT_ID');
+const QUICKBOOKS_CLIENT_SECRET = defineSecret('QUICKBOOKS_CLIENT_SECRET');
+const QUICKBOOKS_REDIRECT_URI = defineString('QUICKBOOKS_REDIRECT_URI');
+const QUICKBOOKS_ENV = defineString('QUICKBOOKS_ENV', { default: 'sandbox' });
+
 const SENDGRID_SECRETS = [SENDGRID_API_KEY];
 const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
 const AI_SECRETS = [OPENAI_API_KEY];
+const QUICKBOOKS_SECRETS = [QUICKBOOKS_CLIENT_ID, QUICKBOOKS_CLIENT_SECRET];
 
 let twilioClient: any = null;
 function isTwilioDryRunEnabled(): boolean {
@@ -192,6 +200,16 @@ function getStripeClient(): Stripe {
     });
   }
   return stripeClient;
+}
+
+function getQuickBooksConfig(): quickBooksAccounting.QuickBooksConfig {
+  const envRaw = (QUICKBOOKS_ENV.value() || 'sandbox').trim().toLowerCase();
+  return {
+    clientId: QUICKBOOKS_CLIENT_ID.value(),
+    clientSecret: QUICKBOOKS_CLIENT_SECRET.value(),
+    redirectUri: QUICKBOOKS_REDIRECT_URI.value(),
+    environment: envRaw === 'production' ? 'production' : 'sandbox',
+  };
 }
 
 // Initialize Firebase Admin
@@ -2609,10 +2627,17 @@ export const sendSMS = functions.runWith({
     const textingOnboardingFlag = await isFeatureFlagEnabled('TEXTING_ONBOARDING_V1');
     const textingOnboardingEnabled = textingOnboardingFlag && facilityData.textingOnboardingEnabled === true;
     const facilityA2PStatus = ((facilityData.a2pStatus as string) || 'draft').toLowerCase();
+    const textingPlatformApproved = facilityData.textingPlatformApproved === true;
     if (textingOnboardingEnabled && facilityA2PStatus !== 'approved' && !forceSend) {
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Texting setup is not approved yet. SMS sending is blocked until A2P 10DLC campaign approval.',
+      );
+    }
+    if (textingOnboardingEnabled && facilityA2PStatus === 'approved' && !textingPlatformApproved && !forceSend) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Texting is awaiting platform approval. A superadmin must approve this facility before SMS can be sent.',
       );
     }
 
@@ -3485,6 +3510,8 @@ interface CampaignData {
 interface TextingOnboardingState {
   a2pStatus: A2PStatus;
   a2pLastError?: string;
+  textingPlatformApproved?: boolean;
+  textingPlatformApprovedAt?: FirebaseFirestore.Timestamp;
   twilioMessagingServiceSid?: string;
   twilioTrustProfileSid?: string;
   twilioTrustProductSid?: string;
@@ -3675,6 +3702,9 @@ async function createOrUpdateA2PProfileInternal(
       supportPhone: businessData.supportPhone,
     },
     a2pStatus: 'draft',
+    textingPlatformApproved: false,
+    textingPlatformApprovedAt: null,
+    textingPlatformApprovedBy: null,
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
@@ -3703,6 +3733,9 @@ async function submitBrandRegistrationInternal(
   await facilityRef.set({
     twilioBrandSid: sid,
     a2pStatus: 'submitted',
+    textingPlatformApproved: false,
+    textingPlatformApprovedAt: null,
+    textingPlatformApprovedBy: null,
     a2pSubmittedAt: admin.firestore.FieldValue.serverTimestamp(),
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
@@ -3745,6 +3778,9 @@ async function submitCampaignInternal(
     textingSampleMessages: campaignData.sampleMessages,
     textingConsentConfirmedAt: campaignData.consentConfirmed ? admin.firestore.FieldValue.serverTimestamp() : null,
     a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+    textingPlatformApproved: false,
+    textingPlatformApprovedAt: null,
+    textingPlatformApprovedBy: null,
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
     ...(isTwilioDryRunEnabled() ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
   }, { merge: true });
@@ -3763,6 +3799,8 @@ function getTextingOnboardingState(facilityData: Record<string, any>): TextingOn
   return {
     a2pStatus: ((facilityData.a2pStatus as string) || 'draft') as A2PStatus,
     a2pLastError: facilityData.a2pLastError as string | undefined,
+    textingPlatformApproved: facilityData.textingPlatformApproved === true,
+    textingPlatformApprovedAt: facilityData.textingPlatformApprovedAt as FirebaseFirestore.Timestamp | undefined,
     twilioMessagingServiceSid: facilityData.twilioMessagingServiceSid as string | undefined,
     twilioTrustProfileSid: facilityData.twilioTrustProfileSid as string | undefined,
     twilioTrustProductSid: facilityData.twilioTrustProductSid as string | undefined,
@@ -3800,6 +3838,9 @@ export const saveTextingBusinessInfo = functions.https.onCall(async (data: { fac
   await ref.set({
     textingOnboardingEnabled: true,
     a2pStatus: 'draft',
+    textingPlatformApproved: false,
+    textingPlatformApprovedAt: null,
+    textingPlatformApprovedBy: null,
     a2pLastError: null,
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
@@ -3935,6 +3976,9 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
       const next = current === 'submitted' || current === 'pending' ? 'approved' : current;
       await ref.set({
         a2pStatus: next,
+        textingPlatformApproved: false,
+        textingPlatformApprovedAt: null,
+        textingPlatformApprovedBy: null,
         a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
         ...(next === 'approved' ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
       }, { merge: true });
@@ -3959,6 +4003,11 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
       a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       a2pLastError: null,
       a2pRejectionReason: next === 'rejected' ? (campaignStatus || brandStatus || 'Rejected by Twilio') : null,
+      ...(next !== 'approved' ? {
+        textingPlatformApproved: false,
+        textingPlatformApprovedAt: null,
+        textingPlatformApprovedBy: null,
+      } : {}),
     };
     if (next === 'approved') update.a2pApprovedAt = admin.firestore.FieldValue.serverTimestamp();
     if (next === 'rejected') update.a2pRejectedAt = admin.firestore.FieldValue.serverTimestamp();
@@ -3978,6 +4027,9 @@ export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SEC
       twilioBrandSid: admin.firestore.FieldValue.delete(),
       twilioCampaignSid: admin.firestore.FieldValue.delete(),
       a2pStatus: 'draft',
+      textingPlatformApproved: false,
+      textingPlatformApprovedAt: null,
+      textingPlatformApprovedBy: null,
       a2pLastError: null,
       a2pRejectionReason: null,
       a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -5155,6 +5207,55 @@ export const listSavedPaymentMethods = functions.runWith({ secrets: STRIPE_SECRE
 export const detachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);
   return stripeTenantBilling.detachPaymentMethod(data, context, getStripeClient());
+});
+
+// ========== QuickBooks Accounting ==========
+/**
+ * Returns connection status for facility QuickBooks integration.
+ */
+export const getQuickBooksConnectionStatus = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.getQuickBooksConnectionStatus(data, context);
+});
+
+/**
+ * Creates an OAuth URL to connect facility QuickBooks account.
+ */
+export const getQuickBooksConnectUrl = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.getQuickBooksConnectUrl(data, context, getQuickBooksConfig());
+});
+
+/**
+ * Completes QuickBooks OAuth token exchange and stores connection.
+ */
+export const completeQuickBooksConnect = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.completeQuickBooksConnect(data, context, getQuickBooksConfig());
+});
+
+/**
+ * Disconnects QuickBooks integration and clears stored tokens.
+ */
+export const disconnectQuickBooks = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.disconnectQuickBooks(data, context);
+});
+
+/**
+ * Manually syncs a facility invoice into QuickBooks.
+ */
+export const syncInvoiceToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.syncInvoiceToQuickBooks(data, context, getQuickBooksConfig());
+});
+
+/**
+ * Manually syncs a facility payment into QuickBooks.
+ */
+export const syncPaymentToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.syncPaymentToQuickBooks(data, context, getQuickBooksConfig());
 });
 
 /**

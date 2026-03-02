@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../models/facility_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
+import '../services/superadmin_service.dart';
 import '../theme/app_theme.dart';
 import '../services/texting_onboarding_service.dart';
 
@@ -18,11 +21,14 @@ class TextingSetupScreen extends ConsumerStatefulWidget {
 }
 
 class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
+  static const Duration _statusPollInterval = Duration(seconds: 30);
+
   int _step = 0;
   bool _busy = false;
   String? _error;
   Map<String, dynamic>? _status;
   String? _resolvedFacilityId;
+  Timer? _statusTimer;
 
   final _legalName = TextEditingController();
   final _dba = TextEditingController();
@@ -47,6 +53,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
 
   @override
   void dispose() {
+    _statusTimer?.cancel();
     _legalName.dispose();
     _dba.dispose();
     _ein.dispose();
@@ -59,6 +66,16 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
     _supportPhone.dispose();
     _areaCode.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _statusTimer = Timer.periodic(_statusPollInterval, (_) {
+      if (mounted && !_busy && _resolvedFacilityId != null) {
+        _refreshStatus();
+      }
+    });
   }
 
   Future<void> _loadStatus() async {
@@ -228,6 +245,29 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _setPlatformApproval(bool approved) async {
+    if (_resolvedFacilityId == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await TextingOnboardingService.setPlatformApproval(
+        facilityId: _resolvedFacilityId!,
+        approved: approved,
+      );
+      await _loadStatus();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString());
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -474,6 +514,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
     final error = _status?['a2pLastError'] as String?;
     final rejectionReason = _status?['rejectionReason'] as String?;
     final isRejected = status.toLowerCase() == 'rejected';
+    final isApprovedByCarrier = status.toLowerCase() == 'approved';
+    final platformApproved = _status?['textingPlatformApproved'] == true;
+    final isSuperAdmin = SuperAdminService.isSuperAdmin();
     final timeline = const ['draft', 'submitted', 'pending', 'approved'];
     final currentIndex = timeline.indexOf(status.toLowerCase());
 
@@ -525,6 +568,39 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                 child: const Text('Resubmit'),
               ),
             ],
+            if (isApprovedByCarrier) ...[
+              const SizedBox(height: 8),
+              Text(
+                platformApproved
+                    ? 'Platform approval: Approved'
+                    : 'Platform approval: Pending superadmin acceptance',
+                style: TextStyle(
+                  color: platformApproved ? Colors.green : Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+            if (isSuperAdmin && isApprovedByCarrier) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton(
+                    onPressed: _busy ? null : () => _setPlatformApproval(true),
+                    child: const Text('Accept For SMS Sending'),
+                  ),
+                  OutlinedButton(
+                    onPressed: _busy ? null : () => _setPlatformApproval(false),
+                    child: const Text('Revoke Approval'),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 4),
+            const Text(
+              'Status auto-refreshes every 30 seconds.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
           ],
         ),
       ),

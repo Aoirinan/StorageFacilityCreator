@@ -51,6 +51,9 @@ class FacilityModel {
   final bool textingOnboardingEnabled;
   final String? a2pStatus;
   final String? a2pLastError;
+  final bool textingPlatformApproved;
+  final DateTime? textingPlatformApprovedAt;
+  final String? textingPlatformApprovedBy;
   final String? twilioMessagingServiceSid;
   final String? twilioTrustProfileSid;
   final String? twilioTrustProductSid;
@@ -93,6 +96,9 @@ class FacilityModel {
     this.textingOnboardingEnabled = false,
     this.a2pStatus,
     this.a2pLastError,
+    this.textingPlatformApproved = false,
+    this.textingPlatformApprovedAt,
+    this.textingPlatformApprovedBy,
     this.twilioMessagingServiceSid,
     this.twilioTrustProfileSid,
     this.twilioTrustProductSid,
@@ -159,6 +165,10 @@ class FacilityModel {
       textingOnboardingEnabled: data?['textingOnboardingEnabled'] ?? false,
       a2pStatus: data?['a2pStatus'] as String?,
       a2pLastError: data?['a2pLastError'] as String?,
+      textingPlatformApproved: data?['textingPlatformApproved'] == true,
+      textingPlatformApprovedAt:
+          (data?['textingPlatformApprovedAt'] as Timestamp?)?.toDate(),
+      textingPlatformApprovedBy: data?['textingPlatformApprovedBy'] as String?,
       twilioMessagingServiceSid: data?['twilioMessagingServiceSid'] as String?,
       twilioTrustProfileSid: data?['twilioTrustProfileSid'] as String?,
       twilioTrustProductSid: data?['twilioTrustProductSid'] as String?,
@@ -211,6 +221,12 @@ class FacilityModel {
       'textingOnboardingEnabled': textingOnboardingEnabled,
       if (a2pStatus != null) 'a2pStatus': a2pStatus,
       if (a2pLastError != null) 'a2pLastError': a2pLastError,
+      'textingPlatformApproved': textingPlatformApproved,
+      if (textingPlatformApprovedAt != null)
+        'textingPlatformApprovedAt':
+            Timestamp.fromDate(textingPlatformApprovedAt!),
+      if (textingPlatformApprovedBy != null)
+        'textingPlatformApprovedBy': textingPlatformApprovedBy,
       if (twilioMessagingServiceSid != null)
         'twilioMessagingServiceSid': twilioMessagingServiceSid,
       if (twilioTrustProfileSid != null)
@@ -261,6 +277,9 @@ class FacilityModel {
     bool? textingOnboardingEnabled,
     String? a2pStatus,
     String? a2pLastError,
+    bool? textingPlatformApproved,
+    DateTime? textingPlatformApprovedAt,
+    String? textingPlatformApprovedBy,
     String? twilioMessagingServiceSid,
     String? twilioTrustProfileSid,
     String? twilioTrustProductSid,
@@ -313,6 +332,12 @@ class FacilityModel {
           textingOnboardingEnabled ?? this.textingOnboardingEnabled,
       a2pStatus: a2pStatus ?? this.a2pStatus,
       a2pLastError: a2pLastError ?? this.a2pLastError,
+      textingPlatformApproved:
+          textingPlatformApproved ?? this.textingPlatformApproved,
+      textingPlatformApprovedAt:
+          textingPlatformApprovedAt ?? this.textingPlatformApprovedAt,
+      textingPlatformApprovedBy:
+          textingPlatformApprovedBy ?? this.textingPlatformApprovedBy,
       twilioMessagingServiceSid:
           twilioMessagingServiceSid ?? this.twilioMessagingServiceSid,
       twilioTrustProfileSid:
