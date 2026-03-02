@@ -2,35 +2,39 @@
   "name": "functions",
   "description": "Cloud Functions for Firebase",
   "scripts": {
-    "lint": "eslint --ext .js,.ts .",
+    "lint": "eslint src/ --max-warnings 9999 --fix",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\""
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "lib/index.js",
   "dependencies": {
     "@sendgrid/mail": "^8.1.0",
-    "dotenv": "^17.2.3",
-    "firebase-admin": "^11.11.1",
-    "firebase-functions": "^5.1.1",
-    "nodemailer": "^7.0.12",
-    "stripe": "^14.21.0"
+    "@sentry/node": "^10.41.0",
+    "dotenv": "^17.3.1",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.0.5",
+    "nodemailer": "^8.0.0",
+    "openai": "^6.0.0",
+    "pdf-lib": "^1.17.1",
+    "stripe": "^20.0.0",
+    "twilio": "^5.12.2"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^5.12.0",
-    "@typescript-eslint/parser": "^5.12.0",
-    "eslint": "^8.9.0",
-    "eslint-config-google": "^0.14.0",
-    "eslint-plugin-import": "^2.25.4",
-    "typescript": "^4.9.0"
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^25.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^10.0.0",
+    "typescript": "^5.0.0"
   },
   "private": true
 }

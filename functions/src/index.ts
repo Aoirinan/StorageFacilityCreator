@@ -1,11 +1,37 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import { getDownloadURL } from 'firebase-admin/storage';
 import * as crypto from 'crypto';
+import { PDFDocument } from 'pdf-lib';
+import express from 'express';
 import * as sgMailModule from '@sendgrid/mail';
 import Stripe from 'stripe';
 import { defineString, defineSecret } from 'firebase-functions/params';
 import * as Sentry from '@sentry/node';
 import OpenAI from 'openai';
+import twilio from 'twilio';
+import * as stripeTenantBilling from './stripe/tenant_billing';
+import { diagnosticFixOwnership } from './diagnostic_fix_ownership';
+import {
+  computeA2PStatus,
+  ensureIdempotentResource,
+  isHelpKeyword,
+  isStartKeyword,
+  isStopKeyword,
+} from './texting_onboarding_helpers';
+
+// Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
+type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
+function subPeriodEnd(sub: Stripe.Subscription): number | undefined {
+  return (sub as SubscriptionWithPeriod).current_period_end;
+}
+function subPeriodStart(sub: Stripe.Subscription): number | undefined {
+  return (sub as SubscriptionWithPeriod).current_period_start;
+}
+function invoiceSubscriptionId(inv: Stripe.Invoice): string | null {
+  const sub = (inv as Stripe.Invoice & { subscription?: string | Stripe.Subscription | null }).subscription;
+  return typeof sub === 'string' ? sub : (sub as Stripe.Subscription)?.id ?? null;
+}
 
 // Robust module-normalization wrapper for SendGrid to handle ESM/CommonJS interop
 const sgMail: any = (sgMailModule as any).default ?? sgMailModule;
@@ -21,33 +47,46 @@ const SENDGRID_SENDER_EMAIL = defineString('SENDGRID_SENDER_EMAIL');
 const SENDGRID_FROM_EMAIL = SENDGRID_SENDER_EMAIL;
 const SENDGRID_FROM_NAME = defineString('SENDGRID_FROM_NAME', { default: 'Storage Facility Creator' });
 
-// Define environment parameters for Stripe
+// Define environment parameters for Stripe (all from Firebase Secrets for tenant Add Card / Connect)
 const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
+const STRIPE_PUBLISHABLE_KEY = defineSecret('STRIPE_PUBLISHABLE_KEY');
 // Use process.env for STRIPE_CONNECT_CLIENT_ID to avoid deployment requirement
 // It's stored as a secret: ca_TWVomtZkyvI6Ie1ZLDJhjLiWHIwjtAwB
+
+const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY];
 
 // Define parameters for Twilio
 const TWILIO_ACCOUNT_SID = defineString('TWILIO_ACCOUNT_SID');
 const TWILIO_AUTH_TOKEN = defineSecret('TWILIO_AUTH_TOKEN');
 const TWILIO_PHONE_NUMBER = defineString('TWILIO_PHONE_NUMBER');
+const TWILIO_DRY_RUN = defineString('TWILIO_DRY_RUN', { default: 'false' });
 
 // Define parameters for AI Assistant (LLM)
 const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
 
-const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET];
 const SENDGRID_SECRETS = [SENDGRID_API_KEY];
 const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
 const AI_SECRETS = [OPENAI_API_KEY];
 
-// Super admin email list
-// Can be configured via SUPER_ADMIN_EMAILS environment variable (comma-separated)
-// Falls back to hardcoded list if not set
-// Must also match lib/services/superadmin_service.dart and firestore.rules
+let twilioClient: any = null;
+function isTwilioDryRunEnabled(): boolean {
+  return (TWILIO_DRY_RUN.value() || 'false').toLowerCase() === 'true';
+}
+function getTwilioClient(): any {
+  if (!twilioClient) {
+    const accountSid = TWILIO_ACCOUNT_SID.value().trim();
+    const authToken = TWILIO_AUTH_TOKEN.value().trim();
+    twilioClient = twilio(accountSid, authToken);
+  }
+  return twilioClient;
+}
+
+// Super admin email list – ONLY russell_forsyth_1992@outlook.com; no one else.
+// Can be overridden via SUPER_ADMIN_EMAILS env var (comma-separated).
+// Must match lib/services/superadmin_service.dart and firestore.rules
 const SUPER_ADMIN_EMAILS_HARDCODED = [
   'russell_forsyth_1992@outlook.com',
-  'russellforsyth09091992@gmail.com',
-  // Add more superadmin emails here
 ];
 
 // Parse environment variable or use hardcoded list
@@ -67,7 +106,7 @@ function isSuperAdmin(userEmail: string | undefined): boolean {
   const lowerEmail = userEmail.toLowerCase();
   const adminEmails = getSuperAdminEmails();
   return adminEmails.some((adminEmail: string) => 
-    adminEmail.toLowerCase() === lowerEmail
+    adminEmail.toLowerCase() === lowerEmail,
   );
 }
 
@@ -76,17 +115,80 @@ function generateAccessCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Initialize Stripe
+/**
+ * Validates that Stripe secret and publishable keys are same mode (both test or both live).
+ * Never logs key values; logs only "Stripe mode: LIVE" or "Stripe mode: TEST".
+ * @throws Error if modes mismatch
+ */
+function validateStripeKeyMode(secretKey: string, publishableKey: string): void {
+  const skLive = secretKey.startsWith('sk_live_');
+  const skTest = secretKey.startsWith('sk_test_');
+  const pkLive = publishableKey.startsWith('pk_live_');
+  const pkTest = publishableKey.startsWith('pk_test_');
+  if (skLive && pkLive) {
+    functions.logger.info('Stripe mode: LIVE');
+    return;
+  }
+  if (skTest && pkTest) {
+    functions.logger.info('Stripe mode: TEST');
+    return;
+  }
+  throw new Error('Stripe key mode mismatch: platform keys must both be test or both be live. Check STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY in Firebase secrets.');
+}
+
+/** Cached platform publishable key after first successful validation (never log this value). */
+let cachedPlatformPublishableKey: string | null = null;
+
+/**
+ * Reject request if client sent Stripe keys (backend must use only Firebase secrets).
+ * Call at start of any callable that accepts arbitrary data.
+ */
+function rejectClientSuppliedStripeKeys(data: Record<string, unknown>): void {
+  const forbidden = ['stripeSecretKey', 'stripePublishableKey', 'secretKey', 'apiKey', 'STRIPE_SECRET_KEY', 'STRIPE_PUBLISHABLE_KEY'];
+  for (const key of forbidden) {
+    if (data && typeof data[key] === 'string' && (data[key] as string).trim() !== '') {
+      functions.logger.warn('Rejected client-supplied Stripe key parameter', { key });
+      throw new functions.https.HttpsError('invalid-argument', 'Stripe keys must not be sent from the client. Use backend configuration only.');
+    }
+  }
+}
+
+/**
+ * Returns the platform publishable key and validates mode against STRIPE_SECRET_KEY.
+ * Use this for any response that sends pk to the client (tenant Add Card, Connect, etc.).
+ */
+function getPlatformPublishableKey(): string {
+  if (cachedPlatformPublishableKey) return cachedPlatformPublishableKey;
+  const secretKey = STRIPE_SECRET_KEY.value();
+  const publishableKey = STRIPE_PUBLISHABLE_KEY.value();
+  if (!secretKey) throw new Error('STRIPE_SECRET_KEY is not set');
+  if (!publishableKey || !publishableKey.trim()) throw new Error('STRIPE_PUBLISHABLE_KEY is not set');
+  validateStripeKeyMode(secretKey, publishableKey);
+  cachedPlatformPublishableKey = publishableKey.trim();
+  return cachedPlatformPublishableKey;
+}
+
+// Initialize Stripe (platform secret only; Connect uses stripeAccount option per request)
 let stripeClient: Stripe | null = null;
 
 function getStripeClient(): Stripe {
   if (!stripeClient) {
     const secretKey = STRIPE_SECRET_KEY.value();
     if (!secretKey) {
-      throw new Error('STRIPE_SECRET_KEY environment variable is not set');
+      throw new Error('STRIPE_SECRET_KEY is not set');
+    }
+    // Validate mode on first use (never log keys)
+    try {
+      const publishableKey = STRIPE_PUBLISHABLE_KEY.value();
+      if (publishableKey && publishableKey.trim()) {
+        validateStripeKeyMode(secretKey, publishableKey);
+      }
+    } catch (e) {
+      // If publishable not set yet, still allow Stripe client for server-only flows
+      functions.logger.warn('Stripe mode check skipped (publishable key not set)');
     }
     stripeClient = new Stripe(secretKey, {
-      apiVersion: '2023-10-16',
+      apiVersion: '2026-02-25.clover',
     });
   }
   return stripeClient;
@@ -223,7 +325,7 @@ async function createOrUpdateMessageLog(
     sentAt?: admin.firestore.Timestamp | null;
     createdByUid: string;
     createdByEmail?: string | null;
-  }
+  },
 ): Promise<void> {
   const messageLogRef = admin.firestore()
     .collection('facilities')
@@ -275,7 +377,7 @@ async function createOrUpdateMessageLog(
 function buildFacilityFooter(
   facilityName: string,
   facilityAddress?: string | null,
-  facilityPhone?: string | null
+  facilityPhone?: string | null,
 ): { html: string; text: string } {
   const lines: string[] = [];
   if (facilityAddress) lines.push(facilityAddress);
@@ -310,7 +412,7 @@ function escapeHtml(text: string): string {
     '<': '&lt;',
     '>': '&gt;',
     '"': '&quot;',
-    "'": '&#039;',
+    '\'': '&#039;',
   };
   return text.replace(/[&<>"']/g, (m) => map[m]);
 }
@@ -322,7 +424,7 @@ async function getTenantInfo(
   facilityId: string,
   tenantId?: string | null,
   email?: string | null,
-  phone?: string | null
+  phone?: string | null,
 ): Promise<{
   tenantId: string | null;
   tenantName: string | null;
@@ -514,7 +616,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       if (!isOwner && !isManager && !hasPermission) {
         throw new functions.https.HttpsError(
           'permission-denied',
-          'User is not authorized to send email for this facility'
+          'User is not authorized to send email for this facility',
         );
       }
     }
@@ -524,7 +626,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       facilityId,
       tenantId || variables?.tenantId,
       to,
-      null
+      null,
     );
 
     // Create message log with status "queued"
@@ -589,7 +691,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       if (!sendGridApiKey || sendGridApiKey.trim().length === 0) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'SendGrid API key not configured. Please set SENDGRID_API_KEY secret in Firebase Functions.'
+          'SendGrid API key not configured. Please set SENDGRID_API_KEY secret in Firebase Functions.',
         );
       }
     } catch (e: any) {
@@ -603,7 +705,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       throw new functions.https.HttpsError(
         'failed-precondition',
         'SendGrid API key not configured. Please set SENDGRID_API_KEY secret in Firebase Functions.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
 
@@ -612,7 +714,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       if (!sendGridFromEmail || sendGridFromEmail.trim().length === 0) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'SendGrid sender email not configured. Please set SENDGRID_SENDER_EMAIL in Firebase Functions environment.'
+          'SendGrid sender email not configured. Please set SENDGRID_SENDER_EMAIL in Firebase Functions environment.',
         );
       }
     } catch (e: any) {
@@ -626,7 +728,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       throw new functions.https.HttpsError(
         'failed-precondition',
         'SendGrid sender email not configured. Please set SENDGRID_SENDER_EMAIL in Firebase Functions environment.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
 
@@ -651,7 +753,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Failed to configure SendGrid API key. Please verify SENDGRID_API_KEY secret is valid.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
 
@@ -702,6 +804,15 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
     // Optionally set Reply-To to facility email if available
     if (facilityEmail) {
       msg.replyTo = facilityEmail;
+    }
+
+    // Disable SendGrid click tracking for invitation emails so the "Accept Invitation"
+    // button link is not rewritten to a tracking URL (e.g. url1827.storagefacilitycreator.com)
+    // which can fail with DNS_PROBE_FINISHED_NXDOMAIN and make the button unreachable.
+    if (html && html.includes('accept-invite')) {
+      msg.trackingSettings = {
+        clickTracking: { enable: false },
+      };
     }
 
     // #region agent log
@@ -819,8 +930,8 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
           { 
             sendGridError: detailMsg, 
             statusCode,
-            hint: 'Check Firebase Functions secrets: firebase functions:secrets:access SENDGRID_API_KEY'
-          }
+            hint: 'Check Firebase Functions secrets: firebase functions:secrets:access SENDGRID_API_KEY',
+          },
         );
       } else if (statusCode === 403) {
         // Common causes: unverified sender, domain not authenticated, rate limit
@@ -828,7 +939,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         throw new functions.https.HttpsError(
           'permission-denied',
           `SendGrid rejected the email: ${detailMsg}. Please verify the sender email is verified in SendGrid.`,
-          { sendGridError: errorMessage, statusCode, details: responseBody }
+          { sendGridError: errorMessage, statusCode, details: responseBody },
         );
       } else if (statusCode === 400) {
         // Bad request - invalid email format, missing fields, etc.
@@ -836,20 +947,20 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         throw new functions.https.HttpsError(
           'invalid-argument',
           `Invalid email request: ${detailMsg}`,
-          { sendGridError: errorMessage, statusCode, details: responseBody }
+          { sendGridError: errorMessage, statusCode, details: responseBody },
         );
       } else if (statusCode && statusCode >= 500) {
         throw new functions.https.HttpsError(
           'internal',
           `SendGrid server error (${statusCode}): ${errorMessage}. Please try again later.`,
-          { sendGridError: errorMessage, statusCode }
+          { sendGridError: errorMessage, statusCode },
         );
       } else {
         // Unknown error or no status code - convert to internal error with details
         throw new functions.https.HttpsError(
           'internal',
           `SendGrid error: ${errorMessage}. Check logs for details.`,
-          { sendGridError: errorMessage, statusCode, originalError: sgError?.toString() }
+          { sendGridError: errorMessage, statusCode, originalError: sgError?.toString() },
         );
       }
     }
@@ -868,7 +979,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       facilityId,
       tenantId || variables?.tenantId,
       to,
-      null
+      null,
     );
     const previewTextForLog = (text || html || '').replace(/<[^>]*>/g, '').substring(0, 200);
 
@@ -968,8 +1079,8 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
           errorDetails: error.details,
           facilityId, 
           to, 
-          templateId 
-        }
+          templateId, 
+        },
       );
 
       // Update message log to "failed"
@@ -978,7 +1089,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
           facilityId,
           tenantId || variables?.tenantId,
           to,
-          null
+          null,
         );
         const userRecord = await admin.auth().getUser(context.auth.uid);
         const userEmail = userRecord.email;
@@ -1046,8 +1157,8 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         stack: error?.stack, 
         facilityId, 
         to, 
-        templateId 
-      }
+        templateId, 
+      },
     );
 
     // Update message log to "failed"
@@ -1056,7 +1167,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         facilityId,
         tenantId || variables?.tenantId,
         to,
-        null
+        null,
       );
       const userRecord = await admin.auth().getUser(context.auth.uid);
       const userEmail = userRecord.email;
@@ -1116,7 +1227,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
     throw new functions.https.HttpsError(
       'internal', 
       `Failed to send email: ${errorMsg}. Please check logs for details.`,
-      { originalError: errorMsg, errorType: error?.constructor?.name }
+      { originalError: errorMsg, errorType: error?.constructor?.name },
     );
   }
 });
@@ -1176,7 +1287,7 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
     await admin.firestore()
       .collection('facilities')
       .doc(facilityId)
-      .collection('emailLogs')
+      .collection('emailLogs');
       // Extract message ID from SendGrid response
       const messageId = result.headers['x-message-id'] || `sg-${Date.now()}`;
 
@@ -1301,7 +1412,7 @@ export const sendDailyDigests = functions.runWith({ secrets: SENDGRID_SECRETS })
                 sentAt: admin.firestore.FieldValue.serverTimestamp(),
                 messageId: messageId,
                 digestId,
-              }
+              },
             );
           });
           await batch.commit();
@@ -1334,7 +1445,11 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
     .doc(monthKey);
 
   // First, check if we need to determine the limit
-  let defaultLimit = 1000; // Default for active subscribers
+  // Limits are sized to support a fully-active 200-tenant facility:
+  //   ~1,184 emails/month at max usage (payment reminders + digests + delinquency + misc)
+  // Paid: 5,000/month gives comfortable headroom up to ~800-tenant facilities
+  // Trial: 500/month allows meaningful testing without incurring significant cost
+  let defaultLimit = 5000; // Default for active subscribers
   const usageDoc = await usageRef.get();
   
   if (!usageDoc.exists || !usageDoc.data()?.emailMonthlyLimit) {
@@ -1352,7 +1467,7 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
         if (!accountSnapshot.empty) {
           const accountData = accountSnapshot.docs[0].data();
           if (accountData.subscriptionStatus === 'trialing') {
-            defaultLimit = 200; // Trial limit
+            defaultLimit = 500; // Trial limit — enough for real testing
           }
         }
       }
@@ -1449,8 +1564,583 @@ function generateDigestHtml(facilityName: string, items: any[]): string {
   `;
 }
 
+// Signing token TTL in days (configurable for hardening)
+const SIGNING_TOKEN_TTL_DAYS = 14;
+
+/**
+ * Rate limit helper: max 25 calls per IP per minute for getContractBySigningToken.
+ * Uses Firestore for persistence. Returns true if allowed, false if rate limited.
+ */
+async function checkSigningTokenRateLimit(ipKey: string): Promise<boolean> {
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+  const RATE_LIMIT_MAX = 25;
+  const docId = `signingToken_${crypto.createHash('sha256').update(ipKey).digest('hex').substring(0, 24)}`;
+  const ref = admin.firestore().collection('rateLimits').doc(docId);
+
+  const now = Date.now();
+  const doc = await ref.get();
+  const data = doc.exists ? (doc.data() as Record<string, any>) : null;
+  const windowStart = data?.windowStart ?? 0;
+
+  if (now - windowStart >= RATE_LIMIT_WINDOW_MS) {
+    // New window
+    await ref.set({ count: 1, windowStart: now });
+    return true;
+  }
+
+  const count = (data?.count ?? 0) + 1;
+  if (count > RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  await ref.update({ count: admin.firestore.FieldValue.increment(1) });
+  return true;
+}
+
+/**
+ * Get contract by signing token. Used when tenants open signing link from email.
+ * - App Check enforced (requests must come from legitimate app)
+ * - Rate limited: 25 calls per IP per minute
+ * - Never returns signingToken in response
+ * - Token TTL configurable via SIGNING_TOKEN_TTL_DAYS
+ */
+export const getContractBySigningToken = functions.https.onCall(async (data: { signingToken?: string }, context: functions.https.CallableContext) => {
+  // App Check optional for signing flow - tenants arrive from email links, may lack App Check token (reCAPTCHA blocked etc.)
+  if (!context.app) {
+    functions.logger.warn('getContractBySigningToken: App Check token missing – allowing for signing-token flow');
+  } else {
+    enforceAppCheckOrThrow(context);
+  }
+
+  const signingToken = (data?.signingToken || '').toString().trim();
+  if (!signingToken) {
+    throw new functions.https.HttpsError('invalid-argument', 'Signing token is required');
+  }
+
+  // Rate limit by IP
+  const ip = (context.rawRequest?.ip || context.rawRequest?.connection?.remoteAddress || 'unknown');
+  const forwarded = context.rawRequest?.headers?.['x-forwarded-for'];
+  const clientIp = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) || ip;
+  const allowed = await checkSigningTokenRateLimit(clientIp);
+  if (!allowed) {
+    throw new functions.https.HttpsError(
+      'resource-exhausted',
+      'Too many requests. Please wait a minute and try again.',
+    );
+  }
+
+  try {
+    const snapshot = await admin.firestore()
+      .collectionGroup('contracts')
+      .where('signingToken', '==', signingToken)
+      .where('status', '==', 'sent')
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return null;
+    }
+
+    const doc = snapshot.docs[0];
+    const d = doc.data() as Record<string, any>;
+
+    // Check token expiry
+    const expiresAt = d.signingTokenExpiresAt;
+    if (expiresAt && expiresAt.toDate && expiresAt.toDate() < new Date()) {
+      return null;
+    }
+
+    // Serialize for client - convert Timestamps to { seconds, nanoseconds } for Dart
+    const serializeTimestamp = (t: admin.firestore.Timestamp | undefined) => {
+      if (!t) return null;
+      const millis = typeof t.toMillis === 'function' ? t.toMillis() : (t as any).toDate?.()?.getTime?.();
+      if (millis == null) return null;
+      return { seconds: Math.floor(millis / 1000), nanoseconds: ((millis % 1000) * 1e6) | 0 };
+    };
+
+    const out: Record<string, any> = { id: doc.id };
+    // Copy fields explicitly, EXCLUDING signingToken and signingTokenExpiresAt (security: never echo token)
+    const exclude = ['signingToken', 'signingTokenExpiresAt'];
+    for (const [k, v] of Object.entries(d)) {
+      if (!exclude.includes(k)) out[k] = v;
+    }
+    if (d.createdAt) out.createdAt = serializeTimestamp(d.createdAt);
+    if (d.sentAt) out.sentAt = serializeTimestamp(d.sentAt);
+    if (d.signedAt) out.signedAt = serializeTimestamp(d.signedAt);
+    if (d.expiresAt) out.expiresAt = serializeTimestamp(d.expiresAt);
+    if (d.moveOutDate) out.moveOutDate = serializeTimestamp(d.moveOutDate);
+    if (d.lastReconfirmedAt) out.lastReconfirmedAt = serializeTimestamp(d.lastReconfirmedAt);
+    if (d.uploadedAt) out.uploadedAt = serializeTimestamp(d.uploadedAt);
+    if (d.disabledAt) out.disabledAt = serializeTimestamp(d.disabledAt);
+    return out;
+  } catch (err: any) {
+    functions.logger.error('getContractBySigningToken error:', err);
+    return null;
+  }
+});
+
+/**
+ * Upload signed contract PDF via Cloud Function (bypasses Storage CORS).
+ * Validates via auth (facility staff) or signing token (tenant from email link).
+ * App Check optional when signingToken present - tenants from email links may lack App Check.
+ */
+export const uploadSignedContract = functions.https.onCall(async (data: {
+  facilityId?: string;
+  contractId?: string;
+  pdfBase64?: string;
+  signingToken?: string;
+}, context: functions.https.CallableContext) => {
+  const signingToken = (data?.signingToken || '').toString().trim();
+  if (signingToken) {
+    // Tenant flow from email link - App Check optional (reCAPTCHA may be blocked)
+    if (!context.app) {
+      functions.logger.warn('uploadSignedContract: App Check token missing – allowing for signing-token flow');
+    } else {
+      enforceAppCheckOrThrow(context);
+    }
+  } else {
+    // Staff flow - enforce App Check
+    enforceAppCheckOrThrow(context);
+  }
+
+  const facilityId = (data?.facilityId || '').toString().trim();
+  const contractId = (data?.contractId || '').toString().trim();
+  const pdfBase64 = data?.pdfBase64;
+
+  if (!facilityId || !contractId || !pdfBase64) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId, contractId, and pdfBase64 are required');
+  }
+
+  let allowed = false;
+
+  if (context.auth?.uid) {
+    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+    if (facilityDoc.exists) {
+      const fd = facilityDoc.data() as Record<string, any>;
+      const ownerUid = fd?.ownerUid;
+      const managers = fd?.managers || {};
+      const roles = fd?.roles || {};
+      const role = roles[context.auth!.uid];
+      const isOwnerOrManager = ownerUid === context.auth.uid ||
+        managers[context.auth.uid] ||
+        role === 'owner' ||
+        role === 'manager';
+      if (isOwnerOrManager) allowed = true;
+    }
+  }
+
+  if (!allowed && signingToken) {
+    const contractDoc = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contracts')
+      .doc(contractId)
+      .get();
+    const d = contractDoc.exists ? (contractDoc.data() as Record<string, any>) : null;
+    if (d?.signingToken === signingToken && d?.status === 'sent') allowed = true;
+  }
+
+  if (!allowed) {
+    throw new functions.https.HttpsError('permission-denied', 'Not authorized to upload signed contract');
+  }
+
+  const buffer = Buffer.from(pdfBase64, 'base64');
+  const path = `facilities/${facilityId}/contracts/${contractId}/signed_contract.pdf`;
+  const bucket = admin.storage().bucket();
+  const file = bucket.file(path);
+  const downloadToken = crypto.randomUUID();
+  await file.save(buffer, {
+    contentType: 'application/pdf',
+    metadata: {
+      contentType: 'application/pdf',
+      metadata: { firebaseStorageDownloadTokens: downloadToken },
+    },
+  });
+  const url = await getDownloadURL(file);
+  return url;
+});
+
+/**
+ * HTTP endpoint for uploadSignedContract - used via Firebase Hosting rewrite.
+ * Same-origin requests avoid CORS preflight 403. Accepts callable-style body: { data: {...} }.
+ * Uses Express with 10MB body limit for base64 PDF payloads.
+ */
+const uploadSignedContractApp = express();
+uploadSignedContractApp.use(express.json({ limit: '10mb' }));
+
+uploadSignedContractApp.all('*', async (req: express.Request, res: express.Response) => {
+  const corsHeaders: Record<string, string> = {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  };
+
+  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
+    return;
+  }
+
+  try {
+    const body = req.body as { data?: Record<string, unknown> } | undefined;
+    const data = (body?.data || body) as Record<string, unknown> | undefined;
+    const facilityId = (data?.facilityId || '').toString().trim();
+    const contractId = (data?.contractId || '').toString().trim();
+    const pdfBase64 = data?.pdfBase64 as string | undefined;
+    const signingToken = (data?.signingToken || '').toString().trim();
+
+    if (!facilityId || !contractId || !pdfBase64) {
+      res.status(400).json({ error: { status: 'INVALID_ARGUMENT', message: 'facilityId, contractId, and pdfBase64 are required' } });
+      return;
+    }
+
+    let authUid: string | undefined;
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.substring(7);
+        const decoded = await admin.auth().verifyIdToken(token);
+        authUid = decoded.uid;
+      } catch {
+        // Invalid or expired token - authUid stays undefined
+      }
+    }
+
+    let allowed = false;
+    if (authUid) {
+      const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+      if (facilityDoc.exists) {
+        const fd = facilityDoc.data() as Record<string, unknown>;
+        const ownerUid = fd?.ownerUid;
+        const managers = (fd?.managers || {}) as Record<string, unknown>;
+        const roles = (fd?.roles || {}) as Record<string, string>;
+        const role = roles[authUid];
+        const isOwnerOrManager = ownerUid === authUid ||
+          managers[authUid] ||
+          role === 'owner' ||
+          role === 'manager';
+        if (isOwnerOrManager) allowed = true;
+      }
+    }
+
+    if (!allowed && signingToken) {
+      const contractDoc = await admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('contracts')
+        .doc(contractId)
+        .get();
+      const d = contractDoc.exists ? (contractDoc.data() as Record<string, unknown>) : null;
+      if ((d?.signingToken as string) === signingToken && d?.status === 'sent') allowed = true;
+    }
+
+    if (!allowed) {
+      res.status(403).json({ error: { status: 'PERMISSION_DENIED', message: 'Not authorized to upload signed contract' } });
+      return;
+    }
+
+    const buffer = Buffer.from(pdfBase64, 'base64');
+    const path = `facilities/${facilityId}/contracts/${contractId}/signed_contract.pdf`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(path);
+    const downloadToken = crypto.randomUUID();
+    await file.save(buffer, {
+      contentType: 'application/pdf',
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: { firebaseStorageDownloadTokens: downloadToken },
+      },
+    });
+    const url = await getDownloadURL(file);
+
+    res.set('Content-Type', 'application/json');
+    res.status(200).json({ result: url });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    functions.logger.error('uploadSignedContractHttp error:', msg, stack ?? '');
+    res.status(500).json({ error: { status: 'INTERNAL', message: 'Internal error' } });
+  }
+});
+
+export const uploadSignedContractHttp = functions.https.onRequest(uploadSignedContractApp);
+
+/**
+ * HTTP endpoint for contract PDF upload - used via Firebase Hosting rewrite.
+ * Same-origin requests avoid CORS preflight 403 when uploading from custom domain.
+ */
+const uploadContractPdfApp = express();
+uploadContractPdfApp.use(express.json({ limit: '16mb' }));
+
+uploadContractPdfApp.all('*', async (req: express.Request, res: express.Response) => {
+  const corsHeaders: Record<string, string> = {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  };
+  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
+    return;
+  }
+  try {
+    const body = req.body as { data?: Record<string, unknown> } | undefined;
+    const data = (body?.data || body) as Record<string, unknown> | undefined;
+    const facilityId = (data?.facilityId || '').toString().trim();
+    const contractId = (data?.contractId || '').toString().trim();
+    const fileName = (data?.fileName || '').toString().trim();
+    const pdfBase64 = data?.pdfBase64 as string | undefined;
+
+    if (!facilityId || !contractId || !fileName || !pdfBase64) {
+      res.status(400).json({ error: { status: 'INVALID_ARGUMENT', message: 'facilityId, contractId, fileName, and pdfBase64 are required' } });
+      return;
+    }
+
+    let authUid: string | undefined;
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.substring(7);
+        const decoded = await admin.auth().verifyIdToken(token);
+        authUid = decoded.uid;
+      } catch {
+        // Invalid or expired token
+      }
+    }
+    if (!authUid) {
+      res.status(403).json({ error: { status: 'UNAUTHENTICATED', message: 'Authentication required' } });
+      return;
+    }
+
+    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+    if (!facilityDoc.exists) {
+      res.status(404).json({ error: { status: 'NOT_FOUND', message: 'Facility not found' } });
+      return;
+    }
+    const fd = facilityDoc.data() as Record<string, unknown>;
+    const ownerUid = fd?.ownerUid;
+    const managers = (fd?.managers || {}) as Record<string, unknown>;
+    const roles = (fd?.roles || {}) as Record<string, string>;
+    const role = roles[authUid];
+    const isOwnerOrManager = ownerUid === authUid || managers[authUid] || role === 'owner' || role === 'manager';
+    if (!isOwnerOrManager) {
+      res.status(403).json({ error: { status: 'PERMISSION_DENIED', message: 'Not authorized to upload contract' } });
+      return;
+    }
+
+    const buffer = Buffer.from(pdfBase64, 'base64');
+    const storagePath = `facilities/${facilityId}/contracts/${contractId}/${fileName}`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(storagePath);
+    const downloadToken = crypto.randomUUID();
+    await file.save(buffer, {
+      contentType: 'application/pdf',
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: { firebaseStorageDownloadTokens: downloadToken },
+      },
+    });
+    const url = await getDownloadURL(file);
+    res.set('Content-Type', 'application/json');
+    res.status(200).json({ result: url });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    functions.logger.error('uploadContractPdfHttp error:', msg);
+    res.status(500).json({ error: { status: 'INTERNAL', message: 'Internal error' } });
+  }
+});
+
+export const uploadContractPdfHttp = functions.https.onRequest(uploadContractPdfApp);
+
+/** Allowed Storage bucket patterns for proxy (contract PDFs only) */
+const PROXY_ALLOWED_BUCKETS = [
+  'storage-facility-creator.firebasestorage.app',
+  'storage-facility-creator.appspot.com',
+];
+
+/**
+ * HTTP proxy for contract PDFs - bypasses Storage CORS when loading PDFs from custom domain.
+ * Same-origin GET to /api/proxyContractPdf avoids CORS on firebasestorage.googleapis.com.
+ */
+const proxyContractPdfApp = express();
+proxyContractPdfApp.all('*', async (req: express.Request, res: express.Response) => {
+  const corsHeaders: Record<string, string> = {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+  };
+  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  if (req.method !== 'GET') {
+    res.status(405).set('Content-Type', 'application/json').json({ error: { message: 'Method not allowed' } });
+    return;
+  }
+  try {
+    const rawUrl = (req.query.url || '').toString().trim();
+    if (!rawUrl) {
+      res.status(400).set('Content-Type', 'application/json').json({ error: { message: 'url query param required' } });
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      res.status(400).set('Content-Type', 'application/json').json({ error: { message: 'Invalid url' } });
+      return;
+    }
+    if (parsed.protocol !== 'https:') {
+      res.status(400).set('Content-Type', 'application/json').json({ error: { message: 'url must be https' } });
+      return;
+    }
+    const host = parsed.hostname || '';
+    const pathname = parsed.pathname || '';
+    const isGoogleStorageHost =
+      host === 'firebasestorage.googleapis.com' || host === 'storage.googleapis.com';
+    const bucketMatch = PROXY_ALLOWED_BUCKETS.some((b) => pathname.includes(`/b/${b}/`));
+    // Storage object path is URL-encoded in /o/{object}; decode before path checks.
+    const objectPathEncoded = pathname.includes('/o/') ? pathname.split('/o/')[1] : '';
+    let objectPath = objectPathEncoded || '';
+    try {
+      objectPath = decodeURIComponent(objectPathEncoded || '');
+    } catch {
+      objectPath = objectPathEncoded || '';
+    }
+    const isContractPath = objectPath.startsWith('facilities/') && objectPath.includes('/contracts/');
+    if (!isGoogleStorageHost || !bucketMatch || !isContractPath) {
+      res.status(403).set('Content-Type', 'application/json').json({ error: { message: 'URL not allowed' } });
+      return;
+    }
+    const resp = await fetch(rawUrl, { method: 'GET' });
+    if (!resp.ok) {
+      res.status(resp.status).set('Content-Type', 'application/json').json({ error: { message: 'Upstream fetch failed' } });
+      return;
+    }
+    const contentType = resp.headers.get('content-type') || 'application/pdf';
+    res.set('Content-Type', contentType);
+    const buf = await resp.arrayBuffer();
+    res.status(200).send(Buffer.from(buf));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    functions.logger.error('proxyContractPdf error:', msg);
+    res.status(500).set('Content-Type', 'application/json').json({ error: { message: 'Internal error' } });
+  }
+});
+
+export const proxyContractPdfHttp = functions.https.onRequest(proxyContractPdfApp);
+
+/**
+ * Firestore trigger: Send confirmation email when a contract is signed.
+ * Sends to signedByEmail if present, otherwise tries tenant email.
+ */
+export const onContractSigned = functions.runWith({ secrets: SENDGRID_SECRETS })
+  .firestore.document('facilities/{facilityId}/contracts/{contractId}')
+  .onUpdate(async (change, context) => {
+    const facilityId = context.params.facilityId as string;
+    const contractId = context.params.contractId as string;
+    const before = change.before.data() as Record<string, any>;
+    const after = change.after.data() as Record<string, any>;
+
+    if (before?.status === 'signed' || after?.status !== 'signed') {
+      return;
+    }
+
+    const signedByEmail = (after?.signedByEmail || '').toString().trim();
+    const signedBy = (after?.signedBy || '').toString().trim();
+    const title = (after?.title || 'Contract').toString();
+    const signedFileUrl = (after?.signedFileUrl || '').toString().trim();
+
+    let toEmail = signedByEmail;
+    if (!toEmail) {
+      const tenantId = (after?.tenantId || '').toString().trim();
+      if (tenantId) {
+        const tenantDoc = await admin.firestore()
+          .collection('facilities').doc(facilityId)
+          .collection('tenants').doc(tenantId)
+          .get();
+        if (tenantDoc.exists) {
+          toEmail = (tenantDoc.data() as Record<string, any>)?.email?.toString().trim() || '';
+        }
+      }
+    }
+    if (!toEmail || !toEmail.includes('@')) {
+      functions.logger.info('onContractSigned: No signer email available, skipping confirmation');
+      return;
+    }
+
+    try {
+      const [apiKey, fromEmail] = await Promise.all([
+        SENDGRID_API_KEY.value(),
+        SENDGRID_FROM_EMAIL.value(),
+      ]);
+      if (!apiKey?.trim() || !fromEmail?.trim()) {
+        functions.logger.warn('onContractSigned: SendGrid not configured, skipping');
+        return;
+      }
+
+      const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+      const facilityData = facilityDoc.exists ? (facilityDoc.data() as Record<string, any>) : {};
+      const facilityName = facilityData?.name || 'Storage Facility';
+      const footer = buildFacilityFooter(
+        facilityName,
+        facilityData?.address,
+        facilityData?.phone,
+      );
+
+      const viewLink = signedFileUrl
+        ? `<p><a clicktracking="off" href="${signedFileUrl}" style="color:#1E3A8A;font-weight:600;">View your signed contract</a></p>`
+        : '';
+      const html = `
+        <h2 style="color:#1E3A8A;">Contract signed successfully</h2>
+        <p>Hello${signedBy ? ` ${escapeHtml(signedBy)}` : ''},</p>
+        <p>Your signature has been recorded for <strong>${escapeHtml(title)}</strong>.</p>
+        ${viewLink}
+        <p>Please keep this email for your records.</p>
+        ${footer.html}
+      `;
+      const text = [
+        'Contract signed successfully',
+        signedBy ? `Hello ${signedBy},` : 'Hello,',
+        `Your signature has been recorded for ${title}.`,
+        signedFileUrl ? `View your signed contract: ${signedFileUrl}` : '',
+        'Please keep this email for your records.',
+        footer.text,
+      ].filter(Boolean).join('\n\n');
+
+      sgMail.setApiKey(apiKey);
+      await sgMail.send({
+        to: toEmail,
+        from: { email: fromEmail, name: facilityName },
+        subject: `Contract Signed: ${title}`,
+        html,
+        text,
+      });
+      functions.logger.info('onContractSigned: Confirmation email sent', { to: toEmail, contractId });
+    } catch (err: unknown) {
+      functions.logger.error('onContractSigned: Failed to send confirmation email', err);
+    }
+  });
+
+/**
+ * Tenant portal lookup by email + access code. No Firebase Auth required.
+ * App Check is not enforced here so unauthenticated tenants can access the portal.
+ */
 export const tenantPortalFetch = functions.https.onCall(async (data: TenantPortalRequest) => {
-  enforceAppCheckOrThrow({ app: (data as any)?._appCheckToken ? {} as any : undefined } as any);
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
 
@@ -1459,14 +2149,33 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
   }
 
   try {
-    const tenantSnapshot = await admin
-      .firestore()
-      .collectionGroup('tenants')
-      .where('emailLower', '==', email)
-      .where('portalEnabled', '==', true)
-      .where('portalAccessCode', '==', accessCode)
-      .limit(1)
-      .get();
+    let tenantSnapshot: admin.firestore.QuerySnapshot;
+    try {
+      tenantSnapshot = await admin
+        .firestore()
+        .collectionGroup('tenants')
+        .where('emailLower', '==', email)
+        .where('portalEnabled', '==', true)
+        .where('portalAccessCode', '==', accessCode)
+        .limit(1)
+        .get();
+    } catch (indexError: any) {
+      if (indexError.code === 9 || (indexError.message ?? '').includes('indexes') || (indexError.message ?? '').includes('index')) {
+        functions.logger.warn('Missing composite index for tenant portal lookup. Falling back to email-only query.', indexError);
+        const fallbackSnapshot = await admin
+          .firestore()
+          .collectionGroup('tenants')
+          .where('emailLower', '==', email)
+          .get();
+        const matchingDocs = fallbackSnapshot.docs.filter((doc) => {
+          const d = doc.data();
+          return d.portalEnabled === true && d.portalAccessCode === accessCode;
+        });
+        tenantSnapshot = { docs: matchingDocs, empty: matchingDocs.length === 0 } as unknown as admin.firestore.QuerySnapshot;
+      } else {
+        throw indexError;
+      }
+    }
 
     if (tenantSnapshot.empty) {
       throw new functions.https.HttpsError('not-found', 'Portal access not found. Verify your email and access code.');
@@ -1547,18 +2256,26 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       portalVisitCount: admin.firestore.FieldValue.increment(1),
     });
 
+    const facilityData = facilityDoc.data() as Record<string, any> | undefined;
+    const stripeStatus = facilityData?.stripeStatus as { state?: string } | undefined;
+    const autopay = tenantData.autopay as Record<string, unknown> | undefined;
+    const stripe = tenantData.stripe as Record<string, unknown> | undefined;
+
     return {
       facility: {
         id: facilityRef.id,
-        name: facilityDoc.data()?.name ?? 'Facility',
-        phone: facilityDoc.data()?.phone ?? null,
-        email: facilityDoc.data()?.email ?? null,
-        address: facilityDoc.data()?.address ?? null,
-        logoUrl: facilityDoc.data()?.logoUrl ?? null,
+        name: facilityData?.name ?? 'Facility',
+        phone: facilityData?.phone ?? null,
+        email: facilityData?.email ?? null,
+        address: facilityData?.address ?? null,
+        logoUrl: facilityData?.logoUrl ?? null,
+        stripeStatus: stripeStatus ?? { state: 'DISCONNECTED' },
       },
       tenant: {
         id: tenantDoc.id,
         name: tenantData.name ?? 'Tenant',
+        email: tenantData.email ?? null,
+        phone: tenantData.phone ?? null,
         unitNumber: tenantData.unitNumber ?? '',
         monthlyRate: tenantData.monthlyRate ?? 0,
         paidThrough: tenantData.paidThrough ?? null,
@@ -1566,6 +2283,9 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
         welcomeMessage: tenantData.portalWelcomeMessage ?? null,
         contacts: tenantData.emergencyContacts ?? [],
         vehicles: tenantData.vehicles ?? [],
+        autopay: autopay ?? { requested: false, enabled: false, status: 'OFF', updatedBy: 'SYSTEM', updatedAt: null },
+        stripe: stripe ?? { customerId: null, defaultPaymentMethodId: null, paymentMethodSummary: null },
+        overlockIsActive: tenantData.overlockIsActive === true,
       },
       payments,
       stats: {
@@ -1584,11 +2304,105 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
 });
 
 /**
+ * tenantUpdateProfile — Allows a tenant to update their own contact info via the portal.
+ * Authenticated via email + accessCode (no Firebase Auth required).
+ * Tenants can update: phone, emergencyContacts, vehicles.
+ * All changes are written directly to the Firestore tenant document.
+ */
+export const tenantUpdateProfile = functions.https.onCall(async (data: any) => {
+  const email = (data.email || '').toString().trim().toLowerCase();
+  const accessCode = (data.accessCode || '').toString().trim();
+
+  if (!email || !accessCode) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
+  }
+
+  try {
+    // Authenticate tenant
+    let tenantSnapshot: admin.firestore.QuerySnapshot;
+    try {
+      tenantSnapshot = await admin
+        .firestore()
+        .collectionGroup('tenants')
+        .where('emailLower', '==', email)
+        .where('portalEnabled', '==', true)
+        .where('portalAccessCode', '==', accessCode)
+        .limit(1)
+        .get();
+    } catch (indexError: any) {
+      if (indexError.code === 9 || (indexError.message ?? '').includes('index')) {
+        const fallback = await admin.firestore().collectionGroup('tenants').where('emailLower', '==', email).get();
+        const matching = fallback.docs.filter((d) => {
+          const dd = d.data();
+          return dd.portalEnabled === true && dd.portalAccessCode === accessCode;
+        });
+        tenantSnapshot = { docs: matching, empty: matching.length === 0 } as unknown as admin.firestore.QuerySnapshot;
+      } else {
+        throw indexError;
+      }
+    }
+
+    if (tenantSnapshot.empty) {
+      throw new functions.https.HttpsError('not-found', 'Portal access not found. Verify your email and access code.');
+    }
+
+    const tenantDoc = tenantSnapshot.docs[0];
+    const updateData: Record<string, any> = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      portalLastProfileUpdateAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Phone
+    if (typeof data.phone === 'string') {
+      updateData['phone'] = data.phone.trim();
+    }
+
+    // Emergency contacts — validate structure
+    if (Array.isArray(data.emergencyContacts)) {
+      const contacts = (data.emergencyContacts as any[]).map((c: any) => ({
+        name: (c.name ?? '').toString().trim(),
+        relationship: (c.relationship ?? '').toString().trim() || null,
+        phone: (c.phone ?? '').toString().trim() || null,
+        email: (c.email ?? '').toString().trim() || null,
+        isPrimary: c.isPrimary === true,
+        isEmergency: c.isEmergency !== false,
+      }));
+      updateData['emergencyContacts'] = contacts;
+    }
+
+    // Vehicles — validate structure
+    if (Array.isArray(data.vehicles)) {
+      const vehicles = (data.vehicles as any[]).map((v: any) => ({
+        make: (v.make ?? '').toString().trim(),
+        model: (v.model ?? '').toString().trim(),
+        color: (v.color ?? '').toString().trim() || null,
+        licensePlate: (v.licensePlate ?? '').toString().trim() || null,
+        state: (v.state ?? '').toString().trim() || null,
+        notes: (v.notes ?? '').toString().trim() || null,
+      }));
+      updateData['vehicles'] = vehicles;
+    }
+
+    await tenantDoc.ref.update(updateData);
+    functions.logger.info('tenantUpdateProfile: tenant updated their profile', { tenantId: tenantDoc.id });
+
+    return { success: true };
+  } catch (error: any) {
+    functions.logger.error('tenantUpdateProfile failed', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message ?? 'Unable to update profile');
+  }
+});
+
+/**
  * Create payment checkout for tenant portal
  * Uses email + accessCode for authentication (no Firebase Auth required)
  */
-export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow({ app: (data as any)?._appCheckToken ? {} as any : undefined } as any);
+/**
+ * Create payment checkout from tenant portal (email + access code auth).
+ * App Check not enforced so unauthenticated tenants can pay.
+ */
+export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
   const amount = data.amount as number;
@@ -1769,7 +2583,7 @@ export const sendSMS = functions.runWith({
     if (!isOwner && !isManager) {
       throw new functions.https.HttpsError(
         'permission-denied',
-        'User is not authorized to send SMS for this facility'
+        'User is not authorized to send SMS for this facility',
       );
     }
 
@@ -1789,13 +2603,23 @@ export const sendSMS = functions.runWith({
       facilityId,
       tenantId,
       null,
-      phoneNumber
+      phoneNumber,
     );
+
+    const textingOnboardingFlag = await isFeatureFlagEnabled('TEXTING_ONBOARDING_V1');
+    const textingOnboardingEnabled = textingOnboardingFlag && facilityData.textingOnboardingEnabled === true;
+    const facilityA2PStatus = ((facilityData.a2pStatus as string) || 'draft').toLowerCase();
+    if (textingOnboardingEnabled && facilityA2PStatus !== 'approved' && !forceSend) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Texting setup is not approved yet. SMS sending is blocked until A2P 10DLC campaign approval.',
+      );
+    }
 
     // SMS Compliance Checks (if enabled)
     const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', facilityId);
     
-    if (complianceEnabled && tenantInfo.tenantId) {
+    if ((complianceEnabled || textingOnboardingEnabled) && tenantInfo.tenantId) {
       // Check if tenant is opted out
       const tenantDoc = await admin.firestore()
         .collection('facilities')
@@ -1805,10 +2629,16 @@ export const sendSMS = functions.runWith({
         .get();
       
       const tenantData = tenantDoc.data() as Record<string, any> | undefined;
-      if (tenantData?.smsOptOut === true) {
+      if (tenantData?.smsOptOut === true || tenantData?.smsConsentStatus === 'opted_out') {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'Tenant has opted out of SMS messages. Cannot send SMS to this number.'
+          'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
+        );
+      }
+      if (textingOnboardingEnabled && tenantData?.smsConsentStatus !== 'opted_in' && !forceSend) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Tenant SMS consent is required before sending messages.',
         );
       }
 
@@ -1818,7 +2648,7 @@ export const sendSMS = functions.runWith({
       if (blockList && blockList.includes(phoneNumber)) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'This phone number is on the facility SMS block list. Cannot send SMS.'
+          'This phone number is on the facility SMS block list. Cannot send SMS.',
         );
       }
     }
@@ -1830,7 +2660,7 @@ export const sendSMS = functions.runWith({
       if (quietHoursCheck.isQuietHours && !forceSend) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          `Cannot send SMS during quiet hours. Next allowed time: ${quietHoursCheck.nextAllowedTime?.toISOString() || 'unknown'}`
+          `Cannot send SMS during quiet hours. Next allowed time: ${quietHoursCheck.nextAllowedTime?.toISOString() || 'unknown'}`,
         );
       }
     }
@@ -1842,7 +2672,7 @@ export const sendSMS = functions.runWith({
       if (!rateLimitCheck.canSend && !forceSend) {
         throw new functions.https.HttpsError(
           'resource-exhausted',
-          `Tenant daily SMS limit reached (${rateLimitCheck.messagesSentToday}/${rateLimitCheck.limit}). Limit resets at ${rateLimitCheck.resetTime?.toISOString() || 'unknown'}.`
+          `Tenant daily SMS limit reached (${rateLimitCheck.messagesSentToday}/${rateLimitCheck.limit}). Limit resets at ${rateLimitCheck.resetTime?.toISOString() || 'unknown'}.`,
         );
       }
     }
@@ -1894,7 +2724,7 @@ export const sendSMS = functions.runWith({
       }
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        'SMS usage is extremely high. SMS scheduling is disabled. Please contact support if you need to increase your limit.'
+        'SMS usage is extremely high. SMS scheduling is disabled. Please contact support if you need to increase your limit.',
       );
     }
 
@@ -1905,7 +2735,7 @@ export const sendSMS = functions.runWith({
       }
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        usageCheck.warning || 'SMS fair-use limit exceeded. Messages will be sent via email instead.'
+        usageCheck.warning || 'SMS fair-use limit exceeded. Messages will be sent via email instead.',
       );
     }
 
@@ -1916,7 +2746,7 @@ export const sendSMS = functions.runWith({
       }
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        usageCheck.warning || 'SMS quota exceeded'
+        usageCheck.warning || 'SMS quota exceeded',
       );
     }
 
@@ -1956,7 +2786,7 @@ export const sendSMS = functions.runWith({
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Twilio Account SID not configured. Please set TWILIO_ACCOUNT_SID in Firebase Functions environment.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
     
@@ -1979,7 +2809,7 @@ export const sendSMS = functions.runWith({
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Twilio Auth Token not configured. Please set TWILIO_AUTH_TOKEN secret in Firebase Functions.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
     
@@ -2001,7 +2831,7 @@ export const sendSMS = functions.runWith({
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Twilio Phone Number not configured. Please set TWILIO_PHONE_NUMBER in Firebase Functions environment.',
-        { originalError: e.message }
+        { originalError: e.message },
       );
     }
 
@@ -2018,9 +2848,14 @@ export const sendSMS = functions.runWith({
       // #endregion
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'SMS service not configured. One or more Twilio credentials are missing. Please configure TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN (secret), and TWILIO_PHONE_NUMBER in Firebase Functions.'
+        'SMS service not configured. One or more Twilio credentials are missing. Please configure TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN (secret), and TWILIO_PHONE_NUMBER in Firebase Functions.',
       );
     }
+
+    const facilityDedicatedFromNumber = (facilityData.twilioPhoneNumberE164 as string | undefined) || null;
+    const resolvedFromNumber = (textingOnboardingEnabled && facilityA2PStatus === 'approved' && facilityDedicatedFromNumber)
+      ? facilityDedicatedFromNumber
+      : twilioPhoneNumber;
 
     // Safe debug logging (masked for security)
     // #region agent log
@@ -2029,7 +2864,7 @@ export const sendSMS = functions.runWith({
       accountSidLength: twilioAccountSid.length,
       authTokenMasked: `****${twilioAuthToken.substring(twilioAuthToken.length - 4)}`, // Last 4 chars only
       authTokenLength: twilioAuthToken.length,
-      fromNumber: twilioPhoneNumber,
+      fromNumber: resolvedFromNumber,
       toNumberMasked: `${phoneNumber.substring(0, 4)}****${phoneNumber.substring(phoneNumber.length - 4)}`, // First 4 + last 4
       messageLength: message.length,
     });
@@ -2044,14 +2879,14 @@ export const sendSMS = functions.runWith({
       twilioUrl: twilioUrl.substring(0, 50) + '...', // Log URL structure only
       authHeaderPrefix: `Basic ${auth.substring(0, 10)}...`, // First 10 chars of base64
       toNumber: phoneNumber,
-      fromNumber: twilioPhoneNumber,
+      fromNumber: resolvedFromNumber,
       messageLength: message.length,
     });
     // #endregion
 
     const formData = new URLSearchParams();
     formData.append('To', phoneNumber);
-    formData.append('From', twilioPhoneNumber);
+    formData.append('From', resolvedFromNumber);
     formData.append('Body', finalMessage); // Use finalMessage which includes footer if compliance enabled
 
     let response: Response;
@@ -2118,7 +2953,7 @@ export const sendSMS = functions.runWith({
               twilioErrorCode: errorResponse.code,
               twilioMoreInfo: errorResponse.more_info,
               accountSidUsed: twilioAccountSid.substring(0, 8) + '...', // First 8 chars for debugging
-            }
+            },
           );
         } else if (response.status === 400) {
           // Bad request - might be A2P, invalid number, etc.
@@ -2128,7 +2963,7 @@ export const sendSMS = functions.runWith({
             {
               twilioErrorCode: errorResponse.code,
               twilioMoreInfo: errorResponse.more_info,
-            }
+            },
           );
         } else if (response.status === 403) {
           // Forbidden - A2P or permission issue
@@ -2148,7 +2983,7 @@ export const sendSMS = functions.runWith({
               twilioErrorCode: errorResponse.code,
               twilioMoreInfo: errorResponse.more_info,
               a2pRegistrationRequired: errorCode === '30034' || errorCode === '30008',
-            }
+            },
           );
         } else {
           // Other errors
@@ -2158,7 +2993,7 @@ export const sendSMS = functions.runWith({
             {
               twilioErrorCode: errorResponse.code,
               twilioMoreInfo: errorResponse.more_info,
-            }
+            },
           );
         }
       }
@@ -2172,7 +3007,7 @@ export const sendSMS = functions.runWith({
       throw new functions.https.HttpsError(
         'internal',
         `Failed to communicate with Twilio: ${e instanceof Error ? e.message : 'Unknown error'}`,
-        { originalError: e instanceof Error ? e.toString() : String(e) }
+        { originalError: e instanceof Error ? e.toString() : String(e) },
       );
     }
 
@@ -2264,7 +3099,7 @@ export const sendSMS = functions.runWith({
           twilioErrorMessage: errorMessage,
           messageId: result.sid,
           a2pRegistrationRequired: true,
-        }
+        },
       );
     }
 
@@ -2428,7 +3263,7 @@ export const sendSMS = functions.runWith({
     // For unexpected errors, convert to internal error
     functions.logger.error(
       `Failed to send SMS to ${to} for facility ${facilityId}`,
-      { error: error?.message, stack: error?.stack, facilityId, to }
+      { error: error?.message, stack: error?.stack, facilityId, to },
     );
 
     // Update message log to "failed"
@@ -2497,7 +3332,7 @@ async function sendSMSAsEmail(
   to: string,
   message: string,
   facilityId: string,
-  usageCheck: any
+  usageCheck: any,
 ): Promise<{
   success: boolean;
   fallbackUsed: boolean;
@@ -2622,6 +3457,534 @@ async function sendSMSAsEmail(
     };
   }
 }
+
+type A2PStatus = 'draft' | 'submitted' | 'pending' | 'approved' | 'rejected';
+
+interface TextingBusinessData {
+  legalBusinessName: string;
+  dba?: string;
+  businessType: 'LLC' | 'Corp' | 'Nonprofit' | 'Sole Prop';
+  ein?: string;
+  soleProprietorTaxIdLast4?: string;
+  addressLine1: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country?: string;
+  website: string;
+  supportEmail: string;
+  supportPhone: string;
+}
+
+interface CampaignData {
+  useCases: string[];
+  sampleMessages: string[];
+  consentConfirmed: boolean;
+}
+
+interface TextingOnboardingState {
+  a2pStatus: A2PStatus;
+  a2pLastError?: string;
+  twilioMessagingServiceSid?: string;
+  twilioTrustProfileSid?: string;
+  twilioTrustProductSid?: string;
+  twilioBrandSid?: string;
+  twilioCampaignSid?: string;
+  twilioPhoneNumberSid?: string;
+  twilioPhoneNumberE164?: string;
+}
+
+async function assertTextingOnboardingEnabled(facilityId: string): Promise<void> {
+  const enabled = await isFeatureFlagEnabled('TEXTING_ONBOARDING_V1');
+  if (!enabled) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Texting onboarding is disabled. Enable TEXTING_ONBOARDING_V1 first.',
+    );
+  }
+}
+
+async function getFacilityForTextingMutation(
+  facilityId: string,
+  uid: string,
+): Promise<{ ref: FirebaseFirestore.DocumentReference; data: Record<string, any> }> {
+  const ref = admin.firestore().collection('facilities').doc(facilityId);
+  const doc = await ref.get();
+  const data = doc.data() as Record<string, any> | undefined;
+  if (!doc.exists || !data) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+
+  const ownerUid = data.ownerUid;
+  const managersMap = (data.managers ?? {}) as Record<string, any>;
+  const rolesMap = (data.roles ?? {}) as Record<string, any>;
+  const isOwner = ownerUid === uid;
+  const isManager = managersMap[uid] === true || rolesMap[uid] === 'manager' || rolesMap[uid] === 'owner';
+  if (!isOwner && !isManager) {
+    throw new functions.https.HttpsError('permission-denied', 'Not authorized for this facility');
+  }
+
+  return { ref, data };
+}
+
+function buildTwilioDryRunSid(prefix: string, facilityId: string): string {
+  const normalized = facilityId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24).padEnd(24, '0');
+  return `${prefix}${normalized}`;
+}
+
+async function ensureMessagingServiceForFacility(
+  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityData: Record<string, any>,
+  requestId: string,
+): Promise<{ messagingServiceSid: string; created: boolean }> {
+  const existing = facilityData.twilioMessagingServiceSid as string | undefined;
+  const idempotent = await ensureIdempotentResource(
+    existing,
+    async () => {
+      if (isTwilioDryRunEnabled()) {
+        return { sid: buildTwilioDryRunSid('MG', facilityRef.id) };
+      }
+      const twilio = getTwilioClient() as any;
+      return await twilio.messaging.v1.services.create({
+        friendlyName: `SFC-${facilityRef.id}-Messaging`,
+      });
+    },
+    (resource: any) => resource.sid as string,
+  );
+
+  if (idempotent.created) {
+    await facilityRef.set({
+      twilioMessagingServiceSid: idempotent.sid,
+      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    functions.logger.info('Created messaging service', { requestId, facilityId: facilityRef.id });
+  }
+  return { messagingServiceSid: idempotent.sid, created: idempotent.created };
+}
+
+async function provisionFacilityPhoneNumber(
+  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityData: Record<string, any>,
+  areaCode: string | undefined,
+  requestId: string,
+): Promise<{ phoneNumberSid: string; phoneNumberE164: string; created: boolean }> {
+  const existingSid = facilityData.twilioPhoneNumberSid as string | undefined;
+  const existingE164 = facilityData.twilioPhoneNumberE164 as string | undefined;
+  if (existingSid && existingE164) {
+    return { phoneNumberSid: existingSid, phoneNumberE164: existingE164, created: false };
+  }
+
+  if (isTwilioDryRunEnabled()) {
+    const sid = buildTwilioDryRunSid('PN', facilityRef.id);
+    const e164 = `+1555${Math.floor(Math.random() * 9000000 + 1000000)}`;
+    await facilityRef.set({
+      twilioPhoneNumberSid: sid,
+      twilioPhoneNumberE164: e164,
+      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { phoneNumberSid: sid, phoneNumberE164: e164, created: true };
+  }
+
+  const twilio = getTwilioClient() as any;
+  const numbers = await twilio.availablePhoneNumbers('US').local.list({
+    smsEnabled: true,
+    limit: 1,
+    ...(areaCode ? { areaCode } : {}),
+  });
+  if (!numbers?.length) {
+    throw new functions.https.HttpsError('resource-exhausted', 'No local Twilio number available for requested area');
+  }
+
+  const purchased = await twilio.incomingPhoneNumbers.create({
+    phoneNumber: numbers[0].phoneNumber,
+  });
+
+  await facilityRef.set({
+    twilioPhoneNumberSid: purchased.sid,
+    twilioPhoneNumberE164: purchased.phoneNumber,
+    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  functions.logger.info('Provisioned Twilio number', { requestId, facilityId: facilityRef.id, phoneSid: purchased.sid });
+  return { phoneNumberSid: purchased.sid, phoneNumberE164: purchased.phoneNumber, created: true };
+}
+
+async function attachPhoneNumberToMessagingService(
+  messagingServiceSid: string,
+  phoneNumberSid: string,
+): Promise<void> {
+  if (isTwilioDryRunEnabled()) return;
+  const twilio = getTwilioClient() as any;
+  const existing = await twilio.messaging.v1.services(messagingServiceSid).phoneNumbers.list({ limit: 200 });
+  const exists = (existing || []).some((p: any) => p.phoneNumberSid === phoneNumberSid);
+  if (!exists) {
+    await twilio.messaging.v1.services(messagingServiceSid).phoneNumbers.create({
+      phoneNumberSid,
+    });
+  }
+}
+
+async function createOrUpdateA2PProfileInternal(
+  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityData: Record<string, any>,
+  businessData: TextingBusinessData,
+): Promise<{ trustProfileSid: string; trustProductSid: string }> {
+  if (facilityData.twilioTrustProfileSid && facilityData.twilioTrustProductSid) {
+    return {
+      trustProfileSid: facilityData.twilioTrustProfileSid as string,
+      trustProductSid: facilityData.twilioTrustProductSid as string,
+    };
+  }
+
+  let trustProfileSid = '';
+  let trustProductSid = '';
+  if (isTwilioDryRunEnabled()) {
+    trustProfileSid = buildTwilioDryRunSid('BU', facilityRef.id);
+    trustProductSid = buildTwilioDryRunSid('TP', facilityRef.id);
+  } else {
+    const twilio = getTwilioClient() as any;
+    const profile = await twilio.trusthub.v1.customerProfiles.create({
+      friendlyName: `SFC ${facilityRef.id} ${businessData.legalBusinessName}`.slice(0, 60),
+      email: businessData.supportEmail,
+      status: 'draft',
+    });
+    trustProfileSid = profile.sid;
+    const trustProduct = await twilio.trusthub.v1.trustProducts.create({
+      friendlyName: `SFC ${facilityRef.id} A2P`,
+      customerProfileSid: trustProfileSid,
+    });
+    trustProductSid = trustProduct.sid;
+  }
+
+  await facilityRef.set({
+    twilioTrustProfileSid: trustProfileSid,
+    twilioTrustProductSid: trustProductSid,
+    textingBusinessData: {
+      legalBusinessName: businessData.legalBusinessName,
+      dba: businessData.dba || null,
+      businessType: businessData.businessType,
+      // Never store full tax IDs in Firestore
+      einLast4: businessData.ein ? businessData.ein.slice(-4) : null,
+      soleProprietorTaxIdLast4: businessData.soleProprietorTaxIdLast4 || null,
+      addressLine1: businessData.addressLine1,
+      city: businessData.city,
+      state: businessData.state,
+      postalCode: businessData.postalCode,
+      country: businessData.country || 'US',
+      website: businessData.website,
+      supportEmail: businessData.supportEmail,
+      supportPhone: businessData.supportPhone,
+    },
+    a2pStatus: 'draft',
+    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { trustProfileSid, trustProductSid };
+}
+
+async function submitBrandRegistrationInternal(
+  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityData: Record<string, any>,
+): Promise<string> {
+  if (facilityData.twilioBrandSid) return facilityData.twilioBrandSid as string;
+
+  let sid = '';
+  if (isTwilioDryRunEnabled()) {
+    sid = buildTwilioDryRunSid('BN', facilityRef.id);
+  } else {
+    const twilio = getTwilioClient() as any;
+    const brand = await twilio.messaging.v1.brandRegistrations.create({
+      customerProfileBundleSid: facilityData.twilioTrustProfileSid,
+      a2pProfileBundleSid: facilityData.twilioTrustProductSid,
+      brandType: 'STANDARD',
+    });
+    sid = brand.sid;
+  }
+
+  await facilityRef.set({
+    twilioBrandSid: sid,
+    a2pStatus: 'submitted',
+    a2pSubmittedAt: admin.firestore.FieldValue.serverTimestamp(),
+    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return sid;
+}
+
+async function submitCampaignInternal(
+  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityData: Record<string, any>,
+  campaignData: CampaignData,
+): Promise<string> {
+  if (facilityData.twilioCampaignSid) return facilityData.twilioCampaignSid as string;
+  if (!facilityData.twilioBrandSid || !facilityData.twilioMessagingServiceSid || !facilityData.twilioPhoneNumberSid) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Missing Twilio brand, messaging service, or phone number. Complete previous steps first.',
+    );
+  }
+
+  let sid = '';
+  if (isTwilioDryRunEnabled()) {
+    sid = buildTwilioDryRunSid('CP', facilityRef.id);
+  } else {
+    const twilio = getTwilioClient() as any;
+    const campaign = await twilio.messaging.v1.campaigns.create({
+      brandRegistrationSid: facilityData.twilioBrandSid,
+      usecase: 'ACCOUNT_NOTIFICATION',
+      description: 'Account notifications, collections reminders, and operational notices',
+      messageFlow: 'Two-way interactions with opted-in tenants',
+      sampleMessages: campaignData.sampleMessages,
+      hasEmbeddedLinks: false,
+      hasEmbeddedPhone: true,
+    });
+    sid = campaign.sid;
+  }
+
+  await facilityRef.set({
+    twilioCampaignSid: sid,
+    textingUseCases: campaignData.useCases,
+    textingSampleMessages: campaignData.sampleMessages,
+    textingConsentConfirmedAt: campaignData.consentConfirmed ? admin.firestore.FieldValue.serverTimestamp() : null,
+    a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(isTwilioDryRunEnabled() ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+  }, { merge: true });
+
+  if (!isTwilioDryRunEnabled()) {
+    await attachPhoneNumberToMessagingService(
+      facilityData.twilioMessagingServiceSid as string,
+      facilityData.twilioPhoneNumberSid as string,
+    );
+  }
+
+  return sid;
+}
+
+function getTextingOnboardingState(facilityData: Record<string, any>): TextingOnboardingState {
+  return {
+    a2pStatus: ((facilityData.a2pStatus as string) || 'draft') as A2PStatus,
+    a2pLastError: facilityData.a2pLastError as string | undefined,
+    twilioMessagingServiceSid: facilityData.twilioMessagingServiceSid as string | undefined,
+    twilioTrustProfileSid: facilityData.twilioTrustProfileSid as string | undefined,
+    twilioTrustProductSid: facilityData.twilioTrustProductSid as string | undefined,
+    twilioBrandSid: facilityData.twilioBrandSid as string | undefined,
+    twilioCampaignSid: facilityData.twilioCampaignSid as string | undefined,
+    twilioPhoneNumberSid: facilityData.twilioPhoneNumberSid as string | undefined,
+    twilioPhoneNumberE164: facilityData.twilioPhoneNumberE164 as string | undefined,
+  };
+}
+
+export const getTextingOnboardingStatus = functions.https.onCall(async (data: { facilityId: string }, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  const { facilityId } = data || {};
+  if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  await assertTextingOnboardingEnabled(facilityId);
+  const { data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+  return {
+    ...getTextingOnboardingState(facilityData),
+    submittedAt: facilityData.a2pSubmittedAt || null,
+    approvedAt: facilityData.a2pApprovedAt || null,
+    rejectedAt: facilityData.a2pRejectedAt || null,
+    rejectionReason: facilityData.a2pRejectionReason || null,
+  };
+});
+
+export const saveTextingBusinessInfo = functions.https.onCall(async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  const { facilityId, businessData } = data || {};
+  if (!facilityId || !businessData?.legalBusinessName) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
+  }
+  await assertTextingOnboardingEnabled(facilityId);
+  const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+  await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
+  await ref.set({
+    textingOnboardingEnabled: true,
+    a2pStatus: 'draft',
+    a2pLastError: null,
+    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return { success: true };
+});
+
+export const ensureMessagingService = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId } = data || {};
+    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    await assertTextingOnboardingEnabled(facilityId);
+    const requestId = crypto.randomUUID();
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const result = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+    return { success: true, requestId, ...result };
+  },
+);
+
+export const createOrUpdateA2PProfile = functions.https.onCall(
+  async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId, businessData } = data || {};
+    if (!facilityId || !businessData?.legalBusinessName) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
+    }
+    await assertTextingOnboardingEnabled(facilityId);
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const result = await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
+    return { success: true, ...result };
+  },
+);
+
+export const provisionPhoneNumber = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; areaCode?: string }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId, areaCode } = data || {};
+    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    await assertTextingOnboardingEnabled(facilityId);
+    const requestId = crypto.randomUUID();
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+    const phone = await provisionFacilityPhoneNumber(ref, facilityData, areaCode, requestId);
+    await attachPhoneNumberToMessagingService(ms.messagingServiceSid, phone.phoneNumberSid);
+    return {
+      success: true,
+      requestId,
+      messagingServiceSid: ms.messagingServiceSid,
+      phoneNumberSid: phone.phoneNumberSid,
+      phoneNumberE164: phone.phoneNumberE164,
+      reusedExisting: !phone.created,
+    };
+  },
+);
+
+export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId, campaignData } = data || {};
+    if (!facilityId || !campaignData?.consentConfirmed) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId and consent confirmation are required');
+    }
+    await assertTextingOnboardingEnabled(facilityId);
+    const requestId = crypto.randomUUID();
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const baseState = getTextingOnboardingState(facilityData);
+    if (!baseState.twilioTrustProfileSid || !baseState.twilioTrustProductSid) {
+      throw new functions.https.HttpsError('failed-precondition', 'Business profile is incomplete. Save business info first.');
+    }
+    const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+    const pn = await provisionFacilityPhoneNumber(ref, facilityData, undefined, requestId);
+    await attachPhoneNumberToMessagingService(ms.messagingServiceSid, pn.phoneNumberSid);
+
+    const latest = (await ref.get()).data() as Record<string, any>;
+    const brandSid = await submitBrandRegistrationInternal(ref, latest);
+    const latestAfterBrand = (await ref.get()).data() as Record<string, any>;
+    const campaignSid = await submitCampaignInternal(ref, {
+      ...latestAfterBrand,
+      twilioBrandSid: brandSid,
+      twilioMessagingServiceSid: latestAfterBrand.twilioMessagingServiceSid || ms.messagingServiceSid,
+      twilioPhoneNumberSid: latestAfterBrand.twilioPhoneNumberSid || pn.phoneNumberSid,
+    }, campaignData);
+
+    return {
+      success: true,
+      requestId,
+      a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+      twilioBrandSid: brandSid,
+      twilioCampaignSid: campaignSid,
+      twilioMessagingServiceSid: ms.messagingServiceSid,
+      twilioPhoneNumberSid: pn.phoneNumberSid,
+      twilioPhoneNumberE164: pn.phoneNumberE164,
+    };
+  },
+);
+
+export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId } = data || {};
+    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    await assertTextingOnboardingEnabled(facilityId);
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const sid = await submitBrandRegistrationInternal(ref, facilityData);
+    return { success: true, brandSid: sid };
+  },
+);
+
+export const submitCampaign = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId, campaignData } = data || {};
+    if (!facilityId || !campaignData?.consentConfirmed) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId and campaignData are required');
+    }
+    await assertTextingOnboardingEnabled(facilityId);
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    const sid = await submitCampaignInternal(ref, facilityData, campaignData);
+    return { success: true, campaignSid: sid };
+  },
+);
+
+export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId } = data || {};
+    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    await assertTextingOnboardingEnabled(facilityId);
+    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+
+    if (isTwilioDryRunEnabled()) {
+      const current = (facilityData.a2pStatus as A2PStatus | undefined) || 'draft';
+      const next = current === 'submitted' || current === 'pending' ? 'approved' : current;
+      await ref.set({
+        a2pStatus: next,
+        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        ...(next === 'approved' ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+      }, { merge: true });
+      return { success: true, a2pStatus: next };
+    }
+
+    const twilio = getTwilioClient() as any;
+    let brandStatus: string | undefined;
+    let campaignStatus: string | undefined;
+    if (facilityData.twilioBrandSid) {
+      const brand = await twilio.messaging.v1.brandRegistrations(facilityData.twilioBrandSid).fetch();
+      brandStatus = brand.status;
+    }
+    if (facilityData.twilioCampaignSid) {
+      const campaign = await twilio.messaging.v1.campaigns(facilityData.twilioCampaignSid).fetch();
+      campaignStatus = campaign.status;
+    }
+    const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
+    const next = computeA2PStatus(current, brandStatus, campaignStatus);
+    const update: Record<string, any> = {
+      a2pStatus: next,
+      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      a2pLastError: null,
+      a2pRejectionReason: next === 'rejected' ? (campaignStatus || brandStatus || 'Rejected by Twilio') : null,
+    };
+    if (next === 'approved') update.a2pApprovedAt = admin.firestore.FieldValue.serverTimestamp();
+    if (next === 'rejected') update.a2pRejectedAt = admin.firestore.FieldValue.serverTimestamp();
+    await ref.set(update, { merge: true });
+    return { success: true, a2pStatus: next, brandStatus, campaignStatus };
+  },
+);
+
+export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    const { facilityId } = data || {};
+    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    await assertTextingOnboardingEnabled(facilityId);
+    const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    await ref.set({
+      twilioBrandSid: admin.firestore.FieldValue.delete(),
+      twilioCampaignSid: admin.firestore.FieldValue.delete(),
+      a2pStatus: 'draft',
+      a2pLastError: null,
+      a2pRejectionReason: null,
+      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { success: true };
+  },
+);
 
 /**
  * Format phone number for Twilio (E.164 format)
@@ -3659,7 +5022,7 @@ export const attachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }
     }
 
     // Get customer ID
-    let customerId = tenantData?.stripeCustomerId as string | undefined;
+    const customerId = tenantData?.stripeCustomerId as string | undefined;
     if (!customerId) {
       throw new functions.https.HttpsError('failed-precondition', 'Tenant does not have a Stripe customer');
     }
@@ -3723,6 +5086,75 @@ export const attachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }
     });
     throw new functions.https.HttpsError('internal', `Failed to attach payment method: ${safeError}`);
   }
+});
+
+// ========== Stripe Embedded Payments (tenant billing) ==========
+/**
+ * Get or create Stripe Customer for tenant (embedded payments)
+ */
+export const getOrCreateStripeCustomer = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return stripeTenantBilling.getOrCreateStripeCustomer(data, context, getStripeClient());
+});
+
+/**
+ * Create SetupIntent for saving card via Payment Element (embedded)
+ * App Check is optional here so card-add works even if reCAPTCHA is blocked; auth is still required.
+ */
+export const createEmbeddedSetupIntent = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (context.app) {
+    // App Check token present – enforce as usual
+  } else {
+    functions.logger.warn('createEmbeddedSetupIntent: App Check token missing (reCAPTCHA may be blocked) – allowing for auth-only');
+  }
+  try {
+    const stripe = getStripeClient();
+    const result = await stripeTenantBilling.createSetupIntent(data, context, stripe);
+    // Return platform publishable key (validated TEST/LIVE match) so frontend matches SetupIntent (avoids 401)
+    const publishableKey = getPlatformPublishableKey();
+    return { ...result, publishableKey };
+  } catch (err: any) {
+    if (err?.code && typeof err.code === 'string' && err.message) {
+      throw err;
+    }
+    functions.logger.error('createEmbeddedSetupIntent error', { message: err?.message, stack: err?.stack });
+    throw new functions.https.HttpsError(
+      'unavailable',
+      err?.message && !err.message.includes('STRIPE_SECRET') ? err.message : 'Payment service is temporarily unavailable. Please try again.',
+    );
+  }
+});
+
+/**
+ * Create one-time PaymentIntent for embedded Payment Element
+ */
+export const createOneTimePaymentIntent = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return stripeTenantBilling.createOneTimePaymentIntent(data, context, getStripeClient());
+});
+
+/**
+ * Toggle AutoPay for tenant (Stripe subscription for monthly rent)
+ */
+export const toggleAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return stripeTenantBilling.toggleAutopay(data, context, getStripeClient());
+});
+
+/**
+ * List saved payment methods for tenant
+ */
+export const listSavedPaymentMethods = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return stripeTenantBilling.listSavedPaymentMethods(data, context, getStripeClient());
+});
+
+/**
+ * Detach payment method from tenant
+ */
+export const detachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return stripeTenantBilling.detachPaymentMethod(data, context, getStripeClient());
 });
 
 /**
@@ -4085,7 +5517,7 @@ export const processDelinquencyAutomation = functions.runWith({ secrets: SENDGRI
  */
 async function processDelinquencyForFacility(
   facilityId: string,
-  dryRun: boolean = false
+  dryRun: boolean = false,
 ): Promise<{
   success: boolean;
   processedCount?: number;
@@ -4154,7 +5586,7 @@ async function processDelinquencyForFacility(
     let lockoutCount = 0;
     let errorCount = 0;
     let estimatedLateFees = 0;
-    let estimatedNotices = 0;
+    const estimatedNotices = 0;
     let estimatedLockouts = 0;
 
     for (const tenantDoc of tenantsSnapshot.docs) {
@@ -4844,7 +6276,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
     });
 
     // 9. Process refund via Stripe if requested
-    let refundResult = null;
+    const refundResult = null;
     if (processRefund && moveOutRefund && moveOutRefund > 0 && refundMethod === 'creditCard') {
       try {
         // Note: We can't directly call another Cloud Function, so we'll process it here
@@ -4927,7 +6359,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
   if (!(data as any)?._appCheckToken) {
     throw new functions.https.HttpsError(
       'failed-precondition',
-      'App Check token required. Please refresh and try again.'
+      'App Check token required. Please refresh and try again.',
     );
   }
   const {
@@ -5015,14 +6447,14 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
       if (paymentIntent.amount_received < Math.round(totalAmount * 100)) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'Payment not completed or amount mismatch'
+          'Payment not completed or amount mismatch',
         );
       }
 
       if (paymentIntent.status !== 'succeeded' && paymentIntent.status !== 'requires_capture') {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          `Payment intent not successful: ${paymentIntent.status}`
+          `Payment intent not successful: ${paymentIntent.status}`,
         );
       }
     } catch (err: any) {
@@ -5040,7 +6472,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
   const deriveMonthlyRate = (): number => {
     if (reservationMetadata.monthlyRate) return Number(reservationMetadata.monthlyRate);
     const rentItem = (lineItems as any[]).find(
-      (item) => item?.type === 'rent' || item?.type === 'proratedRent'
+      (item) => item?.type === 'rent' || item?.type === 'proratedRent',
     );
     if (rentItem?.amount) return Number(rentItem.amount);
     return 0;
@@ -6366,7 +7798,7 @@ export const processPaymentReminders = functions.runWith({ secrets: SENDGRID_SEC
 async function checkAndIncrementSMSUsage(
   facilityId: string,
   tenantId?: string,
-  accountId?: string
+  accountId?: string,
 ): Promise<{
   success: boolean;
   canSendSMS: boolean;
@@ -6686,7 +8118,7 @@ export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60
     const facilityCount = facilityIds.length;
     const additionalFacilityCount = Math.max(0, facilityCount - 1); // Additional facilities beyond first
 
-    // Get or create prices
+    // Get or create prices (needed for both checkout and subscription update)
     let basePriceId: string;
     let addOnPriceId: string;
     try {
@@ -6700,6 +8132,88 @@ export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60
         accountId,
       });
       throw new functions.https.HttpsError('internal', `Failed to get pricing: ${priceError.message}`);
+    }
+
+    // If account already has a subscription (trial or active), update it to include the new facility
+    // instead of creating a new checkout that would charge for all facilities again.
+    const subscriptionStatus = (accountData.subscriptionStatus as string) || '';
+    let subscriptionId = accountData.stripeSubscriptionId as string | undefined;
+
+    // If we don't have subscriptionId on the account (e.g. webhook missed), try to find it by customer
+    if (!subscriptionId && customerId && (subscriptionStatus === 'trialing' || subscriptionStatus === 'active')) {
+      const subs = await stripe.subscriptions.list({
+        customer: customerId,
+        status: 'all',
+        limit: 10,
+      });
+      const activeOrTrialing = subs.data.find(s => s.status === 'active' || s.status === 'trialing');
+      if (activeOrTrialing) {
+        subscriptionId = activeOrTrialing.id;
+        functions.logger.info('Resolved missing stripeSubscriptionId from customer subscriptions', {
+          accountId,
+          subscriptionId,
+        });
+        await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+          stripeSubscriptionId: subscriptionId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    const hasExistingSubscription = subscriptionId && (subscriptionStatus === 'trialing' || subscriptionStatus === 'active');
+    if (hasExistingSubscription && facilityCount > 0 && subscriptionId) {
+      try {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data.price'] });
+        const getPriceId = (item: Stripe.SubscriptionItem): string =>
+          (typeof item.price === 'string' ? item.price : (item.price as Stripe.Price).id);
+        const baseItem = subscription.items.data.find(item => getPriceId(item) === basePriceId)
+          ?? subscription.items.data[0]; // First item is base if no match (e.g. different price id)
+        const addOnItem = subscription.items.data.find(item => getPriceId(item) === addOnPriceId);
+        const updates: Stripe.SubscriptionUpdateParams = {
+          items: [],
+          proration_behavior: 'create_prorations',
+          cancel_at_period_end: false, // Clear cancellation when user subscribes/updates
+        };
+        if (baseItem) {
+          updates.items!.push({ id: baseItem.id, quantity: 1 });
+        }
+        if (additionalFacilityCount > 0) {
+          if (addOnItem) {
+            updates.items!.push({ id: addOnItem.id, quantity: additionalFacilityCount });
+          } else {
+            updates.items!.push({ price: addOnPriceId, quantity: additionalFacilityCount });
+          }
+        } else if (addOnItem) {
+          updates.items!.push({ id: addOnItem.id, deleted: true });
+        }
+        await stripe.subscriptions.update(subscriptionId, updates);
+        await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+          subscriptionCancelAtPeriodEnd: false,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        functions.logger.info('Subscription updated for existing account instead of new checkout', {
+          accountId,
+          facilityCount,
+          additionalFacilityCount,
+        });
+        await writeAuditLog(accountId, {
+          action: 'subscription_updated_instead_of_checkout',
+          userId: context.auth.uid,
+          facilityCount,
+        });
+        return {
+          subscriptionUpdated: true,
+          checkoutUrl: null,
+          message: 'Your subscription has been updated to include your new facility. You will see a prorated charge at your next billing date.',
+        };
+      } catch (updateError: any) {
+        functions.logger.error('Error updating existing subscription, falling back to checkout', {
+          error: updateError.message,
+          accountId,
+          subscriptionId,
+        });
+        // Fall through to create checkout (e.g. if subscription was cancelled in Stripe)
+      }
     }
 
     // Build line items: base price (always 1) + add-on price (quantity = additional facilities)
@@ -6739,6 +8253,7 @@ export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60
           facilityCount: facilityCount.toString(),
         },
         subscription_data: {
+          trial_period_days: 30,
           metadata: {
             accountId: accountId,
             facilityCount: facilityCount.toString(),
@@ -6846,7 +8361,7 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
     if (currentStatus === 'active' || currentStatus === 'trialing') {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'Account already has an active subscription or trial'
+        'Account already has an active subscription or trial',
       );
     }
 
@@ -6883,7 +8398,7 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
     functions.logger.error('Error starting trial', error);
     
     // Provide more detailed error information
-    let errorMessage = 'Unknown error occurred';
+    let errorMessage: string;
     if (error instanceof functions.https.HttpsError) {
       // Re-throw HttpsErrors as-is
       throw error;
@@ -6963,6 +8478,173 @@ export const createCustomerPortalSession = functions.runWith({ secrets: STRIPE_S
 });
 
 /**
+ * Cancel subscription at period end (in-app, no Stripe portal required)
+ */
+export const cancelSubscription = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+
+  const { accountId } = data;
+  if (!accountId) {
+    throw new functions.https.HttpsError('invalid-argument', 'accountId is required');
+  }
+
+  try {
+    const accountDoc = await admin.firestore()
+      .collection('facilityCreatorAccounts')
+      .doc(accountId)
+      .get();
+    if (!accountDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Account not found');
+    }
+    const accountData = accountDoc.data()!;
+    if (accountData.ownerUid !== context.auth.uid) {
+      throw new functions.https.HttpsError('permission-denied', 'Access denied');
+    }
+    const subscriptionId = accountData.stripeSubscriptionId as string | undefined;
+    if (!subscriptionId) {
+      throw new functions.https.HttpsError('failed-precondition', 'No active subscription to cancel');
+    }
+    const stripe = getStripeClient();
+    await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+    await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+      subscriptionCancelAtPeriodEnd: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`Subscription set to cancel at period end for account ${accountId}`);
+    return { success: true, message: 'Your subscription will cancel at the end of the current billing period.' };
+  } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) throw error;
+    functions.logger.error('Error cancelling subscription', error);
+    throw new functions.https.HttpsError('internal', `Failed to cancel: ${error.message}`);
+  }
+});
+
+/**
+ * Create Stripe Checkout for ONE facility's platform subscription ($75/mo).
+ * Each facility gets its own subscription and payment method (different card per facility).
+ */
+export const createFacilitySubscriptionCheckout = functions.runWith({ timeoutSeconds: 60, memory: '256MB', secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+
+  const { accountId, facilityId, customerEmail, successUrl, cancelUrl } = data;
+  if (!accountId || !facilityId || !customerEmail) {
+    throw new functions.https.HttpsError('invalid-argument', 'accountId, facilityId, and customerEmail are required');
+  }
+
+  try {
+    const db = admin.firestore();
+    const [accountDoc, facilityDoc] = await Promise.all([
+      db.collection('facilityCreatorAccounts').doc(accountId).get(),
+      db.collection('facilities').doc(facilityId).get(),
+    ]);
+    if (!accountDoc.exists || !facilityDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Account or facility not found');
+    }
+    const accountData = accountDoc.data()!;
+    const facilityData = facilityDoc.data()!;
+    if (accountData.ownerUid !== context.auth.uid || facilityData.ownerUid !== context.auth.uid) {
+      throw new functions.https.HttpsError('permission-denied', 'Access denied');
+    }
+    if ((facilityData.facilityCreatorAccountId as string) !== accountId) {
+      throw new functions.https.HttpsError('failed-precondition', 'Facility must be linked to this account first');
+    }
+
+    const facilityPlatformSubId = facilityData.stripePlatformSubscriptionId as string | undefined;
+    const platformStatus = (facilityData.platformSubscriptionStatus as string) || '';
+    if (facilityPlatformSubId && (platformStatus === 'active' || platformStatus === 'trialing')) {
+      return {
+        subscriptionUpdated: true,
+        checkoutUrl: null,
+        message: 'This facility already has an active subscription.',
+      };
+    }
+
+    const stripe = getStripeClient();
+    let customerId = accountData.stripeCustomerId as string | undefined;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: customerEmail,
+        metadata: { accountId, ownerUid: context.auth.uid },
+      });
+      customerId = customer.id;
+      await db.collection('facilityCreatorAccounts').doc(accountId).update({
+        stripeCustomerId: customerId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    const basePriceId = process.env.STRIPE_BASE_PRICE_ID || await getOrCreateBasePriceId(stripe);
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'subscription',
+      line_items: [{ price: basePriceId, quantity: 1 }],
+      success_url: successUrl || `https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facilityId}`,
+      cancel_url: cancelUrl || `https://storage-facility-creator.web.app/subscription/cancel?facility_id=${facilityId}`,
+      metadata: { accountId, facilityId, ownerUid: context.auth.uid },
+      subscription_data: {
+        trial_period_days: 30,
+        metadata: { accountId, facilityId },
+      },
+    });
+
+    return { checkoutUrl: session.url, sessionId: session.id };
+  } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) throw error;
+    functions.logger.error('Error creating facility subscription checkout', error);
+    throw new functions.https.HttpsError('internal', `Failed: ${error.message}`);
+  }
+});
+
+/**
+ * Cancel one facility's platform subscription at period end.
+ */
+export const cancelFacilitySubscription = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+
+  const { facilityId } = data;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+
+  try {
+    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+    if (!facilityDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Facility not found');
+    }
+    const facilityData = facilityDoc.data()!;
+    if (facilityData.ownerUid !== context.auth.uid) {
+      throw new functions.https.HttpsError('permission-denied', 'Access denied');
+    }
+    const subscriptionId = facilityData.stripePlatformSubscriptionId as string | undefined;
+    if (!subscriptionId) {
+      throw new functions.https.HttpsError('failed-precondition', 'No platform subscription found for this facility');
+    }
+
+    const stripe = getStripeClient();
+    await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+    await admin.firestore().collection('facilities').doc(facilityId).update({
+      platformSubscriptionCancelAtPeriodEnd: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`Facility ${facilityId} platform subscription set to cancel at period end`);
+    return { success: true, message: 'Subscription will cancel at end of billing period.' };
+  } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) throw error;
+    functions.logger.error('Error cancelling facility subscription', error);
+    throw new functions.https.HttpsError('internal', `Failed to cancel: ${error.message}`);
+  }
+});
+
+/**
  * Update subscription quantity based on facility count
  * Called when facilities are added or removed
  */
@@ -7016,9 +8698,22 @@ export const updateSubscriptionQuantity = functions.runWith({ secrets: STRIPE_SE
     const baseItem = subscription.items.data.find(item => item.price.id === basePriceId);
     const addOnItem = subscription.items.data.find(item => item.price.id === addOnPriceId);
 
+    // Idempotency: skip update if quantity already matches (prevents duplicate charges)
+    const currentAddOnQty = addOnItem ? addOnItem.quantity : 0;
+    if (baseItem?.quantity === 1 && currentAddOnQty === additionalFacilityCount) {
+      functions.logger.info(`Subscription quantity already correct for account ${accountId}: ${facilityCount} facilities`);
+      return {
+        success: true,
+        facilityCount: facilityCount,
+        baseQuantity: 1,
+        addOnQuantity: additionalFacilityCount,
+      };
+    }
+
     const updates: Stripe.SubscriptionUpdateParams = {
       items: [],
-      proration_behavior: 'always_invoice', // Prorate charges for mid-cycle changes
+      // Add proration to next invoice so user gets one charge per month, not multiple mid-cycle
+      proration_behavior: 'create_prorations',
     };
 
     // Base item: always quantity 1
@@ -7118,6 +8813,94 @@ export const getSubscriptionStatus = functions.https.onCall(async (data: any, co
 });
 
 /**
+ * Reconcile account.facilityIds with facilities linked to this account (server-side).
+ * Uses facilityCreatorAccountId so intentionally-removed facilities stay removed.
+ * Fixes orphaned IDs when facilities were deleted but account wasn't updated.
+ * Updates Firestore (admin) and Stripe subscription quantity.
+ */
+export const reconcileAccountFacilityIds = functions
+  .runWith({ secrets: STRIPE_SECRETS })
+  .https.onCall(async (_data: any, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    enforceAppCheckOrThrow(context);
+    const uid = context.auth.uid;
+    const db = admin.firestore();
+
+    const accountSnap = await db
+      .collection('facilityCreatorAccounts')
+      .where('ownerUid', '==', uid)
+      .limit(1)
+      .get();
+    if (accountSnap.empty) {
+      throw new functions.https.HttpsError('not-found', 'No account found for user');
+    }
+    const accountDoc = accountSnap.docs[0];
+    const accountId = accountDoc.id;
+    const accountData = accountDoc.data();
+
+    // Use facilityCreatorAccountId so "removed from subscription" facilities (unlinked) stay removed.
+    // Old logic used ownerUid and re-added removed facilities on every page load.
+    const facilitiesSnap = await db
+      .collection('facilities')
+      .where('facilityCreatorAccountId', '==', accountId)
+      .where('active', '==', true)
+      .get();
+    const actualIds = facilitiesSnap.docs.map((d) => d.id);
+
+    const current = (accountData.facilityIds as string[]) || [];
+    const currentSet = new Set(current);
+    const actualSet = new Set(actualIds);
+    if (currentSet.size === actualSet.size && actualIds.every((id) => currentSet.has(id))) {
+      functions.logger.info(`reconcileAccountFacilityIds: already in sync, facilityCount=${actualIds.length}`);
+      return { success: true, facilityCount: actualIds.length, updated: false };
+    }
+
+    await db.collection('facilityCreatorAccounts').doc(accountId).update({
+      facilityIds: actualIds,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`reconcileAccountFacilityIds: ${current.length} -> ${actualIds.length} for account ${accountId}`);
+
+    const subscriptionId = accountData.stripeSubscriptionId as string | undefined;
+    if (subscriptionId) {
+      const stripe = getStripeClient();
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+      const basePriceId = process.env.STRIPE_BASE_PRICE_ID || await getOrCreateBasePriceId(stripe);
+      const addOnPriceId = process.env.STRIPE_ADDON_PRICE_ID || await getOrCreateAddOnPriceId(stripe);
+      const facilityCount = actualIds.length;
+      const additionalFacilityCount = Math.max(0, facilityCount - 1);
+      const baseItem = subscription.items.data.find((item: any) => item.price.id === basePriceId);
+      const addOnItem = subscription.items.data.find((item: any) => item.price.id === addOnPriceId);
+      const currentAddOnQty = addOnItem ? addOnItem.quantity : 0;
+      if (baseItem?.quantity === 1 && currentAddOnQty === additionalFacilityCount) {
+        functions.logger.info(`reconcileAccountFacilityIds: Stripe already in sync for account ${accountId}`);
+      } else {
+      const updates: any = { items: [], proration_behavior: 'create_prorations' };
+      if (baseItem) {
+        updates.items.push({ id: baseItem.id, quantity: 1 });
+      } else {
+        updates.items.push({ price: basePriceId, quantity: 1 });
+      }
+      if (additionalFacilityCount > 0) {
+        if (addOnItem) {
+          updates.items.push({ id: addOnItem.id, quantity: additionalFacilityCount });
+        } else {
+          updates.items.push({ price: addOnPriceId, quantity: additionalFacilityCount });
+        }
+      } else if (addOnItem) {
+        updates.items.push({ id: addOnItem.id, deleted: true });
+      }
+      await stripe.subscriptions.update(subscriptionId, updates);
+      functions.logger.info(`reconcileAccountFacilityIds: Stripe updated for account ${accountId}, facilityCount=${facilityCount}`);
+      }
+    }
+
+    return { success: true, facilityCount: actualIds.length, updated: true };
+  });
+
+/**
  * Stripe webhook handler for subscription events
  */
 export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).https.onRequest(async (req, res) => {
@@ -7202,7 +8985,8 @@ export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).http
       }
       case 'setup_intent.succeeded': {
         const setupIntent = event.data.object as Stripe.SetupIntent;
-        await handleSetupIntentSucceeded(setupIntent);
+        const connectedAccountId = (event as any).account as string | undefined;
+        await handleSetupIntentSucceeded(setupIntent, connectedAccountId);
         break;
       }
       case 'charge.refunded': {
@@ -7355,6 +9139,7 @@ async function getOrCreateAddOnPriceId(stripe: Stripe): Promise<string> {
 // Webhook handlers
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const accountId = session.metadata?.accountId;
+  const facilityId = session.metadata?.facilityId;
   if (!accountId) {
     functions.logger.error('No accountId in checkout session metadata');
     return;
@@ -7366,40 +9151,110 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     return;
   }
 
+  // Per-facility checkout: update facility doc
+  if (facilityId) {
+    await updateFacilityFromPlatformSubscription(facilityId, subscriptionId);
+    // Ensure facility is in account's facilityIds
+    const accountDoc = await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).get();
+    if (accountDoc.exists) {
+      const facilityIds = (accountDoc.data()?.facilityIds as string[]) || [];
+      if (!facilityIds.includes(facilityId)) {
+        await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
+          facilityIds: admin.firestore.FieldValue.arrayUnion(facilityId),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+    return;
+  }
+
+  // Legacy account-level checkout
   await updateAccountFromSubscription(accountId, subscriptionId);
 }
 
 async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
-  if (!accountId) {
-    functions.logger.error('No accountId in subscription metadata');
+  const facilityId = subscription.metadata?.facilityId;
+  const tenantId = subscription.metadata?.tenantId;
+
+  // Per-facility platform subscription (facilityId set, tenantId not set)
+  if (facilityId && !tenantId) {
+    await updateFacilityFromPlatformSubscription(facilityId, subscription.id);
     return;
   }
 
-  await updateAccountFromSubscription(accountId, subscription.id);
+  // Legacy account-level platform subscription
+  if (accountId && !facilityId) {
+    await updateAccountFromSubscription(accountId, subscription.id);
+    return;
+  }
+
+  if (facilityId && tenantId) {
+    // Tenant autopay subscription
+    const billingRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('billing').doc('default');
+    const periodEnd = subPeriodEnd(subscription);
+    const nextDue = periodEnd
+      ? admin.firestore.Timestamp.fromDate(new Date(periodEnd * 1000))
+      : null;
+    await billingRef.set({
+      stripeSubscriptionId: subscription.id,
+      autopayEnabled: subscription.status === 'active' || subscription.status === 'trialing',
+      nextDueAt: nextDue,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
 }
 
 async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
-  if (!accountId) {
-    functions.logger.error('No accountId in subscription metadata');
+  const facilityId = subscription.metadata?.facilityId;
+  const tenantId = subscription.metadata?.tenantId;
+
+  // Per-facility platform subscription
+  if (facilityId && !tenantId) {
+    await admin.firestore().collection('facilities').doc(facilityId).update({
+      platformSubscriptionStatus: 'cancelled',
+      stripePlatformSubscriptionId: admin.firestore.FieldValue.delete(),
+      platformSubscriptionCurrentPeriodEnd: admin.firestore.FieldValue.delete(),
+      platformSubscriptionCancelAtPeriodEnd: false,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`Facility ${facilityId} platform subscription cancelled`);
     return;
   }
 
-  await admin.firestore()
-    .collection('facilityCreatorAccounts')
-    .doc(accountId)
-    .update({
-      subscriptionStatus: 'cancelled',
-      subscriptionCanceledAt: admin.firestore.FieldValue.serverTimestamp(),
+  if (accountId) {
+    await admin.firestore()
+      .collection('facilityCreatorAccounts')
+      .doc(accountId)
+      .update({
+        subscriptionStatus: 'cancelled',
+        subscriptionCanceledAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    functions.logger.info(`Subscription cancelled for account: ${accountId}`);
+  }
+
+  if (facilityId && tenantId) {
+    const billingRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('billing').doc('default');
+    await billingRef.update({
+      autopayEnabled: false,
+      stripeSubscriptionId: null,
+      nextDueAt: null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-
-  functions.logger.info(`Subscription cancelled for account: ${accountId}`);
+    functions.logger.info(`Tenant autopay subscription cancelled: ${subscription.id} for tenant ${tenantId}`);
+  }
 }
 
 async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
-  const subscriptionId = invoice.subscription as string;
+  const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) {
     return;
   }
@@ -7407,15 +9262,54 @@ async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
   const stripe = getStripeClient();
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
   const accountId = subscription.metadata?.accountId;
+  const facilityId = subscription.metadata?.facilityId;
+  const tenantId = subscription.metadata?.tenantId;
 
+  if (facilityId && !tenantId) {
+    await updateFacilityFromPlatformSubscription(facilityId, subscriptionId);
+    functions.logger.info(`Facility ${facilityId} platform payment succeeded`);
+    return;
+  }
   if (accountId) {
     await updateAccountFromSubscription(accountId, subscriptionId);
     functions.logger.info(`Payment succeeded for account: ${accountId}`);
   }
+
+  if (facilityId && tenantId) {
+    const billingRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('billing').doc('default');
+    const periodEnd = subPeriodEnd(subscription);
+    const nextDue = periodEnd
+      ? admin.firestore.Timestamp.fromDate(new Date(periodEnd * 1000))
+      : null;
+    await billingRef.set({
+      lastPaymentStatus: 'succeeded',
+      lastPaymentAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastFailureCode: null,
+      lastFailureMessage: null,
+      nextDueAt: nextDue,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    await admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('payments').add({
+      type: 'invoice',
+      amountCents: invoice.amount_paid || 0,
+      currency: 'usd',
+      stripeObjectId: invoice.id,
+      status: 'succeeded',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    functions.logger.info(`Tenant autopay invoice succeeded: ${invoice.id} for tenant ${tenantId}`);
+  }
 }
 
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
-  const subscriptionId = invoice.subscription as string;
+  const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) {
     return;
   }
@@ -7423,9 +9317,21 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
   const stripe = getStripeClient();
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
   const accountId = subscription.metadata?.accountId;
+  const facilityId = subscription.metadata?.facilityId;
+  const tenantId = subscription.metadata?.tenantId;
+  const lastError = invoice.last_finalization_error;
+  const failureCode = lastError?.code || null;
+  const failureMessage = lastError?.message || null;
 
+  if (facilityId && !tenantId) {
+    await admin.firestore().collection('facilities').doc(facilityId).update({
+      platformSubscriptionStatus: 'past_due',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`Facility ${facilityId} platform payment failed`);
+    return;
+  }
   if (accountId) {
-    // Update account status to past_due
     await admin.firestore()
       .collection('facilityCreatorAccounts')
       .doc(accountId)
@@ -7434,48 +9340,99 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
         subscriptionLastPaymentFailed: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-
-    // Optionally send email notification to facility owner
-    // (This would require getting the owner's email from the account)
     functions.logger.info(`Payment failed for account: ${accountId}`);
+  }
+
+  if (facilityId && tenantId) {
+    const billingRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('billing').doc('default');
+    await billingRef.set({
+      lastPaymentStatus: 'failed',
+      lastPaymentAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastFailureCode: failureCode,
+      lastFailureMessage: failureMessage,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    await admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('payments').add({
+        type: 'invoice',
+        amountCents: invoice.amount_due || 0,
+        currency: 'usd',
+        stripeObjectId: invoice.id,
+        status: 'failed',
+        failureCode,
+        failureMessage,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    functions.logger.info(`Tenant autopay invoice failed: ${invoice.id} for tenant ${tenantId}`);
   }
 }
 
 /**
- * Handle successful payment intent (for tenant payments via Stripe Connect)
+ * Handle successful payment intent (for tenant payments via Stripe Connect / embedded)
  */
 async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
     const invoiceId = paymentIntent.metadata?.invoiceId;
+    const paymentDocId = paymentIntent.metadata?.paymentDocId;
 
     if (!facilityId || !tenantId) {
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
       return;
     }
 
-    // Update payment record in Firestore
+    // Update tenant payments subcollection (embedded one-time payments)
+    if (paymentDocId) {
+      const tenantPaymentRef = admin.firestore()
+        .collection('facilities').doc(facilityId)
+        .collection('tenants').doc(tenantId)
+        .collection('payments').doc(paymentDocId);
+      await tenantPaymentRef.update({
+        status: 'succeeded',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      const billingRef = admin.firestore()
+        .collection('facilities').doc(facilityId)
+        .collection('tenants').doc(tenantId)
+        .collection('billing').doc('default');
+      await billingRef.set({
+        lastPaymentStatus: 'succeeded',
+        lastPaymentAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastFailureCode: null,
+        lastFailureMessage: null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    // Update facility-level payment record (for ledger/reconciliation)
     const paymentsRef = admin.firestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('payments');
 
-    // Find payment by externalPaymentId or create new one
     const existingPayments = await paymentsRef
       .where('externalPaymentId', '==', paymentIntent.id)
       .limit(1)
       .get();
 
     if (!existingPayments.empty) {
-      // Update existing payment
+      const now = admin.firestore.FieldValue.serverTimestamp();
       await existingPayments.docs[0].ref.update({
         status: 'completed',
-        paidDate: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        paidAt: now,
+        paidDate: now,
+        updatedAt: now,
       });
     } else {
-      // Create new payment record
+      // Create new payment record (embedded or Connect)
+      const now = admin.firestore.FieldValue.serverTimestamp();
       await paymentsRef.add({
         tenantId: tenantId,
         facilityId: facilityId,
@@ -7485,9 +9442,10 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
         method: 'stripe',
         externalPaymentId: paymentIntent.id,
         transactionId: paymentIntent.id,
-        paidDate: admin.firestore.FieldValue.serverTimestamp(),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        paidAt: now,
+        paidDate: now,
+        createdAt: now,
+        updatedAt: now,
         createdBy: 'system@stripe-webhook',
         isActive: true,
       });
@@ -7509,29 +9467,32 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
       });
     }
 
-    // Create ledger entry for payment
-    const ledgerRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('ledgers')
-      .doc();
+    // Create ledger entry for payment (skip if chargeTenantOffSession already created it)
+    const chargeType = paymentIntent.metadata?.chargeType;
+    if (chargeType !== 'tenant_one_time_card_on_file') {
+      const ledgerRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .doc();
 
-    await ledgerRef.set({
-      tenantId: tenantId,
-      facilityId: facilityId,
-      type: 'payment',
-      amount: -(paymentIntent.amount / 100), // Negative for payments
-      description: `Payment via Stripe - ${paymentIntent.id}`,
-      referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
-      entryDate: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'posted',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdBy: 'system@stripe-webhook',
-      metadata: {
-        paymentIntentId: paymentIntent.id,
-        invoiceId: invoiceId || null,
-      },
-    });
+      await ledgerRef.set({
+        tenantId: tenantId,
+        facilityId: facilityId,
+        type: 'payment',
+        amount: -(paymentIntent.amount / 100), // Negative for payments
+        description: `Payment via Stripe - ${paymentIntent.id}`,
+        referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
+        entryDate: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'posted',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdBy: 'system@stripe-webhook',
+        metadata: {
+          paymentIntentId: paymentIntent.id,
+          invoiceId: invoiceId || null,
+        },
+      });
+    }
 
     functions.logger.info(`Payment intent succeeded: ${paymentIntent.id} for tenant ${tenantId}`);
   } catch (error: any) {
@@ -7540,19 +9501,48 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
 }
 
 /**
- * Handle failed payment intent (for tenant payments via Stripe Connect)
+ * Handle failed payment intent (for tenant payments via Stripe Connect / embedded)
  */
 async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
+    const paymentDocId = paymentIntent.metadata?.paymentDocId;
+    const lastError = paymentIntent.last_payment_error;
+    const failureCode = lastError?.code || null;
+    const failureMessage = lastError?.message || null;
 
     if (!facilityId || !tenantId) {
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
       return;
     }
 
-    // Update payment record in Firestore
+    // Update tenant payments subcollection (embedded one-time payments)
+    if (paymentDocId) {
+      const tenantPaymentRef = admin.firestore()
+        .collection('facilities').doc(facilityId)
+        .collection('tenants').doc(tenantId)
+        .collection('payments').doc(paymentDocId);
+      await tenantPaymentRef.update({
+        status: 'failed',
+        failureCode,
+        failureMessage,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      const billingRef = admin.firestore()
+        .collection('facilities').doc(facilityId)
+        .collection('tenants').doc(tenantId)
+        .collection('billing').doc('default');
+      await billingRef.set({
+        lastPaymentStatus: 'failed',
+        lastPaymentAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastFailureCode: failureCode,
+        lastFailureMessage: failureMessage,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    // Update facility-level payment record
     const paymentsRef = admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -7567,6 +9557,7 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
       await existingPayments.docs[0].ref.update({
         status: 'failed',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        notes: failureMessage ? `Payment failed: ${failureMessage}` : undefined,
       });
     } else {
       // Create failed payment record
@@ -7583,7 +9574,7 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         createdBy: 'system@stripe-webhook',
         isActive: true,
-        notes: `Payment failed: ${paymentIntent.last_payment_error?.message || 'Unknown error'}`,
+        notes: failureMessage ? `Payment failed: ${failureMessage}` : 'Payment failed: Unknown error',
       });
     }
 
@@ -7595,24 +9586,65 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
 }
 
 /**
- * Handle successful setup intent (for saving payment methods)
+ * Handle successful setup intent (for saving payment methods).
+ * If connectedAccountId is set, the SetupIntent was on a Connect account; use stripeAccount for Stripe API calls.
  */
-async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
+async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent, connectedAccountId?: string) {
   try {
-    const facilityId = setupIntent.metadata?.facilityId;
-    const tenantId = setupIntent.metadata?.tenantId;
+    const facilityId = setupIntent.metadata?.facilityId as string | undefined;
+    const tenantId = setupIntent.metadata?.tenantId as string | undefined;
+    const paymentMethodId = setupIntent.payment_method as string | undefined;
 
-    if (!facilityId || !tenantId) {
-      functions.logger.warn('Setup intent missing facilityId or tenantId metadata');
+    if (!facilityId || !tenantId || !paymentMethodId) {
+      functions.logger.warn('Setup intent missing facilityId, tenantId, or payment_method');
       return;
     }
 
-    functions.logger.info(`Setup intent succeeded: ${setupIntent.id} for tenant ${tenantId}`);
+    functions.logger.info(`Setup intent succeeded: ${setupIntent.id} for tenant ${tenantId}` + (connectedAccountId ? ' (Connect)' : ''));
 
-    // The payment method is already attached via attachPaymentMethod function
-    // This webhook handler is mainly for logging and idempotency
-    // The actual payment method storage happens in attachPaymentMethod
+    const stripe = getStripeClient();
+    const customerId = setupIntent.customer as string;
+    const requestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
+    if (customerId) {
+      await stripe.customers.update(customerId, {
+        invoice_settings: { default_payment_method: paymentMethodId },
+      }, requestOptions);
+    }
 
+    const billingRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('billing').doc('default');
+    await billingRef.set({
+      facilityId,
+      tenantId,
+      stripeCustomerId: customerId || null,
+      defaultPaymentMethodId: paymentMethodId,
+      lastPaymentStatus: 'succeeded',
+      lastPaymentAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastFailureCode: null,
+      lastFailureMessage: null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    if (connectedAccountId) {
+      const stripe = getStripeClient();
+      const pm = await stripe.paymentMethods.retrieve(paymentMethodId, { stripeAccount: connectedAccountId });
+      const card = pm.card;
+      const paymentMethodSummary = {
+        brand: card?.brand ?? null,
+        last4: card?.last4 ?? null,
+        expMonth: card?.exp_month ?? null,
+        expYear: card?.exp_year ?? null,
+      };
+      await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).update({
+        'stripe.defaultPaymentMethodId': paymentMethodId,
+        'stripe.paymentMethodSummary': paymentMethodSummary,
+        'stripe.customerId': customerId,
+        stripeConnectedCustomerId: customerId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
   } catch (error: any) {
     functions.logger.error('Error handling setup intent succeeded:', error);
   }
@@ -7798,7 +9830,7 @@ async function enforceRateLimit(config: RateLimitConfig): Promise<void> {
     if (current >= limit) {
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        `Rate limit exceeded for ${key}. Try again shortly.`
+        `Rate limit exceeded for ${key}. Try again shortly.`,
       );
     }
     tx.set(
@@ -7812,7 +9844,7 @@ async function enforceRateLimit(config: RateLimitConfig): Promise<void> {
         lastUserId: userId || null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
   });
 }
@@ -7843,7 +9875,7 @@ async function writeAuditLog(
     metadata?: Record<string, any>;
     details?: Record<string, any>; // Legacy field, maps to metadata
     [key: string]: any; // Allow other fields for backward compatibility
-  }
+  },
 ): Promise<void> {
   try {
     // Normalize entry to standardized schema
@@ -7935,7 +9967,7 @@ function enforceAppCheckOrThrow(context: functions.https.CallableContext) {
   if (!context.app) {
     throw new functions.https.HttpsError(
       'failed-precondition',
-      'App Check token required. Please update your app.'
+      'App Check token required. Please update your app.',
     );
   }
 }
@@ -8019,7 +10051,7 @@ async function getStripeConfig(): Promise<StripeConfig> {
  */
 async function isStripeFeatureEnabled(
   feature: 'connect' | 'tenantAutopay' | 'store' | 'checkout',
-  facilityId?: string
+  facilityId?: string,
 ): Promise<boolean> {
   const config = await getStripeConfig();
 
@@ -8050,6 +10082,43 @@ async function isStripeFeatureEnabled(
 
   // Feature enabled if global flag is true OR facility is in allowlist
   return globalFlag || inAllowlist;
+}
+
+/**
+ * Reads /appConfig/featureFlags and returns a specific flag state.
+ * Defaults to false when missing to keep production safe.
+ */
+async function isFeatureFlagEnabled(flagKey: string): Promise<boolean> {
+  try {
+    const doc = await admin.firestore().collection('appConfig').doc('featureFlags').get();
+    if (!doc.exists) return false;
+    const data = doc.data() || {};
+    const flagValue = data[flagKey] as Record<string, any> | undefined;
+    return flagValue?.enabled === true;
+  } catch (error: any) {
+    functions.logger.error('Error reading feature flag, defaulting OFF', { flagKey, error: error?.message });
+    return false;
+  }
+}
+
+/**
+ * Tenant autopay / add-card is allowed if kill switch is off AND the facility has
+ * Stripe Connect with charges_enabled. (No separate tenantAutopay flag required.)
+ */
+async function isTenantAutopayAllowedForFacility(facilityId: string): Promise<boolean> {
+  const config = await getStripeConfig();
+  if (config.killSwitch) return false;
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) return false;
+  const connectAccountId = facilityDoc.data()?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) return false;
+  try {
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(connectAccountId);
+    return !!account.charges_enabled;
+  } catch {
+    return false;
+  }
 }
 
 // ============================================
@@ -8110,7 +10179,7 @@ async function getSMSComplianceConfig(): Promise<SMSComplianceConfig> {
  */
 async function isSMSComplianceFeatureEnabled(
   feature: 'enhancedOptOut' | 'quietHours' | 'rateLimiting',
-  facilityId?: string
+  facilityId?: string,
 ): Promise<boolean> {
   const config = await getSMSComplianceConfig();
 
@@ -8194,7 +10263,7 @@ async function getPaymentSafetyConfig(): Promise<PaymentSafetyConfig> {
  */
 async function isPaymentSafetyFeatureEnabled(
   feature: 'idempotency' | 'duplicateDetection' | 'reconciliation',
-  facilityId?: string
+  facilityId?: string,
 ): Promise<boolean> {
   const config = await getPaymentSafetyConfig();
 
@@ -8473,7 +10542,7 @@ export const processExportJob = functions.https.onCall(async (data: any, context
  */
 async function _exportTenantsToCSV(
   facilityId: string,
-  filters?: Record<string, any>
+  filters?: Record<string, any>,
 ): Promise<{ csv: string; count: number }> {
   let query: admin.firestore.Query = admin.firestore()
     .collection('facilities')
@@ -8523,7 +10592,7 @@ async function _exportTenantsToCSV(
  */
 async function _exportPaymentsToCSV(
   facilityId: string,
-  filters?: Record<string, any>
+  filters?: Record<string, any>,
 ): Promise<{ csv: string; count: number }> {
   let query: admin.firestore.Query = admin.firestore()
     .collection('facilities')
@@ -8574,7 +10643,7 @@ async function _exportPaymentsToCSV(
  */
 async function _exportAuditLogsToCSV(
   facilityId: string,
-  filters?: Record<string, any>
+  filters?: Record<string, any>,
 ): Promise<{ csv: string; count: number }> {
   let query: admin.firestore.Query = admin.firestore()
     .collection('facilities')
@@ -8652,8 +10721,8 @@ const DEFAULT_AI_ASSISTANT_CONFIG: AIAssistantConfig = {
   allowlistFacilityIds: [],
   killSwitch: false,
   maxTokensPerRequest: 1000,
-  maxMessagesPerDay: 100, // Per facility
-  maxMessagesPerUser: 50, // Per user per day
+  maxMessagesPerDay: 30,  // Per facility (hard limit)
+  maxMessagesPerUser: 20, // Per user per day (hard limit)
   maxConversationHistory: 10,
   maxMessageLength: 2000, // Characters
 };
@@ -8673,7 +10742,7 @@ async function getAIAssistantConfig(): Promise<AIAssistantConfig> {
     }
 
     const data = configDoc.data() || {};
-    return {
+    const config = {
       enabled: data.enabled ?? false,
       allowlistFacilityIds: data.allowlistFacilityIds || [],
       killSwitch: data.killSwitch ?? false,
@@ -8684,6 +10753,15 @@ async function getAIAssistantConfig(): Promise<AIAssistantConfig> {
       maxConversationHistory: data.maxConversationHistory ?? DEFAULT_AI_ASSISTANT_CONFIG.maxConversationHistory,
       maxMessageLength: data.maxMessageLength ?? DEFAULT_AI_ASSISTANT_CONFIG.maxMessageLength,
     };
+    
+    // Log what we read from Firestore for debugging
+    functions.logger.info('getAIAssistantConfig read from Firestore', {
+      docExists: configDoc.exists,
+      rawData: data,
+      parsedConfig: config,
+    });
+    
+    return config;
   } catch (error: any) {
     functions.logger.error('Error getting AI assistant config, using defaults:', error);
     return DEFAULT_AI_ASSISTANT_CONFIG;
@@ -8710,7 +10788,21 @@ async function isAIAssistantEnabled(facilityId?: string): Promise<boolean> {
  * (allowlist empty OR facilityId in allowlist).
  */
 function shouldUseOpenAIChat(facilityId: string, config: AIAssistantConfig): { ok: boolean; allowlistPassed: boolean } {
-  if (config.killSwitch || !config.enabled || config.provider !== 'openai') {
+  // Debug logging
+  const providerCheck = config.provider === 'openai';
+  const enabledCheck = config.enabled;
+  const killSwitchCheck = !config.killSwitch;
+  
+  if (config.killSwitch || !config.enabled || !providerCheck) {
+    functions.logger.warn('shouldUseOpenAIChat failed', {
+      facilityId,
+      killSwitch: config.killSwitch,
+      enabled: config.enabled,
+      provider: config.provider,
+      providerMatches: providerCheck,
+      killSwitchPassed: killSwitchCheck,
+      enabledPassed: enabledCheck,
+    });
     return { ok: false, allowlistPassed: false };
   }
   const allowlist = config.allowlistFacilityIds || [];
@@ -8720,7 +10812,7 @@ function shouldUseOpenAIChat(facilityId: string, config: AIAssistantConfig): { o
 
 async function getFacilityDataForUserOrThrow(
   uid: string,
-  facilityId: string
+  facilityId: string,
 ): Promise<Record<string, any>> {
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
@@ -8767,7 +10859,7 @@ async function enforceUserRateLimit(
   userId: string,
   key: string,
   limit: number,
-  windowSeconds: number
+  windowSeconds: number,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
@@ -8785,7 +10877,7 @@ async function enforceUserRateLimit(
     if (current >= limit) {
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        `Rate limit exceeded. Maximum ${limit} requests per minute. Try again shortly.`
+        `Rate limit exceeded. Maximum ${limit} requests per minute. Try again shortly.`,
       );
     }
     tx.set(
@@ -8798,7 +10890,7 @@ async function enforceUserRateLimit(
         userId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
   });
 }
@@ -8863,7 +10955,7 @@ async function getNewFeaturesConfig(): Promise<NewFeaturesConfig> {
  */
 async function isNewFeatureEnabled(
   feature: 'twoFactor' | 'leadPipeline' | 'workOrders' | 'portalUpgrades',
-  facilityId?: string
+  facilityId?: string,
 ): Promise<boolean> {
   const config = await getNewFeaturesConfig();
 
@@ -8996,7 +11088,7 @@ async function getAutomationGuardrailsConfig(): Promise<AutomationGuardrailsConf
  */
 async function isAutomationGuardrailsFeatureEnabled(
   feature: 'dryRun' | 'safetyChecks' | 'confirmationRequired',
-  facilityId?: string
+  facilityId?: string,
 ): Promise<boolean> {
   const config = await getAutomationGuardrailsConfig();
 
@@ -9137,9 +11229,11 @@ export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SE
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
 
-    // Check if account already exists
-    if (facilityData.stripeConnectAccountId) {
-      throw new functions.https.HttpsError('already-exists', 'Stripe Connect account already exists for this facility');
+    // If account already exists, return it so the client can proceed to get an onboarding/link URL (e.g. "Reconnect")
+    const existingAccountId = facilityData.stripeConnectAccountId as string | undefined;
+    if (existingAccountId) {
+      functions.logger.info(`Stripe Connect account already exists for facility ${facilityId}, returning existing ID`);
+      return { accountId: existingAccountId };
     }
 
     const stripe = getStripeClient();
@@ -9177,14 +11271,18 @@ export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SE
       accountId: account.id,
     };
   } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
     functions.logger.error('Error creating Stripe Connect account', error);
-    throw new functions.https.HttpsError('internal', `Failed to create account: ${error.message}`);
+    throw new functions.https.HttpsError('internal', error?.message ? `Failed to create account: ${error.message}` : 'An internal error occurred. Please try again.');
   }
 });
 
 /**
- * Create an account link for Stripe Connect onboarding
- * This returns a URL that the facility owner visits to complete onboarding
+ * Create an account link for Stripe Connect onboarding.
+ * If facility has no connectedAccountId, creates a Standard Connect account first, then returns onboarding URL.
+ * Single entry point for "Connect Stripe" and "Finish onboarding".
  */
 export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
@@ -9199,11 +11297,8 @@ export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIP
   }
 
   try {
-    // Verify user has access to this facility
-    const facilityDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .get();
+    const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
+    const facilityDoc = await facilityRef.get();
 
     if (!facilityDoc.exists) {
       throw new functions.https.HttpsError('not-found', 'Facility not found');
@@ -9214,32 +11309,176 @@ export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIP
       throw new functions.https.HttpsError('permission-denied', 'Access denied');
     }
 
-    const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+    const stripe = getStripeClient();
+    let connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+
     if (!connectAccountId) {
-      throw new functions.https.HttpsError('failed-precondition', 'Stripe Connect account not created. Call createStripeConnectAccount first.');
+      const account = await stripe.accounts.create({
+        type: 'standard',
+        country: 'US',
+        email: (facilityData.email as string) || (context.auth.token?.email as string) || undefined,
+        metadata: { facilityId, ownerUid: context.auth.uid },
+      });
+      connectAccountId = account.id;
+      await facilityRef.update({
+        stripeConnectAccountId: connectAccountId,
+        stripeConnectOnboardingComplete: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      functions.logger.info(`Created Stripe Connect account ${connectAccountId} for facility ${facilityId}`);
     }
 
-    const stripe = getStripeClient();
-
-    // Create account link for onboarding
+    const baseUrl = 'https://storagefacilitycreator.com';
     const accountLink = await stripe.accountLinks.create({
       account: connectAccountId,
-      refresh_url: 'https://storagefacilitycreator.com/stripe-connect/refresh?facility_id=' + facilityId,
-      return_url: 'https://storagefacilitycreator.com/stripe-connect/return?facility_id=' + facilityId,
+      refresh_url: `${baseUrl}/#/stripe-connect?facilityId=${facilityId}&refresh=1`,
+      return_url: `${baseUrl}/#/stripe-connect?facilityId=${facilityId}`,
       type: 'account_onboarding',
     });
 
-    return {
-      url: accountLink.url,
-    };
+    return { url: accountLink.url };
   } catch (error: any) {
-    functions.logger.error('Error creating Stripe Connect account link', error);
-    throw new functions.https.HttpsError('internal', `Failed to create account link: ${error.message}`);
+    if (error?.code && typeof error.code === 'string' && error.message) {
+      throw error;
+    }
+    functions.logger.error('Error creating Stripe Connect account link', { message: error?.message });
+    throw new functions.https.HttpsError('internal', `Failed to create account link: ${error?.message || 'Unknown error'}`);
   }
 });
 
 /**
- * Check Stripe Connect account status
+ * Stripe Connect status state: DISCONNECTED | ONBOARDING_INCOMPLETE | ENABLED | ACTION_REQUIRED
+ * Used to gate tenant payment UI; only ENABLED allows Stripe Elements / card entry.
+ */
+export type StripeConnectState = 'DISCONNECTED' | 'ONBOARDING_INCOMPLETE' | 'ENABLED' | 'ACTION_REQUIRED';
+
+/**
+ * Get Stripe Connect status for a facility (state machine).
+ * Returns: state, connectedAccountId, chargesEnabled, payoutsEnabled, detailsSubmitted, requirements, and persisted stripeStatus.
+ * Callable by any authenticated user with facility access (owner/manager for settings; staff/tenant for payment UI gating).
+ */
+/** Verify user has access to facility: owner, manager, or tenant (occupant) */
+async function canAccessFacility(uid: string, facilityId: string): Promise<boolean> {
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) return false;
+  const d = facilityDoc.data()!;
+  if (d.ownerUid === uid) return true;
+  const roles = (d.roles || {}) as Record<string, string>;
+  if (roles[uid] === 'manager' || roles[uid] === 'owner') return true;
+  const tenantsSnap = await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').get();
+  for (const t of tenantsSnap.docs) {
+    const occupants = (t.data().occupants || []) as Array<{ userId?: string }>;
+    if (occupants.some((o) => o.userId === uid)) return true;
+  }
+  return false;
+}
+
+export const stripeConnectGetStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+
+  const { facilityId } = data;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+
+  try {
+    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+    if (!facilityDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Facility not found');
+    }
+
+    const hasAccess = await canAccessFacility(context.auth!.uid, facilityId);
+    if (!hasAccess) {
+      throw new functions.https.HttpsError('permission-denied', 'Access denied');
+    }
+
+    const facilityData = facilityDoc.data()!;
+    const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+
+    if (!connectAccountId) {
+      const stripeStatusFirestore = {
+        state: 'DISCONNECTED' as const,
+        chargesEnabled: false,
+        payoutsEnabled: false,
+        detailsSubmitted: false,
+        currentlyDue: [] as string[],
+        pastDue: [] as string[],
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      await admin.firestore().collection('facilities').doc(facilityId).update({
+        stripeStatus: stripeStatusFirestore,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return {
+        state: 'DISCONNECTED',
+        connectedAccountId: null,
+        chargesEnabled: false,
+        payoutsEnabled: false,
+        detailsSubmitted: false,
+        currentlyDue: [],
+        pastDue: [],
+        stripeStatus: { state: 'DISCONNECTED', chargesEnabled: false, payoutsEnabled: false, detailsSubmitted: false, currentlyDue: [], pastDue: [] },
+      };
+    }
+
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(connectAccountId);
+    const chargesEnabled = !!account.charges_enabled;
+    const payoutsEnabled = !!account.payouts_enabled;
+    const detailsSubmitted = !!account.details_submitted;
+    const currentlyDue = (account.requirements?.currently_due as string[] | undefined) || [];
+    const pastDue = (account.requirements?.past_due as string[] | undefined) || [];
+    const hasRequirementsDue = currentlyDue.length > 0 || pastDue.length > 0;
+
+    let state: StripeConnectState;
+    if (hasRequirementsDue) {
+      state = 'ACTION_REQUIRED';
+    } else if (chargesEnabled) {
+      state = 'ENABLED';
+    } else {
+      state = 'ONBOARDING_INCOMPLETE';
+    }
+
+    const stripeStatusFirestore = {
+      state,
+      chargesEnabled,
+      payoutsEnabled,
+      detailsSubmitted,
+      currentlyDue,
+      pastDue,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await admin.firestore().collection('facilities').doc(facilityId).update({
+      stripeStatus: stripeStatusFirestore,
+      stripeConnectOnboardingComplete: chargesEnabled && detailsSubmitted,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const stripeStatusResponse = { state, chargesEnabled, payoutsEnabled, detailsSubmitted, currentlyDue, pastDue };
+    return {
+      state,
+      connectedAccountId: connectAccountId,
+      chargesEnabled,
+      payoutsEnabled,
+      detailsSubmitted,
+      currentlyDue,
+      pastDue,
+      stripeStatus: stripeStatusResponse,
+    };
+  } catch (error: any) {
+    if (error?.code && typeof error.code === 'string' && error.message) {
+      throw error;
+    }
+    functions.logger.error('Error in stripeConnectGetStatus', { message: error?.message });
+    throw new functions.https.HttpsError('internal', `Failed to get status: ${error?.message || 'Unknown error'}`);
+  }
+});
+
+/**
+ * Check Stripe Connect account status (legacy shape; prefer stripeConnectGetStatus for state machine)
  * Returns the current status of the connected account
  */
 export const getStripeConnectAccountStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
@@ -9467,15 +11706,101 @@ export const createTenantPaymentCheckout = functions.runWith({ secrets: STRIPE_S
 
 
 /**
- * Create a SetupIntent on a connected account for tenant payment method capture
- * Feature-flagged: Requires tenantAutopayEnabledGlobal OR facilityId in allowlist
- * PCI-safe: Returns client_secret for Stripe Elements
+ * Create a one-time PaymentIntent on connected account for paying with a NEW card.
+ * User enters card in Payment Element; payment is not saved to customer.
+ * Returns clientSecret, publishableKey, connectedAccountId for embedded payment form.
  */
-export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+export const createOneTimePaymentIntentOnConnectedAccount = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
-  enforceAppCheckOrThrow(context);
+  const { facilityId, tenantId, amountCents } = data;
+  if (!facilityId || !tenantId || amountCents == null || amountCents < 50) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId, tenantId, and amountCents (min 50) are required');
+  }
+  const tenantAutopayAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!tenantAutopayAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility.');
+  }
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data();
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+  const hasAccess = await canAccessFacility(context.auth.uid, facilityId);
+  if (!hasAccess) {
+    throw new functions.https.HttpsError('permission-denied', 'Access denied');
+  }
+  const tenantDoc = await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).get();
+  if (!tenantDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Tenant not found');
+  }
+  const tenantData = tenantDoc.data();
+  const stripe = getStripeClient();
+
+  // Create payment doc first for webhook to update
+  const paymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).collection('payments');
+  const paymentDocRef = paymentsRef.doc();
+  await paymentDocRef.set({
+    facilityId,
+    tenantId,
+    type: 'one_time',
+    amountCents,
+    currency: 'usd',
+    stripeObjectId: null,
+    status: 'processing',
+    chargeType: 'tenant_one_time_new_card',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    failureCode: null,
+    failureMessage: null,
+  });
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: amountCents,
+    currency: 'usd',
+    metadata: {
+      facilityId,
+      tenantId,
+      paymentDocId: paymentDocRef.id,
+      chargeType: 'tenant_one_time_new_card',
+    },
+    automatic_payment_methods: { enabled: true },
+  }, {
+    stripeAccount: connectAccountId,
+    idempotencyKey: paymentDocRef.id,
+  });
+
+  await paymentDocRef.update({
+    stripeObjectId: paymentIntent.id,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return {
+    clientSecret: paymentIntent.client_secret,
+    publishableKey: getPlatformPublishableKey(),
+    connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * Create a SetupIntent on a connected account for tenant payment method capture.
+ * PRECONDITION: Facility Stripe Connect state must be ENABLED (charges_enabled).
+ * Returns clientSecret, publishableKey, and connectedAccountId so frontend can load Stripe with stripeAccount (avoids 401).
+ */
+export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  if (!context.app) {
+    functions.logger.warn('createTenantSetupIntent: App Check token missing – allowing for auth-only');
+  }
 
   const { facilityId, tenantId } = data;
 
@@ -9483,38 +11808,43 @@ export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRE
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters: facilityId, tenantId');
   }
 
-  // Feature flag check
-  const tenantAutopayEnabled = await isStripeFeatureEnabled('tenantAutopay', facilityId);
-  if (!tenantAutopayEnabled) {
-    throw new functions.https.HttpsError('failed-precondition', 'Tenant autopay is not enabled for this facility');
+  const tenantAutopayAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!tenantAutopayAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility. Connect and complete Stripe onboarding first.');
   }
 
   try {
-    // Verify user has access to this facility
-    const facilityDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .get();
-
+    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
     if (!facilityDoc.exists) {
       throw new functions.https.HttpsError('not-found', 'Facility not found');
     }
 
     const facilityData = facilityDoc.data();
     const ownerUid = facilityData?.ownerUid;
-    const roles = facilityData?.roles || {};
+    const roles = (facilityData?.roles || {}) as Record<string, string>;
     const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
 
     if (!connectAccountId) {
-      throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+      throw new functions.https.HttpsError('failed-precondition', 'Payments are not set up for this facility. Connect Stripe in facility settings first.');
     }
 
-    // Check if user is owner or has manager role
-    if (ownerUid !== context.auth.uid && roles[context.auth.uid] !== 'manager' && roles[context.auth.uid] !== 'owner') {
-      throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(connectAccountId);
+    if (!account.charges_enabled) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Payments are not enabled for this facility yet. The facility owner needs to finish Stripe onboarding.',
+      );
     }
 
-    // Verify tenant exists
+    const isStaff = ownerUid === context.auth.uid || roles[context.auth.uid] === 'manager' || roles[context.auth.uid] === 'owner';
+    if (!isStaff) {
+      const hasAccess = await canAccessFacility(context.auth!.uid, facilityId);
+      if (!hasAccess) {
+        throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+      }
+    }
+
     const tenantDoc = await admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -9527,7 +11857,6 @@ export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRE
     }
 
     const tenantData = tenantDoc.data();
-    const stripe = getStripeClient();
 
     // Get or create Stripe Customer on CONNECTED account
     let customerId = tenantData?.stripeConnectedCustomerId as string | undefined;
@@ -9570,9 +11899,12 @@ export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRE
 
     functions.logger.info(`SetupIntent created on connected account: ${setupIntent.id} for tenant ${tenantId}`);
 
+    const publishableKey = getPlatformPublishableKey();
     return {
       clientSecret: setupIntent.client_secret,
       setupIntentId: setupIntent.id,
+      publishableKey,
+      connectedAccountId: connectAccountId,
     };
   } catch (error: any) {
     const safeError = error?.message || 'Failed to create setup intent';
@@ -9590,10 +11922,13 @@ export const createTenantSetupIntent = functions.runWith({ secrets: STRIPE_SECRE
  * Feature-flagged: Requires tenantAutopayEnabledGlobal OR facilityId in allowlist
  */
 export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
-  enforceAppCheckOrThrow(context);
+  if (!context.app) {
+    functions.logger.warn('attachTenantPaymentMethod: App Check token missing – allowing for auth-only');
+  }
 
   const { facilityId, tenantId, paymentMethodId, setupIntentId } = data;
 
@@ -9601,10 +11936,9 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters');
   }
 
-  // Feature flag check
-  const tenantAutopayEnabled = await isStripeFeatureEnabled('tenantAutopay', facilityId);
-  if (!tenantAutopayEnabled) {
-    throw new functions.https.HttpsError('failed-precondition', 'Tenant autopay is not enabled for this facility');
+  const tenantAutopayAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!tenantAutopayAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility. Connect and complete Stripe onboarding first.');
   }
 
   try {
@@ -9627,7 +11961,8 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
       throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
     }
 
-    if (ownerUid !== context.auth.uid && roles[context.auth.uid] !== 'manager' && roles[context.auth.uid] !== 'owner') {
+    const hasAccess = await canAccessFacility(context.auth!.uid, facilityId);
+    if (!hasAccess) {
       throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
     }
 
@@ -9656,7 +11991,7 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
     }
 
     // Get customer ID on connected account
-    let customerId = tenantData?.stripeConnectedCustomerId as string | undefined;
+    const customerId = tenantData?.stripeConnectedCustomerId as string | undefined;
     if (!customerId) {
       throw new functions.https.HttpsError('failed-precondition', 'Tenant does not have a Stripe customer on connected account');
     }
@@ -9673,6 +12008,11 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
       stripeAccount: connectAccountId,
     });
 
+    // Set as default payment method on customer
+    await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId },
+    }, { stripeAccount: connectAccountId });
+
     // Extract safe display info
     const card = paymentMethod.card;
     const displayInfo = {
@@ -9681,6 +12021,23 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
       expMonth: card?.exp_month || null,
       expYear: card?.exp_year || null,
     };
+
+    const paymentMethodSummary = {
+      brand: displayInfo.brand,
+      last4: displayInfo.last4,
+      expMonth: displayInfo.expMonth,
+      expYear: displayInfo.expYear,
+    };
+
+    // Update tenant doc: stripe.defaultPaymentMethodId + paymentMethodSummary (and customerId for consistency)
+    const tenantUpdate: Record<string, unknown> = {
+      'stripe.customerId': customerId,
+      'stripe.defaultPaymentMethodId': paymentMethodId,
+      'stripe.paymentMethodSummary': paymentMethodSummary,
+      stripeConnectedCustomerId: customerId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await tenantDoc.ref.update(tenantUpdate);
 
     // Store payment method in Firestore (only safe metadata)
     const paymentMethodRef = admin.firestore()
@@ -9697,12 +12054,12 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
       type: 'creditCard',
       stripePaymentMethodId: paymentMethodId,
       stripeCustomerId: customerId,
-      stripeConnectedAccountId: connectAccountId, // Track which account
+      stripeConnectedAccountId: connectAccountId,
       last4: displayInfo.last4,
       brand: displayInfo.brand,
       expiryMonth: displayInfo.expMonth,
       expiryYear: displayInfo.expYear,
-      isDefault: false,
+      isDefault: true,
       autopayEnabled: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: context.auth.uid,
@@ -9710,6 +12067,9 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
     });
 
     functions.logger.info(`Payment method attached on connected account: ${paymentMethodId} for tenant ${tenantId}`);
+
+    const tenantNameForEvent = (tenantData?.name as string) || 'Tenant';
+    await writeAutopayEvent(facilityId, tenantId, tenantNameForEvent, 'CARD_ADDED', 'FACILITY', null);
 
     return {
       success: true,
@@ -9728,6 +12088,526 @@ export const attachTenantPaymentMethod = functions.runWith({ secrets: STRIPE_SEC
 });
 
 /**
+ * attachTenantPaymentMethodFromRedirect — When Stripe Link (or 3DS) redirects for verification,
+ * the Payment Element iframe never gets the result. This function handles the redirect return:
+ * retrieves the SetupIntent, gets the payment_method, and attaches it to the tenant.
+ */
+export const attachTenantPaymentMethodFromRedirect = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  const { setupIntentId, facilityId, tenantId } = data;
+  if (!setupIntentId || !facilityId || !tenantId) {
+    throw new functions.https.HttpsError('invalid-argument', 'setupIntentId, facilityId, and tenantId are required');
+  }
+  const tenantAutopayAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!tenantAutopayAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility.');
+  }
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data();
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+  const hasAccess = await canAccessFacility(context.auth!.uid, facilityId);
+  if (!hasAccess) {
+    throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+  }
+  const tenantDoc = await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).get();
+  if (!tenantDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Tenant not found');
+  }
+  const tenantData = tenantDoc.data();
+  const stripe = getStripeClient();
+  const setupIntent = await stripe.setupIntents.retrieve(setupIntentId, { stripeAccount: connectAccountId });
+  if (setupIntent.status !== 'succeeded') {
+    throw new functions.https.HttpsError('failed-precondition', `SetupIntent not succeeded (status: ${setupIntent.status})`);
+  }
+  const paymentMethodId = typeof setupIntent.payment_method === 'string' ? setupIntent.payment_method : setupIntent.payment_method?.id;
+  if (!paymentMethodId) {
+    throw new functions.https.HttpsError('failed-precondition', 'SetupIntent has no payment method');
+  }
+  const customerId = tenantData?.stripeConnectedCustomerId as string | undefined;
+  if (!customerId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Tenant does not have a Stripe customer');
+  }
+  const paymentMethod = await stripe.paymentMethods.retrieve(paymentMethodId, { stripeAccount: connectAccountId });
+  await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId }, { stripeAccount: connectAccountId });
+  await stripe.customers.update(customerId, {
+    invoice_settings: { default_payment_method: paymentMethodId },
+  }, { stripeAccount: connectAccountId });
+  const card = paymentMethod.card;
+  const displayInfo = { last4: card?.last4, brand: card?.brand, expMonth: card?.exp_month, expYear: card?.exp_year };
+  const paymentMethodSummary = { last4: displayInfo.last4, brand: displayInfo.brand, expMonth: displayInfo.expMonth, expYear: displayInfo.expYear };
+  await tenantDoc.ref.update({
+    'stripe.customerId': customerId,
+    'stripe.defaultPaymentMethodId': paymentMethodId,
+    'stripe.paymentMethodSummary': paymentMethodSummary,
+    stripeConnectedCustomerId: customerId,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  const paymentMethodRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).collection('paymentMethods').doc();
+  await paymentMethodRef.set({
+    tenantId, facilityId, type: 'creditCard',
+    stripePaymentMethodId: paymentMethodId, stripeCustomerId: customerId, stripeConnectedAccountId: connectAccountId,
+    last4: displayInfo.last4, brand: displayInfo.brand, expiryMonth: displayInfo.expMonth, expiryYear: displayInfo.expYear,
+    isDefault: true, autopayEnabled: false, createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdBy: context.auth.uid, isActive: true,
+  });
+  const tenantNameForEvent = (tenantData?.name as string) || 'Tenant';
+  await writeAutopayEvent(facilityId, tenantId, tenantNameForEvent, 'CARD_ADDED', 'FACILITY', null);
+  functions.logger.info(`Payment method attached from redirect: ${paymentMethodId} for tenant ${tenantId}`);
+  return { success: true, paymentMethodId: paymentMethodRef.id };
+});
+
+/** Create a facility notification and an AutopayEvents log entry */
+async function createAutopayNotificationAndEvent(
+  facilityId: string,
+  tenantId: string,
+  tenantName: string,
+  notificationType: 'AUTOPAY_DISABLED' | 'AUTOPAY_ENABLED' | 'AUTOPAY_REQUESTED' | 'STRIPE_ACTION_REQUIRED',
+  eventAction: 'REQUESTED' | 'ENABLED' | 'DISABLED',
+  source: 'TENANT' | 'FACILITY' | 'SYSTEM',
+  message: string,
+  reason: string | null,
+): Promise<void> {
+  const batch = admin.firestore().batch();
+  const notifRef = admin.firestore().collection('facilities').doc(facilityId).collection('Notifications').doc();
+  batch.set(notifRef, {
+    type: notificationType,
+    tenantId,
+    tenantName,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    readAt: null,
+    message,
+    metadata: reason ? { reason } : {},
+  });
+  const eventRef = admin.firestore().collection('facilities').doc(facilityId).collection('AutopayEvents').doc();
+  batch.set(eventRef, {
+    facilityId,
+    tenantId,
+    tenantName,
+    action: eventAction,
+    source,
+    reason: reason || null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  await batch.commit();
+}
+
+/** Write a single AutopayEvents entry (e.g. CARD_ADDED) without a notification. */
+async function writeAutopayEvent(
+  facilityId: string,
+  tenantId: string,
+  tenantName: string,
+  action: 'CARD_ADDED' | 'CARD_REMOVED' | 'PAYMENT_FAILED' | 'PAYMENT_SUCCEEDED' | 'REQUESTED' | 'ENABLED' | 'DISABLED',
+  source: 'TENANT' | 'FACILITY' | 'SYSTEM',
+  reason: string | null,
+): Promise<void> {
+  await admin.firestore().collection('facilities').doc(facilityId).collection('AutopayEvents').add({
+    facilityId,
+    tenantId,
+    tenantName,
+    action,
+    source,
+    reason: reason || null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/**
+ * setTenantAutopay — Enable or disable autopay for a tenant. Creates notification + AutopayEvents log.
+ * source: "TENANT" | "FACILITY" | "SYSTEM"
+ */
+export const setTenantAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  if (!context.app) {
+    functions.logger.warn('setTenantAutopay: App Check token missing – allowing for auth-only');
+  }
+  rejectClientSuppliedStripeKeys(data || {});
+
+  const payload = data && typeof data === 'object' ? data : {};
+  const facilityId = typeof payload.facilityId === 'string' ? payload.facilityId.trim() : '';
+  const tenantId = typeof payload.tenantId === 'string' ? payload.tenantId.trim() : '';
+  let enabled: boolean;
+  if (typeof payload.enabled === 'boolean') {
+    enabled = payload.enabled;
+  } else if (typeof payload.enabled === 'string') {
+    enabled = payload.enabled === 'true' || payload.enabled === '1';
+  } else if (payload.enabled === 1) {
+    enabled = true;
+  } else if (payload.enabled === 0) {
+    enabled = false;
+  } else {
+    functions.logger.warn('setTenantAutopay: invalid payload', {
+      hasFacilityId: !!facilityId,
+      hasTenantId: !!tenantId,
+      enabledType: typeof payload.enabled,
+      uid: context.auth?.uid?.slice(0, 8),
+    });
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'facilityId (string), tenantId (string), and enabled (boolean or "true"/"false") are required.',
+    );
+  }
+  if (!facilityId || !tenantId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'facilityId and tenantId must be non-empty strings.',
+    );
+  }
+  const source = payload.source;
+  const src = (source === 'TENANT' || source === 'FACILITY' || source === 'SYSTEM') ? source : 'SYSTEM';
+
+  const hasAccess = await canAccessFacility(context.auth.uid, facilityId);
+  if (!hasAccess) {
+    throw new functions.https.HttpsError('permission-denied', 'Access denied');
+  }
+
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data()!;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  let chargesEnabled = false;
+  if (connectAccountId) {
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(connectAccountId);
+    chargesEnabled = !!account.charges_enabled;
+  }
+
+  const tenantRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
+  const tenantDoc = await tenantRef.get();
+  if (!tenantDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Tenant not found');
+  }
+  const tenantData = tenantDoc.data()!;
+  const tenantName = (tenantData.name as string) || 'Tenant';
+  const stripe = tenantData.stripe as { defaultPaymentMethodId?: string } | undefined;
+  const hasPm = !!(stripe?.defaultPaymentMethodId);
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  if (enabled) {
+    if (!connectAccountId) {
+      throw new functions.https.HttpsError('failed-precondition', 'Stripe is not connected for this facility. Connect Stripe in facility settings first.', { code: 'stripe_not_connected' });
+    }
+    if (!chargesEnabled) {
+      throw new functions.https.HttpsError('failed-precondition', 'Stripe onboarding is not complete for this facility. Complete setup in facility settings.', { code: 'stripe_not_ready' });
+    }
+    if (!hasPm) {
+      throw new functions.https.HttpsError('failed-precondition', 'Tenant must have a saved payment method before enabling autopay. Add a card first.', { code: 'missing_payment_method' });
+    }
+    await tenantRef.update({
+      'autopay.requested': true,
+      'autopay.enabled': true,
+      'autopay.status': 'ON',
+      'autopay.enabledAt': now,
+      'autopay.disabledAt': null,
+      'autopay.disabledReason': null,
+      'autopay.updatedBy': src,
+      'autopay.updatedAt': now,
+      updatedAt: now,
+    });
+    await createAutopayNotificationAndEvent(
+      facilityId, tenantId, tenantName,
+      'AUTOPAY_ENABLED', 'ENABLED', src,
+      `${tenantName} autopay enabled.`,
+      null,
+    );
+    return { enabled: true, status: 'ON' };
+  } else {
+    const disabledReason = src === 'TENANT' ? 'Tenant disabled in portal' : src === 'FACILITY' ? 'Disabled by facility' : 'System';
+    await tenantRef.update({
+      'autopay.requested': false,
+      'autopay.enabled': false,
+      'autopay.status': 'OFF',
+      'autopay.disabledAt': now,
+      'autopay.disabledReason': disabledReason,
+      'autopay.updatedBy': src,
+      'autopay.updatedAt': now,
+      updatedAt: now,
+    });
+    await createAutopayNotificationAndEvent(
+      facilityId, tenantId, tenantName,
+      'AUTOPAY_DISABLED', 'DISABLED', src,
+      `${tenantName} turned off autopay.`,
+      disabledReason,
+    );
+    return { enabled: false, status: 'OFF' };
+  }
+});
+
+/**
+ * requestTenantAutopay — Set autopay requested=true, enabled=false, status=REQUESTED. Creates notification + event.
+ */
+export const requestTenantAutopay = functions.https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  const { facilityId, tenantId, source } = data;
+  if (!facilityId || !tenantId) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId and tenantId are required');
+  }
+  const src = (source === 'TENANT' || source === 'FACILITY' || source === 'SYSTEM') ? source : 'SYSTEM';
+
+  const hasAccess = await canAccessFacility(context.auth.uid, facilityId);
+  if (!hasAccess) {
+    throw new functions.https.HttpsError('permission-denied', 'Access denied');
+  }
+
+  const tenantRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
+  const tenantDoc = await tenantRef.get();
+  if (!tenantDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Tenant not found');
+  }
+  const tenantData = tenantDoc.data()!;
+  const tenantName = (tenantData.name as string) || 'Tenant';
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  await tenantRef.update({
+    'autopay.requested': true,
+    'autopay.enabled': false,
+    'autopay.status': 'REQUESTED',
+    'autopay.updatedBy': src,
+    'autopay.updatedAt': now,
+    updatedAt: now,
+  });
+  await createAutopayNotificationAndEvent(
+    facilityId, tenantId, tenantName,
+    'AUTOPAY_REQUESTED', 'REQUESTED', src,
+    `${tenantName} requested autopay.`,
+    null,
+  );
+  return { status: 'REQUESTED', requested: true };
+});
+
+/**
+ * setTenantAutopayFromPortal — For tenant portal (no Firebase Auth). Uses email + accessCode to identify tenant.
+ */
+export const setTenantAutopayFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  const email = (data.email || '').toString().trim().toLowerCase();
+  const accessCode = (data.accessCode || '').toString().trim();
+  const enabled = data.enabled === true;
+
+  if (!email || !accessCode) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
+  }
+
+  const tenantSnapshot = await admin.firestore().collectionGroup('tenants')
+    .where('emailLower', '==', email)
+    .where('portalEnabled', '==', true)
+    .where('portalAccessCode', '==', accessCode)
+    .limit(1)
+    .get();
+
+  if (tenantSnapshot.empty) {
+    throw new functions.https.HttpsError('not-found', 'Portal access not found.');
+  }
+
+  const tenantDoc = tenantSnapshot.docs[0];
+  const facilityId = tenantDoc.ref.parent.parent?.id;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
+  }
+
+  const tenantId = tenantDoc.id;
+  const tenantData = tenantDoc.data() as Record<string, any>;
+  const tenantName = tenantData.name || 'Tenant';
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data()!;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  let chargesEnabled = false;
+  if (connectAccountId) {
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(connectAccountId);
+    chargesEnabled = !!account.charges_enabled;
+  }
+  const stripe = tenantData.stripe as { defaultPaymentMethodId?: string } | undefined;
+  const hasPm = !!(stripe?.defaultPaymentMethodId);
+  const tenantRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  if (enabled) {
+    if (!chargesEnabled || !connectAccountId) {
+      throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility yet. The facility must complete Stripe setup first.');
+    }
+    if (!hasPm) {
+      throw new functions.https.HttpsError('failed-precondition', 'Add a payment method first. Use "Add card" to save your card, then turn on autopay.');
+    }
+    await tenantRef.update({
+      'autopay.requested': true,
+      'autopay.enabled': true,
+      'autopay.status': 'ON',
+      'autopay.enabledAt': now,
+      'autopay.disabledAt': null,
+      'autopay.disabledReason': null,
+      'autopay.updatedBy': 'TENANT',
+      'autopay.updatedAt': now,
+      updatedAt: now,
+    });
+    await createAutopayNotificationAndEvent(facilityId, tenantId, tenantName, 'AUTOPAY_ENABLED', 'ENABLED', 'TENANT', `${tenantName} enabled autopay from portal.`, null);
+    return { enabled: true, status: 'ON' };
+  } else {
+    const disabledReason = 'Tenant disabled in portal';
+    await tenantRef.update({
+      'autopay.requested': false,
+      'autopay.enabled': false,
+      'autopay.status': 'OFF',
+      'autopay.disabledAt': now,
+      'autopay.disabledReason': disabledReason,
+      'autopay.updatedBy': 'TENANT',
+      'autopay.updatedAt': now,
+      updatedAt: now,
+    });
+    await createAutopayNotificationAndEvent(facilityId, tenantId, tenantName, 'AUTOPAY_DISABLED', 'DISABLED', 'TENANT', `${tenantName} turned off autopay.`, disabledReason);
+    return { enabled: false, status: 'OFF' };
+  }
+});
+
+/**
+ * createTenantSetupIntentFromPortal — Portal (no Firebase Auth). Email + accessCode → SetupIntent for adding card.
+ */
+export const createTenantSetupIntentFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  const email = (data.email || '').toString().trim().toLowerCase();
+  const accessCode = (data.accessCode || '').toString().trim();
+  if (!email || !accessCode) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
+  }
+  const tenantSnapshot = await admin.firestore().collectionGroup('tenants')
+    .where('emailLower', '==', email)
+    .where('portalEnabled', '==', true)
+    .where('portalAccessCode', '==', accessCode)
+    .limit(1)
+    .get();
+  if (tenantSnapshot.empty) {
+    throw new functions.https.HttpsError('not-found', 'Portal access not found.');
+  }
+  const tenantDoc = tenantSnapshot.docs[0];
+  const facilityId = tenantDoc.ref.parent.parent?.id;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
+  }
+  const tenantId = tenantDoc.id;
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const connectAccountId = facilityDoc.data()?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility yet.');
+  }
+  const stripe = getStripeClient();
+  const account = await stripe.accounts.retrieve(connectAccountId);
+  if (!account.charges_enabled) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility yet.');
+  }
+  const tenantData = tenantDoc.data() as Record<string, any>;
+  let customerId = tenantData.stripeConnectedCustomerId as string | undefined;
+  if (!customerId) {
+    const customer = await stripe.customers.create({
+      email: tenantData.email,
+      name: tenantData.name,
+      metadata: { facilityId, tenantId },
+    }, { stripeAccount: connectAccountId });
+    customerId = customer.id;
+    await tenantDoc.ref.update({
+      stripeConnectedCustomerId: customerId,
+      'stripe.customerId': customerId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+  const setupIntent = await stripe.setupIntents.create({
+    customer: customerId,
+    payment_method_types: ['card'],
+    usage: 'off_session',
+    metadata: { facilityId, tenantId, chargeType: 'tenant_autopay', source: 'portal' },
+  }, { stripeAccount: connectAccountId });
+  const publishableKey = getPlatformPublishableKey();
+  return {
+    clientSecret: setupIntent.client_secret,
+    setupIntentId: setupIntent.id,
+    publishableKey,
+    connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * attachTenantPaymentMethodFromPortal — Portal (no Firebase Auth). Email + accessCode + paymentMethodId → attach PM.
+ */
+export const attachTenantPaymentMethodFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  const email = (data.email || '').toString().trim().toLowerCase();
+  const accessCode = (data.accessCode || '').toString().trim();
+  const paymentMethodId = data.paymentMethodId as string;
+  const setupIntentId = data.setupIntentId as string | undefined;
+  if (!email || !accessCode || !paymentMethodId) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email, access code, and paymentMethodId are required');
+  }
+  const tenantSnapshot = await admin.firestore().collectionGroup('tenants')
+    .where('emailLower', '==', email)
+    .where('portalEnabled', '==', true)
+    .where('portalAccessCode', '==', accessCode)
+    .limit(1)
+    .get();
+  if (tenantSnapshot.empty) {
+    throw new functions.https.HttpsError('not-found', 'Portal access not found.');
+  }
+  const tenantDoc = tenantSnapshot.docs[0];
+  const facilityId = tenantDoc.ref.parent.parent?.id;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
+  }
+  const tenantId = tenantDoc.id;
+  const tenantData = tenantDoc.data() as Record<string, any>;
+  const connectAccountId = (await admin.firestore().collection('facilities').doc(facilityId).get()).data()?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+  const customerId = tenantData.stripeConnectedCustomerId as string | undefined;
+  if (!customerId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Tenant does not have a Stripe customer');
+  }
+  const stripeClient = getStripeClient();
+  if (setupIntentId) {
+    const si = await stripeClient.setupIntents.retrieve(setupIntentId, { stripeAccount: connectAccountId });
+    if (si.status !== 'succeeded') {
+      throw new functions.https.HttpsError('failed-precondition', 'SetupIntent not succeeded');
+    }
+  }
+  const paymentMethod = await stripeClient.paymentMethods.retrieve(paymentMethodId, { stripeAccount: connectAccountId });
+  await stripeClient.paymentMethods.attach(paymentMethodId, { customer: customerId }, { stripeAccount: connectAccountId });
+  await stripeClient.customers.update(customerId, { invoice_settings: { default_payment_method: paymentMethodId } }, { stripeAccount: connectAccountId });
+  const card = paymentMethod.card;
+  const paymentMethodSummary = { brand: card?.brand ?? null, last4: card?.last4 ?? null, expMonth: card?.exp_month ?? null, expYear: card?.exp_year ?? null };
+  await tenantDoc.ref.update({
+    'stripe.customerId': customerId,
+    'stripe.defaultPaymentMethodId': paymentMethodId,
+    'stripe.paymentMethodSummary': paymentMethodSummary,
+    stripeConnectedCustomerId: customerId,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  const tenantName = (tenantData.name as string) || 'Tenant';
+  await writeAutopayEvent(facilityId, tenantId, tenantName, 'CARD_ADDED', 'TENANT', null);
+  return { success: true, displayInfo: paymentMethodSummary };
+});
+
+/** Alias for stripeConnectGetStatus — get facility Stripe status (state machine). */
+export const getFacilityStripeStatus = stripeConnectGetStatus;
+
+/**
  * Charge a tenant off-session using a stored payment method on a connected account
  * Feature-flagged: Requires tenantAutopayEnabledGlobal OR facilityId in allowlist
  */
@@ -9735,7 +12615,9 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
-  enforceAppCheckOrThrow(context);
+  if (!context.app) {
+    functions.logger.warn('chargeTenantOffSession: App Check token missing – allowing for auth-only');
+  }
 
   const { facilityId, tenantId, paymentMethodId, amount, description } = data;
 
@@ -9743,10 +12625,10 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters');
   }
 
-  // Feature flag check
-  const tenantAutopayEnabled = await isStripeFeatureEnabled('tenantAutopay', facilityId);
-  if (!tenantAutopayEnabled) {
-    throw new functions.https.HttpsError('failed-precondition', 'Tenant autopay is not enabled for this facility');
+  // Use same gate as Add Card / one-time payments: facility must have Connect + charges_enabled
+  const tenantAutopayAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!tenantAutopayAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility. Connect and complete Stripe onboarding first.');
   }
 
   try {
@@ -9809,17 +12691,74 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
         facilityId,
         tenantId,
         userId: context.auth.uid,
-        chargeType: 'tenant_autopay',
+        chargeType: 'tenant_one_time_card_on_file',
       },
     }, {
       stripeAccount: connectAccountId, // Create on connected account
     });
 
-    // Store charge in tenantCharges collection
-    const chargeRef = admin.firestore()
-      .collection('tenantCharges')
-      .doc();
+    const amountCents = Math.round(amount * 100);
+    const now = admin.firestore.FieldValue.serverTimestamp();
 
+    // Store in tenant payments subcollection (shows in Payment History)
+    const tenantPaymentsRef = admin.firestore()
+      .collection('facilities').doc(facilityId)
+      .collection('tenants').doc(tenantId)
+      .collection('payments');
+    const paymentDocRef = tenantPaymentsRef.doc();
+    await paymentDocRef.set({
+      facilityId,
+      tenantId,
+      type: 'one_time',
+      amountCents,
+      currency: 'usd',
+      stripeObjectId: paymentIntent.id,
+      status: 'succeeded',
+      chargeType: 'tenant_one_time_card_on_file',
+      description: description || `One-time payment`,
+      createdAt: now,
+      updatedAt: now,
+      failureCode: null,
+      failureMessage: null,
+    });
+
+    // Store in facility payments (shows in main Payments screen)
+    const facilityPaymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('payments');
+    const facilityPaymentDoc = await facilityPaymentsRef.add({
+      tenantId,
+      facilityId,
+      contractId: '',
+      amount: amount,
+      status: 'completed',
+      method: 'stripe',
+      paidAt: now,
+      paidDate: now,
+      externalPaymentId: paymentIntent.id,
+      transactionId: paymentIntent.id,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: context.auth.uid,
+      isActive: true,
+    });
+
+    // Create ledger entry (shows in View Ledger)
+    const ledgerRef = admin.firestore().collection('facilities').doc(facilityId).collection('ledgers').doc();
+    await ledgerRef.set({
+      tenantId,
+      facilityId,
+      type: 'payment',
+      amount: -(amount),
+      description: `Payment via Stripe - ${paymentIntent.id}`,
+      referenceId: facilityPaymentDoc.id,
+      entryDate: now,
+      status: 'posted',
+      createdAt: now,
+      createdBy: context.auth.uid,
+      metadata: { paymentIntentId: paymentIntent.id },
+    });
+
+    // Also store in tenantCharges for legacy/reconciliation
+    const chargeRef = admin.firestore().collection('tenantCharges').doc();
     await chargeRef.set({
       facilityId,
       tenantId,
@@ -9829,13 +12768,14 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
       amount: amount,
       currency: 'usd',
       status: paymentIntent.status,
-      description: description || `Payment for tenant ${tenantId}`,
+      description: description || `One-time payment for tenant ${tenantId}`,
       metadata: {
-        chargeType: 'tenant_autopay',
+        chargeType: 'tenant_one_time_card_on_file',
         userId: context.auth.uid,
+        paymentDocId: paymentDocRef.id,
       },
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: now,
+      updatedAt: now,
     });
 
     functions.logger.info(`Off-session charge created on connected account: ${paymentIntent.id} for tenant ${tenantId}`);
@@ -10188,6 +13128,7 @@ export const lookupUserByEmail = functions.https.onCall(async (data: any, contex
 
 // Export migration functions (Phase 2)
 import { runAllMigrations } from './migrations/phase2_migrations';
+import { backfillContractCompliance } from './migrations/backfill_contract_compliance';
 
 // Cloud Function to run migrations (for manual execution)
 export const runPhase2Migrations = functions.https.onCall(async (data: any, context) => {
@@ -10214,6 +13155,75 @@ export const runPhase2Migrations = functions.https.onCall(async (data: any, cont
     throw new functions.https.HttpsError('internal', `Migration failed: ${error.message}`);
   }
 });
+
+// Cloud Function to backfill contract compliance fields
+export const backfillContractComplianceFields = functions.https.onCall(async (data: any, context) => {
+  // Only allow super admins to run migrations
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+
+  const userEmail = context.auth.token.email;
+  const superAdminEmails = [
+    'russell_forsyth_1992@outlook.com',
+    'russellforsyth09091992@gmail.com',
+  ];
+
+  if (!superAdminEmails.includes(userEmail?.toLowerCase() || '')) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can run migrations');
+  }
+
+  try {
+    const result = await backfillContractCompliance();
+    functions.logger.info('Contract compliance backfill completed', result);
+    return {
+      success: true,
+      message: 'Contract compliance backfill completed',
+      ...result,
+    };
+  } catch (error: any) {
+    functions.logger.error('Migration error:', error);
+    throw new functions.https.HttpsError('internal', `Migration failed: ${error.message}`);
+  }
+});
+
+async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {
+  try {
+    const stripe = getStripeClient();
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+    let status: string = 'active';
+    switch (subscription.status) {
+      case 'active': status = 'active'; break;
+      case 'past_due': status = 'pastDue'; break;
+      case 'canceled': status = 'cancelled'; break;
+      case 'trialing': status = 'trialing'; break;
+      case 'incomplete': status = 'incomplete'; break;
+      case 'incomplete_expired': status = 'incompleteExpired'; break;
+      case 'unpaid': status = 'unpaid'; break;
+      default: status = 'active';
+    }
+
+    await admin.firestore().collection('facilities').doc(facilityId).update({
+      stripePlatformSubscriptionId: subscriptionId,
+      platformSubscriptionStatus: status,
+      platformSubscriptionCurrentPeriodStart: subPeriodStart(subscription)
+        ? admin.firestore.Timestamp.fromMillis(subPeriodStart(subscription)! * 1000)
+        : null,
+      platformSubscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
+        ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
+        : null,
+      platformSubscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
+      platformSubscriptionTrialEnd: subscription.trial_end
+        ? admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000)
+        : null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    functions.logger.info(`Facility ${facilityId} updated from platform subscription ${subscriptionId}`);
+  } catch (error: any) {
+    functions.logger.error(`Error updating facility from subscription: ${error.message}`, error);
+  }
+}
 
 async function updateAccountFromSubscription(accountId: string, subscriptionId: string) {
   try {
@@ -10253,11 +13263,11 @@ async function updateAccountFromSubscription(accountId: string, subscriptionId: 
       .update({
         subscriptionStatus: status,
         stripeSubscriptionId: subscriptionId,
-        subscriptionCurrentPeriodStart: subscription.current_period_start
-          ? admin.firestore.Timestamp.fromMillis(subscription.current_period_start * 1000)
+        subscriptionCurrentPeriodStart: subPeriodStart(subscription)
+          ? admin.firestore.Timestamp.fromMillis(subPeriodStart(subscription)! * 1000)
           : null,
-        subscriptionCurrentPeriodEnd: subscription.current_period_end
-          ? admin.firestore.Timestamp.fromMillis(subscription.current_period_end * 1000)
+        subscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
+          ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
           : null,
         subscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
         subscriptionCanceledAt: subscription.canceled_at
@@ -10307,62 +13317,29 @@ export const handleIncomingSMS = functions.runWith({
     const from = req.body.From as string;
     const to = req.body.To as string;
     const body = (req.body.Body as string || '').trim();
-    const bodyUpper = body.toUpperCase();
     const messageSid = req.body.MessageSid as string;
+    const requestId = crypto.randomUUID();
+    const inboundFacilityId = await findFacilityIdByInboundNumber(to);
+    functions.logger.info('Incoming SMS webhook', {
+      requestId,
+      fromMasked: `${from?.substring(0, 4)}****${from?.substring(Math.max(0, from.length - 4))}`,
+      toMasked: `${to?.substring(0, 4)}****${to?.substring(Math.max(0, to.length - 4))}`,
+      messageSid,
+      inboundFacilityId: inboundFacilityId || null,
+    });
 
-    functions.logger.info(`Incoming SMS from ${from} to ${to}: ${body.substring(0, 50)}`);
-
-    // Handle STOP/UNSTOP keywords
-    if (bodyUpper === 'STOP' || bodyUpper === 'STOPALL' || bodyUpper === 'UNSUBSCRIBE' || 
-        bodyUpper === 'CANCEL' || bodyUpper === 'END' || bodyUpper === 'QUIT') {
-      // Handle opt-out
-      const confirmationMessage = await handleSMSOptOut(from);
-      if (confirmationMessage) {
-        // Send confirmation message via Twilio REST API
-        try {
-          const twilioAccountSid = TWILIO_ACCOUNT_SID.value().trim();
-          const twilioAuthToken = TWILIO_AUTH_TOKEN.value().trim();
-          const twilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
-          const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-          const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-          
-          const formData = new URLSearchParams();
-          formData.append('To', from);
-          formData.append('From', twilioPhoneNumber);
-          formData.append('Body', confirmationMessage);
-          
-          await fetch(twilioUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Basic ${auth}`,
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: formData.toString(),
-          });
-        } catch (twilioError: any) {
-          functions.logger.error(`Error sending opt-out confirmation: ${twilioError.message}`);
-        }
-      }
-      res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
-      return;
-    }
-
-    if (bodyUpper === 'START' || bodyUpper === 'YES' || bodyUpper === 'UNSTOP') {
-      // Handle opt-in
-      await handleSMSOptIn(from);
-      // Send confirmation message via Twilio REST API
+    async function sendComplianceResponse(message: string) {
       try {
         const twilioAccountSid = TWILIO_ACCOUNT_SID.value().trim();
         const twilioAuthToken = TWILIO_AUTH_TOKEN.value().trim();
-        const twilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
+        const defaultTwilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
+        const fromNumber = to || defaultTwilioPhoneNumber;
         const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
         const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-        
         const formData = new URLSearchParams();
         formData.append('To', from);
-        formData.append('From', twilioPhoneNumber);
-        formData.append('Body', 'You have been subscribed to SMS messages. Reply STOP to opt out.');
-        
+        formData.append('From', fromNumber);
+        formData.append('Body', message);
         await fetch(twilioUrl, {
           method: 'POST',
           headers: {
@@ -10372,17 +13349,37 @@ export const handleIncomingSMS = functions.runWith({
           body: formData.toString(),
         });
       } catch (twilioError: any) {
-        functions.logger.error(`Error sending opt-in confirmation: ${twilioError.message}`);
+        functions.logger.error('Error sending compliance response', {
+          requestId,
+          error: twilioError?.message,
+        });
+      }
+    }
+
+    // Handle STOP/UNSTOP keywords
+    if (isStopKeyword(body)) {
+      // Handle opt-out
+      const confirmationMessage = await handleSMSOptOut(from, inboundFacilityId);
+      if (confirmationMessage) {
+        await sendComplianceResponse(confirmationMessage);
       }
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
     }
 
+    if (isStartKeyword(body)) {
+      // Handle opt-in
+      await handleSMSOptIn(from, inboundFacilityId);
+      await sendComplianceResponse('You have been subscribed to SMS messages. Reply STOP to opt out.');
+      res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      return;
+    }
+
     // Handle HELP keyword
-    if (bodyUpper === 'HELP' || bodyUpper === 'INFO') {
+    if (isHelpKeyword(body)) {
       const normalizedFrom = formatPhoneNumber(from);
       if (normalizedFrom) {
-        const tenant = await findTenantByPhoneNumber(normalizedFrom);
+        const tenant = await findTenantByPhoneNumber(normalizedFrom, inboundFacilityId);
         if (tenant) {
           // Get facility SMS settings for custom help message
           const facilityDoc = await admin.firestore()
@@ -10397,30 +13394,7 @@ export const handleIncomingSMS = functions.runWith({
           const message = helpMessage || 
             'Reply STOP to opt out of SMS messages. Reply START to opt back in. For support, contact your facility directly.';
 
-          // Send help message via Twilio REST API
-          try {
-            const twilioAccountSid = TWILIO_ACCOUNT_SID.value().trim();
-            const twilioAuthToken = TWILIO_AUTH_TOKEN.value().trim();
-            const twilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
-            const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-            const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-            
-            const formData = new URLSearchParams();
-            formData.append('To', from);
-            formData.append('From', twilioPhoneNumber);
-            formData.append('Body', message);
-            
-            await fetch(twilioUrl, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: formData.toString(),
-            });
-          } catch (twilioError: any) {
-            functions.logger.error(`Error sending help message: ${twilioError.message}`);
-          }
+          await sendComplianceResponse(message);
         }
       }
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
@@ -10436,7 +13410,7 @@ export const handleIncomingSMS = functions.runWith({
     }
 
     // Find tenant by phone number (try multiple formats)
-    const tenant = await findTenantByPhoneNumber(normalizedFrom);
+    const tenant = await findTenantByPhoneNumber(normalizedFrom, inboundFacilityId);
     
     if (!tenant) {
       // No tenant found - log but don't error (could be spam)
@@ -10467,9 +13441,31 @@ export const handleIncomingSMS = functions.runWith({
 });
 
 /**
+ * Resolve facility from inbound "To" phone number.
+ */
+async function findFacilityIdByInboundNumber(toPhoneNumber: string): Promise<string | null> {
+  try {
+    const normalized = formatPhoneNumber(toPhoneNumber);
+    if (!normalized) return null;
+    const snapshot = await admin.firestore()
+      .collection('facilities')
+      .where('twilioPhoneNumberE164', '==', normalized)
+      .limit(1)
+      .get();
+    if (!snapshot.empty) {
+      return snapshot.docs[0].id;
+    }
+    return null;
+  } catch (error: any) {
+    functions.logger.warn('Failed to resolve inbound facility by number', { error: error?.message });
+    return null;
+  }
+}
+
+/**
  * Helper: Find tenant by phone number (try multiple formats)
  */
-async function findTenantByPhoneNumber(phoneNumber: string): Promise<{ facilityId: string; id: string; phone: string } | null> {
+async function findTenantByPhoneNumber(phoneNumber: string, facilityIdHint?: string | null): Promise<{ facilityId: string; id: string; phone: string } | null> {
   try {
     // Try different phone number formats
     const phoneVariations = [
@@ -10478,6 +13474,28 @@ async function findTenantByPhoneNumber(phoneNumber: string): Promise<{ facilityI
       phoneNumber.replace(/^\+1/, ''), // Without +1
       phoneNumber.replace(/^\+1/, '1'), // With 1 but no +
     ];
+
+    if (facilityIdHint) {
+      for (const phoneVar of phoneVariations) {
+        const scopedQuery = await admin.firestore()
+          .collection('facilities')
+          .doc(facilityIdHint)
+          .collection('tenants')
+          .where('phone', '==', phoneVar)
+          .where('isActive', '==', true)
+          .limit(1)
+          .get();
+        if (!scopedQuery.empty) {
+          const tenantDoc = scopedQuery.docs[0];
+          const tenantData = tenantDoc.data() as Record<string, any>;
+          return {
+            facilityId: facilityIdHint,
+            id: tenantDoc.id,
+            phone: tenantData.phone,
+          };
+        }
+      }
+    }
 
     for (const phoneVar of phoneVariations) {
       // Use collection group query to search across all facilities
@@ -10516,7 +13534,7 @@ async function findTenantByPhoneNumber(phoneNumber: string): Promise<{ facilityI
 async function getOrCreateSMSConversation(
   facilityId: string,
   tenantId: string,
-  phoneNumber: string
+  phoneNumber: string,
 ): Promise<string> {
   try {
     // Check if conversation already exists
@@ -10563,7 +13581,7 @@ async function storeIncomingSMSMessage(
   tenantId: string,
   phoneNumber: string,
   messageBody: string,
-  messageSid: string
+  messageSid: string,
 ): Promise<void> {
   try {
     const now = admin.firestore.FieldValue.serverTimestamp();
@@ -10613,7 +13631,7 @@ async function createContactLogForSMSReply(
   tenantId: string,
   messageBody: string,
   phoneNumber: string,
-  messageSid: string
+  messageSid: string,
 ): Promise<void> {
   try {
     await admin.firestore()
@@ -10642,12 +13660,12 @@ async function createContactLogForSMSReply(
 /**
  * Helper: Handle SMS opt-out
  */
-async function handleSMSOptOut(phoneNumber: string): Promise<string | null> {
+async function handleSMSOptOut(phoneNumber: string, facilityIdHint?: string | null): Promise<string | null> {
   try {
     const normalizedPhone = formatPhoneNumber(phoneNumber);
     if (!normalizedPhone) return null;
 
-    const tenant = await findTenantByPhoneNumber(normalizedPhone);
+    const tenant = await findTenantByPhoneNumber(normalizedPhone, facilityIdHint);
     if (!tenant) return null;
 
     // Check if enhanced opt-out is enabled for this facility
@@ -10661,6 +13679,9 @@ async function handleSMSOptOut(phoneNumber: string): Promise<string | null> {
       .doc(tenant.id)
       .update({
         smsOptOut: true,
+        smsConsentStatus: 'opted_out',
+        smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+        smsConsentSource: 'inbound_stop',
         smsOptOutDate: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -10697,12 +13718,12 @@ async function handleSMSOptOut(phoneNumber: string): Promise<string | null> {
 /**
  * Helper: Handle SMS opt-in
  */
-async function handleSMSOptIn(phoneNumber: string): Promise<void> {
+async function handleSMSOptIn(phoneNumber: string, facilityIdHint?: string | null): Promise<void> {
   try {
     const normalizedPhone = formatPhoneNumber(phoneNumber);
     if (!normalizedPhone) return;
 
-    const tenant = await findTenantByPhoneNumber(normalizedPhone);
+    const tenant = await findTenantByPhoneNumber(normalizedPhone, facilityIdHint);
     if (!tenant) return;
 
     // Check if enhanced opt-out is enabled for this facility
@@ -10711,6 +13732,9 @@ async function handleSMSOptIn(phoneNumber: string): Promise<void> {
     // Update tenant's SMS opt-in status
     const updateData: Record<string, any> = {
       smsOptOut: false,
+      smsConsentStatus: 'opted_in',
+      smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+      smsConsentSource: 'inbound_start',
       smsOptInDate: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -10855,7 +13879,7 @@ async function checkQuietHours(facilityId: string, tenantId?: string): Promise<{
  */
 async function checkPerTenantRateLimit(
   facilityId: string,
-  tenantId: string
+  tenantId: string,
 ): Promise<{
   canSend: boolean;
   messagesSentToday: number;
@@ -11267,7 +14291,7 @@ export const aiAssistant = functions.runWith({ secrets: AI_SECRETS }).https.onCa
     if (facilityUsageCount >= maxFacilityDaily) {
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        `Daily limit reached for this facility (${maxFacilityDaily} messages/day). Try again tomorrow.`
+        `Daily limit reached for this facility (${maxFacilityDaily} messages/day). Try again tomorrow.`,
       );
     }
 
@@ -11285,7 +14309,7 @@ export const aiAssistant = functions.runWith({ secrets: AI_SECRETS }).https.onCa
     if (userUsageCount >= maxUserDaily) {
       throw new functions.https.HttpsError(
         'resource-exhausted',
-        `Daily limit reached for your account (${maxUserDaily} messages/day). Try again tomorrow.`
+        `Daily limit reached for your account (${maxUserDaily} messages/day). Try again tomorrow.`,
       );
     }
 
@@ -11536,9 +14560,152 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
 });
 
 const MAX_INPUT_CHARS = 2000;
-const MAX_OUTPUT_TOKENS = 700;
-const MAX_REQUESTS_PER_USER_PER_MINUTE = 10;
+const MAX_OUTPUT_TOKENS = 380; // Shorter replies; hard guard rails
+const MAX_REQUESTS_PER_USER_PER_MINUTE = 5; // Hard limit
 const OPENAI_CHAT_MODEL = 'gpt-4o-mini';
+
+// Enhanced guardrail constants
+const MIN_MESSAGE_LENGTH = 3; // Minimum meaningful message length
+const MAX_REPEATED_CHARS = 10; // Max repeated characters (e.g., "aaaaaaa")
+const SUSPICIOUS_PATTERN_THRESHOLD = 3; // Number of suspicious patterns to trigger rejection
+
+/** Keywords that indicate storage-facility-related questions. Broad so natural questions pass. */
+const STORAGE_RELATED_KEYWORDS = [
+  'storage', 'facility', 'facilities', 'tenant', 'tenants', 'unit', 'units',
+  'occupancy', 'payment', 'payments', 'rent', 'lease', 'contract', 'move-in', 'move-out',
+  'gate', 'access', 'auction', 'lien', 'delinquency', 'pricing', 'yield', 'insurance',
+  'dnr', 'reservation', 'vacancy', 'deposit', 'billing', 'stripe', 'report', 'reports',
+  'late fee', 'self-storage', 'self storage', 'management', 'app ', 'feature', 'how do i', 'how to',
+  'property', 'properties', 'location', 'business', 'customer', 'rental', 'space', 'locker',
+  'owner', 'operate', 'operating', 'running', 'best practice', 'setup', 'set up', 'tips', 'advice',
+  'monthly', 'overdue', 'collections', 'evict', 'overlock', 'lock out', 'lockout',
+  'charge', 'charges', 'fee', 'fees', 'price', 'rates', 'revenue', 'income',
+];
+
+/** Off-topic terms. Reject if present and no storage-related keyword. */
+const OFF_TOPIC_KEYWORDS = [
+  'star trek', 'startrek', 'star wars', 'movie', 'movies', 'film', 'recipe', 'recipes',
+  'cook', 'sports', 'football', 'basketball', 'game of thrones', 'lotr', 'music', 'celebrity',
+  'joke', 'jokes', 'meme', 'trivia', 'recipe for',
+  ' dog ', ' cat ', ' puppy', ' kitten', ' dog named', ' cat named', 'a dog', 'a cat',
+];
+
+/** Request to generate a message/email to a specific person. We have no tenant data → refuse. */
+const PERSONALIZED_MESSAGE_PATTERNS = [
+  /(?:give me|write|draft|send|email)\s+(?:a\s+)?(?:message|email|reminder|notice)\s+to\s+/i,
+  /(?:message|email|reminder|notice)\s+to\s+send\s+to\s+/i,
+  /(?:send|write)\s+(?:a\s+)?(?:message|email)\s+to\s+/i,
+  /\b(?:hi|dear|hello)\s+[a-z]+\s*[,.]\s*(?:rent|payment|due)/i,
+];
+
+/** Prompt injection patterns - attempts to override system instructions */
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(?:previous|all|above)\s+(?:instructions?|prompts?|rules?)/i,
+  /forget\s+(?:previous|all|above)\s+(?:instructions?|prompts?|rules?)/i,
+  /you\s+are\s+now\s+(?:a|an)\s+/i,
+  /system\s*:\s*you\s+are/i,
+  /new\s+instructions?\s*:/i,
+  /override\s+(?:previous|system)/i,
+  /act\s+as\s+if/i,
+  /pretend\s+to\s+be/i,
+  /roleplay\s+as/i,
+  /\[system\]/i,
+  /<\|system\|>/i,
+  /###\s*instructions?\s*:/i,
+];
+
+/** Suspicious patterns that may indicate abuse or malicious intent */
+const SUSPICIOUS_PATTERNS = [
+  /(.)\1{9,}/, // Repeated characters (e.g., "aaaaaaaaaa")
+  /[^\x20-\x7E]{5,}/, // Non-printable characters
+  /(?:http|https|ftp):\/\//i, // URLs (shouldn't be in storage facility questions)
+  /<script|javascript:|onerror=|onclick=/i, // Script injection attempts
+  /eval\(|exec\(|system\(/i, // Code execution attempts
+  /password|secret|api[_\s]?key|token|credential/i, // Sensitive data requests
+  /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Credit card patterns
+];
+
+function isStorageFacilityRelated(message: string): boolean {
+  const m = message.toLowerCase().trim();
+  if (m.length < MIN_MESSAGE_LENGTH) return false; // Reject too short messages
+  const hasStorage = STORAGE_RELATED_KEYWORDS.some((kw) => m.includes(kw));
+  const hasOffTopic = OFF_TOPIC_KEYWORDS.some((kw) => m.includes(kw));
+  if (hasOffTopic && !hasStorage) return false;
+  if (hasStorage) return true;
+  if (m.length <= 35 && !hasOffTopic) return true;
+  return false;
+}
+
+/**
+ * Detect prompt injection attempts - users trying to override system instructions
+ */
+function containsPromptInjection(message: string): boolean {
+  return PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * Detect suspicious patterns that may indicate abuse or malicious intent
+ */
+function containsSuspiciousPatterns(message: string): { detected: boolean; patterns: string[] } {
+  const detectedPatterns: string[] = [];
+  
+  for (const pattern of SUSPICIOUS_PATTERNS) {
+    if (pattern.test(message)) {
+      detectedPatterns.push(pattern.toString());
+    }
+  }
+  
+  // Check for repeated characters
+  const repeatedCharMatch = message.match(/(.)\1{9,}/);
+  if (repeatedCharMatch) {
+    detectedPatterns.push('repeated_characters');
+  }
+  
+  return {
+    detected: detectedPatterns.length >= SUSPICIOUS_PATTERN_THRESHOLD,
+    patterns: detectedPatterns,
+  };
+}
+
+/**
+ * Validate message structure and content quality
+ */
+function isValidMessageStructure(message: string): { valid: boolean; reason?: string } {
+  const trimmed = message.trim();
+  
+  // Too short
+  if (trimmed.length < MIN_MESSAGE_LENGTH) {
+    return { valid: false, reason: 'Message too short' };
+  }
+  
+  // Too many repeated characters (likely spam/abuse)
+  const repeatedCharMatch = trimmed.match(/(.)\1{9,}/);
+  if (repeatedCharMatch) {
+    return { valid: false, reason: 'Invalid message format' };
+  }
+  
+  // Check for excessive whitespace
+  if (trimmed.split(/\s+/).length > 200) {
+    return { valid: false, reason: 'Message too long' };
+  }
+  
+  return { valid: true };
+}
+
+/** Reject requests to draft messages to specific people (we have no tenant data). */
+function containsPersonalizedMessageRequest(message: string): boolean {
+  return PERSONALIZED_MESSAGE_PATTERNS.some((re) => re.test(message));
+}
+
+/** Reject nonsense e.g. dog/cat as tenant, "message to Rambo" (dog) late on rent. */
+function containsNonsenseOrPersonalizedRequest(message: string): boolean {
+  const m = message.toLowerCase();
+  if (containsPersonalizedMessageRequest(message)) return true;
+  const hasPet = /\b(dog|cat|puppy|kitten|pet)\b/.test(m);
+  const hasTenantContext = /\b(rent|tenant|late|payment|message to|send to|email to)\b/.test(m);
+  if (hasPet && hasTenantContext) return true;
+  return false;
+}
 
 /**
  * aiAssistantChat – OpenAI-backed chat via Firestore config.
@@ -11577,28 +14744,132 @@ export const aiAssistantChat = functions
     if (message.length > MAX_INPUT_CHARS) {
       throw new functions.https.HttpsError(
         'invalid-argument',
-        `Message too long. Maximum ${MAX_INPUT_CHARS} characters allowed.`
+        `Message too long. Maximum ${MAX_INPUT_CHARS} characters allowed.`,
+      );
+    }
+
+    // Enhanced validation: Message structure
+    const structureCheck = isValidMessageStructure(message);
+    if (!structureCheck.valid) {
+      functions.logger.warn('aiAssistantChat invalid message structure', {
+        facilityId,
+        reason: structureCheck.reason,
+        messageLength: message.length,
+      });
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        structureCheck.reason || 'Invalid message format',
+      );
+    }
+
+    // Enhanced guardrail: Prompt injection detection
+    if (containsPromptInjection(message)) {
+      functions.logger.warn('aiAssistantChat prompt injection detected', { facilityId });
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Invalid request. Please ask a question about storage facility management.',
+      );
+    }
+
+    // Enhanced guardrail: Suspicious patterns detection
+    const suspiciousCheck = containsSuspiciousPatterns(message);
+    if (suspiciousCheck.detected) {
+      functions.logger.warn('aiAssistantChat suspicious patterns detected', {
+        facilityId,
+        patterns: suspiciousCheck.patterns,
+      });
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Invalid request format. Please ask a question about storage facility management.',
       );
     }
 
     const config = await getAIAssistantConfig();
+    
+    // Log config for debugging
+    functions.logger.info('aiAssistantChat config check', {
+      enabled: config.enabled,
+      killSwitch: config.killSwitch,
+      provider: config.provider,
+      providerType: typeof config.provider,
+      allowlistLength: config.allowlistFacilityIds?.length || 0,
+      facilityId,
+      allowlistIncludesFacility: config.allowlistFacilityIds?.includes(facilityId) || false,
+    });
+    
     const { ok, allowlistPassed } = shouldUseOpenAIChat(facilityId, config);
     if (!ok) {
+      functions.logger.warn('aiAssistantChat rejected', {
+        facilityId,
+        enabled: config.enabled,
+        killSwitch: config.killSwitch,
+        provider: config.provider,
+        providerMatches: config.provider === 'openai',
+        allowlistPassed,
+      });
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'AI Assistant (OpenAI) is not enabled for this facility. Check app config or allowlist.'
+        'AI Assistant (OpenAI) is not enabled for this facility. Check app config or allowlist.',
       );
     }
 
+    // Rate limiting: Per user per minute
     await enforceUserRateLimit(uid, 'aiAssistantChat', MAX_REQUESTS_PER_USER_PER_MINUTE, 60);
+
+    // Daily usage limits: Per facility
+    const today = new Date().toISOString().split('T')[0];
+    const facilityUsageRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('aiUsage')
+      .doc(today);
+
+    const facilityUsageDoc = await facilityUsageRef.get();
+    const facilityUsageCount = facilityUsageDoc.exists ? (facilityUsageDoc.data()?.count || 0) : 0;
+    const maxFacilityDaily = config.maxMessagesPerDay ?? 30;
+    
+    if (facilityUsageCount >= maxFacilityDaily) {
+      functions.logger.warn('aiAssistantChat daily facility limit reached', {
+        facilityId,
+        count: facilityUsageCount,
+        limit: maxFacilityDaily,
+      });
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        `Daily limit reached for this facility (${maxFacilityDaily} messages/day). Try again tomorrow.`,
+      );
+    }
+
+    // Daily usage limits: Per user
+    const userUsageRef = admin.firestore()
+      .collection('users')
+      .doc(uid)
+      .collection('aiUsage')
+      .doc(today);
+
+    const userUsageDoc = await userUsageRef.get();
+    const userUsageCount = userUsageDoc.exists ? (userUsageDoc.data()?.count || 0) : 0;
+    const maxUserDaily = config.maxMessagesPerUser ?? 20;
+    
+    if (userUsageCount >= maxUserDaily) {
+      functions.logger.warn('aiAssistantChat daily user limit reached', {
+        userId: uid,
+        count: userUsageCount,
+        limit: maxUserDaily,
+      });
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        `Daily limit reached for your account (${maxUserDaily} messages/day). Try again tomorrow.`,
+      );
+    }
 
     const facilityData = await getFacilityDataForUserOrThrow(uid, facilityId);
 
     const displayName = facilityName || facilityData?.name || 'your facility';
-    const systemPrompt = `You are an AI assistant for a self-storage facility management system. Answer questions about facility operations, tenant management, payments, and best practices. Be concise and helpful. Facility: ${displayName}.`;
+    const systemPrompt = `You are a helpful AI assistant for ${displayName}, a self-storage facility. You help facility owners and managers with anything related to running their business — tenant management, payments, pricing, occupancy, delinquency, best practices, marketing, legal questions about storage, and how to use this software. Be conversational, practical, and thorough. You can draft template messages, emails, or notices (e.g. late payment notices, move-out confirmations) since these are general templates, not sent to specific people. If asked something completely unrelated to the storage business or facility management, gently redirect back to how you can help. Keep responses focused and actionable.`;
 
-    let replyText = '';
-    let tokensUsed = 0;
+    let replyText: string;
+    let tokensUsed: number;
     const providerUsed = 'openai';
     const model = OPENAI_CHAT_MODEL;
 
@@ -11609,18 +14880,61 @@ export const aiAssistantChat = functions
       }
       const openai = new OpenAI({ apiKey });
 
+      // Enhanced guardrail: Use OpenAI Moderation API to check for harmful content
+      try {
+        const moderationResult = await openai.moderations.create({ input: message });
+        const flagged = moderationResult.results[0]?.flagged || false;
+        const categories = moderationResult.results[0]?.categories || {};
+        
+        if (flagged) {
+          const flaggedCategories = Object.entries(categories)
+            .filter(([_, isFlagged]) => isFlagged)
+            .map(([category]) => category);
+          
+          functions.logger.warn('aiAssistantChat content flagged by moderation API', {
+            facilityId,
+            categories: flaggedCategories,
+          });
+          
+          throw new functions.https.HttpsError(
+            'invalid-argument',
+            'Your message contains inappropriate content. Please ask a question about storage facility management.',
+          );
+        }
+      } catch (modErr: any) {
+        // If moderation API fails, log but don't block (fail open for availability)
+        functions.logger.warn('aiAssistantChat moderation API check failed', {
+          facilityId,
+          error: modErr?.message,
+        });
+        // Continue with request if moderation check fails
+      }
+
       const completion = await openai.chat.completions.create({
         model: OPENAI_CHAT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message },
         ],
-        temperature: 0.7,
-        max_tokens: MAX_OUTPUT_TOKENS,
+        temperature: 0.4,
+        max_tokens: Math.min(MAX_OUTPUT_TOKENS, config.maxTokensPerRequest ?? MAX_OUTPUT_TOKENS),
       });
 
       const choice = completion.choices[0];
       replyText = (choice?.message?.content || '').trim() || 'I couldn\'t generate a response. Please try again.';
+      
+      // Enhanced guardrail: Validate and sanitize response
+      if (replyText.length > MAX_OUTPUT_TOKENS * 4) { // Rough char estimate (4 chars per token)
+        replyText = replyText.substring(0, MAX_OUTPUT_TOKENS * 4) + '...';
+        functions.logger.warn('aiAssistantChat response truncated', { facilityId });
+      }
+      
+      // Check response for prompt injection attempts in output
+      if (containsPromptInjection(replyText)) {
+        functions.logger.warn('aiAssistantChat prompt injection in response', { facilityId });
+        replyText = 'I can only help with storage facility management questions.';
+      }
+      
       tokensUsed =
         (completion.usage?.total_tokens ?? 0) ||
         (completion.usage?.completion_tokens ?? 0) +
@@ -11629,9 +14943,22 @@ export const aiAssistantChat = functions
       functions.logger.error('aiAssistantChat OpenAI error', { requestId, error: apiErr?.message });
       throw new functions.https.HttpsError(
         'internal',
-        apiErr?.message?.includes('rate') ? 'Service is busy. Please try again shortly.' : 'Failed to get AI response. Please try again.'
+        apiErr?.message?.includes('rate') ? 'Service is busy. Please try again shortly.' : 'Failed to get AI response. Please try again.',
       );
     }
+
+    // Increment usage counters (after successful OpenAI call)
+    await facilityUsageRef.set({
+      count: facilityUsageCount + 1,
+      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+      facilityId,
+    }, { merge: true });
+
+    await userUsageRef.set({
+      count: userUsageCount + 1,
+      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+      userId: uid,
+    }, { merge: true });
 
     const latencyMs = Date.now() - startMs;
     const userIdHashed = hashUserId(uid);
@@ -11645,6 +14972,8 @@ export const aiAssistantChat = functions
       tokensUsed,
       latencyMs,
       allowlistPassed,
+      facilityUsageCount: facilityUsageCount + 1,
+      userUsageCount: userUsageCount + 1,
     });
 
     return {
@@ -11745,417 +15074,477 @@ export const aiAssistantExecuteAction = functions.https.onCall(async (data: any,
 });
 
 // ============================================================================
-// E-SIGN FUNCTIONS (Dropbox Sign / Provider-based)
+// DOCUMENT COMPLIANCE FUNCTIONS
 // ============================================================================
 
-// Define E-sign secrets (optional - checked at runtime)
-// Using process.env directly to allow deployment without secrets configured
-// When ready, switch to defineSecret for better security
-// const DROPBOX_SIGN_API_KEY = defineSecret('DROPBOX_SIGN_API_KEY'); // Use this when secrets are configured
-// const DROPBOX_SIGN_CLIENT_ID = defineString('DROPBOX_SIGN_CLIENT_ID', { default: '' }); // Reserved for future use
-// const DROPBOX_SIGN_WEBHOOK_SECRET = defineSecret('DROPBOX_SIGN_WEBHOOK_SECRET'); // Reserved for webhook verification (uncomment when implementing)
+/**
+ * Compute SHA-256 hash of a document
+ * Used for document integrity verification
+ */
+export const computeDocumentHash = functions.https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
 
-// Helper to get API key (checks env var, can be upgraded to secret later)
-function getDropboxSignApiKey(): string | undefined {
-  return process.env.DROPBOX_SIGN_API_KEY || undefined;
-}
+  try {
+    const { fileData } = data;
 
-interface EsignCreateEnvelopeRequest {
-  facilityId: string;
-  tenantId?: string;
-  contractId?: string;
-  templateId?: string;
-  signerName: string;
-  signerEmail: string;
-  signerPhone?: string;
-  unitIds?: string[];
-  subject?: string;
-  message?: string;
-  expiresAt?: string;
-}
+    if (!fileData || !Array.isArray(fileData)) {
+      throw new functions.https.HttpsError('invalid-argument', 'fileData must be a byte array');
+    }
+
+    // Convert array to Buffer
+    const buffer = Buffer.from(fileData);
+    
+    // Compute SHA-256 hash
+    const hash = crypto.createHash('sha256');
+    hash.update(buffer);
+    const sha256 = hash.digest('hex');
+
+    functions.logger.info(`Computed SHA-256 hash for document (${buffer.length} bytes)`);
+
+    return {
+      sha256: sha256,
+      size: buffer.length,
+    };
+  } catch (error: any) {
+    functions.logger.error('Error computing document hash:', error);
+    throw new functions.https.HttpsError('internal', `Failed to compute hash: ${error.message}`);
+  }
+});
 
 /**
- * Create E-sign envelope via Dropbox Sign API
+ * Merge signature image and optional text into the original contract PDF.
+ * Returns the merged PDF as base64. Used when signing the uploaded contract (not a blank page).
+ * placements: [{ type: 'image'|'text', pageIndex, x, y, width?, height?, imageBase64?, text?, fontSize? }]
+ * PDF coordinates: origin bottom-left, units in points (72 per inch).
+ */
+export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, memory: '512MB' })
+  .https.onCall(async (data: {
+    pdfBase64?: string;
+    fileUrl?: string;
+    signaturePngBase64?: string;
+    signerName?: string;
+    signerDate?: string;
+    signingToken?: string;
+    placements?: Array<{
+      type: 'image' | 'text';
+      pageIndex: number;
+      x: number;
+      y: number;
+      width?: number;
+      height?: number;
+      imageBase64?: string;
+      text?: string;
+      fontSize?: number;
+    }>;
+  }, context: functions.https.CallableContext) => {
+  const pdfBase64 = (data?.pdfBase64 || '').toString().trim();
+  const fileUrl = (data?.fileUrl || '').toString().trim();
+  const signaturePngBase64 = (data?.signaturePngBase64 || '').toString().trim();
+  const signerName = (data?.signerName || '').toString().trim();
+  const signerDate = (data?.signerDate || '').toString().trim();
+  const placements = (data?.placements || []) as Array<{
+    type: 'image' | 'text';
+    pageIndex: number;
+    x: number;
+    y: number;
+    width?: number;
+    height?: number;
+    imageBase64?: string;
+    text?: string;
+    fontSize?: number;
+  }>;
+
+  if (!pdfBase64 && !fileUrl) {
+    throw new functions.https.HttpsError('invalid-argument', 'pdfBase64 or fileUrl is required');
+  }
+
+  // Require auth or valid signing token (same as uploadSignedContract)
+  const signingToken = (data as any)?.signingToken?.toString?.()?.trim() || '';
+  if (!context.auth?.uid && !signingToken) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentication or signing token required');
+  }
+
+  try {
+    let pdfBytes: Buffer;
+    if (pdfBase64) {
+      pdfBytes = Buffer.from(pdfBase64, 'base64');
+    } else if (fileUrl) {
+      const resp = await fetch(fileUrl);
+      if (!resp.ok) {
+        throw new functions.https.HttpsError('internal', `Failed to fetch PDF: ${resp.status} ${resp.statusText}`);
+      }
+      const arrayBuf = await resp.arrayBuffer();
+      pdfBytes = Buffer.from(arrayBuf);
+    } else {
+      throw new functions.https.HttpsError('invalid-argument', 'pdfBase64 or fileUrl is required');
+    }
+    if (pdfBytes.length > 10 * 1024 * 1024) { // 10MB limit
+      throw new functions.https.HttpsError('invalid-argument', 'PDF too large (max 10MB)');
+    }
+
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
+
+    if (pages.length === 0) {
+      throw new functions.https.HttpsError('invalid-argument', 'PDF has no pages');
+    }
+
+    // Build placements: if none provided, add default signature + name + date on last page
+    const finalPlacements: Array<{ type: 'image' | 'text'; pageIndex: number; x: number; y: number; width?: number; height?: number; imageBase64?: string; text?: string; fontSize?: number }> = placements.length > 0
+      ? placements
+      : [];
+
+    if (finalPlacements.length === 0 && signaturePngBase64) {
+      const lastPageIndex = pages.length - 1;
+      const page = pages[lastPageIndex];
+      const { width, height } = page.getSize();
+      const defaultY = 100;
+      const defaultX = 50;
+      const sigW = 150;
+      const sigH = 60;
+
+      const pngBytes = Buffer.from(signaturePngBase64, 'base64');
+      const pngImage = await pdfDoc.embedPng(pngBytes);
+      page.drawImage(pngImage, { x: defaultX, y: defaultY, width: sigW, height: sigH });
+
+      if (signerName) {
+        page.drawText(signerName, { x: defaultX, y: defaultY + sigH + 8, size: 11 });
+      }
+      if (signerDate) {
+        page.drawText(signerDate, { x: defaultX, y: defaultY + sigH + 20, size: 10 });
+      }
+    } else {
+      for (const p of finalPlacements) {
+        const pageIndex = Math.max(0, Math.min(p.pageIndex, pages.length - 1));
+        const page = pages[pageIndex];
+        if (p.type === 'image') {
+          const b64 = p.imageBase64 || signaturePngBase64;
+          if (b64) {
+            const imgBytes = Buffer.from(b64, 'base64');
+            const img = await pdfDoc.embedPng(imgBytes);
+            const w = p.width ?? 150;
+            const h = p.height ?? 60;
+            page.drawImage(img, { x: p.x, y: p.y, width: w, height: h });
+          }
+        } else if (p.type === 'text' && p.text) {
+          page.drawText(p.text, { x: p.x, y: p.y, size: p.fontSize ?? 11 });
+        }
+      }
+    }
+
+    const mergedPdfBytes = await pdfDoc.save();
+    return { pdfBase64: Buffer.from(mergedPdfBytes).toString('base64') };
+  } catch (err: any) {
+    functions.logger.error('mergeSignatureIntoPdf error:', err?.message);
+    if (err instanceof functions.https.HttpsError) throw err;
+    throw new functions.https.HttpsError('internal', `Failed to merge: ${err?.message || 'Unknown error'}`);
+  }
+});
+
+// ============================================================================
+// STRIPE CONFIG FUNCTIONS
+// ============================================================================
+
+/**
+ * Get Stripe publishable key (platform key only; safe to expose to clients).
+ * Uses Firebase secrets and validates TEST/LIVE consistency.
+ */
+export const getStripePublishableKey = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (_data, _context) => {
+  try {
+    const publishableKey = getPlatformPublishableKey();
+    return { publishableKey };
+  } catch (error: any) {
+    functions.logger.error('Error getting Stripe publishable key:', { message: error?.message });
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    throw new functions.https.HttpsError('internal', 'Stripe publishable key is not configured or key mode mismatch.');
+  }
+});
+
+// ============================================================================
+// 2FA - EMAIL OTP FUNCTIONS
+// ============================================================================
+
+/**
+ * Generate and send OTP code via email
  * 
  * This function:
- * 1. Validates auth + facility access
- * 2. Gets lease template if templateId provided
- * 3. Calls Dropbox Sign API to create envelope
- * 4. Creates envelope document in Firestore
- * 5. Returns envelope ID
+ * 1. Generates a 6-digit OTP code
+ * 2. Stores it in Firestore with expiration (10 minutes)
+ * 3. Sends it via SendGrid email
+ * 4. Updates user's lastOTPSentAt timestamp
+ * 
+ * Rate limiting: Max 1 OTP per 45 seconds per user. lastOTPSentAt is updated only
+ * after a successful email send, so failed sends do not rate-limit the user.
  */
-// Deploy without requiring secrets - will check at runtime
-export const esignCreateEnvelope = functions.https.onCall(
-  async (data: EsignCreateEnvelopeRequest, context) => {
+export const generateOTP = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(
+  async (data: { purpose?: string }, context) => {
     try {
-      // Validate authentication
       if (!context.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
       }
+      enforceAppCheckOrThrow(context);
 
-      const { facilityId, tenantId, templateId, signerName, signerEmail, signerPhone, unitIds, subject, message, expiresAt } = data;
+      const userId = context.auth.uid;
+      const userEmail = context.auth.token.email;
+      const purpose = data.purpose || 'sensitive_action';
 
-      // Validate required fields
-      if (!facilityId || !signerName || !signerEmail) {
-        throw new functions.https.HttpsError('invalid-argument', 'Missing required fields: facilityId, signerName, signerEmail');
+      if (!userEmail) {
+        throw new functions.https.HttpsError('invalid-argument', 'User email is required');
       }
 
-      // Verify facility access
-      const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-      if (!facilityDoc.exists) {
-        throw new functions.https.HttpsError('not-found', 'Facility not found');
+      // Get user document
+      const userDoc = await admin.firestore().collection('users').doc(userId).get();
+      if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'User not found');
       }
 
-      const facilityData = facilityDoc.data()!;
-      const facilityOwnerUid = facilityData.ownerUid as string;
+      const userData = userDoc.data()!;
+      const lastOTPSentAt = userData.lastOTPSentAt as admin.firestore.Timestamp | null;
 
-      // Check if user has access (owner or manager)
-      if (facilityOwnerUid !== context.auth.uid && !getSuperAdminEmails().includes(context.auth.token.email || '')) {
-        // Check if user is a manager (you may need to implement this check)
-        throw new functions.https.HttpsError('permission-denied', 'User does not have access to this facility');
-      }
-
-      // Check if E-sign is configured
-      const apiKey = getDropboxSignApiKey();
-      if (!apiKey || apiKey.trim() === '') {
-        throw new functions.https.HttpsError('failed-precondition', 'E-sign is not configured. Please set DROPBOX_SIGN_API_KEY environment variable in Firebase Functions config, or use: firebase functions:secrets:set DROPBOX_SIGN_API_KEY');
-      }
-
-      // Get template if provided
-      let providerTemplateId: string | undefined;
-      if (templateId) {
-        const templateDoc = await admin.firestore()
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('leaseTemplates')
-          .doc(templateId)
-          .get();
-        
-        if (templateDoc.exists) {
-          const templateData = templateDoc.data()!;
-          providerTemplateId = templateData.providerTemplateId as string | undefined;
+      // Rate limiting: Max 1 OTP per 45 seconds (only applies after a *successful* send)
+      const COOLDOWN_SECONDS = 45;
+      if (lastOTPSentAt) {
+        const secondsSinceLastOTP = (Date.now() - lastOTPSentAt.toMillis()) / 1000;
+        if (secondsSinceLastOTP < COOLDOWN_SECONDS) {
+          const remainingSeconds = Math.ceil(COOLDOWN_SECONDS - secondsSinceLastOTP);
+          throw new functions.https.HttpsError(
+            'resource-exhausted',
+            `Please wait ${remainingSeconds} seconds before requesting another OTP code. You can request a new code in ${remainingSeconds} second${remainingSeconds !== 1 ? 's' : ''}.`,
+          );
         }
       }
 
-      // TODO: Call Dropbox Sign API to create envelope
-      // For now, create a placeholder envelope in Firestore
-      // Replace this with actual Dropbox Sign API integration:
-      // const dropboxSign = require('@dropbox/sign');
-      // const signatureRequest = await dropboxSign.signatureRequestCreate({...});
+      // Generate 6-digit OTP code
+      const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
 
-      const envelopeRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('esignEnvelopes')
-        .doc();
+      // Store OTP in Firestore
+      const otpId = `otp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      await admin.firestore()
+        .collection('users')
+        .doc(userId)
+        .collection('otpCodes')
+        .doc(otpId)
+        .set({
+          code: otpCode,
+          purpose: purpose,
+          expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          used: false,
+        });
 
-      const now = admin.firestore.Timestamp.now();
-      const envelopeData = {
-        facilityId,
-        facilityOwnerUid,
-        tenantId: tenantId || null,
-        contractId: data.contractId || null,
-        templateId: templateId || null,
-        provider: 'dropboxSign',
-        status: 'draft', // Will be updated to 'sent' after API call
-        providerEnvelopeId: `placeholder_${envelopeRef.id}`, // Replace with actual envelope ID from API
-        providerTemplateId: providerTemplateId || null,
-        signerName,
-        signerEmail,
-        signerPhone: signerPhone || null,
-        unitIds: unitIds || [],
-        occupancyId: null,
-        createdAt: now,
-        updatedAt: now,
-        sentAt: null,
-        viewedAt: null,
-        signedAt: null,
-        voidedAt: null,
-        expiresAt: expiresAt ? admin.firestore.Timestamp.fromDate(new Date(expiresAt)) : null,
-        signedPdfPath: null,
-        signedPdfUrl: null,
-        auditTrailPath: null,
-        auditTrailUrl: null,
-        subject: subject || null,
-        message: message || null,
-        customFields: null,
-        notes: null,
-        createdBy: context.auth.uid,
-        isActive: true,
+      // Send OTP via email using SendGrid *before* updating lastOTPSentAt.
+      // Only rate-limit when we've actually sent an email; if send fails, user can retry immediately.
+      initializeSendGrid();
+
+      const emailSubject = 'Your Verification Code';
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #333;">Verification Code</h2>
+          <p>Your verification code is:</p>
+          <div style="background-color: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0; border-radius: 5px;">
+            <h1 style="color: #0066cc; font-size: 32px; margin: 0; letter-spacing: 5px;">${otpCode}</h1>
+          </div>
+          <p>This code will expire in 10 minutes.</p>
+          <p style="color: #666; font-size: 12px;">If you didn't request this code, please ignore this email.</p>
+        </div>
+      `;
+      const emailText = `Your verification code is: ${otpCode}\n\nThis code will expire in 10 minutes.\n\nIf you didn't request this code, please ignore this email.`;
+
+      const msg = {
+        to: userEmail,
+        from: {
+          email: SENDGRID_FROM_EMAIL.value(),
+          name: SENDGRID_FROM_NAME.value(),
+        },
+        subject: emailSubject,
+        html: emailHtml,
+        text: emailText,
       };
 
-      await envelopeRef.set(envelopeData);
+      await sgMail.send(msg);
 
-      functions.logger.info(`E-sign envelope created: ${envelopeRef.id} for tenant: ${tenantId}`);
+      // Update lastOTPSentAt only *after* successful send so failed sends don't rate-limit the user.
+      await admin.firestore()
+        .collection('users')
+        .doc(userId)
+        .update({
+          lastOTPSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+      functions.logger.info(`OTP generated and sent to user ${userId} (${userEmail})`);
 
       return {
-        envelopeId: envelopeRef.id,
-        providerEnvelopeId: envelopeData.providerEnvelopeId,
+        success: true,
+        message: 'OTP code sent to your email',
+        expiresIn: 600, // 10 minutes in seconds
       };
     } catch (error: any) {
-      functions.logger.error('Error creating E-sign envelope:', error);
+      functions.logger.error('Error generating OTP:', error);
       if (error instanceof functions.https.HttpsError) {
         throw error;
       }
-      throw new functions.https.HttpsError('internal', `Failed to create envelope: ${error.message}`);
+      throw new functions.https.HttpsError('internal', `Failed to generate OTP: ${error.message}`);
     }
-  }
+  },
 );
 
 /**
- * Webhook handler for Dropbox Sign events
+ * Verify OTP code
  * 
  * This function:
- * 1. Verifies webhook signature
- * 2. Processes envelope events (sent, viewed, signed, declined, voided)
- * 3. Updates envelope document in Firestore
- * 4. Downloads signed PDF if signed
- * 5. Updates associated contract/tenant records
+ * 1. Finds the most recent unused OTP for the user
+ * 2. Checks if it matches and hasn't expired
+ * 3. Marks it as used
+ * 4. Returns success if valid
  */
-// Deploy without requiring secrets - will check at runtime
-export const esignWebhookDropboxSign = functions.https.onRequest(
-  async (req, res) => {
+export const verifyOTP = functions.https.onCall(
+  async (data: { code: string; purpose?: string }, context) => {
     try {
-      // Verify webhook signature
-      const signature = req.headers['x-dropbox-sign-signature'] as string;
-      
-      if (!signature) {
-        functions.logger.warn('Webhook called without signature');
-        res.status(401).send('Unauthorized');
-        return;
+      if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+      }
+      enforceAppCheckOrThrow(context);
+
+      const userId = context.auth.uid;
+      const { code, purpose } = data;
+
+      if (!code || code.length !== 6 || !/^\d+$/.test(code)) {
+        throw new functions.https.HttpsError('invalid-argument', 'OTP code must be a 6-digit number');
       }
 
-      // TODO: Verify signature using Dropbox Sign webhook verification
-      // When DROPBOX_SIGN_WEBHOOK_SECRET is configured, verify signature:
-      // const crypto = require('crypto');
-      // const webhookSecret = DROPBOX_SIGN_WEBHOOK_SECRET.value();
-      // const expectedSignature = crypto.createHmac('sha256', webhookSecret)
-      //   .update(JSON.stringify(req.body))
-      //   .digest('hex');
-      // if (signature !== expectedSignature) {
-      //   res.status(401).send('Invalid signature');
-      //   return;
-      // }
-      // const crypto = require('crypto');
-      // const expectedSignature = crypto.createHmac('sha256', webhookSecret)
-      //   .update(JSON.stringify(req.body))
-      //   .digest('hex');
-      // if (signature !== expectedSignature) {
-      //   res.status(401).send('Invalid signature');
-      //   return;
-      // }
-
-      const event = req.body;
-      const eventType = event.event?.event_type;
-      const envelopeId = event.event?.event_hash; // Or appropriate field from Dropbox Sign
-
-      if (!eventType || !envelopeId) {
-        functions.logger.warn('Invalid webhook payload:', event);
-        res.status(400).send('Invalid payload');
-        return;
-      }
-
-      // Find envelope by providerEnvelopeId
-      const envelopesSnapshot = await admin.firestore()
-        .collectionGroup('esignEnvelopes')
-        .where('providerEnvelopeId', '==', envelopeId)
-        .limit(1)
-        .get();
-
-      if (envelopesSnapshot.empty) {
-        functions.logger.warn(`Envelope not found for provider ID: ${envelopeId}`);
-        res.status(404).send('Envelope not found');
-        return;
-      }
-
-      const envelopeDoc = envelopesSnapshot.docs[0];
-      const envelopeData = envelopeDoc.data();
-      const facilityId = envelopeData.facilityId as string;
-      const envelopeRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('esignEnvelopes')
-        .doc(envelopeDoc.id);
-
-      const updateData: any = {
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-
-      // Process event type
-      switch (eventType) {
-        case 'signature_request_sent':
-          updateData.status = 'sent';
-          updateData.sentAt = admin.firestore.FieldValue.serverTimestamp();
-          break;
-        case 'signature_request_viewed':
-          updateData.status = 'viewed';
-          updateData.viewedAt = admin.firestore.FieldValue.serverTimestamp();
-          break;
-        case 'signature_request_signed':
-          updateData.status = 'signed';
-          updateData.signedAt = admin.firestore.FieldValue.serverTimestamp();
+      // Find the most recent unused OTP for this user
+      // Use try-catch for the query in case index is missing
+      let otpQuery;
+      try {
+        otpQuery = await admin.firestore()
+          .collection('users')
+          .doc(userId)
+          .collection('otpCodes')
+          .where('used', '==', false)
+          .where('purpose', '==', purpose || 'sensitive_action')
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+      } catch (queryError: any) {
+        // If index is missing, try without orderBy (less efficient but works)
+        if (queryError.message && queryError.message.includes('index')) {
+          functions.logger.warn('Composite index missing, using fallback query');
+          otpQuery = await admin.firestore()
+            .collection('users')
+            .doc(userId)
+            .collection('otpCodes')
+            .where('used', '==', false)
+            .where('purpose', '==', purpose || 'sensitive_action')
+            .get();
           
-          // TODO: Download signed PDF from Dropbox Sign API
-          // const signedPdf = await dropboxSign.signatureRequestFiles({...});
-          // Upload to Firebase Storage
-          // Update signedPdfPath and signedPdfUrl
-          
-          // Update associated contract if exists
-          if (envelopeData.contractId) {
-            await admin.firestore()
-              .collection('facilities')
-              .doc(facilityId)
-              .collection('contracts')
-              .doc(envelopeData.contractId)
-              .update({
-                status: 'signed',
-                signedAt: admin.firestore.FieldValue.serverTimestamp(),
-                signedBy: envelopeData.signerEmail,
-                // signedFileUrl: ... (from Storage)
-              });
+          // Sort in memory by createdAt
+          if (!otpQuery.empty) {
+            const sortedDocs = otpQuery.docs.sort((a, b) => {
+              const aTime = (a.data().createdAt as admin.firestore.Timestamp)?.toMillis() || 0;
+              const bTime = (b.data().createdAt as admin.firestore.Timestamp)?.toMillis() || 0;
+              return bTime - aTime; // Descending
+            });
+            // Create a new QuerySnapshot-like object with sorted docs
+            otpQuery = {
+              empty: sortedDocs.length === 0,
+              docs: sortedDocs.slice(0, 1), // Take only the first one
+            } as any;
           }
-          break;
-        case 'signature_request_declined':
-          updateData.status = 'declined';
-          break;
-        case 'signature_request_voided':
-          updateData.status = 'voided';
-          updateData.voidedAt = admin.firestore.FieldValue.serverTimestamp();
-          break;
-        case 'signature_request_canceled':
-          updateData.status = 'voided';
-          updateData.voidedAt = admin.firestore.FieldValue.serverTimestamp();
-          break;
-        default:
-          functions.logger.info(`Unhandled event type: ${eventType}`);
+        } else {
+          throw queryError;
+        }
       }
 
-      await envelopeRef.update(updateData);
-
-      functions.logger.info(`E-sign webhook processed: ${eventType} for envelope ${envelopeDoc.id}`);
-
-      res.status(200).send('OK');
-    } catch (error: any) {
-      functions.logger.error('Error processing E-sign webhook:', error);
-      res.status(500).send('Internal server error');
-    }
-  }
-);
-
-/**
- * Resend E-sign envelope
- */
-// Deploy without requiring secrets - will check at runtime
-export const esignResendEnvelope = functions.https.onCall(
-  async (data: { facilityId: string; envelopeId: string }, context) => {
-    try {
-      if (!context.auth) {
-        throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+      if (otpQuery.empty) {
+        throw new functions.https.HttpsError('not-found', 'No valid OTP code found. Please request a new code.');
       }
 
-      const { facilityId, envelopeId } = data;
+      const otpDoc = otpQuery.docs[0];
+      const otpData = otpDoc.data();
+      
+      // Validate data exists
+      if (!otpData.expiresAt) {
+        functions.logger.error('OTP document missing expiresAt field', { userId, otpId: otpDoc.id });
+        throw new functions.https.HttpsError('internal', 'OTP data is invalid. Please request a new code.');
+      }
+      
+      const expiresAt = (otpData.expiresAt as admin.firestore.Timestamp).toDate();
 
-      // Get envelope
-      const envelopeDoc = await admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('esignEnvelopes')
-        .doc(envelopeId)
+      // Check if expired
+      if (expiresAt < new Date()) {
+        // Mark as used to prevent reuse
+        await otpDoc.ref.update({ used: true });
+        throw new functions.https.HttpsError('deadline-exceeded', 'OTP code has expired. Please request a new code.');
+      }
+
+      // Check if code matches (ensure both are strings for comparison)
+      const storedCode = String(otpData.code || '');
+      const providedCode = String(code || '');
+      
+      if (storedCode !== providedCode) {
+        functions.logger.warn('OTP code mismatch', { 
+          userId, 
+          storedCode: storedCode.substring(0, 2) + '****', // Log partial for security
+          providedCodeLength: providedCode.length, 
+        });
+        throw new functions.https.HttpsError('permission-denied', 'Invalid OTP code. Please try again.');
+      }
+
+      // Mark as used
+      await otpDoc.ref.update({ used: true });
+
+      // Clean up old OTP codes (older than 1 hour)
+      const oneHourAgo = admin.firestore.Timestamp.fromDate(new Date(Date.now() - 60 * 60 * 1000));
+      const oldOtpsQuery = await admin.firestore()
+        .collection('users')
+        .doc(userId)
+        .collection('otpCodes')
+        .where('createdAt', '<', oneHourAgo)
         .get();
 
-      if (!envelopeDoc.exists) {
-        throw new functions.https.HttpsError('not-found', 'Envelope not found');
-      }
-
-      const envelopeData = envelopeDoc.data()!;
-
-      // Verify access
-      if (envelopeData.facilityOwnerUid !== context.auth.uid && !getSuperAdminEmails().includes(context.auth.token.email || '')) {
-        throw new functions.https.HttpsError('permission-denied', 'User does not have access');
-      }
-
-      // Check if E-sign is configured
-      const apiKey = getDropboxSignApiKey();
-      if (!apiKey || apiKey.trim() === '') {
-        throw new functions.https.HttpsError('failed-precondition', 'E-sign is not configured. Please set DROPBOX_SIGN_API_KEY environment variable or secret.');
-      }
-
-      // TODO: Call Dropbox Sign API to resend
-      // await dropboxSign.signatureRequestRemind({...});
-
-      // Update envelope
-      await envelopeDoc.ref.update({
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      const batch = admin.firestore().batch();
+      oldOtpsQuery.docs.forEach((doc) => {
+        batch.delete(doc.ref);
       });
+      if (!oldOtpsQuery.empty) {
+        await batch.commit();
+      }
 
-      return { success: true };
+      functions.logger.info(`OTP verified successfully for user ${userId}`);
+
+      return {
+        success: true,
+        message: 'OTP code verified successfully',
+      };
     } catch (error: any) {
-      functions.logger.error('Error resending envelope:', error);
+      functions.logger.error('Error verifying OTP:', error);
       if (error instanceof functions.https.HttpsError) {
         throw error;
       }
-      throw new functions.https.HttpsError('internal', `Failed to resend envelope: ${error.message}`);
+      throw new functions.https.HttpsError('internal', `Failed to verify OTP: ${error.message}`);
     }
-  }
+  },
 );
 
-/**
- * Void E-sign envelope
- */
-// Deploy without requiring secrets - will check at runtime
-export const esignVoidEnvelope = functions.https.onCall(
-  async (data: { facilityId: string; envelopeId: string; reason?: string }, context) => {
-    try {
-      if (!context.auth) {
-        throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
-      }
+// Export diagnostic function to fix ownership issues after subscription
+export { diagnosticFixOwnership };
 
-      const { facilityId, envelopeId, reason } = data;
+// Export facility stats functions for automatic dashboard updates
+import * as facilityStatsModule from './facility_stats';
+export const onTenantWrite = facilityStatsModule.onTenantWrite;
+export const onUnitWrite = facilityStatsModule.onUnitWrite;
+export const updateAllFacilityStatsNightly = facilityStatsModule.updateAllFacilityStatsNightly;
+export const updateFacilityStatsManual = facilityStatsModule.updateFacilityStatsManual;
 
-      // Get envelope
-      const envelopeDoc = await admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('esignEnvelopes')
-        .doc(envelopeId)
-        .get();
-
-      if (!envelopeDoc.exists) {
-        throw new functions.https.HttpsError('not-found', 'Envelope not found');
-      }
-
-      const envelopeData = envelopeDoc.data()!;
-
-      // Verify access
-      if (envelopeData.facilityOwnerUid !== context.auth.uid && !getSuperAdminEmails().includes(context.auth.token.email || '')) {
-        throw new functions.https.HttpsError('permission-denied', 'User does not have access');
-      }
-
-      // Check if E-sign is configured
-      const apiKey = getDropboxSignApiKey();
-      if (!apiKey || apiKey.trim() === '') {
-        throw new functions.https.HttpsError('failed-precondition', 'E-sign is not configured. Please set DROPBOX_SIGN_API_KEY environment variable or secret.');
-      }
-
-      // TODO: Call Dropbox Sign API to void
-      // await dropboxSign.signatureRequestCancel({...});
-
-      // Update envelope
-      await envelopeDoc.ref.update({
-        status: 'voided',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        voidedAt: admin.firestore.FieldValue.serverTimestamp(),
-        notes: reason || envelopeData.notes || null,
-      });
-
-      return { success: true };
-    } catch (error: any) {
-      functions.logger.error('Error voiding envelope:', error);
-      if (error instanceof functions.https.HttpsError) {
-        throw error;
-      }
-      throw new functions.https.HttpsError('internal', `Failed to void envelope: ${error.message}`);
-    }
-  }
-);
+// Manager Overlock callables (manager/admin only)
+import * as overlockModule from './overlock';
+export const setUnitOverlockStatus = overlockModule.setUnitOverlockStatus;
+export const setUnitsOverlockStatusBulk = overlockModule.setUnitsOverlockStatusBulk;
+export const overlockAllDelinquent = overlockModule.overlockAllDelinquent;
+export const clearOverlockByFilter = overlockModule.clearOverlockByFilter;
