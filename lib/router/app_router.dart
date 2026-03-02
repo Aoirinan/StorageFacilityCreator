@@ -7,9 +7,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../providers/auth_provider.dart';
+import '../providers/active_facility_provider.dart';
+import '../providers/facility_provider.dart';
 import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
+import '../services/modern_navigation_service.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/signup_screen.dart';
 import '../screens/auth/forgot_password_screen.dart';
@@ -20,6 +23,9 @@ import '../screens/accept_invite_screen.dart';
 import '../screens/facility_management_screen.dart';
 import '../screens/client_list_screen.dart';
 import '../screens/facility_map_editor_screen.dart';
+import '../screens/unit_list_screen.dart';
+import '../screens/manager_overlock_screen.dart';
+import '../screens/tenant_csv_import_wizard_screen.dart';
 import '../screens/home_screen_modern.dart';
 import '../screens/contract_list_screen.dart';
 import '../screens/payment_list_screen.dart';
@@ -28,6 +34,8 @@ import '../screens/messaging_screen.dart';
 import '../screens/sms_conversations_screen.dart';
 import '../screens/gate_access_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/texting_setup_screen.dart';
+import '../screens/permission_management_screen.dart';
 import '../screens/ai_assistant_screen.dart';
 import '../screens/stripe_connect_onboarding_screen.dart';
 import '../models/facility_model.dart';
@@ -39,6 +47,7 @@ import '../screens/facility_creation_wizard.dart';
 import '../widgets/global_home_overlay.dart';
 import '../screens/late_dashboard_screen.dart';
 import '../screens/subscription_test_screen.dart';
+import '../screens/billing_and_payments_screen.dart';
 import '../models/tenant_model.dart';
 import '../models/payment_model.dart';
 import '../screens/payment_detail_screen.dart';
@@ -48,8 +57,13 @@ import '../screens/reminder_schedule_screen.dart';
 import '../screens/contract_detail_screen.dart';
 import '../screens/contract_creation_screen.dart';
 import '../screens/contract_template_management_screen.dart';
+import '../screens/create_contract_template_screen.dart';
+import '../screens/edit_contract_template_screen.dart';
+import '../screens/lease_templates_screen.dart';
 import '../screens/payment_creation_screen.dart';
+import '../screens/payment_reconciliation_screen.dart';
 import '../models/contract_model.dart';
+import '../models/contract_template_model.dart';
 import '../models/unit_model.dart';
 import '../screens/client_detail_screen.dart';
 import '../models/reminder_model.dart';
@@ -61,6 +75,7 @@ import '../screens/invoice_list_screen.dart';
 import '../screens/invoice_detail_screen.dart';
 import '../models/invoice_model.dart';
 import '../screens/recurring_charges_screen.dart';
+import '../screens/automation_preview_screen.dart';
 import '../screens/deposit_list_screen.dart';
 import '../screens/deposit_detail_screen.dart';
 import '../screens/deposit_creation_screen.dart';
@@ -73,9 +88,12 @@ import '../screens/inventory_list_screen.dart';
 import '../screens/pos_screen.dart';
 import '../screens/reports_consolidated_screen.dart';
 import '../screens/contact_logs_screen.dart';
+import '../screens/audit_log_screen.dart';
+import '../screens/exports_screen.dart';
 import '../screens/transfer_workflow_screen.dart';
 import '../screens/document_attachments_screen.dart';
 import '../screens/unit_detail_screen.dart';
+import '../screens/unit_creation_screen.dart';
 import '../screens/insurance_settings_screen.dart';
 import '../screens/claims_list_screen.dart';
 import '../screens/claim_detail_screen.dart';
@@ -87,6 +105,7 @@ import '../screens/bulk_messaging_screen.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/tenant_service.dart';
 import '../widgets/subscription_warning_banner.dart';
+import '../widgets/messaging_facility_selector.dart';
 import '../screens/email_template_management_screen.dart';
 import '../screens/sms_template_management_screen.dart';
 import '../screens/public_payment_screen.dart';
@@ -107,9 +126,16 @@ import '../screens/communication_analytics_screen.dart';
 import '../screens/document_center_screen.dart';
 import '../screens/escalation_workflow_management_screen.dart';
 import '../screens/conditional_rules_management_screen.dart';
+import '../screens/facility_calendar_screen.dart';
+import '../screens/pending_approval_screen.dart';
 import '../models/document_attachment_model.dart';
 import '../screens/marketing_landing_page.dart';
-
+import '../screens/sms_policy_screen.dart';
+import '../screens/contact_screen.dart';
+import '../screens/auth/privacy_screen.dart';
+import '../screens/auth/terms_screen.dart';
+import '../screens/super_admin/super_admin_screen.dart';
+import '../providers/feature_flag_provider.dart';
 // NOTE: Route constants, guards, and helpers are now in separate files:
 // - app_route.dart: Route constants
 // - route_guards.dart: Route guard logic (includes subscription cache)
@@ -133,14 +159,15 @@ class DelinquencyShellScreen extends StatelessWidget {
 }
 
 /// Main router provider
-/// 
+///
 /// NOTE: This file has been partially modularized. Route constants, guards, and helpers
 /// are in separate files. The routes array is still here but will be further modularized.
 final goRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: AppRoute.landing,
     debugLogDiagnostics: kDebugMode,
-    refreshListenable: GoRouterRefreshStream(FirebaseAuth.instance.authStateChanges()),
+    refreshListenable:
+        GoRouterRefreshStream(FirebaseAuth.instance.authStateChanges()),
     redirect: (context, state) => routeGuard(context, state, ref),
     errorBuilder: (context, state) => NotFoundPage(state: state),
     routes: [
@@ -150,9 +177,33 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => MarketingLandingPage(),
       ),
       GoRoute(
+        path: '/privacy',
+        name: 'privacy',
+        builder: (context, state) => const PrivacyScreen(),
+      ),
+      GoRoute(
+        path: '/terms',
+        name: 'terms',
+        builder: (context, state) => const TermsScreen(),
+      ),
+      GoRoute(
+        path: '/sms-policy',
+        name: 'sms-policy',
+        builder: (context, state) => const SMSPolicyScreen(),
+      ),
+      GoRoute(
+        path: '/contact',
+        name: 'contact',
+        builder: (context, state) => const ContactScreen(),
+      ),
+      GoRoute(
         path: AppRoute.login,
         name: 'login',
-        builder: (context, state) => const LoginScreen(),
+        builder: (context, state) {
+          final email = state.uri.queryParameters['email'];
+          final redirect = state.uri.queryParameters['redirect'];
+          return LoginScreen(initialEmail: email, redirectAfterLogin: redirect);
+        },
       ),
       GoRoute(
         path: AppRoute.signup,
@@ -170,16 +221,23 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final emailExtra = state.extra;
           final emailParam = state.uri.queryParameters['email'];
-          final email = emailExtra is String
-              ? emailExtra
-              : (emailParam ?? '');
+          final email = emailExtra is String ? emailExtra : (emailParam ?? '');
           return EmailVerificationScreen(email: email);
         },
       ),
       GoRoute(
         path: AppRoute.tenantPortal,
         name: 'tenant-portal',
-        builder: (context, state) => const TenantPortalAccessScreen(),
+        builder: (context, state) => Consumer(
+          builder: (ctx, ref, _) {
+            final enabled =
+                ref.watch(featureFlagEnabledProvider('tenantPortal'));
+            if (!enabled) {
+              return const _FeatureDisabledPage(featureName: 'Tenant Portal');
+            }
+            return const TenantPortalAccessScreen();
+          },
+        ),
       ),
       GoRoute(
         path: AppRoute.contractSign,
@@ -189,9 +247,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           if (token == null || token.isEmpty) {
             return NotFoundPage(state: state);
           }
-          return ContractSigningScreen(signingToken: token);
-            },
-          ),
+          final contract = state.extra is ContractModel
+              ? state.extra as ContractModel
+              : null;
+          return ContractSigningScreen(signingToken: token, contract: contract);
+        },
+      ),
       GoRoute(
         path: AppRoute.publicRental,
         name: 'public-rental',
@@ -215,7 +276,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: '${AppRoute.publicFacility}/:facilityId',
         name: 'public-facility',
         builder: (context, state) {
-          final facilityId = state.pathParameters['facilityId'] ?? state.uri.queryParameters['facilityId'];
+          final facilityId = state.pathParameters['facilityId'] ??
+              state.uri.queryParameters['facilityId'];
           if (facilityId == null || facilityId.isEmpty) {
             return NotFoundPage(state: state);
           }
@@ -296,7 +358,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final facilityId = state.uri.queryParameters['facilityId'];
           final inviteId = state.uri.queryParameters['inviteId'];
-          if (facilityId == null || facilityId.isEmpty || inviteId == null || inviteId.isEmpty) {
+          if (facilityId == null ||
+              facilityId.isEmpty ||
+              inviteId == null ||
+              inviteId.isEmpty) {
             return NotFoundPage(state: state);
           }
           return AcceptInviteScreen(
@@ -306,7 +371,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       ShellRoute(
-        builder: (context, state, child) => AppShell(child: child, showSubscriptionBanner: true),
+        builder: (context, state, child) =>
+            AppShell(child: child, showSubscriptionBanner: true),
         routes: [
           GoRoute(
             path: AppRoute.dashboard,
@@ -334,14 +400,55 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const ClientListScreen(),
           ),
           GoRoute(
+            path: AppRoute.tenantCsvImport,
+            name: 'tenant-csv-import',
+            builder: (context, state) {
+              final extra = state.extra;
+              String facilityId = '';
+              if (extra is Map<String, dynamic>) {
+                facilityId = extra['facilityId'] ?? '';
+              } else {
+                facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              }
+              if (facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return TenantCsvImportWizardScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
             path: AppRoute.tenantDetail,
             name: 'tenant-detail',
             builder: (context, state) {
               final tenantExtra = state.extra;
-              if (tenantExtra is! TenantModel) {
+              if (tenantExtra is TenantModel) {
+                return ClientDetailScreen(tenant: tenantExtra);
+              }
+              // Load from query params when navigating from dashboard etc.
+              final tenantId = state.uri.queryParameters['tenantId'];
+              final facilityId = state.uri.queryParameters['facilityId'];
+              if (tenantId == null ||
+                  tenantId.isEmpty ||
+                  facilityId == null ||
+                  facilityId.isEmpty) {
                 return NotFoundPage(state: state);
               }
-              return ClientDetailScreen(tenant: tenantExtra);
+              return FutureBuilder<TenantModel?>(
+                future: TenantService.getTenantById(facilityId, tenantId),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (snapshot.hasError ||
+                      !snapshot.hasData ||
+                      snapshot.data == null) {
+                    return NotFoundPage(state: state);
+                  }
+                  return ClientDetailScreen(tenant: snapshot.data!);
+                },
+              );
             },
           ),
           GoRoute(
@@ -352,13 +459,13 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               if (tenantId == null) {
                 return NotFoundPage(state: state);
               }
-              
+
               // Try to get tenant from state.extra first (preferred)
               final tenantExtra = state.extra;
               if (tenantExtra is TenantModel) {
                 return LedgerScreen(tenant: tenantExtra);
               }
-              
+
               // Otherwise, try to load from facilityId query parameter
               final facilityId = state.uri.queryParameters['facilityId'];
               if (facilityId != null && facilityId.isNotEmpty) {
@@ -371,14 +478,16 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                         body: Center(child: CircularProgressIndicator()),
                       );
                     }
-                    if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
+                    if (snapshot.hasError ||
+                        !snapshot.hasData ||
+                        snapshot.data == null) {
                       return NotFoundPage(state: state);
                     }
                     return LedgerScreen(tenant: snapshot.data!);
                   },
                 );
               }
-              
+
               // If no facilityId provided and no tenant in extra, show not found
               return NotFoundPage(state: state);
             },
@@ -401,6 +510,16 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.auditLogs,
+            name: 'audit-logs',
+            builder: (context, state) => const AuditLogScreen(),
+          ),
+          GoRoute(
+            path: AppRoute.exports,
+            name: 'exports',
+            builder: (context, state) => const ExportsScreen(),
+          ),
+          GoRoute(
             path: AppRoute.transfer,
             name: 'transfer',
             builder: (context, state) {
@@ -420,7 +539,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.units,
             name: 'units',
-            builder: (context, state) => const UnitsLandingScreen(),
+            builder: (context, state) => const UnitListScreen(),
+          ),
+          GoRoute(
+            path: AppRoute.managerOverlock,
+            name: 'manager-overlock',
+            builder: (context, state) => const ManagerOverlockScreen(),
           ),
           GoRoute(
             path: AppRoute.unitsMap,
@@ -440,7 +564,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               final unitId = state.uri.queryParameters['unitId'] ?? '';
               final unit = state.extra;
-              
+
               if (facilityId.isNotEmpty && unitId.isNotEmpty) {
                 return UnitDetailScreen(
                   facilityId: facilityId,
@@ -460,6 +584,20 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.unitEdit,
+            name: 'unit-edit',
+            builder: (context, state) {
+              final unit = state.extra;
+              if (unit is UnitModel) {
+                return UnitCreationScreen(
+                  facilityId: unit.facilityId,
+                  unit: unit,
+                );
+              }
+              return NotFoundPage(state: state);
+            },
+          ),
+          GoRoute(
             path: AppRoute.contracts,
             name: 'contracts',
             builder: (context, state) => const ContractListScreen(),
@@ -469,13 +607,55 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'contract-create',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
-              return ContractCreationScreen(facilityId: facilityId);
+              final tenantId = state.uri.queryParameters['tenantId'] ?? '';
+              return ContractCreationScreen(
+                facilityId: facilityId,
+                tenantId: tenantId.isEmpty ? null : tenantId,
+              );
             },
           ),
           GoRoute(
             path: AppRoute.contractTemplates,
             name: 'contract-templates',
-            builder: (context, state) => const ContractTemplateManagementScreen(),
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              return ContractTemplateManagementScreen(
+                facilityId: facilityId.isEmpty ? null : facilityId,
+              );
+            },
+          ),
+          GoRoute(
+            path: AppRoute.contractTemplatesCreate,
+            name: 'contract-templates-create',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return CreateContractTemplateScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
+            path: AppRoute.contractTemplatesEdit,
+            name: 'contract-templates-edit',
+            builder: (context, state) {
+              final template = state.extra;
+              if (template is! ContractTemplateModel) {
+                return NotFoundPage(state: state);
+              }
+              return EditContractTemplateScreen(template: template);
+            },
+          ),
+          GoRoute(
+            path: AppRoute.leaseTemplates,
+            name: 'lease-templates',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return LeaseTemplatesScreen(facilityId: facilityId);
+            },
           ),
           GoRoute(
             path: AppRoute.contractDetail,
@@ -523,6 +703,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.paymentReconciliation,
+            name: 'payment-reconciliation',
+            builder: (context, state) => const PaymentReconciliationScreen(),
+          ),
+          GoRoute(
             path: AppRoute.delinquency,
             name: 'delinquency',
             builder: (context, state) => const DelinquencyShellScreen(),
@@ -532,7 +717,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'access',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'];
-              final facilityName = state.uri.queryParameters['facilityName'] ?? '';
+              final facilityName =
+                  state.uri.queryParameters['facilityName'] ?? '';
               if (facilityId == null || facilityId.isEmpty) {
                 return const AccessLandingScreen();
               }
@@ -548,7 +734,35 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'];
               if (facilityId == null || facilityId.isEmpty) {
-                return const MessagingLandingScreen();
+                // Use active facility or trigger facility selection
+                return Consumer(
+                  builder: (context, ref, child) {
+                    final activeFacilityIdAsync =
+                        ref.watch(activeFacilityIdProvider);
+                    return activeFacilityIdAsync.when(
+                      data: (activeFacilityId) {
+                        if (activeFacilityId != null) {
+                          // Redirect to messaging with active facility
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (context.mounted) {
+                              context.go(
+                                  '/messaging?facilityId=$activeFacilityId');
+                            }
+                          });
+                          return const Scaffold(
+                            body: Center(child: CircularProgressIndicator()),
+                          );
+                        }
+                        // No active facility - show facility selector
+                        return const MessagingFacilitySelector();
+                      },
+                      loading: () => const Scaffold(
+                        body: Center(child: CircularProgressIndicator()),
+                      ),
+                      error: (_, __) => const MessagingFacilitySelector(),
+                    );
+                  },
+                );
               }
               return MessagingScreen(facilityId: facilityId);
             },
@@ -559,7 +773,33 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               if (facilityId.isEmpty) {
-                return const MessagingLandingScreen(); // Fallback
+                // Use active facility or redirect to messaging
+                return Consumer(
+                  builder: (context, ref, child) {
+                    final activeFacilityId = ref
+                        .watch(activeFacilityIdProvider)
+                        .whenOrNull(data: (d) => d);
+                    if (activeFacilityId != null) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (context.mounted) {
+                          context.go(
+                              '/messaging/sms?facilityId=$activeFacilityId');
+                        }
+                      });
+                      return const Scaffold(
+                        body: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (context.mounted) {
+                        context.go('/messaging');
+                      }
+                    });
+                    return const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    );
+                  },
+                );
               }
               return SMSConversationsScreen(facilityId: facilityId);
             },
@@ -570,15 +810,135 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const SettingsScreen(),
           ),
           GoRoute(
+            path: AppRoute.textingSetup,
+            name: 'texting-setup',
+            builder: (context, state) => Consumer(
+              builder: (ctx, ref, _) {
+                final enabled = ref
+                    .watch(featureFlagEnabledProvider('TEXTING_ONBOARDING_V1'));
+                if (!enabled) {
+                  return const _FeatureDisabledPage(
+                      featureName: 'Texting Setup');
+                }
+                final facilityId = state.uri.queryParameters['facilityId'];
+                return TextingSetupScreen(facilityId: facilityId);
+              },
+            ),
+          ),
+          GoRoute(
+            path: AppRoute.permissionManagement,
+            name: 'permission-management',
+            builder: (context, state) => const PermissionManagementScreen(),
+          ),
+          GoRoute(
             path: AppRoute.stripeConnect,
             name: 'stripe-connect',
             builder: (context, state) {
               final extra = state.extra;
+              final facilityIdParam = state.uri.queryParameters['facilityId'];
+
+              // Priority: extra > query param > active facility
               if (extra is FacilityModel) {
                 return StripeConnectOnboardingScreen(facility: extra);
               }
-              // Fallback - redirect to settings if no facility provided
-              return const SettingsScreen();
+
+              // Try to get facility from query param or active facility
+              return Consumer(
+                builder: (context, ref, _) {
+                  final facilitiesAsync = ref.watch(userFacilitiesProvider(
+                    ref
+                            .watch(authStateProvider)
+                            .whenOrNull(data: (d) => d)
+                            ?.uid ??
+                        '',
+                  ));
+
+                  return facilitiesAsync.when(
+                    data: (facilities) {
+                      FacilityModel? facility;
+
+                      if (facilityIdParam != null &&
+                          facilityIdParam.isNotEmpty) {
+                        facility = facilities.firstWhere(
+                          (f) => f.id == facilityIdParam,
+                          orElse: () => facilities.isNotEmpty
+                              ? facilities.first
+                              : throw Exception('Facility not found'),
+                        );
+                      } else {
+                        // Use active facility
+                        final activeFacilityId = ref
+                            .read(activeFacilityIdProvider)
+                            .whenOrNull(data: (d) => d);
+                        if (activeFacilityId != null) {
+                          facility = facilities.firstWhere(
+                            (f) => f.id == activeFacilityId,
+                            orElse: () => facilities.isNotEmpty
+                                ? facilities.first
+                                : throw Exception('Facility not found'),
+                          );
+                        } else if (facilities.isNotEmpty) {
+                          facility = facilities.first;
+                        }
+                      }
+
+                      if (facility == null) {
+                        return Scaffold(
+                          appBar: AppBar(
+                            title: const Text('Stripe Connect'),
+                          ),
+                          body: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.account_balance_wallet_outlined,
+                                    size: 64,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 24),
+                                  Text(
+                                    'Create a facility first',
+                                    style:
+                                        Theme.of(context).textTheme.titleLarge,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'Stripe Connect is set up per facility. Create a facility, then come back here to connect Stripe and receive payments.',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                          color: Colors.grey[600],
+                                        ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 24),
+                                  ElevatedButton.icon(
+                                    onPressed: () =>
+                                        context.go(AppRoute.facilityCreate),
+                                    icon: const Icon(Icons.add_business),
+                                    label: const Text('Create Facility'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+
+                      return StripeConnectOnboardingScreen(facility: facility);
+                    },
+                    loading: () => const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    ),
+                    error: (_, __) => const SettingsScreen(),
+                  );
+                },
+              );
             },
           ),
           GoRoute(
@@ -630,7 +990,33 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               if (facilityId.isEmpty) {
-                return const SettingsScreen(); // Fallback
+                // Use active facility or redirect to messaging
+                return Consumer(
+                  builder: (context, ref, child) {
+                    final activeFacilityId = ref
+                        .watch(activeFacilityIdProvider)
+                        .whenOrNull(data: (d) => d);
+                    if (activeFacilityId != null) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (context.mounted) {
+                          context.go(
+                              '/messaging/bulk?facilityId=$activeFacilityId');
+                        }
+                      });
+                      return const Scaffold(
+                        body: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (context.mounted) {
+                        context.go('/messaging');
+                      }
+                    });
+                    return const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    );
+                  },
+                );
               }
               return BulkMessagingScreen(facilityId: facilityId);
             },
@@ -713,9 +1099,24 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.calendar,
+            name: 'calendar',
+            builder: (context, state) => const FacilityCalendarScreen(),
+          ),
+          GoRoute(
             path: AppRoute.aiAssistant,
             name: 'ai-assistant',
-            builder: (context, state) => const AIAssistantScreen(),
+            builder: (context, state) => Consumer(
+              builder: (ctx, ref, _) {
+                final enabled =
+                    ref.watch(featureFlagEnabledProvider('aiAssistant'));
+                if (!enabled) {
+                  return const _FeatureDisabledPage(
+                      featureName: 'AI Assistant');
+                }
+                return const AIAssistantScreen();
+              },
+            ),
           ),
           GoRoute(
             path: AppRoute.reports,
@@ -825,7 +1226,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'reminder-schedule',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
-              final facilityName = state.uri.queryParameters['facilityName'] ?? '';
+              final facilityName =
+                  state.uri.queryParameters['facilityName'] ?? '';
               return ReminderScheduleScreen(
                 facilityId: facilityId,
                 facilityName: facilityName.isEmpty ? 'Facility' : facilityName,
@@ -838,9 +1240,27 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const DNRListScreen(),
           ),
           GoRoute(
+            path: AppRoute.pendingApproval,
+            name: 'pending-approval',
+            builder: (context, state) => const PendingApprovalScreen(),
+          ),
+          GoRoute(
             path: AppRoute.subscription,
             name: 'subscription',
-            builder: (context, state) => const SubscriptionTestScreen(),
+            builder: (context, state) {
+              final showTrialExpiredDialog =
+                  state.uri.queryParameters['trialExpired'] == '1';
+              final initialTab =
+                  state.uri.queryParameters['tab'] == 'processing' ? 1 : 0;
+              final subscriptionChild = state.extra is SubscriptionTestScreen
+                  ? state.extra as SubscriptionTestScreen
+                  : null;
+              return BillingAndPaymentsScreen(
+                showTrialExpiredDialog: showTrialExpiredDialog,
+                initialTab: initialTab,
+                subscriptionChild: subscriptionChild,
+              );
+            },
           ),
           GoRoute(
             path: AppRoute.dataIntegrity,
@@ -856,53 +1276,6 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               }
               // In release mode, redirect to contracts list
               return const ContractListScreen();
-            },
-          ),
-          GoRoute(
-            path: AppRoute.legacyScreen,
-            name: 'legacy-screen',
-            builder: (context, state) {
-              // #region agent log
-              final logEntry = jsonEncode({
-                'timestamp': DateTime.now().millisecondsSinceEpoch,
-                'location': 'app_router.dart:562',
-                'message': 'Legacy route builder called',
-                'data': {'extraType': state.extra?.runtimeType.toString(), 'hasExtra': state.extra != null, 'isWidget': state.extra is Widget},
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'C',
-              });
-              print('[DEBUG] $logEntry');
-              // #endregion
-              final extra = state.extra;
-              if (extra is Widget) {
-                // #region agent log
-                final logEntry2 = jsonEncode({
-                  'timestamp': DateTime.now().millisecondsSinceEpoch,
-                  'location': 'app_router.dart:570',
-                  'message': 'Returning Widget from legacy route',
-                  'data': {'widgetType': extra.runtimeType.toString()},
-                  'sessionId': 'debug-session',
-                  'runId': 'run1',
-                  'hypothesisId': 'C',
-                });
-                print('[DEBUG] $logEntry2');
-                // #endregion
-                return extra;
-              }
-              // #region agent log
-              final logEntry3 = jsonEncode({
-                'timestamp': DateTime.now().millisecondsSinceEpoch,
-                'location': 'app_router.dart:586',
-                'message': 'Extra is not a Widget, returning NotFoundPage',
-                'data': {},
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'C',
-              });
-              print('[DEBUG] $logEntry3');
-              // #endregion
-              return NotFoundPage(state: state);
             },
           ),
           GoRoute(
@@ -1009,6 +1382,15 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const RecurringChargesScreen(),
           ),
           GoRoute(
+            path: AppRoute.automationPreview,
+            name: 'automation-preview',
+            builder: (context, state) {
+              final automationType =
+                  state.uri.queryParameters['type'] ?? 'monthlyCharges';
+              return AutomationPreviewScreen(automationType: automationType);
+            },
+          ),
+          GoRoute(
             path: AppRoute.deposits,
             name: 'deposits',
             builder: (context, state) => const DepositListScreen(),
@@ -1052,7 +1434,58 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           ),
         ],
       ),
+      // Outside ShellRoute so it renders without the facility owner sidebar.
+      // Used by the tenant portal (and any other full-screen widget pushed via extra).
+      GoRoute(
+        path: AppRoute.legacyScreen,
+        name: 'legacy-screen',
+        builder: (context, state) {
+          final extra = state.extra;
+          if (extra is Widget) return extra;
+          return NotFoundPage(state: state);
+        },
+      ),
+      // Super admin dashboard — full-screen, no facility sidebar.
+      // Access is restricted to superadmin emails in route_guards.dart.
+      GoRoute(
+        path: AppRoute.superAdmin,
+        name: 'super-admin',
+        builder: (context, state) => const SuperAdminScreen(),
+      ),
     ],
   );
 });
 
+/// Shown when a feature has been disabled via the Super Admin feature flags.
+class _FeatureDisabledPage extends StatelessWidget {
+  final String featureName;
+  const _FeatureDisabledPage({required this.featureName});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.block, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text('$featureName is currently unavailable.',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            const Text(
+              'This feature has been temporarily disabled by the platform administrator.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 24),
+            TextButton(
+              onPressed: () => context.go(AppRoute.dashboard),
+              child: const Text('Back to Dashboard'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

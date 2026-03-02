@@ -1,5 +1,5 @@
 /// Centralized route names/paths.
-/// 
+///
 /// This file contains all route constants used throughout the application.
 /// Routes are organized by category for easier maintenance.
 class AppRoute {
@@ -24,17 +24,24 @@ class AppRoute {
   static const facilityCreate = '/facilities/create';
   static const tenants = '/tenants';
   static const tenantDetail = '/tenants/detail';
+  static const tenantCsvImport = '/tenants/import-csv';
   static const units = '/units';
   static const unitsMap = '/units/map';
   static const unitDetail = '/units/detail';
+  static const unitEdit = '/units/edit';
+  static const managerOverlock = '/manager-overlock';
   static const contracts = '/contracts';
   static const contractDetail = '/contracts/detail';
   static const contractCreate = '/contracts/create';
   static const contractTemplates = '/contracts/templates';
+  static const contractTemplatesCreate = '/contracts/templates/create';
+  static const contractTemplatesEdit = '/contracts/templates/edit';
   static const contractSigningTest = '/contracts/sign/test';
+  static const leaseTemplates = '/lease-templates';
   static const payments = '/payments';
   static const paymentDetail = '/payments/detail';
   static const paymentCreate = '/payments/create';
+  static const paymentReconciliation = '/payments/reconciliation';
   static const invoices = '/invoices';
   static const invoiceDetail = '/invoices/detail';
   static const deposits = '/deposits';
@@ -55,20 +62,27 @@ class AppRoute {
   static const reportsFinancial = '/reports/financial';
   static const reportsConsolidated = '/reports/consolidated';
   static const settings = '/settings';
+  static const textingSetup = '/settings/texting';
+  static const permissionManagement = '/permissions';
   static const notificationSettings = '/settings/notifications';
   static const profileEdit = '/settings/profile';
   static const appearanceSettings = '/settings/appearance';
   static const subscription = '/subscription';
   static const billing = '/billing';
+  static const autopayActivity = '/autopay-activity';
+  static const facilityNotifications = '/notifications';
   static const moveInWizard = '/move-in';
   static const moveOut = '/move-out';
   static const contactLogs = '/contact-logs';
+  static const auditLogs = '/audit-logs';
+  static const exports = '/exports';
   static const ledger = '/ledger';
   static const transfer = '/transfer';
   static const documents = '/documents';
   static const inventory = '/inventory';
   static const pos = '/pos';
   static const recurringCharges = '/recurring-charges';
+  static const automationPreview = '/automation-preview';
 
   // Insurance routes
   static const insurance = '/insurance';
@@ -95,11 +109,17 @@ class AppRoute {
   static const webhooks = '/webhooks';
   static const stripeConnect = '/stripe-connect';
 
+  // Account approval holding screen
+  static const pendingApproval = '/pending-approval';
+
+  // Super admin
+  static const superAdmin = '/super-admin';
+
   // Other routes
   static const coupons = '/coupons';
   static const aiAssistant = '/ai-assistant';
+  static const calendar = '/calendar';
   static const yieldManagement = '/yield';
   static const dataIntegrity = '/data-integrity';
   static const legacyScreen = '/_legacy';
 }
-
