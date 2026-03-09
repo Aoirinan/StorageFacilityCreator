@@ -12,7 +12,7 @@ import '../services/statement_service.dart';
 import '../services/facility_service.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
-import '../router/app_router.dart';
+import '../router/app_route.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
 import '../providers/ledger_provider.dart';
@@ -48,38 +48,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     final ledgerAsync = ref.watch(ledgerStreamProvider(ledgerParams));
     final balanceAsync = ref.watch(ledgerBalanceProvider(ledgerParams));
 
-    return ModernPageWrapper(
-      currentRoute: '/tenants',
-      title: 'Ledger - ${widget.tenant.name}',
-      onNavigate: (route) => context.go(route),
-      actions: [
-        IconButton(
-          onPressed: () => _showFiltersDialog(context),
-          icon: const Icon(Icons.filter_list),
-          tooltip: 'Filter',
-        ),
-        IconButton(
-          onPressed: () => _showPrintStatementDialog(context),
-          icon: const Icon(Icons.print),
-          tooltip: 'Print Statement',
-        ),
-        IconButton(
-          onPressed: () => _showSendStatementDialog(context),
-          icon: const Icon(Icons.email),
-          tooltip: 'Send Statement',
-        ),
-        IconButton(
-          onPressed: () => _showGenerateInvoiceDialog(context),
-          icon: const Icon(Icons.receipt_long),
-          tooltip: 'Generate Invoice',
-        ),
-        IconButton(
-          onPressed: () => _showCreateEntryDialog(context),
-          icon: const Icon(Icons.add),
-          tooltip: 'Add Entry',
-        ),
-      ],
-      child: ledgerAsync.when(
+    return ledgerAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stackTrace) {
           // Check if it's a missing index error
@@ -176,13 +145,71 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
           }
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Balance Summary Card
-                Card(
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Page header with back button and tenant name
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () => context.push(AppRoute.tenantDetail, extra: widget.tenant),
+                      tooltip: 'Back to tenant',
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.tenant.name,
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (widget.tenant.unitNumber != null && widget.tenant.unitNumber!.isNotEmpty)
+                            Text(
+                              'Unit ${widget.tenant.unitNumber}',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppTheme.textTertiary,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.filter_alt),
+                      onPressed: () => _showFiltersDialog(context),
+                      tooltip: 'Filter',
+                    ),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.receipt_long, size: 18),
+                      label: const Text('Generate Invoice'),
+                      onPressed: () => _showGenerateInvoiceDialog(context),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.primaryBlue,
+                        foregroundColor: AppTheme.textOnDark,
+                      ),
+                    ),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('Add entry'),
+                      onPressed: () => _showCreateEntryDialog(context),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Balance Summary Card
+                      Card(
                   child: Padding(
                     padding: const EdgeInsets.all(20.0),
                     child: Row(
@@ -297,12 +324,14 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     entry: entry,
                     onVoid: () => _voidEntry(context, entry),
                   )),
-              ],
-            ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           );
         },
-      ),
-    );
+      );
   }
 
   bool _hasActiveFilters() {

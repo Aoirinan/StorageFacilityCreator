@@ -2,7 +2,7 @@ name: sfcapp
 description: Storage Facility Creator - A comprehensive facility management app
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 2.10.5+20260303
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -12,9 +12,9 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # State management (Riverpod 2.x - compatible with StateNotifierProvider)
-  flutter_riverpod: ^2.6.1
-  riverpod_annotation: ^2.6.1
+  # State management
+  flutter_riverpod: ^3.2.0
+  riverpod_annotation: ^4.0.2
   state_notifier: ^1.0.0
 
   # Navigation
@@ -34,11 +34,12 @@ dependencies:
   path_provider: ^2.1.1
 
   # CSV handling
-  csv: ^6.0.0
+  csv: ^7.0.0
 
   # PDF and printing
   pdf: ^3.10.4
   printing: ^5.11.0
+  pdfx: ^2.9.2
 
   # Signature capture
   signature: ^6.3.0
@@ -58,8 +59,7 @@ dependencies:
   stripe_platform_interface: ^12.1.1
   stripe_android: ^12.1.0
   stripe_ios: ^12.1.0
-  # Web support for JavaScript interop (for Stripe Elements)
-  js: ^0.7.1  # For JavaScript interop on Flutter web
+  # Stripe web uses dart:js_util (no deprecated js package needed)
 
   # Local storage
   shared_preferences: ^2.5.4
@@ -76,14 +76,16 @@ dependencies:
 
   # UI
   cupertino_icons: ^1.0.2
+  google_fonts: ^8.0.0
+  table_calendar: ^3.2.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  riverpod_generator: ^2.6.5
-  build_runner: ^2.5.4
-  riverpod_lint: ^2.6.5
+  riverpod_generator: ^4.0.3
+  build_runner: ^2.4.0
+  riverpod_lint: ^3.1.0
   firebase_core_platform_interface: ^6.0.2
   firebase_auth_mocks: ^0.15.1
 
@@ -93,3 +95,4 @@ flutter:
   assets:
     - lib/templates/reminders/
     - lib/templates/emails/
+    - assets/images/

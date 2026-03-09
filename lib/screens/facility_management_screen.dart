@@ -5,10 +5,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/facility_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/email_usage_card.dart';
 import '../services/facility_creator_account_service.dart';
+import '../services/facility_stats_service.dart';
 import '../services/superadmin_service.dart';
+import '../providers/dashboard_provider.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
@@ -18,6 +21,7 @@ import 'subscription_test_screen.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/two_factor_helper.dart';
 
 class FacilityManagementScreen extends ConsumerStatefulWidget {
   const FacilityManagementScreen({super.key});
@@ -28,6 +32,55 @@ class FacilityManagementScreen extends ConsumerStatefulWidget {
 
 class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScreen> {
   bool _showArchived = false;
+  String? _selectedFacilityId; // null means "All Facilities"
+  int _totalFacilityCount = 0; // Total facilities from account
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTotalFacilityCount();
+  }
+
+  Future<void> _loadTotalFacilityCount() async {
+    try {
+      final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+      if (mounted) {
+        setState(() {
+          _totalFacilityCount = account.facilityIds.length;
+        });
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error loading facility count: $e');
+      }
+    }
+  }
+
+  Future<void> _recomputeAllStats(BuildContext context) async {
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Syncing facility counts…')),
+      );
+      await FacilityStatsService.recomputeAllFacilitiesStats();
+      if (!context.mounted) return;
+      ref.invalidate(dashboardStatsProvider);
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Counts synced. Dashboard and facility cards will show correct occupancy.'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,45 +94,7 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
           );
         }
         
-        return ModernPageWrapper(
-          currentRoute: '/leads',
-          title: 'Facility Management',
-          onNavigate: (route) {
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-          actions: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Show Archived',
-                  style: TextStyle(
-                    color: AppTheme.textSecondary,
-                    fontSize: 14,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Switch(
-                  value: _showArchived,
-                  onChanged: (value) {
-                    setState(() {
-                      _showArchived = value;
-                    });
-                  },
-                ),
-                const SizedBox(width: 16),
-              ],
-            ),
-          ],
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: () => _showCreateFacilityDialog(context),
-            backgroundColor: AppTheme.primaryBlue,
-            foregroundColor: AppTheme.textOnDark,
-            icon: const Icon(Icons.add),
-            label: const Text('New Facility'),
-          ),
-          child: _buildFacilityList(user.uid),
-        );
+        return _buildFacilityList(user.uid);
       },
       loading: () => const Scaffold(
         body: Center(child: CircularProgressIndicator()),
@@ -108,7 +123,12 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
 
     return facilitiesAsync.when(
       data: (facilities) {
-        if (facilities.isEmpty) {
+        // Filter facilities if one is selected
+        final displayedFacilities = _selectedFacilityId == null
+            ? facilities
+            : facilities.where((f) => f.id == _selectedFacilityId).toList();
+        
+        if (displayedFacilities.isEmpty) {
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -127,25 +147,86 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
                   ),
                 ),
                 const SizedBox(height: 8),
-                if (!_showArchived)
+                if (!_showArchived) ...[
                   Text(
                     'Create your first facility to get started',
                     style: TextStyle(
                       color: AppTheme.textTertiary,
                     ),
                   ),
+                  const SizedBox(height: 24),
+                  ElevatedButton.icon(
+                    onPressed: () => _showCreateFacilityDialog(context),
+                    icon: const Icon(Icons.add_business),
+                    label: const Text('Create Facility'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primaryBlue,
+                      foregroundColor: AppTheme.textOnDark,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                    ),
+                  ),
+                ],
               ],
             ),
           );
         }
 
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: facilities.length,
-          itemBuilder: (context, index) {
-            final facility = facilities[index];
-            return _buildFacilityCard(facility);
-          },
+        return Column(
+          children: [
+            // Header with Create button and facility selector
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.backgroundLight,
+                border: Border(
+                  bottom: BorderSide(color: AppTheme.borderLight),
+                ),
+              ),
+              child: Row(
+                children: [
+                  // Facility selector dropdown - show if there are multiple facilities total OR multiple active facilities
+                  if (_totalFacilityCount > 1 || facilities.length > 1) ...[
+                    Expanded(
+                      child: _buildFacilitySelector(facilities),
+                    ),
+                    const SizedBox(width: 16),
+                  ],
+                  // Recompute all facility stats (fix ghost occupancy / sync counts)
+                  Tooltip(
+                    message: 'Recompute occupancy and tenant counts for all facilities',
+                    child: TextButton.icon(
+                      onPressed: () => _recomputeAllStats(context),
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text('Sync counts'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Create Facility button
+                  ElevatedButton.icon(
+                    onPressed: () => _showCreateFacilityDialog(context),
+                    icon: const Icon(Icons.add_business),
+                    label: const Text('Create Facility'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primaryBlue,
+                      foregroundColor: AppTheme.textOnDark,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Facilities list
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: displayedFacilities.length,
+                itemBuilder: (context, index) {
+                  final facility = displayedFacilities[index];
+                  return _buildFacilityCard(facility);
+                },
+              ),
+            ),
+          ],
         );
       },
       loading: () => const Center(
@@ -233,6 +314,75 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
     );
   }
 
+  Widget _buildFacilitySelector(List<FacilityModel> facilities) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        const Icon(Icons.business, color: AppTheme.primaryBlue),
+        const SizedBox(width: 12),
+        Expanded(
+          child: DropdownButtonFormField<String?>(
+            value: _selectedFacilityId,
+            decoration: InputDecoration(
+              labelText: 'Filter by Facility',
+              hintText: 'All Facilities',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            isExpanded: true,
+            selectedItemBuilder: (context) => [
+              Text(
+                'All Facilities',
+                style: AppTheme.dropdownItemTextStyle.copyWith(color: colorScheme.onSurface),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+              ...facilities.map((f) => Text(
+                f.name,
+                style: AppTheme.dropdownItemTextStyle.copyWith(color: colorScheme.onSurface),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              )),
+            ],
+            items: [
+              DropdownMenuItem<String?>(
+                value: null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'All Facilities',
+                    style: AppTheme.dropdownItemTextStyle,
+                    softWrap: true,
+                  ),
+                ),
+              ),
+              ...facilities.map((facility) {
+                return DropdownMenuItem<String?>(
+                  value: facility.id,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      facility.name,
+                      style: AppTheme.dropdownItemTextStyle,
+                      softWrap: true,
+                    ),
+                  ),
+                );
+              }),
+            ],
+            onChanged: (value) {
+              setState(() {
+                _selectedFacilityId = value;
+              });
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildFacilityCard(FacilityModel facility) {
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
@@ -265,10 +415,18 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
               ),
           ],
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${facility.occupiedUnits}/${facility.totalUnits} units occupied'),
+        subtitle: FutureBuilder<({int totalUnits, int occupiedUnits})>(
+          future: FacilityStatsService.computeUnitCounts(facility.id),
+          builder: (context, snapshot) {
+            // Use facility.totalUnits as single source of truth when set; else fall back to computed count
+            final totalUnits = facility.totalUnits > 0 ? facility.totalUnits : (snapshot.data?.totalUnits ?? 0);
+            final occupiedUnits = snapshot.data?.occupiedUnits ?? facility.occupiedUnits;
+            final totalDisplay = totalUnits > 0 ? totalUnits.toString() : '—';
+            
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$occupiedUnits/$totalDisplay units occupied'),
             if (facility.address != null) Text(facility.address!),
             if (facility.phone != null) Text(facility.phone!),
             if (facility.email != null) Text(facility.email!),
@@ -277,13 +435,18 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
               const SizedBox(height: 8),
               EmailUsageIndicator(facilityId: facility.id),
             ],
-          ],
+              ],
+            );
+          },
         ),
         trailing: PopupMenuButton<String>(
           onSelected: (value) async {
             switch (value) {
               case 'edit':
                 _showEditFacilityDialog(context, facility);
+                break;
+              case 'stripe-connect':
+                context.go(AppRoute.stripeConnect, extra: facility);
                 break;
               case 'archive':
                 await _archiveFacility(facility);
@@ -304,6 +467,16 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
                   Icon(Icons.edit),
                   SizedBox(width: 8),
                   Text('Edit'),
+                ],
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'stripe-connect',
+              child: Row(
+                children: [
+                  Icon(Icons.account_balance_wallet_outlined),
+                  SizedBox(width: 8),
+                  Text('Stripe Connect'),
                 ],
               ),
             ),
@@ -342,8 +515,17 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
           ],
         ),
         onTap: () {
-          // Navigate to facility details or management
-          _showFacilityDetails(context, facility);
+          // Set this facility as the active facility (no modal)
+          ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(facility.id);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Selected ${facility.name}'),
+                backgroundColor: AppTheme.primaryBlue,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
         },
       ),
     );
@@ -462,36 +644,48 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
       builder: (context) => _DeleteConfirmationDialog(facilityName: facility.name),
     );
 
-    if (confirmed == true) {
-      try {
-        await ref.read(facilityOperationsProvider.notifier).hardDeleteFacility(facility.id);
-        
-        // Invalidate both providers to ensure real-time updates
-        final authState = ref.read(authStateProvider);
-        authState.whenData((user) {
-          if (user != null) {
-            ref.invalidate(facilitiesActiveProvider(user.uid));
-            ref.invalidate(facilitiesArchivedProvider(user.uid));
-          }
-        });
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${facility.name} deleted permanently'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
+    if (confirmed != true) return;
+
+    // Require 2FA verification if enabled
+    final canProceed = await TwoFactorHelper.require2FA(
+      context: context,
+      purpose: 'delete_facility',
+      actionName: 'delete ${facility.name}',
+    );
+
+    if (!canProceed) {
+      // User cancelled or verification failed
+      return;
+    }
+
+    try {
+      await ref.read(facilityOperationsProvider.notifier).hardDeleteFacility(facility.id);
+      
+      // Invalidate both providers to ensure real-time updates
+      final authState = ref.read(authStateProvider);
+      authState.whenData((user) {
+        if (user != null) {
+          ref.invalidate(facilitiesActiveProvider(user.uid));
+          ref.invalidate(facilitiesArchivedProvider(user.uid));
         }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error deleting facility: $e'),
-              backgroundColor: AppTheme.error,
-            ),
-          );
-        }
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${facility.name} deleted permanently'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting facility: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
       }
     }
   }
@@ -803,47 +997,6 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
 
   void _showEditFacilityDialog(BuildContext context, FacilityModel facility) {
     context.push(AppRoute.legacyScreen, extra: FacilityEditScreen(facility: facility));
-  }
-
-  void _showFacilityDetails(BuildContext context, FacilityModel facility) {
-    // Show facility details dialog with ID for now
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(facility.name),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Address: ${facility.address ?? 'N/A'}'),
-            Text('Units: ${facility.occupiedUnits}/${facility.totalUnits}'),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(8),
-              color: AppTheme.backgroundLight,
-              child: SelectableText(
-                'Facility ID: ${facility.id}',
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Copy this ID to use for email testing',
-              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
   }
 }
 

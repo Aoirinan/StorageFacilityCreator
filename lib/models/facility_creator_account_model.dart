@@ -9,6 +9,8 @@ enum SubscriptionStatus {
   incomplete,
   incompleteExpired,
   unpaid,
+  /// Account created but not yet approved by admin. Trial clock has not started.
+  pendingApproval,
 }
 
 /// Facility Creator Account model
@@ -164,10 +166,14 @@ class FacilityCreatorAccountModel {
       subscriptionStatus == SubscriptionStatus.trialing;
   bool get isSubscriptionPastDue => subscriptionStatus == SubscriptionStatus.pastDue;
   bool get isSubscriptionCancelled => subscriptionStatus == SubscriptionStatus.cancelled;
+  bool get isPendingApproval => subscriptionStatus == SubscriptionStatus.pendingApproval;
   
   /// Check if subscription is valid for accessing the platform
   /// Note: Superadmins bypass this check (handled in UI layer)
   bool get canAccessPlatform {
+    // Pending approval accounts cannot access until admin approves
+    if (isPendingApproval) return false;
+
     // Check if trial expired - expired trials cannot access
     if (hasTrial && isTrialExpired) {
       return false;
@@ -252,6 +258,8 @@ extension SubscriptionStatusExtension on SubscriptionStatus {
         return 'Incomplete Expired';
       case SubscriptionStatus.unpaid:
         return 'Unpaid';
+      case SubscriptionStatus.pendingApproval:
+        return 'Pending Approval';
     }
   }
 }

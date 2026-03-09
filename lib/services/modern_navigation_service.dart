@@ -4,10 +4,20 @@ import 'package:go_router/go_router.dart';
 
 import '../services/facility_service.dart';
 import '../screens/home_screen_modern_helper.dart';
+import 'debug_logger.dart';
 
 /// Modern navigation service for sidebar routes
 class ModernNavigationService {
   static void navigateToRoute(BuildContext context, String route) {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H2',
+      location: 'modern_navigation_service.dart:navigateToRoute',
+      message: 'navigateToRoute called',
+      data: {'route': route},
+    );
+    // #endregion
+    
     final currentLocation =
         GoRouter.of(context).routeInformationProvider.value.location ?? '';
 
@@ -15,11 +25,41 @@ class ModernNavigationService {
     final currentPath = Uri.tryParse(currentLocation)?.path ?? currentLocation;
     final targetPath = Uri.tryParse(route)?.path ?? route;
     final isSameOrChild = currentPath == targetPath || currentPath.startsWith(targetPath);
-    if (isSameOrChild) {
+    
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H2',
+      location: 'modern_navigation_service.dart:navigateToRoute',
+      message: 'Path comparison',
+      data: {'currentPath': currentPath, 'targetPath': targetPath, 'isSameOrChild': isSameOrChild},
+    );
+    // #endregion
+    
+    // Special handling for messaging/access/units - these need facility selection even if already on the route
+    final needsFacilitySelection = route == '/messaging' || route == '/access' || route == '/units/map';
+    
+    if (isSameOrChild && !needsFacilitySelection) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H2',
+        location: 'modern_navigation_service.dart:navigateToRoute',
+        message: 'Early return - same path and no facility selection needed',
+        data: {},
+      );
+      // #endregion
       return;
     }
 
     void doNav() {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H2',
+        location: 'modern_navigation_service.dart:doNav',
+        message: 'Executing navigation',
+        data: {'route': route},
+      );
+      // #endregion
+      
       switch (route) {
         case '/dashboard':
           context.go('/dashboard');
@@ -39,6 +79,9 @@ class ModernNavigationService {
           break;
         case '/billing':
           context.go('/billing');
+          break;
+        case '/stripe-connect':
+          context.go('/stripe-connect');
           break;
         case '/payments':
           context.go('/payments');
@@ -69,6 +112,9 @@ class ModernNavigationService {
           break;
         case '/settings':
           context.go('/settings');
+          break;
+        case '/calendar':
+          context.go('/calendar');
           break;
         case '/ai-assistant':
           context.go('/ai-assistant');
@@ -169,8 +215,24 @@ class ModernNavigationService {
 
   // Helper method to navigate to comms with facility selection
   static Future<void> _navigateToCommsWithFacilitySelection(BuildContext context) async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H1',
+      location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+      message: 'Facility selection started',
+      data: {},
+    );
+    // #endregion
     try {
       final user = FirebaseAuth.instance.currentUser;
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'User check',
+        data: {'hasUser': user != null, 'userId': user?.uid},
+      );
+      // #endregion
       if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Please sign in to access messaging')),
@@ -178,29 +240,87 @@ class ModernNavigationService {
         return;
       }
 
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'Loading facilities',
+        data: {},
+      );
+      // #endregion
       final facilities = await FacilityService.getUserFacilities();
       
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'Facilities loaded',
+        data: {'facilityCount': facilities.length, 'facilityIds': facilities.map((f) => f.id).toList()},
+      );
+      // #endregion
+      
       if (facilities.isEmpty) {
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H1',
+          location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+          message: 'No facilities found, showing dialog',
+          data: {},
+        );
+        // #endregion
         _showNoFacilitiesDialog(context, featureName: 'messaging');
         return;
       }
 
       // If only one facility, use it directly
       if (facilities.length == 1) {
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H1',
+          location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+          message: 'Single facility found, navigating directly',
+          data: {'facilityId': facilities.first.id},
+        );
+        // #endregion
         context.go('/messaging?facilityId=${facilities.first.id}');
         return;
       }
 
       // Multiple facilities - show picker
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'Multiple facilities found, showing picker',
+        data: {'facilityCount': facilities.length},
+      );
+      // #endregion
       final selected = await showModalBottomSheet<FacilitySelectResult>(
         context: context,
         builder: (context) => FacilityPickerSheet(facilities: facilities),
       );
 
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'Facility picker closed',
+        data: {'selected': selected != null, 'selectedId': selected?.id},
+      );
+      // #endregion
+
       if (selected != null) {
         context.go('/messaging?facilityId=${selected.id}');
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H1',
+        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        message: 'Error during facility selection',
+        data: {'error': e.toString(), 'stackTrace': stackTrace.toString()},
+      );
+      // #endregion
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error accessing messaging: $e')),
       );

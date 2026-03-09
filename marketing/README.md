@@ -62,6 +62,8 @@ export const DEMO_IMAGE_PATH = '/demo.png';
 
 If your files have different names, either rename them to `logo.png` / `demo.png` in `public/`, or change `LOGO_PATH` and `DEMO_IMAGE_PATH` in `src/config/site.ts` to match (e.g. `/my-logo.png`).
 
+**Extra screenshots:** To add more app screenshots (e.g. Delinquency, Reports), add the image files to `marketing/public/` (e.g. `delinquency.png`, `reports.png`). Then in `src/config/site.ts`, add entries to `EXTRA_DEMO_IMAGES`, e.g. `{ src: '/delinquency.png', alt: 'Delinquency and past due view' }`. They will appear in a “See the app” section on the homepage.
+
 ### 3. Support contact
 
 In `src/config/site.ts`:

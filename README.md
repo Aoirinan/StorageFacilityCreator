@@ -24,3 +24,28 @@ Flutter web app for Storage Facility Creator.
 - Startup: on Firebase init failure, use the Retry button; check console for details.
 - Focus noise on web is suppressed; other platform errors bubble to crash reporting hook.
 - For subscription access issues, ensure network connectivity; guard is fail-closed on errors.
+
+## Manager Overlock
+Manager Overlock is a manager/admin-only feature for marking units as overlocked (e.g. for non-payment or policy).
+
+### UI
+- **Nav:** Left sidebar → "Manager Overlock" (under Delinquency).
+- **Page:** Facility filter, search (name, unit #, phone, email), filters: Overlock status (All / Overlocked / Not Overlocked), Delinquency (All / Delinquent Only / Not Delinquent).
+- **Bulk actions:** Select rows → Overlock Selected, Remove Overlock Selected, Overlock All Delinquent, Clear Overlock All (Filtered; requires typing CLEAR), Print Overlock List.
+- **Table:** Unit #, Tenant, Phone/Email, Balance, Overlock badge, per-row Mark Overlocked / Remove Overlock. Row click opens a detail drawer with overlock history and quick toggle.
+- **Print:** "Print Overlock List" opens a printable view (overlocked units only by default); use the Print icon or browser Print (e.g. Ctrl+P) to print.
+
+### Data
+- **Unit document** (`facilities/{facilityId}/units/{unitId}`): `overlock` map with `isOverlocked`, `updatedAt`, `updatedByUid`, `updatedByName`, `reasonNote`, `lastAction` ("OVERLOCKED" | "REMOVED").
+- **Audit subcollection** `facilities/{facilityId}/units/{unitId}/overlockEvents/{eventId}`: `action`, `at`, `byUid`, `byName`, `note`, `tenantId`, `tenantName`, optional `bulkBatchId`.
+- **Tenant document:** Denormalized `overlockIsActive` (boolean), kept in sync by Cloud Functions.
+
+### Backend
+- Callables: `setUnitOverlockStatus`, `setUnitsOverlockStatusBulk`, `overlockAllDelinquent`, `clearOverlockByFilter`. All require manager/admin for the facility; note required when setting overlock.
+- Firestore rules: only owner/manager can update unit overlock and create overlockEvents.
+
+### Where overlock appears
+- Unit list: red "OVERLOCKED" badge next to status.
+- Map editor: "OVERLOCKED" label on unit tile.
+- Tenant (client) detail: red banner "Unit is overlocked".
+- Tenant portal: warning banner "Unit is currently overlocked. Please contact management." Payments remain allowed.

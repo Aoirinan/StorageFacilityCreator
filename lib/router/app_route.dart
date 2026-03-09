@@ -5,6 +5,7 @@
 class AppRoute {
   // Public routes (no authentication required)
   static const landing = '/';
+  static const marketing = '/marketing';
   static const login = '/login';
   static const signup = '/signup';
   static const forgotPassword = '/forgot-password';

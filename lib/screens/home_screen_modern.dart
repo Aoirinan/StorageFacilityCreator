@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../services/debug_logger.dart';
 import '../providers/facility_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../providers/search_provider.dart' as search;
 import '../providers/dashboard_provider.dart';
 import '../models/facility_model.dart';
@@ -23,6 +24,7 @@ import '../services/home_button_service.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/facility_switcher.dart';
 import 'auth/login_screen.dart';
 import 'client_detail_screen.dart';
 import 'facility_creation_wizard.dart';
@@ -47,6 +49,7 @@ import '../models/facility_creator_account_model.dart';
 import 'home_screen_modern_helper.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../utils/error_message_helper.dart';
+import '../services/facility_stats_service.dart';
 
 class HomeScreenModern extends ConsumerWidget {
   const HomeScreenModern({super.key});
@@ -145,6 +148,32 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _recomputeAllStats(BuildContext context) async {
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Syncing facility counts…')),
+      );
+      await FacilityStatsService.recomputeAllFacilitiesStats();
+      if (!context.mounted) return;
+      ref.invalidate(dashboardStatsProvider);
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Counts synced. Dashboard and facility cards will show correct occupancy.'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    }
   }
 
   void _onSearchChanged() {
@@ -270,72 +299,25 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = MediaQuery.of(context).size.width < 900;
-    final searchState = ref.watch(search.searchStateProvider(widget.user.uid));
-
-    return Scaffold(
-      body: Row(
-        children: [
-          // Sidebar
-          if (!isMobile)
-            ModernSidebar(
-              currentRoute: _currentRoute,
-              isCollapsed: _sidebarCollapsed,
-              onNavigate: _handleNavigation,
-            ),
-          
-          // Main content
-          Expanded(
-            child: Column(
-              children: [
-                // Top bar
-                _buildTopBar(context, isMobile),
-                
-                // Main content area
-                Expanded(
-                  child: _showSearchResults
-                      ? _buildSearchResults(searchState)
-                      : _buildDashboard(),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _handleNewFacilityPressed(context),
-        backgroundColor: AppTheme.primaryBlue,
-        foregroundColor: AppTheme.textOnDark,
-        tooltip: 'Create facility',
-        icon: const Icon(Icons.add),
-        label: const Text('New Facility'),
-      ),
-      drawer: isMobile ? Drawer(
-        child: ModernSidebar(
-          currentRoute: _currentRoute,
-          isCollapsed: false,
-          onNavigate: (route) {
-            Navigator.of(context).pop();
-            _handleNavigation(route);
-          },
-        ),
-      ) : null,
-    );
+    return _buildDashboard();
   }
 
   Widget _buildTopBar(BuildContext context, bool isMobile) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       height: 64,
       decoration: BoxDecoration(
-        color: AppTheme.textOnDark,
+        color: colorScheme.surface,
         border: Border(
           bottom: BorderSide(
-            color: AppTheme.borderLight,
+            color: colorScheme.outline,
             width: 1,
           ),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 12 : 24,
+      ),
       child: Row(
         children: [
           if (isMobile)
@@ -346,12 +328,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 onPressed: () => Scaffold.of(context).openDrawer(),
               ),
             ),
-          const Text(
+          Text(
             'SFC',
             style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w700,
-              color: AppTheme.primaryBlue,
+              color: colorScheme.primary,
               letterSpacing: -0.5,
             ),
           ),
@@ -386,10 +368,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                       : null,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: AppTheme.borderLight),
+                    borderSide: BorderSide(color: colorScheme.outline),
                   ),
                   filled: true,
-                  fillColor: AppTheme.backgroundLight,
+                  fillColor: colorScheme.surfaceContainerHighest,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
               ),
@@ -397,6 +379,20 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           ),
           
           const Spacer(),
+          
+          // Facility Switcher
+          const FacilitySwitcher(compact: false),
+          const SizedBox(width: 8),
+          // Sync counts (recompute occupancy/tenant counts for all facilities)
+          Tooltip(
+            message: 'Recompute occupancy and tenant counts for all facilities',
+            child: IconButton(
+              onPressed: () => _recomputeAllStats(context),
+              icon: const Icon(Icons.refresh, size: 20),
+              tooltip: 'Sync counts',
+            ),
+          ),
+          const SizedBox(width: 16),
           
           // Language selector
           const LanguageSelector(),
@@ -458,6 +454,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
 
   Widget _buildDashboard() {
     final dashboardStats = ref.watch(dashboardStatsProvider);
+    final facilitiesAsync = ref.watch(userFacilitiesProvider(widget.user.uid));
+    final hasFacilities = facilitiesAsync.when(
+          data: (list) => list.isNotEmpty,
+          loading: () => false,
+          error: (_, __) => false,
+        );
     final isMobile = MediaQuery.of(context).size.width < 900;
 
     return SingleChildScrollView(
@@ -465,9 +467,16 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Welcome section
+          // Welcome section (includes "Create your first facility" CTA when empty)
           _buildWelcomeSection(),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          // Sync counts only when user has facilities; otherwise show get-started checklist
+          if (hasFacilities) _buildDashboardSyncRow(context),
+          if (!hasFacilities) ...[
+            _buildGetStartedChecklist(context),
+            const SizedBox(height: 24),
+          ],
+          if (hasFacilities) const SizedBox(height: 24),
           
           // Metrics grid
           dashboardStats.when(
@@ -519,15 +528,104 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
 
   Widget _buildWelcomeSection() {
     final facilitiesAsync = ref.watch(userFacilitiesProvider(widget.user.uid));
-    
+    final activeFacilityId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+
     return facilitiesAsync.when(
       data: (facilities) {
-        final facilityName = facilities.isNotEmpty ? facilities.first.name : 'Your Facility';
+        final colorScheme = Theme.of(context).colorScheme;
+
+        // Empty state: prompt to create first facility
+        if (facilities.isEmpty) {
+          return Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.outline, width: 1),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Row(
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.add_business,
+                      color: colorScheme.primary,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Get started',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Create your first facility to get started',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                            color: colorScheme.onSurface,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        if (widget.user.email != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            widget.user.email!,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: () => _handleNewFacilityPressed(context),
+                    icon: const Icon(Icons.add_business, size: 20),
+                    label: const Text('Create Facility'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primaryBlue,
+                      foregroundColor: AppTheme.textOnDark,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        String facilityName;
+        if (activeFacilityId == null) {
+          facilityName = 'All Facilities';
+        } else {
+          final facility = facilities.firstWhere(
+            (f) => f.id == activeFacilityId,
+            orElse: () => facilities.first,
+          );
+          facilityName = facility.name;
+        }
         return Card(
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: AppTheme.borderLight, width: 1),
+            side: BorderSide(color: colorScheme.outline, width: 1),
           ),
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -537,12 +635,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   width: 56,
                   height: 56,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryBlue.withOpacity(0.1),
+                    color: colorScheme.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.dashboard,
-                    color: AppTheme.primaryBlue,
+                    color: colorScheme.primary,
                     size: 28,
                   ),
                 ),
@@ -555,17 +653,17 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                         'Welcome back!',
                         style: TextStyle(
                           fontSize: 14,
-                          color: AppTheme.textSecondary,
+                          color: colorScheme.onSurfaceVariant,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         facilityName,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary,
+                          color: colorScheme.onSurface,
                           letterSpacing: -0.5,
                         ),
                       ),
@@ -575,7 +673,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                           widget.user.email!,
                           style: TextStyle(
                             fontSize: 14,
-                            color: AppTheme.textSecondary,
+                            color: colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -589,6 +687,76 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       },
       loading: () => const SizedBox.shrink(),
       error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+  /// Get-started checklist shown when user has no facilities (first-time onboarding).
+  Widget _buildGetStartedChecklist(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: colorScheme.outline, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.checklist, color: colorScheme.primary, size: 24),
+                const SizedBox(width: 12),
+                Text(
+                  'Get started',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _GetStartedStep(
+              number: 1,
+              title: 'Create your first facility',
+              subtitle: 'Add name, address, and billing settings.',
+              onTap: () => _handleNewFacilityPressed(context),
+            ),
+            const SizedBox(height: 12),
+            _GetStartedStep(
+              number: 2,
+              title: 'Add units',
+              subtitle: 'Use Unit Map or Unit List from the sidebar.',
+              onTap: () => _showNoFacilitiesDialog(context, featureName: 'units'),
+            ),
+            const SizedBox(height: 12),
+            _GetStartedStep(
+              number: 3,
+              title: 'Add a tenant',
+              subtitle: 'Use Move-In Wizard or Tenants → Create Tenant.',
+              onTap: () => _showNoFacilitiesDialog(context, featureName: 'tenants'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Sync counts button on Dashboard – same action as Facilities screen and top bar (all in unison).
+  Widget _buildDashboardSyncRow(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Tooltip(
+        message: 'Recompute occupancy and tenant counts for all facilities',
+        child: TextButton.icon(
+          onPressed: () => _recomputeAllStats(context),
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Sync counts'),
+        ),
+      ),
     );
   }
 
@@ -691,23 +859,24 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   }
 
   Widget _buildOccupancyCard(DashboardStats stats) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.borderLight, width: 1),
+        side: BorderSide(color: colorScheme.outline, width: 1),
       ),
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'OCCUPANCY RATE',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary,
+                color: colorScheme.onSurfaceVariant,
                 letterSpacing: 0.5,
               ),
             ),
@@ -716,7 +885,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               child: DonutChart(
                 value: stats.occupancyRate,
                 label: 'Occupied',
-                color: AppTheme.primaryBlue,
+                color: colorScheme.primary,
                 size: 160,
               ),
             ),
@@ -724,10 +893,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
             Center(
               child: Text(
                 '${(stats.occupancyRate * 100).toStringAsFixed(1)}%',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w700,
-                  color: AppTheme.textPrimary,
+                  color: colorScheme.onSurface,
                 ),
               ),
             ),
@@ -789,12 +958,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Quick Actions',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w600,
-            color: AppTheme.textPrimary,
+            color: Theme.of(context).colorScheme.onSurface,
           ),
         ),
         const SizedBox(height: 16),
@@ -850,11 +1019,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   }
 
   Widget _buildQuickActionCard(String label, IconData icon, Color color, VoidCallback onTap) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.borderLight, width: 1),
+        side: BorderSide(color: colorScheme.outline, width: 1),
       ),
       child: InkWell(
         onTap: onTap,
@@ -868,10 +1038,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               const SizedBox(height: 8),
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
+                  color: colorScheme.onSurface,
                 ),
               ),
             ],
@@ -885,17 +1055,18 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     return searchState.when(
       data: (results) {
         if (results.isEmpty) {
+          final cs = Theme.of(context).colorScheme;
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.search_off, size: 64, color: AppTheme.textSecondary),
+                Icon(Icons.search_off, size: 64, color: cs.onSurfaceVariant),
                 const SizedBox(height: 16),
                 Text(
                   'No results found',
                   style: TextStyle(
                     fontSize: 18,
-                    color: AppTheme.textSecondary,
+                    color: cs.onSurfaceVariant,
                   ),
                 ),
               ],
@@ -903,6 +1074,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           );
         }
 
+        final cs = Theme.of(context).colorScheme;
         return ListView.builder(
           padding: const EdgeInsets.all(16),
           itemCount: results.length,
@@ -913,7 +1085,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               child: ListTile(
                 leading: Icon(
                   result.type == 'tenant' ? Icons.person : Icons.business,
-                  color: AppTheme.primaryBlue,
+                  color: cs.primary,
                 ),
                 title: Text(result.title),
                 subtitle: Text(result.subtitle ?? ''),
@@ -924,67 +1096,73 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           },
         );
       },
-      loading: () => Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(
-              'Searching...',
-              style: TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
-      ),
-      error: (error, stack) => Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.error_outline, size: 64, color: AppTheme.error),
-            const SizedBox(height: 16),
-            Text(
-              'Error searching',
-              style: TextStyle(
-                fontSize: 18,
-                color: AppTheme.textPrimary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                ErrorMessageHelper.getUserFriendlyMessage(error),
+      loading: () {
+        final cs = Theme.of(context).colorScheme;
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                'Searching...',
                 style: TextStyle(
+                  color: cs.onSurfaceVariant,
                   fontSize: 14,
-                  color: AppTheme.textSecondary,
                 ),
-                textAlign: TextAlign.center,
               ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () {
-                // Retry search
-                final query = _searchController.text.trim();
-                if (query.isNotEmpty) {
-                  ref.read(search.searchStateProvider(widget.user.uid).notifier).updateQuery(query);
-                }
-              },
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.primaryBlue,
-                foregroundColor: AppTheme.textOnDark,
+            ],
+          ),
+        );
+      },
+      error: (error, stack) {
+        final cs = Theme.of(context).colorScheme;
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 64, color: cs.error),
+              const SizedBox(height: 16),
+              Text(
+                'Error searching',
+                style: TextStyle(
+                  fontSize: 18,
+                  color: cs.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-          ],
-        ),
-      ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  ErrorMessageHelper.getUserFriendlyMessage(error),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: cs.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () {
+                  // Retry search
+                  final query = _searchController.text.trim();
+                  if (query.isNotEmpty) {
+                    ref.read(search.searchStateProvider(widget.user.uid).notifier).updateQuery(query);
+                  }
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: cs.primary,
+                  foregroundColor: cs.onPrimary,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1001,10 +1179,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       final facilityId = result.data['facilityId'] as String?;
       if (facilityId == null || facilityId.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Unable to locate tenant - facility ID missing'),
-              backgroundColor: Colors.red,
+            ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Unable to locate tenant - facility ID missing'),
+              backgroundColor: Theme.of(context).colorScheme.error,
             ),
           );
         }
@@ -1066,20 +1244,21 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   }
 
   Widget _buildErrorWidget(Object error) {
+    final cs = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Center(
           child: Column(
             children: [
-              const Icon(Icons.error_outline, size: 48, color: AppTheme.error),
+              Icon(Icons.error_outline, size: 48, color: cs.error),
               const SizedBox(height: 16),
               Text(
                 'Error loading dashboard',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
+                  color: cs.onSurface,
                 ),
               ),
               const SizedBox(height: 8),
@@ -1087,7 +1266,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 ErrorMessageHelper.getUserFriendlyMessage(error),
                 style: TextStyle(
                   fontSize: 14,
-                  color: AppTheme.textSecondary,
+                  color: cs.onSurfaceVariant,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -1119,8 +1298,8 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.error,
-              foregroundColor: AppTheme.textOnDark,
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
             ),
             child: const Text('Sign Out'),
           ),
@@ -1191,12 +1370,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               children: [
                 Icon(Icons.warning, color: AppTheme.error, size: 24),
                 const SizedBox(width: 8),
-                const Text(
+                Text(
                   'Top Delinquent Tenants',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimary,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const Spacer(),
@@ -1208,12 +1387,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
             ),
             const SizedBox(height: 16),
             if (tenants.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(16.0),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
                 child: Center(
                   child: Text(
                     'No delinquent tenants',
-                    style: TextStyle(color: AppTheme.textSecondary),
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 ),
               )
@@ -1252,17 +1431,17 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 children: [
                   Text(
                     tenant.tenantName,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   Text(
                     tenant.facilityName,
                     style: TextStyle(
                       fontSize: 12,
-                      color: AppTheme.textSecondary,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -1283,7 +1462,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   '${tenant.daysLate} days late',
                   style: TextStyle(
                     fontSize: 12,
-                    color: AppTheme.textSecondary,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
@@ -1310,24 +1489,24 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               children: [
                 Icon(Icons.move_to_inbox, color: AppTheme.warning, size: 24),
                 const SizedBox(width: 8),
-                const Text(
+                Text(
                   'Upcoming Move-Outs',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimary,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 16),
             if (moveOuts.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(16.0),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
                 child: Center(
                   child: Text(
                     'No upcoming move-outs',
-                    style: TextStyle(color: AppTheme.textSecondary),
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 ),
               )
@@ -1371,17 +1550,17 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 children: [
                   Text(
                     moveOut.tenantName,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   Text(
                     '${moveOut.facilityName} - Unit ${moveOut.unitNumber}',
                     style: TextStyle(
                       fontSize: 12,
-                      color: AppTheme.textSecondary,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -1425,6 +1604,83 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     } else {
       return '${date.month}/${date.day}/${date.year}';
     }
+  }
+}
+
+/// Single step in the get-started checklist (dashboard empty state).
+class _GetStartedStep extends StatelessWidget {
+  final int number;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _GetStartedStep({
+    required this.number,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Material(
+      color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '$number',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: colorScheme.primary,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.arrow_forward_ios, size: 14, color: colorScheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

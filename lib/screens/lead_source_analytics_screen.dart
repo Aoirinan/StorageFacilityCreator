@@ -564,8 +564,10 @@ class _LeadSourceAnalyticsScreenState extends ConsumerState<LeadSourceAnalyticsS
               // Data rows
               ...sourcesWithData.map((stat) {
                 return TableRow(
-                  decoration: Border(
-                    bottom: BorderSide(color: AppTheme.borderLight),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(color: AppTheme.borderLight),
+                    ),
                   ),
                   children: [
                     _buildTableCell(stat.source.displayName),

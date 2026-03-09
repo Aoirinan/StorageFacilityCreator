@@ -22,62 +22,7 @@ class ReminderDetailScreen extends ConsumerStatefulWidget {
 class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/reminders',
-      title: 'Reminder ${widget.reminder.id.substring(0, 8)}...',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
-          tooltip: 'Back',
-        ),
-        if (widget.reminder.status == ReminderStatus.pending)
-          IconButton(
-            icon: const Icon(Icons.send),
-            onPressed: _sendReminder,
-            tooltip: 'Send Reminder',
-          ),
-        PopupMenuButton<String>(
-          onSelected: _handleMenuAction,
-          itemBuilder: (context) => [
-            if (widget.reminder.status == ReminderStatus.pending)
-              const PopupMenuItem(
-                value: 'mark_sent',
-                child: ListTile(
-                  leading: Icon(Icons.check),
-                  title: Text('Mark as Sent'),
-                ),
-              ),
-            if (widget.reminder.status == ReminderStatus.sent && !widget.reminder.isRead)
-              const PopupMenuItem(
-                value: 'mark_read',
-                child: ListTile(
-                  leading: Icon(Icons.mark_email_read),
-                  title: Text('Mark as Read'),
-                ),
-              ),
-            if (widget.reminder.status == ReminderStatus.pending)
-              const PopupMenuItem(
-                value: 'cancel',
-                child: ListTile(
-                  leading: Icon(Icons.cancel),
-                  title: Text('Cancel'),
-                ),
-              ),
-            const PopupMenuItem(
-              value: 'delete',
-              child: ListTile(
-                leading: Icon(Icons.delete),
-                title: Text('Delete'),
-              ),
-            ),
-          ],
-        ),
-      ],
-      child: SingleChildScrollView(
+    return SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -93,8 +38,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             ],
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatusCard() {

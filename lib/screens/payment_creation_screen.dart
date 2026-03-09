@@ -47,19 +47,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/billing',
-      title: 'Create Payment',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        TextButton(
-          onPressed: _submitForm,
-          child: const Text('Save'),
-        ),
-      ],
-      child: KeyboardScrollable(
+    return KeyboardScrollable(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Form(
@@ -185,9 +173,12 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                             border: OutlineInputBorder(),
                           ),
                           items: contracts.map((contract) {
+                            final label = contract.title.trim().isNotEmpty
+                                ? contract.title
+                                : 'Contract ${contract.id.substring(0, 8)}...';
                             return DropdownMenuItem(
                               value: contract.id,
-                              child: Text('Contract ${contract.id.substring(0, 8)}...'),
+                              child: Text(label),
                             );
                           }).toList(),
                           onChanged: (value) {
@@ -315,8 +306,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
           ),
         ),
       ),
-      ),
-    );
+      );
   }
 
   void _selectDueDate() async {

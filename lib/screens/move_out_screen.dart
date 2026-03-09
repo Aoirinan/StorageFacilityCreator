@@ -217,13 +217,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/contracts',
-      title: 'Move-Out',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: _isLoading
+    return _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _contract == null || _tenant == null
               ? const Center(child: Text('Contract or tenant not found'))
@@ -251,8 +245,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                       ],
                     ),
                   ),
-                ),
-    );
+                );
   }
 
   Widget _buildTenantInfo() {

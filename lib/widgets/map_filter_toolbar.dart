@@ -18,17 +18,21 @@ class MapFilterToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: AppTheme.backgroundLight,
-        border: Border(bottom: BorderSide(color: AppTheme.borderLight)),
+        color: colorScheme.surfaceContainerHighest,
+        border: Border(bottom: BorderSide(color: colorScheme.outline)),
       ),
       child: Row(
         children: [
-          const Text(
+          Text(
             'Filter:',
-            style: TextStyle(fontWeight: FontWeight.bold),
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: colorScheme.onSurface,
+            ),
           ),
           const SizedBox(width: 12),
           _buildFilterChip('All', UnitStatus.values.toSet(), selectedStatuses.length == UnitStatus.values.length),

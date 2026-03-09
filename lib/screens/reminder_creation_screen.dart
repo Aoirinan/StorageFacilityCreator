@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../models/reminder_model.dart';
 import '../providers/reminder_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../models/provider_params.dart';
+import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../theme/app_theme.dart';
@@ -41,20 +43,7 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/reminders',
-      title: 'Create Reminder',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          onPressed: _submitForm,
-          icon: const Icon(Icons.save),
-          tooltip: 'Save Reminder',
-        ),
-      ],
-      child: Form(
+    return Form(
         key: _formKey,
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -162,9 +151,12 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
                               child: Text('No specific contract'),
                             ),
                             ...contracts.map((contract) {
+                              final label = contract.title.trim().isNotEmpty
+                                  ? contract.title
+                                  : 'Contract ${contract.id.substring(0, 8)}...';
                               return DropdownMenuItem(
                                 value: contract.id,
-                                child: Text('Contract ${contract.id.substring(0, 8)}...'),
+                                child: Text(label),
                               );
                             }),
                           ],
@@ -366,8 +358,7 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
             ],
           ),
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildTemplateButton(String title, String message) {
@@ -478,13 +469,14 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
       );
       
       if (mounted) {
-        Navigator.of(context).pop();
-        // Invalidate providers to refresh reminder lists
         ref.invalidate(reminderListProvider(widget.facilityId));
         ref.invalidate(reminderStatsProvider(widget.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Reminder created successfully')),
         );
+        // Always go to reminders list so we never land on a blank screen
+        // (e.g. when user arrived via calendar's "Add to date" which uses context.go)
+        context.go(AppRoute.reminders);
       }
     } catch (e) {
       if (mounted) {

@@ -440,7 +440,7 @@ class _AdvancedSearchWidgetState extends ConsumerState<AdvancedSearchWidget> {
 
   Future<void> _performSearch() async {
     final authState = ref.read(authStateProvider);
-    final user = authState.valueOrNull;
+    final user = authState.whenOrNull(data: (d) => d);
     if (user == null) return;
 
     setState(() {

@@ -4,11 +4,13 @@ import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../services/facility_service.dart';
+import '../services/facility_stats_service.dart';
 import '../models/facility_model.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/time_zone_helper.dart';
 
 class FacilityEditScreen extends ConsumerStatefulWidget {
   final FacilityModel facility;
@@ -30,6 +32,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   late final TextEditingController _emailController;
   late final TextEditingController _gracePeriodController;
   late final TextEditingController _lateFeeAmountController;
+  late final TextEditingController _totalUnitsController;
   
   String? _selectedTimeZone;
   String _lateFeeType = 'flat';
@@ -71,7 +74,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       _lateFeeAmountController = TextEditingController(text: '25.00');
     }
     
-    _selectedTimeZone = widget.facility.timeZone;
+    _totalUnitsController = TextEditingController(
+      text: widget.facility.totalUnits > 0 ? widget.facility.totalUnits.toString() : '',
+    );
+    _selectedTimeZone = widget.facility.timeZone ?? TimeZoneHelper.defaultTimeZoneId;
   }
 
   @override
@@ -82,6 +88,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     _emailController.dispose();
     _gracePeriodController.dispose();
     _lateFeeAmountController.dispose();
+    _totalUnitsController.dispose();
     super.dispose();
   }
 
@@ -114,6 +121,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         }
       }
 
+      final totalUnits = int.tryParse(_totalUnitsController.text.trim()) ?? 0;
       await FacilityService.updateFacility(
         facilityId: widget.facility.id,
         name: _nameController.text.trim(),
@@ -122,7 +130,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
         timeZone: _selectedTimeZone,
         billingSettings: billingSettings,
+        totalUnits: totalUnits,
       );
+
+      await FacilityStatsService.reconcileUnitsToCapacity(widget.facility.id);
 
       if (kDebugMode) {
         print('✅ Facility updated successfully');
@@ -170,13 +181,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
           );
         }
 
-        return ModernPageWrapper(
-          currentRoute: '/facilities',
-          title: 'Edit Facility',
-          onNavigate: (route) {
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-          child: Padding(
+        return Padding(
             padding: const EdgeInsets.all(16.0),
             child: Form(
               key: _formKey,
@@ -265,6 +270,31 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                     ),
                     const SizedBox(height: 16),
 
+                    // Total Units (required, 1–200)
+                    TextFormField(
+                      controller: _totalUnitsController,
+                      decoration: const InputDecoration(
+                        labelText: 'Total Units',
+                        hintText: 'e.g., 50',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.grid_view),
+                        helperText: 'Total physical capacity (1–200). Used for occupancy calculations.',
+                      ),
+                      keyboardType: TextInputType.number,
+                      validator: (value) {
+                        final raw = value?.trim() ?? '';
+                        if (raw.isEmpty) {
+                          return 'Total units is required.';
+                        }
+                        final n = int.tryParse(raw);
+                        if (n == null || n < 1 || n > 200) {
+                          return 'Total units must be between 1 and 200.';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
                     // Time Zone
                     DropdownButtonFormField<String>(
                       value: _selectedTimeZone,
@@ -277,7 +307,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       items: _timeZones.map((tz) {
                         return DropdownMenuItem<String>(
                           value: tz,
-                          child: Text(tz.replaceAll('America/', '').replaceAll('Pacific/', '')),
+                          child: Text(TimeZoneHelper.displayLabel(tz)),
                         );
                       }).toList(),
                       onChanged: (value) {
@@ -434,7 +464,6 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                 ),
               ),
             ),
-          ),
         );
       },
       loading: () => const Scaffold(

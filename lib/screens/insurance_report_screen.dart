@@ -124,7 +124,7 @@ class _InsuranceReportScreenState extends State<InsuranceReportScreen> {
         ]);
       }
 
-      final csvString = const ListToCsvConverter().convert(csvData);
+      final csvString = csv.encode(csvData);
       final bytes = utf8.encode(csvString);
       await downloadReportBytes(bytes, 'insurance_report_${DateTime.now().millisecondsSinceEpoch}.csv');
 

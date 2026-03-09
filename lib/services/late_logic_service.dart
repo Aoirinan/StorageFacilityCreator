@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
 import '../models/contract_model.dart';
+import 'tenant_service.dart';
+import 'facility_service.dart';
 
 enum LateStatus {
   current,
@@ -59,11 +61,53 @@ class LateLogicService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  // Late fee configuration
+  // Defaults when facility has no billing settings
   static const double _baseLateFee = 25.00;
   static const double _dailyLateFee = 5.00;
-  static const int _gracePeriodDays = 3;
+  static const int _defaultGracePeriodDays = 3;
   static const int _severeOverdueDays = 30;
+
+  /// Grace period for a facility (from Billing Settings). Use this so "late" matches what the owner configured.
+  static Future<int> getFacilityGracePeriodDays(String facilityId) async {
+    final facility = await FacilityService.getFacility(facilityId);
+    final grace = facility?.billingSettings?['gracePeriodDays'];
+    if (grace is int) return grace;
+    if (grace != null) return int.tryParse(grace.toString()) ?? _defaultGracePeriodDays;
+    return _defaultGracePeriodDays;
+  }
+
+  /// Whether a tenant is late, using the facility's grace period (or default 3 days).
+  static bool isTenantLate(TenantModel tenant, {int? gracePeriodDays}) {
+    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
+    final now = DateTime.now();
+    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+    final paidThroughDate = tenant.paidThrough;
+
+    if (paidThroughDate == null) {
+      final daysSinceCreation = now.difference(tenant.createdAt).inDays;
+      if (daysSinceCreation <= 30) return false;
+      final tenantCreatedThisMonth = tenant.createdAt.year == now.year && tenant.createdAt.month == now.month;
+      if (tenantCreatedThisMonth) return false;
+      return true;
+    }
+    final graceBoundary = startOfCurrentMonth.subtract(Duration(days: grace));
+    return paidThroughDate.isBefore(graceBoundary);
+  }
+
+  /// Days late (0 if not late). Use facility grace period when available.
+  static int getTenantDaysLate(TenantModel tenant, {int? gracePeriodDays}) {
+    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
+    if (!isTenantLate(tenant, gracePeriodDays: grace)) return 0;
+    final now = DateTime.now();
+    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+    final paidThroughDate = tenant.paidThrough;
+    final referenceDate = paidThroughDate ??
+        ((tenant.createdAt.year == now.year && tenant.createdAt.month == now.month)
+            ? tenant.createdAt
+            : startOfCurrentMonth);
+    final difference = startOfCurrentMonth.difference(referenceDate).inDays - grace;
+    return difference < 0 ? 0 : difference;
+  }
 
   // --- Late Payment Detection ---
 
@@ -96,7 +140,8 @@ class LateLogicService {
       if (kDebugMode) {
         print('❌ Error getting overdue payments: $e');
       }
-      rethrow;
+      // Return empty list instead of rethrowing so delinquency can still show tenant-based past due
+      return [];
     }
   }
 
@@ -106,9 +151,12 @@ class LateLogicService {
         print('🔄 Getting tenants with overdue payments for facility: $facilityId');
       }
 
-      final overduePayments = await getOverduePayments(facilityId);
-      if (overduePayments.isEmpty) {
-        return [];
+      // Get overdue payments (may return [] if query fails or no payments exist)
+      List<PaymentModel> overduePayments;
+      try {
+        overduePayments = await getOverduePayments(facilityId);
+      } catch (_) {
+        overduePayments = [];
       }
 
       final paymentsByTenant = <String, List<PaymentModel>>{};
@@ -117,7 +165,9 @@ class LateLogicService {
       }
 
       final results = <TenantOverdueInfo>[];
+      final trackedTenantIds = <String>{};
 
+      // Add tenants who have overdue payment records
       for (final entry in paymentsByTenant.entries) {
         final tenantDoc = await _firestore
             .collection('facilities')
@@ -133,10 +183,11 @@ class LateLogicService {
         final tenant = TenantModel.fromFirestore(tenantDoc);
         final tenantPayments = entry.value;
 
+        final graceDaysForFees = await getFacilityGracePeriodDays(facilityId);
         final totalDue = tenantPayments.fold<double>(0, (sum, payment) => sum + payment.amount);
-        final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment));
+        final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment, gracePeriodDays: graceDaysForFees));
         final maxDaysOverdue = tenantPayments.fold<int>(0, (max, payment) => payment.daysOverdue > max ? payment.daysOverdue : max);
-        final status = _statusForOverduePayments(tenantPayments);
+        final status = _statusForOverduePayments(tenantPayments, gracePeriodDays: graceDaysForFees);
 
         results.add(TenantOverdueInfo(
           tenant: tenant,
@@ -147,12 +198,14 @@ class LateLogicService {
           maxDaysOverdue: maxDaysOverdue,
           status: status,
         ));
+        trackedTenantIds.add(tenant.id);
       }
 
-      final trackedTenantIds = results.map((info) => info.tenant.id).toSet();
+      // Use facility's grace period so "late" matches what the owner set in Billing Settings
+      final graceDays = await getFacilityGracePeriodDays(facilityId);
       final now = DateTime.now();
       final startOfCurrentMonth = DateTime(now.year, now.month, 1);
-      final graceCutoff = startOfCurrentMonth.subtract(Duration(days: _gracePeriodDays));
+      final graceCutoff = startOfCurrentMonth.subtract(Duration(days: graceDays));
 
       final lateTenantsSnapshot = await _firestore
           .collection('facilities')
@@ -178,11 +231,11 @@ class LateLogicService {
         if (trackedTenantIds.contains(doc.id)) continue;
 
         final tenant = TenantModel.fromFirestore(doc);
-        if (!tenant.isLate) {
-          continue;
-        }
+        if (!tenant.isActive) continue;
+        if (!isTenantLate(tenant, gracePeriodDays: graceDays)) continue;
 
-        final status = _statusForDaysLate(tenant.daysLate);
+        final daysLate = getTenantDaysLate(tenant, gracePeriodDays: graceDays);
+        final status = _statusForDaysLate(daysLate);
         results.add(
           TenantOverdueInfo(
             tenant: tenant,
@@ -190,7 +243,7 @@ class LateLogicService {
             totalDue: tenant.monthlyRate,
             totalLateFees: 0,
             overduePayments: 0,
-            maxDaysOverdue: tenant.daysLate,
+            maxDaysOverdue: daysLate,
             status: status,
           ),
         );
@@ -214,18 +267,20 @@ class LateLogicService {
 
   // --- Late Fee Calculation ---
 
-  static double calculateLateFee(PaymentModel payment) {
+  static double calculateLateFee(PaymentModel payment, {int? gracePeriodDays}) {
     if (payment.status != PaymentStatus.pending) return 0.0;
     if (!payment.isOverdue) return 0.0;
 
+    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
     final daysOverdue = payment.daysOverdue;
-    if (daysOverdue <= _gracePeriodDays) return 0.0;
+    if (daysOverdue <= grace) return 0.0;
 
-    return _baseLateFee + ((daysOverdue - _gracePeriodDays) * _dailyLateFee);
+    return _baseLateFee + ((daysOverdue - grace) * _dailyLateFee);
   }
 
   static Future<double> calculateTotalLateFees(String facilityId, String tenantId) async {
     try {
+      final graceDays = await getFacilityGracePeriodDays(facilityId);
       final querySnapshot = await _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -237,7 +292,7 @@ class LateLogicService {
       double totalLateFees = 0.0;
       for (final doc in querySnapshot.docs) {
         final payment = PaymentModel.fromFirestore(doc);
-        totalLateFees += calculateLateFee(payment);
+        totalLateFees += calculateLateFee(payment, gracePeriodDays: graceDays);
       }
 
       return totalLateFees;
@@ -251,12 +306,13 @@ class LateLogicService {
 
   // --- Status Determination ---
 
-  static LateStatus getPaymentLateStatus(PaymentModel payment) {
+  static LateStatus getPaymentLateStatus(PaymentModel payment, {int? gracePeriodDays}) {
     if (payment.status != PaymentStatus.pending) return LateStatus.current;
     if (!payment.isOverdue) return LateStatus.current;
 
+    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
     final daysOverdue = payment.daysOverdue;
-    if (daysOverdue <= _gracePeriodDays) return LateStatus.current;
+    if (daysOverdue <= grace) return LateStatus.current;
     if (daysOverdue <= 15) return LateStatus.late;
     if (daysOverdue <= _severeOverdueDays) return LateStatus.overdue;
     return LateStatus.severelyOverdue;
@@ -264,6 +320,7 @@ class LateLogicService {
 
   static Future<LateStatus> getTenantLateStatus(String facilityId, String tenantId) async {
     try {
+      final graceDays = await getFacilityGracePeriodDays(facilityId);
       final overduePayments = await _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -276,7 +333,7 @@ class LateLogicService {
       if (overduePayments.docs.isEmpty) return LateStatus.current;
 
       final payments = overduePayments.docs.map(PaymentModel.fromFirestore).toList();
-      return _statusForOverduePayments(payments);
+      return _statusForOverduePayments(payments, gracePeriodDays: graceDays);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting tenant late status: $e');
@@ -391,10 +448,11 @@ class LateLogicService {
         print('🔄 Applying late fees for facility: $facilityId');
       }
 
+      final graceDays = await getFacilityGracePeriodDays(facilityId);
       final overduePayments = await getOverduePayments(facilityId);
       
       for (final payment in overduePayments) {
-        final lateFee = calculateLateFee(payment);
+        final lateFee = calculateLateFee(payment, gracePeriodDays: graceDays);
         if (lateFee > 0) {
           // Create a late fee payment record
           await _firestore.collection('facilities').doc(facilityId).collection('payments').add({
@@ -430,18 +488,27 @@ class LateLogicService {
 
   // --- Statistics ---
 
+  /// Late statistics use tenant-based past-due (paidThrough / daysLate) so they match
+  /// the dashboard and tenant list. Tenants with overdue payment records are also included
+  /// via getTenantsWithOverduePayments.
   static Future<Map<String, int>> getLateStatistics(String facilityId) async {
     try {
-      final overduePayments = await getOverduePayments(facilityId);
-      final tenantsWithOverdue = await getTenantsWithOverduePayments(facilityId);
+      final graceDays = await getFacilityGracePeriodDays(facilityId);
+      final tenants = await TenantService.getTenantsForFacility(facilityId);
+      final activeTenants = tenants.where((t) => t.isActive == true).toList();
 
       int currentCount = 0;
       int lateCount = 0;
       int overdueCount = 0;
       int severelyOverdueCount = 0;
 
-      for (final payment in overduePayments) {
-        final status = getPaymentLateStatus(payment);
+      for (final tenant in activeTenants) {
+        if (!isTenantLate(tenant, gracePeriodDays: graceDays)) {
+          currentCount++;
+          continue;
+        }
+        final daysLate = getTenantDaysLate(tenant, gracePeriodDays: graceDays);
+        final status = _statusForDaysLate(daysLate);
         switch (status) {
           case LateStatus.current:
             currentCount++;
@@ -463,7 +530,7 @@ class LateLogicService {
         'late': lateCount,
         'overdue': overdueCount,
         'severelyOverdue': severelyOverdueCount,
-        'totalTenantsWithOverdue': tenantsWithOverdue.length,
+        'totalTenantsWithOverdue': lateCount + overdueCount + severelyOverdueCount,
       };
     } catch (e) {
       if (kDebugMode) {
@@ -500,9 +567,10 @@ class LateLogicService {
     return '$days days overdue';
   }
 
-  static LateStatus _statusForOverduePayments(List<PaymentModel> payments) {
+  static LateStatus _statusForOverduePayments(List<PaymentModel> payments, {int? gracePeriodDays}) {
     if (payments.isEmpty) return LateStatus.current;
 
+    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
     int maxDaysOverdue = 0;
     for (final payment in payments) {
       if (payment.daysOverdue > maxDaysOverdue) {
@@ -510,7 +578,7 @@ class LateLogicService {
       }
     }
 
-    if (maxDaysOverdue <= _gracePeriodDays) return LateStatus.current;
+    if (maxDaysOverdue <= grace) return LateStatus.current;
     if (maxDaysOverdue <= 15) return LateStatus.late;
     if (maxDaysOverdue <= _severeOverdueDays) return LateStatus.overdue;
     return LateStatus.severelyOverdue;

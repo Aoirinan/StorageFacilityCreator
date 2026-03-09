@@ -2,13 +2,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
-import 'package:sfcapp/providers/search_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/services/facility_service.dart';
-import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 class YieldManagementScreen extends ConsumerStatefulWidget {
   const YieldManagementScreen({super.key});
@@ -32,24 +32,60 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
 
     final facilities = await FacilityService.getUserFacilities();
     if (facilities.isNotEmpty && mounted) {
-      setState(() {
-        _selectedFacilityId = facilities.first.id;
-      });
+      // Sync with global facility selector (same as Late Dashboard, Unit List, etc.)
+      final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+      final id = (activeId != null && facilities.any((f) => f.id == activeId))
+          ? activeId
+          : facilities.first.id;
+      setState(() => _selectedFacilityId = id);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return _selectedFacilityId == null
-        ? _buildNoFacilityMessage()
-        : Column(
-            children: [
-              _buildFacilitySelector(),
-              Expanded(
-                child: _buildYieldAnalysis(),
-              ),
-            ],
-          );
+    final auth = ref.watch(authStateProvider);
+    final activeId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+    final facilities = auth.whenOrNull(data: (d) => d) != null
+        ? ref.watch(userFacilitiesProvider(auth.whenOrNull(data: (d) => d)!.uid)).whenOrNull(data: (d) => d)
+        : null;
+
+    // When global facility changes (top selector), sync Yield Mgmt selection
+    ref.listen(activeFacilityIdProvider, (prev, next) {
+      final nextId = next.whenOrNull(data: (d) => d);
+      if (nextId != null &&
+          facilities != null &&
+          facilities.any((f) => f.id == nextId) &&
+          _selectedFacilityId != nextId &&
+          mounted) {
+        setState(() => _selectedFacilityId = nextId);
+      }
+    });
+
+    // Fallback: use active facility when _selectedFacilityId is null (e.g. after nav)
+    String? effectiveId = _selectedFacilityId;
+    if (effectiveId == null && facilities != null && facilities.isNotEmpty) {
+      effectiveId = (activeId != null && facilities.any((f) => f.id == activeId))
+          ? activeId
+          : facilities.first.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedFacilityId != effectiveId) {
+          setState(() => _selectedFacilityId = effectiveId);
+        }
+      });
+    }
+
+    if (effectiveId == null) {
+      return _buildNoFacilityMessage();
+    }
+
+    return Column(
+      children: [
+        _buildFacilitySelector(effectiveId),
+        Expanded(
+          child: _buildYieldAnalysis(effectiveId),
+        ),
+      ],
+    );
   }
 
   Widget _buildNoFacilityMessage() {
@@ -73,7 +109,7 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
     );
   }
 
-  Widget _buildFacilitySelector() {
+  Widget _buildFacilitySelector(String facilityId) {
     final authState = ref.watch(authStateProvider);
     return authState.when(
       data: (user) {
@@ -85,22 +121,41 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
             return Padding(
               padding: const EdgeInsets.all(16),
               child: DropdownButtonFormField<String>(
-                value: _selectedFacilityId,
+                value: facilityId,
+                isExpanded: true,
                 decoration: const InputDecoration(
                   labelText: 'Facility',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.business),
                 ),
+                selectedItemBuilder: (context) => facilities
+                    .map((f) => Text(
+                          f.name,
+                          style: AppTheme.dropdownItemTextStyle.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ))
+                    .toList(),
                 items: facilities.map((facility) {
                   return DropdownMenuItem(
                     value: facility.id,
-                    child: Text(facility.name),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        facility.name,
+                        style: AppTheme.dropdownItemTextStyle,
+                        softWrap: true,
+                      ),
+                    ),
                   );
                 }).toList(),
                 onChanged: (value) {
-                  setState(() {
-                    _selectedFacilityId = value;
-                  });
+                  if (value != null) {
+                    setState(() => _selectedFacilityId = value);
+                    ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
+                  }
                 },
               ),
             );
@@ -114,13 +169,19 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
     );
   }
 
-  Widget _buildYieldAnalysis() {
-    if (_selectedFacilityId == null) {
-      return const Center(child: Text('Select a facility'));
-    }
+  Future<({List<UnitModel> units, int totalUnits, int occupiedUnits})> _loadYieldData(String facilityId) async {
+    final results = await Future.wait([
+      UnitService.getUnitsForFacility(facilityId),
+      FacilityStatsService.computeUnitCounts(facilityId),
+    ]);
+    final units = results[0] as List<UnitModel>;
+    final counts = results[1] as ({int totalUnits, int occupiedUnits});
+    return (units: units, totalUnits: counts.totalUnits, occupiedUnits: counts.occupiedUnits);
+  }
 
-    return FutureBuilder<List<UnitModel>>(
-      future: UnitService.getUnitsForFacility(_selectedFacilityId!),
+  Widget _buildYieldAnalysis(String facilityId) {
+    return FutureBuilder<({List<UnitModel> units, int totalUnits, int occupiedUnits})>(
+      future: _loadYieldData(facilityId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -133,14 +194,15 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
               children: [
                 Icon(Icons.error, size: 64, color: AppTheme.error),
                 const SizedBox(height: 16),
-                Text('Error loading units: ${snapshot.error}'),
+                Text('Error loading data: ${snapshot.error}'),
               ],
             ),
           );
         }
 
-        final units = snapshot.data ?? [];
-        if (units.isEmpty) {
+        final data = snapshot.data;
+        final units = data?.units ?? [];
+        if (units.isEmpty && (data?.totalUnits ?? 0) == 0) {
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -161,8 +223,15 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
           );
         }
 
-        // Analyze by unit type
+        // Analyze by unit type (by-type uses units; overall uses canonical FacilityStatsService counts)
         final analysis = _analyzeUnits(units);
+        final totalUnits = data!.totalUnits;
+        final totalOccupied = data.occupiedUnits;
+        final totalAvailable = (totalUnits - totalOccupied).clamp(0, totalUnits);
+        analysis['totalUnits'] = totalUnits;
+        analysis['totalOccupied'] = totalOccupied;
+        analysis['totalAvailable'] = totalAvailable;
+        analysis['overallOccupancy'] = totalUnits > 0 ? totalOccupied / totalUnits : 0.0;
 
         return SingleChildScrollView(
           padding: const EdgeInsets.all(16),

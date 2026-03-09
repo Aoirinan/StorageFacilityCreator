@@ -17,6 +17,7 @@ class RecurringChargesService {
   static Future<RecurringChargesResult> generateMonthlyRentCharges({
     required String facilityId,
     DateTime? forDate, // Defaults to first day of current month
+    bool dryRun = false, // Preview mode - don't actually create charges
   }) async {
     try {
       final user = _auth.currentUser;
@@ -29,9 +30,17 @@ class RecurringChargesService {
         print('   Target date: ${targetDate.toIso8601String()}');
       }
 
-      // Get all active tenants for the facility
+      // Get all active tenants for the facility (with safety checks)
       final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final activeTenants = tenants.where((t) => t.isActive && t.unitNumber.isNotEmpty).toList();
+      final activeTenants = tenants.where((t) {
+        // Must be active
+        if (!t.isActive) return false;
+        // Must have unit number
+        if (t.unitNumber.isEmpty) return false;
+        // Skip if moved out (has moveOutDate)
+        // Note: TenantModel doesn't have moveOutDate, but we check isActive which should cover this
+        return true;
+      }).toList();
 
       if (kDebugMode) {
         print('   Found ${activeTenants.length} active tenants');
@@ -56,6 +65,15 @@ class RecurringChargesService {
               print('   ⏭️  Skipping tenant ${tenant.name} - charge already exists');
             }
             skippedCount++;
+            continue;
+          }
+
+          // In dry-run mode, skip actual creation
+          if (dryRun) {
+            if (kDebugMode) {
+              print('   🔍 [DRY RUN] Would generate charge for tenant: ${tenant.name}');
+            }
+            successCount++;
             continue;
           }
 

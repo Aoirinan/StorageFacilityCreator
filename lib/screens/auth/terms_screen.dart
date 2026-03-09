@@ -26,7 +26,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              'Last updated: September 16, 2025',
+              'Last updated: January 28, 2026',
               style: TextStyle(
                 fontSize: 14,
                 color: AppTheme.textSecondary,
@@ -99,7 +99,20 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '6. Payment Terms',
+              '6. SMS Messaging Terms',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'If you send SMS messages to tenants through Storage Facility Creator, you are responsible for obtaining proper consent from recipients before sending messages. You agree to:\n\n• Only send SMS messages to tenants who have opted in\n• Respect opt-out requests (STOP keyword) immediately\n• Include required compliance language in your messages\n• Comply with all applicable SMS messaging laws and regulations\n• Not use SMS messaging for spam, harassment, or illegal purposes\n\nStorage Facility Creator provides SMS messaging functionality, but you are responsible for ensuring compliance with carrier requirements and applicable laws. For details about SMS compliance requirements, see our SMS Messaging Policy at /sms-policy.',
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '7. Payment Terms',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -112,7 +125,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '7. Limitation of Liability',
+              '8. Limitation of Liability',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -125,7 +138,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '8. Termination',
+              '9. Termination',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -138,7 +151,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '9. Changes to Terms',
+              '10. Changes to Terms',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -151,7 +164,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '10. Contact Information',
+              '11. Contact Information',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,

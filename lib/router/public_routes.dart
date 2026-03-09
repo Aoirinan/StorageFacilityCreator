@@ -12,6 +12,7 @@ import '../screens/public_rental_portal_screen.dart';
 import '../screens/public_facility_page_screen.dart';
 import '../screens/public_move_in_screen.dart';
 import '../screens/marketing_landing_page.dart';
+import '../models/contract_model.dart';
 import 'app_route.dart';
 import 'route_helpers.dart';
 
@@ -21,6 +22,11 @@ List<RouteBase> getPublicRoutes() {
     GoRoute(
       path: AppRoute.landing,
       name: 'landing',
+      builder: (context, state) => MarketingLandingPage(),
+    ),
+    GoRoute(
+      path: AppRoute.marketing,
+      name: 'marketing',
       builder: (context, state) => MarketingLandingPage(),
     ),
     GoRoute(
@@ -63,7 +69,8 @@ List<RouteBase> getPublicRoutes() {
         if (token == null || token.isEmpty) {
           return NotFoundPage(state: state);
         }
-        return ContractSigningScreen(signingToken: token);
+        final contract = state.extra is ContractModel ? state.extra as ContractModel : null;
+        return ContractSigningScreen(signingToken: token, contract: contract);
       },
     ),
     GoRoute(

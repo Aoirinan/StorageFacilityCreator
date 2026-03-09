@@ -82,20 +82,7 @@ class _LienListScreenState extends ConsumerState<LienListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/liens',
-      title: 'Liens & Auctions',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.filter_list),
-          onPressed: () => _showFiltersDialog(context),
-          tooltip: 'Filter',
-        ),
-      ],
-      child: _selectedFacilityId.isEmpty
+    return _selectedFacilityId.isEmpty
           ? _buildNoFacilitiesMessage()
           : Column(
               children: [
@@ -105,7 +92,6 @@ class _LienListScreenState extends ConsumerState<LienListScreen> {
                   child: _buildLiensList(),
                 ),
               ],
-            ),
     );
   }
 

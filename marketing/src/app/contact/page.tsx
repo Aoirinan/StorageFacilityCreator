@@ -84,7 +84,7 @@ export default function ContactPage() {
                 type="text"
                 required
                 autoComplete="name"
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
             <div>
@@ -97,7 +97,7 @@ export default function ContactPage() {
                 type="email"
                 required
                 autoComplete="email"
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
             <div>
@@ -109,7 +109,20 @@ export default function ContactPage() {
                 name="facilityName"
                 type="text"
                 required
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            <div>
+              <label htmlFor="facilityAddress" className="block text-sm font-medium text-slate-700">
+                Facility Address (optional)
+              </label>
+              <input
+                id="facilityAddress"
+                name="facilityAddress"
+                type="text"
+                autoComplete="street-address"
+                placeholder="123 Main St, City, State ZIP"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
             <div>
@@ -121,7 +134,7 @@ export default function ContactPage() {
                 name="phone"
                 type="tel"
                 autoComplete="tel"
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
             <div>
@@ -131,7 +144,7 @@ export default function ContactPage() {
               <select
                 id="unitCount"
                 name="unitCount"
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               >
                 {UNIT_RANGES.map(({ value, label }) => (
                   <option key={value || 'empty'} value={value}>
@@ -148,7 +161,7 @@ export default function ContactPage() {
                 id="message"
                 name="message"
                 rows={4}
-                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-sm focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
             <button

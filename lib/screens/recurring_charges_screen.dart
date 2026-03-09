@@ -181,6 +181,9 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
           final facilities = snapshot.data ?? [];
           if (facilities.isEmpty) return const SizedBox.shrink();
           
+          final style = AppTheme.dropdownItemTextStyle.copyWith(
+            color: Theme.of(context).colorScheme.onSurface,
+          );
           return DropdownButtonFormField<String>(
             value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
             decoration: InputDecoration(
@@ -190,6 +193,9 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
               ),
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
+            selectedItemBuilder: (context) => facilities
+                .map((f) => Text(f.name, style: style, overflow: TextOverflow.ellipsis, maxLines: 1))
+                .toList(),
             items: facilities.map((facility) {
               return DropdownMenuItem(
                 value: facility.id,
@@ -422,6 +428,8 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
     return months[month - 1];
   }
 
+  bool _dryRun = false;
+
   void _showGenerateDialog(BuildContext context) {
     final now = DateTime.now();
     final firstOfMonth = DateTime(now.year, now.month, 1);
@@ -466,21 +474,40 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
                 ),
               ),
               const SizedBox(height: 8),
+              CheckboxListTile(
+                title: const Text('Dry Run (Preview Only)'),
+                subtitle: const Text('Preview charges without creating them'),
+                value: _dryRun,
+                onChanged: (value) {
+                  setState(() {
+                    _dryRun = value ?? false;
+                  });
+                },
+              ),
+              const SizedBox(height: 8),
               Container(
                 padding: const EdgeInsets.all(12.0),
                 decoration: BoxDecoration(
-                  color: AppTheme.warning.withOpacity(0.1),
+                  color: _dryRun 
+                      ? AppTheme.info.withOpacity(0.1)
+                      : AppTheme.warning.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.warning_amber, color: AppTheme.warning, size: 20),
+                    Icon(
+                      _dryRun ? Icons.visibility : Icons.warning_amber,
+                      color: _dryRun ? AppTheme.info : AppTheme.warning,
+                      size: 20,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'This will generate rent charges for all active tenants. Existing charges for the selected month will be skipped.',
+                        _dryRun
+                            ? 'Preview mode: This will show what charges would be created without actually creating them.'
+                            : 'This will generate rent charges for all active tenants. Existing charges for the selected month will be skipped.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.warning,
+                          color: _dryRun ? AppTheme.info : AppTheme.warning,
                         ),
                       ),
                     ),
@@ -500,9 +527,9 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-                _generateCharges(_selectedDate ?? firstOfMonth);
+                _generateCharges(_selectedDate ?? firstOfMonth, _dryRun);
               },
-              child: const Text('Generate'),
+              child: Text(_dryRun ? 'Preview' : 'Generate'),
             ),
           ],
         ),
@@ -510,7 +537,7 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
     );
   }
 
-  Future<void> _generateCharges(DateTime targetDate) async {
+  Future<void> _generateCharges(DateTime targetDate, bool dryRun) async {
     if (_selectedFacilityId.isEmpty) return;
 
     setState(() {
@@ -521,58 +548,71 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
       final result = await RecurringChargesService.generateMonthlyRentCharges(
         facilityId: _selectedFacilityId,
         forDate: targetDate,
+        dryRun: dryRun,
       );
 
       if (mounted) {
         if (result.success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Generated ${result.successCount} charges. '
-                '${result.skippedCount} skipped (already exist). '
-                '${result.errorCount} errors.',
-              ),
-              backgroundColor: (result.errorCount ?? 0) > 0 ? AppTheme.warning : AppTheme.success,
-              duration: const Duration(seconds: 5),
-            ),
-          );
-
-          if (result.errors.isNotEmpty) {
-            // Show errors in a dialog
-            showDialog(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text('Generation Errors'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'The following errors occurred during generation:',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 16),
-                      ...result.errors.map((error) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0),
-                        child: Text(
-                          '• $error',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.error,
-                          ),
-                        ),
-                      )),
-                    ],
-                  ),
+          if (dryRun) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Preview: ${result.successCount} charges would be created (${result.skippedCount} skipped)',
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Close'),
-                  ),
-                ],
+                backgroundColor: AppTheme.info,
+                duration: const Duration(seconds: 5),
               ),
             );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Generated ${result.successCount} charges. '
+                  '${result.skippedCount} skipped (already exist). '
+                  '${result.errorCount} errors.',
+                ),
+                backgroundColor: (result.errorCount ?? 0) > 0 ? AppTheme.warning : AppTheme.success,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+
+            if (result.errors.isNotEmpty) {
+              // Show errors in a dialog
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Generation Errors'),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'The following errors occurred during generation:',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        const SizedBox(height: 16),
+                        ...result.errors.map((error) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0),
+                          child: Text(
+                            '• $error',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.error,
+                            ),
+                          ),
+                        )),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              );
+            }
           }
         } else {
           ScaffoldMessenger.of(context).showSnackBar(

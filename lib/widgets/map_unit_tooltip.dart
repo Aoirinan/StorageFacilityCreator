@@ -17,15 +17,17 @@ class MapUnitTooltip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
-      constraints: const BoxConstraints(maxWidth: 300),
+      constraints: const BoxConstraints(maxWidth: 320, minWidth: 240),
       padding: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colorScheme.surface,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outline),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: colorScheme.shadow.withOpacity(0.25),
             blurRadius: 8,
             spreadRadius: 2,
           ),
@@ -33,20 +35,25 @@ class MapUnitTooltip extends StatelessWidget {
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _getStatusColor(unit.status).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  unit.unitNumber,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _getStatusColor(unit.status).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    unit.unitNumber,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    softWrap: true,
                   ),
                 ),
               ),
@@ -59,8 +66,8 @@ class MapUnitTooltip extends StatelessWidget {
                 ),
                 child: Text(
                   unit.statusDisplayName,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: colorScheme.onPrimary,
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
                   ),
@@ -69,14 +76,15 @@ class MapUnitTooltip extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          if (unit.tenantName != null) ...[
-            _buildInfoRow('Tenant', unit.tenantName!),
+          if (unit.tenantName != null && unit.tenantName!.isNotEmpty) ...[
+            _buildInfoRow(context, 'Tenant', unit.tenantName!),
             const SizedBox(height: 4),
           ],
-          _buildInfoRow('Rate', '\$${unit.monthlyRate.toStringAsFixed(2)}/month'),
+          _buildInfoRow(context, 'Rate', '\$${unit.monthlyRate.toStringAsFixed(2)}/month'),
           if (unit.moveInDate != null) ...[
             const SizedBox(height: 4),
             _buildInfoRow(
+              context,
               'Move-In',
               DateFormat('MMM d, y').format(unit.moveInDate!),
             ),
@@ -119,27 +127,32 @@ class MapUnitTooltip extends StatelessWidget {
     );
   }
 
-  Widget _buildInfoRow(String label, String value) {
+  Widget _buildInfoRow(BuildContext context, String label, String value) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 80,
+          width: 70,
           child: Text(
             '$label:',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
-              color: AppTheme.textSecondary,
+              color: colorScheme.onSurfaceVariant,
             ),
           ),
         ),
         Expanded(
           child: Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
+              color: colorScheme.onSurface,
             ),
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
           ),
         ),
       ],

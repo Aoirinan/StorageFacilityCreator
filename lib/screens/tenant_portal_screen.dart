@@ -6,11 +6,15 @@ import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/tenant_autopay_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/tenant_portal_models.dart';
 import 'package:sfcapp/providers/tenant_portal_provider.dart';
+import 'package:sfcapp/services/autopay_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/ui/payments/stripe_embedded_payment_dialog.dart';
 
 class TenantPortalScreen extends ConsumerStatefulWidget {
   final TenantPortalLookup lookup;
@@ -28,18 +32,23 @@ class TenantPortalScreen extends ConsumerStatefulWidget {
 
 class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   bool _isProcessingPayment = false;
+  bool _isAutopayLoading = false;
   bool _appCheckFailureShown = false;
+  final bool _isLocalhost = kIsWeb &&
+      (Uri.base.host == 'localhost' || Uri.base.host == '127.0.0.1');
 
   @override
   void initState() {
     super.initState();
     // Prefetch App Check token to avoid failed-precondition on first load.
-    FirebaseAppCheck.instance.getToken().catchError((_) {
-      if (mounted && !_appCheckFailureShown) {
-        _appCheckFailureShown = true;
-        _showAppCheckDialog();
-      }
-    });
+    if (!_isLocalhost) {
+      FirebaseAppCheck.instance.getToken().catchError((_) {
+        if (mounted && !_appCheckFailureShown) {
+          _appCheckFailureShown = true;
+          _showAppCheckDialog();
+        }
+      });
+    }
   }
 
   String _formatCurrency(double amount) => '\$${amount.toStringAsFixed(2)}';
@@ -98,7 +107,9 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   Future<void> _manualRefresh() async {
     try {
       // Ensure App Check token is fresh before hitting Functions
-      await FirebaseAppCheck.instance.getToken();
+      if (!_isLocalhost) {
+        await FirebaseAppCheck.instance.getToken();
+      }
       await ref.refresh(tenantPortalProvider(widget.lookup).future);
     } on TenantPortalException catch (error) {
       if (error.code == 'failed-precondition') {
@@ -116,12 +127,13 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     _showSnack('$label copied to clipboard');
   }
 
-  void _showSnack(String message) {
+  void _showSnack(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         behavior: SnackBarBehavior.floating,
+        backgroundColor: isError ? AppTheme.error : null,
       ),
     );
   }
@@ -143,7 +155,9 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
           TextButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await FirebaseAppCheck.instance.getToken();
+              if (!_isLocalhost) {
+                await FirebaseAppCheck.instance.getToken();
+              }
               await _manualRefresh();
             },
             child: const Text('Retry'),
@@ -321,21 +335,24 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
 
     final bodyChildren = <Widget>[
       if (portalAsync.hasError) _buildErrorBanner(context, portalAsync.error),
+      if (data.tenant.overlockIsActive) _buildOverlockBanner(context),
       _buildSummaryCard(context, data),
       const SizedBox(height: 16),
       _buildStatsSection(context, data),
       const SizedBox(height: 16),
+      _buildUpcomingCard(context, data),
+      const SizedBox(height: 16),
+      _buildMyInfoCard(context, data),
+      const SizedBox(height: 16),
       _buildFacilityCard(context, data),
-      if (data.tenant.contacts.isNotEmpty) ...[
-        const SizedBox(height: 16),
-        _buildEmergencyContactsCard(context, data),
-      ],
-      if (data.tenant.vehicles.isNotEmpty) ...[
-        const SizedBox(height: 16),
-        _buildVehiclesCard(context, data),
-      ],
+      const SizedBox(height: 16),
+      _buildEmergencyContactsCard(context, data),
+      const SizedBox(height: 16),
+      _buildVehiclesCard(context, data),
       const SizedBox(height: 16),
       _buildPaymentsCard(context, data),
+      const SizedBox(height: 16),
+      _buildAutopayCard(context, data),
       const SizedBox(height: 16),
       _buildHelpCard(context, data),
       const SizedBox(height: 16),
@@ -403,6 +420,41 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         trailing: TextButton(
           onPressed: _manualRefresh,
           child: const Text('Retry'),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOverlockBanner(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      color: AppTheme.error.withOpacity(0.1),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(Icons.lock, color: AppTheme.error, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Unit is currently overlocked',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: AppTheme.error,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'This unit is currently overlocked. Please contact management. You can still make payments below.',
+                    style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.error),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -550,6 +602,266 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         Text(
           value,
           style: theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+
+  // ─── Upcoming Dates Card ──────────────────────────────────────────────────────
+
+  /// Builds a compact timeline of the next important dates for this tenant.
+  /// Only shows items that are actually present and upcoming.
+  Widget _buildUpcomingCard(BuildContext context, TenantPortalData data) {
+    final tenant = data.tenant;
+    final stats = data.stats;
+    final now = DateTime.now();
+    final theme = Theme.of(context);
+
+    // Collect upcoming items: (date, label, icon, color, urgency)
+    final items = <_UpcomingItem>[];
+
+    // Next payment due
+    if (stats.nextDueDate != null) {
+      final daysUntil = stats.nextDueDate!.difference(now).inDays;
+      final isPast = stats.nextDueDate!.isBefore(now);
+      items.add(_UpcomingItem(
+        date: stats.nextDueDate!,
+        label: isPast
+            ? 'Payment overdue'
+            : 'Payment due',
+        detail: stats.nextAmountDue != null
+            ? _formatCurrency(stats.nextAmountDue!)
+            : null,
+        icon: Icons.receipt_long_outlined,
+        color: isPast || daysUntil <= 3
+            ? AppTheme.error
+            : daysUntil <= 7
+                ? AppTheme.warning
+                : AppTheme.primaryBlue,
+        isUrgent: isPast || daysUntil <= 3,
+      ));
+    }
+
+    // Autopay charge date — same as next due date when autopay is on
+    if (tenant.autopay.isOn &&
+        stats.nextDueDate != null &&
+        !stats.nextDueDate!.isBefore(now)) {
+      items.add(_UpcomingItem(
+        date: stats.nextDueDate!,
+        label: 'Autopay charge',
+        detail: stats.nextAmountDue != null
+            ? _formatCurrency(stats.nextAmountDue!)
+            : null,
+        icon: Icons.autorenew,
+        color: AppTheme.success,
+        isUrgent: false,
+      ));
+    }
+
+    // Scheduled move-out
+    if (tenant.scheduledMoveOutDate != null) {
+      final daysUntil = tenant.scheduledMoveOutDate!.difference(now).inDays;
+      items.add(_UpcomingItem(
+        date: tenant.scheduledMoveOutDate!,
+        label: 'Scheduled move-out',
+        icon: Icons.logout,
+        color: daysUntil <= 7 ? AppTheme.warning : AppTheme.primaryBlueDark,
+        isUrgent: daysUntil <= 3,
+      ));
+    }
+
+    // Contract expiration
+    if (tenant.contractExpiresAt != null) {
+      final daysUntil = tenant.contractExpiresAt!.difference(now).inDays;
+      if (daysUntil <= 60) {
+        items.add(_UpcomingItem(
+          date: tenant.contractExpiresAt!,
+          label: daysUntil < 0 ? 'Lease expired' : 'Lease expires',
+          detail: daysUntil >= 0 ? 'in $daysUntil days' : null,
+          icon: Icons.description_outlined,
+          color: daysUntil <= 14
+              ? AppTheme.error
+              : daysUntil <= 30
+                  ? AppTheme.warning
+                  : AppTheme.textSecondary,
+          isUrgent: daysUntil <= 14,
+        ));
+      }
+    }
+
+    // Insurance expiration
+    if (tenant.insuranceExpiresAt != null) {
+      final daysUntil = tenant.insuranceExpiresAt!.difference(now).inDays;
+      if (daysUntil <= 60) {
+        items.add(_UpcomingItem(
+          date: tenant.insuranceExpiresAt!,
+          label: daysUntil < 0 ? 'Insurance expired' : 'Insurance expires',
+          detail: daysUntil >= 0 ? 'in $daysUntil days' : null,
+          icon: Icons.shield_outlined,
+          color: daysUntil <= 14
+              ? AppTheme.error
+              : daysUntil <= 30
+                  ? AppTheme.warning
+                  : AppTheme.textSecondary,
+          isUrgent: daysUntil <= 14,
+        ));
+      }
+    }
+
+    // Sort by date ascending
+    items.sort((a, b) => a.date.compareTo(b.date));
+
+    // Deduplicate: if autopay charge and payment due are on the same day, keep only autopay
+    final deduped = <_UpcomingItem>[];
+    for (final item in items) {
+      final sameDay = deduped.any((existing) =>
+          existing.date.year == item.date.year &&
+          existing.date.month == item.date.month &&
+          existing.date.day == item.date.day &&
+          existing.label == 'Payment due' &&
+          item.label == 'Autopay charge');
+      if (!sameDay) deduped.add(item);
+    }
+
+    // Nothing to show — hide the card entirely
+    if (deduped.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.event_note_outlined,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text('Upcoming', style: theme.textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...deduped.asMap().entries.map((entry) {
+              final i = entry.key;
+              final item = entry.value;
+              final isLast = i == deduped.length - 1;
+              return _buildUpcomingRow(context, item, isLast: isLast);
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUpcomingRow(
+    BuildContext context,
+    _UpcomingItem item, {
+    required bool isLast,
+  }) {
+    final theme = Theme.of(context);
+    final dateStr = _formatDate(item.date);
+    final daysUntil = item.date.difference(DateTime.now()).inDays;
+    final String relativeLabel;
+    if (daysUntil < 0) {
+      relativeLabel = '${daysUntil.abs()} day${daysUntil.abs() == 1 ? '' : 's'} ago';
+    } else if (daysUntil == 0) {
+      relativeLabel = 'Today';
+    } else if (daysUntil == 1) {
+      relativeLabel = 'Tomorrow';
+    } else {
+      relativeLabel = 'In $daysUntil days';
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            // Timeline dot + line
+            SizedBox(
+              width: 32,
+              child: Column(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: item.color.withOpacity(0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(item.icon, size: 14, color: item.color),
+                  ),
+                  if (!isLast)
+                    Container(
+                      width: 1.5,
+                      height: 20,
+                      color: theme.dividerColor,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: isLast ? 0 : 20),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                item.label,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: item.isUrgent ? item.color : null,
+                                ),
+                              ),
+                              if (item.isUrgent) ...[
+                                const SizedBox(width: 4),
+                                Icon(Icons.priority_high,
+                                    size: 14, color: item.color),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            dateStr,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                                color: AppTheme.textSecondary),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          relativeLabel,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: item.isUrgent ? item.color : AppTheme.textSecondary,
+                            fontWeight: item.isUrgent ? FontWeight.w700 : FontWeight.normal,
+                          ),
+                        ),
+                        if (item.detail != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            item.detail!,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                              color: item.color,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -719,6 +1031,163 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     );
   }
 
+  // ─── Edit My Information ────────────────────────────────────────────────────
+
+  Widget _buildMyInfoCard(BuildContext context, TenantPortalData data) {
+    final tenant = data.tenant;
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text('My Contact Information', style: theme.textTheme.titleMedium)),
+                TextButton.icon(
+                  onPressed: () => _showEditPhoneDialog(context, data),
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Edit'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (tenant.email != null && tenant.email!.isNotEmpty)
+              _infoRow(Icons.email_outlined, 'Email', tenant.email!),
+            if (tenant.phone != null && tenant.phone!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _infoRow(Icons.phone_outlined, 'Phone', tenant.phone!),
+            ],
+            if ((tenant.email == null || tenant.email!.isEmpty) &&
+                (tenant.phone == null || tenant.phone!.isEmpty))
+              Text('No contact info on file.', style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            Text(
+              'Email is managed by your facility. You can update your phone number here.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: AppTheme.primaryBlueDark),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              Text(value),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showEditPhoneDialog(BuildContext context, TenantPortalData data) async {
+    final controller = TextEditingController(text: data.tenant.phone ?? '');
+    final formKey = GlobalKey<FormState>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Update Phone Number'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(
+              labelText: 'Phone Number',
+              prefixIcon: Icon(Icons.phone_outlined),
+              border: OutlineInputBorder(),
+            ),
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Please enter a phone number';
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) Navigator.pop(ctx, true);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _saveProfileUpdate(phone: controller.text.trim());
+  }
+
+  Future<void> _showEditContactsSheet(BuildContext context, TenantPortalData data) async {
+    final contacts = List<TenantContact>.from(data.tenant.contacts);
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => _EditContactsSheet(
+        contacts: contacts,
+        onSave: (updated) async {
+          Navigator.pop(ctx);
+          await _saveProfileUpdate(emergencyContacts: updated);
+        },
+      ),
+    );
+  }
+
+  Future<void> _showEditVehiclesSheet(BuildContext context, TenantPortalData data) async {
+    final vehicles = List<TenantVehicle>.from(data.tenant.vehicles);
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => _EditVehiclesSheet(
+        vehicles: vehicles,
+        onSave: (updated) async {
+          Navigator.pop(ctx);
+          await _saveProfileUpdate(vehicles: updated);
+        },
+      ),
+    );
+  }
+
+  Future<void> _saveProfileUpdate({
+    String? phone,
+    List<TenantContact>? emergencyContacts,
+    List<TenantVehicle>? vehicles,
+  }) async {
+    try {
+      await TenantPortalService.updateProfile(
+        email: widget.lookup.email,
+        accessCode: widget.lookup.accessCode,
+        phone: phone,
+        emergencyContacts: emergencyContacts,
+        vehicles: vehicles,
+      );
+      if (!mounted) return;
+      _showSnack('Information updated successfully.');
+      ref.refresh(tenantPortalProvider(widget.lookup).future);
+    } on TenantPortalException catch (e) {
+      if (!mounted) return;
+      _showSnack('Error: ${e.message}', isError: true);
+    } catch (e) {
+      if (!mounted) return;
+      _showSnack('Unexpected error. Please try again.', isError: true);
+    }
+  }
+
+  // ─── Emergency Contacts Card ─────────────────────────────────────────────────
+
   Widget _buildEmergencyContactsCard(BuildContext context, TenantPortalData data) {
     final contacts = data.tenant.contacts;
     final theme = Theme.of(context);
@@ -729,8 +1198,22 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Emergency & Alternate Contacts', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: Text('Emergency & Alternate Contacts', style: theme.textTheme.titleMedium)),
+                TextButton.icon(
+                  onPressed: () => _showEditContactsSheet(context, data),
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Edit'),
+                ),
+              ],
+            ),
+            if (contacts.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('No contacts on file. Tap Edit to add one.',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary)),
+              ),
             ...contacts.map((contact) {
               final chips = <Widget>[];
               if (contact.isPrimary) {
@@ -807,11 +1290,25 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Registered Vehicles', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: Text('Registered Vehicles', style: theme.textTheme.titleMedium)),
+                TextButton.icon(
+                  onPressed: () => _showEditVehiclesSheet(context, data),
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Edit'),
+                ),
+              ],
+            ),
+            if (vehicles.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('No vehicles on file. Tap Edit to add one.',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary)),
+              ),
             ...vehicles.map((vehicle) {
               return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.only(top: 12),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -906,6 +1403,186 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     );
   }
 
+  Future<void> _addCardFromPortal() async {
+    if (!kIsWeb) return;
+    setState(() => _isAutopayLoading = true);
+    try {
+      final result = await StripeService.createTenantSetupIntentFromPortal(
+        email: widget.lookup.email,
+        accessCode: widget.lookup.accessCode,
+      );
+      final clientSecret = result['clientSecret'] as String?;
+      final publishableKey = result['publishableKey'] as String?;
+      final connectedAccountId = result['connectedAccountId'] as String?;
+      if (clientSecret == null) throw Exception('No client secret');
+      if (!mounted) return;
+      final baseUrl = Uri.base.origin;
+      final dialogResult = await showStripeEmbeddedDialog(
+        context: context,
+        clientSecret: clientSecret,
+        mode: 'setup',
+        returnUrl: '$baseUrl/#/portal',
+        publishableKeyFromBackend: publishableKey,
+        stripeAccount: connectedAccountId,
+      );
+      if (!mounted) return;
+      if (dialogResult != null && dialogResult.succeeded) {
+        _showSnack('Card saved. Refreshing…');
+        await ref.refresh(tenantPortalProvider(widget.lookup).future);
+        final data = ref.read(tenantPortalProvider(widget.lookup)).whenOrNull(data: (d) => d);
+        if (data != null && data.tenant.autopay.isRequested) {
+          await AutopayService.setTenantAutopayFromPortal(
+            email: widget.lookup.email,
+            accessCode: widget.lookup.accessCode,
+            enabled: true,
+          );
+          await ref.refresh(tenantPortalProvider(widget.lookup).future);
+          _showSnack('Autopay is now on.');
+        }
+      }
+    } catch (e) {
+      if (mounted) _showSnack('Could not add card. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isAutopayLoading = false);
+    }
+  }
+
+  Widget _buildAutopayCard(BuildContext context, TenantPortalData data) {
+    final theme = Theme.of(context);
+    final autopay = data.tenant.autopay;
+    final stripe = data.tenant.stripe;
+    final paymentsEnabled = data.facility.paymentsEnabled;
+
+    Widget statusChip;
+    switch (autopay.status) {
+      case AutopayStatus.off:
+        statusChip = Chip(
+          avatar: const Icon(Icons.toggle_off, color: AppTheme.textSecondary, size: 20),
+          label: const Text('OFF'),
+          backgroundColor: AppTheme.textSecondary.withOpacity(0.1),
+        );
+        break;
+      case AutopayStatus.requested:
+        statusChip = Chip(
+          avatar: const Icon(Icons.schedule, color: AppTheme.warning, size: 20),
+          label: const Text('REQUESTED'),
+          backgroundColor: AppTheme.warning.withOpacity(0.1),
+        );
+        break;
+      case AutopayStatus.on:
+        statusChip = Chip(
+          avatar: const Icon(Icons.check_circle, color: AppTheme.success, size: 20),
+          label: const Text('ON'),
+          backgroundColor: AppTheme.success.withOpacity(0.1),
+        );
+        break;
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('Autopay', style: theme.textTheme.titleMedium),
+                const SizedBox(width: 12),
+                statusChip,
+              ],
+            ),
+            if (!paymentsEnabled) ...[
+              const SizedBox(height: 12),
+              Text(
+                "Payments aren't enabled for this facility yet. Your autopay request is saved. Add your card once the facility enables payments.",
+                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+              ),
+            ] else ...[
+              if (autopay.isOn) ...[
+                if (stripe.hasPaymentMethod && stripe.paymentMethodSummary != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Card: ${stripe.paymentMethodSummary!.displayLabel}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text('Turn off autopay'),
+                    const SizedBox(width: 12),
+                    Switch(
+                      value: true,
+                      onChanged: _isAutopayLoading ? null : (v) async {
+                        if (!v) {
+                          setState(() => _isAutopayLoading = true);
+                          try {
+                            await AutopayService.setTenantAutopayFromPortal(
+                              email: widget.lookup.email,
+                              accessCode: widget.lookup.accessCode,
+                              enabled: false,
+                            );
+                            await ref.refresh(tenantPortalProvider(widget.lookup).future);
+                            _showSnack('Autopay turned off.');
+                          } catch (e) {
+                            _showSnack('Could not update. Try again.');
+                          } finally {
+                            if (mounted) setState(() => _isAutopayLoading = false);
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ] else if (autopay.isRequested) ...[
+                const SizedBox(height: 12),
+                const Text('Autopay requested — add a card to finish setup.'),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: _isAutopayLoading ? null : _addCardFromPortal,
+                  icon: _isAutopayLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_card),
+                  label: const Text('Add card / Finish setup'),
+                ),
+              ] else ...[
+                const SizedBox(height: 12),
+                const Text('Turn on autopay to have rent charged automatically each month.'),
+                if (!stripe.hasPaymentMethod) ...[
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: _isAutopayLoading ? null : _addCardFromPortal,
+                    icon: _isAutopayLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_card),
+                    label: const Text('Add card'),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 8),
+                  FilledButton(
+                    onPressed: _isAutopayLoading ? null : () async {
+                      setState(() => _isAutopayLoading = true);
+                      try {
+                        await AutopayService.setTenantAutopayFromPortal(
+                          email: widget.lookup.email,
+                          accessCode: widget.lookup.accessCode,
+                          enabled: true,
+                        );
+                        await ref.refresh(tenantPortalProvider(widget.lookup).future);
+                        _showSnack('Autopay is now on.');
+                      } catch (e) {
+                        _showSnack(e.toString().replaceFirst('Exception: ', ''));
+                      } finally {
+                        if (mounted) setState(() => _isAutopayLoading = false);
+                      }
+                    },
+                    child: const Text('Turn on autopay'),
+                  ),
+                ],
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildHelpCard(BuildContext context, TenantPortalData data) {
     final theme = Theme.of(context);
     final facility = data.facility;
@@ -943,6 +1620,357 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ─── Upcoming item data class ─────────────────────────────────────────────────
+
+class _UpcomingItem {
+  final DateTime date;
+  final String label;
+  final String? detail;
+  final IconData icon;
+  final Color color;
+  final bool isUrgent;
+
+  const _UpcomingItem({
+    required this.date,
+    required this.label,
+    this.detail,
+    required this.icon,
+    required this.color,
+    required this.isUrgent,
+  });
+}
+
+// ─── Edit Contacts Sheet ──────────────────────────────────────────────────────
+
+class _EditContactsSheet extends StatefulWidget {
+  final List<TenantContact> contacts;
+  final Future<void> Function(List<TenantContact>) onSave;
+
+  const _EditContactsSheet({required this.contacts, required this.onSave});
+
+  @override
+  State<_EditContactsSheet> createState() => _EditContactsSheetState();
+}
+
+class _EditContactsSheetState extends State<_EditContactsSheet> {
+  late List<Map<String, dynamic>> _items;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = widget.contacts
+        .map((c) => {
+              'name': c.name,
+              'relationship': c.relationship ?? '',
+              'phone': c.phone ?? '',
+              'email': c.email ?? '',
+              'isPrimary': c.isPrimary,
+              'isEmergency': c.isEmergency,
+            })
+        .toList();
+  }
+
+  void _addContact() {
+    setState(() {
+      _items.add({'name': '', 'relationship': '', 'phone': '', 'email': '', 'isPrimary': false, 'isEmergency': true});
+    });
+  }
+
+  void _removeContact(int index) => setState(() => _items.removeAt(index));
+
+  Future<void> _save() async {
+    for (final item in _items) {
+      if ((item['name'] as String).trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Each contact must have a name.'), behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
+    }
+    setState(() => _saving = true);
+    final contacts = _items
+        .map((item) => TenantContact(
+              name: (item['name'] as String).trim(),
+              relationship: (item['relationship'] as String).trim().isEmpty ? null : (item['relationship'] as String).trim(),
+              phone: (item['phone'] as String).trim().isEmpty ? null : (item['phone'] as String).trim(),
+              email: (item['email'] as String).trim().isEmpty ? null : (item['email'] as String).trim(),
+              isPrimary: item['isPrimary'] as bool,
+              isEmergency: item['isEmergency'] as bool,
+            ))
+        .toList();
+    await widget.onSave(contacts);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      maxChildSize: 0.95,
+      builder: (ctx, scrollController) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: Row(
+              children: [
+                Expanded(child: Text('Edit Contacts', style: theme.textTheme.titleLarge)),
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _saving ? null : _save,
+                  child: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Save'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(),
+          Expanded(
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(16),
+              children: [
+                ..._items.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final item = entry.value;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text('Contact ${i + 1}', style: theme.textTheme.titleSmall),
+                              const Spacer(),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                onPressed: () => _removeContact(i),
+                                tooltip: 'Remove',
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          _field('Name *', item['name'] as String, (v) => setState(() => item['name'] = v)),
+                          const SizedBox(height: 8),
+                          _field('Relationship', item['relationship'] as String, (v) => setState(() => item['relationship'] = v)),
+                          const SizedBox(height: 8),
+                          _field('Phone', item['phone'] as String, (v) => setState(() => item['phone'] = v), keyboard: TextInputType.phone),
+                          const SizedBox(height: 8),
+                          _field('Email', item['email'] as String, (v) => setState(() => item['email'] = v), keyboard: TextInputType.emailAddress),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('Primary'),
+                                  value: item['isPrimary'] as bool,
+                                  onChanged: (v) => setState(() => item['isPrimary'] = v ?? false),
+                                ),
+                              ),
+                              Expanded(
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('Emergency'),
+                                  value: item['isEmergency'] as bool,
+                                  onChanged: (v) => setState(() => item['isEmergency'] = v ?? true),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+                OutlinedButton.icon(
+                  onPressed: _addContact,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add Contact'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _field(String label, String value, ValueChanged<String> onChanged, {TextInputType? keyboard}) {
+    return TextFormField(
+      initialValue: value,
+      keyboardType: keyboard,
+      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), isDense: true),
+      onChanged: onChanged,
+    );
+  }
+}
+
+// ─── Edit Vehicles Sheet ──────────────────────────────────────────────────────
+
+class _EditVehiclesSheet extends StatefulWidget {
+  final List<TenantVehicle> vehicles;
+  final Future<void> Function(List<TenantVehicle>) onSave;
+
+  const _EditVehiclesSheet({required this.vehicles, required this.onSave});
+
+  @override
+  State<_EditVehiclesSheet> createState() => _EditVehiclesSheetState();
+}
+
+class _EditVehiclesSheetState extends State<_EditVehiclesSheet> {
+  late List<Map<String, dynamic>> _items;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = widget.vehicles
+        .map((v) => {
+              'make': v.make,
+              'model': v.model,
+              'color': v.color ?? '',
+              'licensePlate': v.licensePlate ?? '',
+              'state': v.state ?? '',
+              'notes': v.notes ?? '',
+            })
+        .toList();
+  }
+
+  void _addVehicle() {
+    setState(() {
+      _items.add({'make': '', 'model': '', 'color': '', 'licensePlate': '', 'state': '', 'notes': ''});
+    });
+  }
+
+  void _removeVehicle(int index) => setState(() => _items.removeAt(index));
+
+  Future<void> _save() async {
+    for (final item in _items) {
+      if ((item['make'] as String).trim().isEmpty || (item['model'] as String).trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Each vehicle must have a make and model.'), behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
+    }
+    setState(() => _saving = true);
+    final vehicles = _items
+        .map((item) => TenantVehicle(
+              make: (item['make'] as String).trim(),
+              model: (item['model'] as String).trim(),
+              color: (item['color'] as String).trim().isEmpty ? null : (item['color'] as String).trim(),
+              licensePlate: (item['licensePlate'] as String).trim().isEmpty ? null : (item['licensePlate'] as String).trim(),
+              state: (item['state'] as String).trim().isEmpty ? null : (item['state'] as String).trim(),
+              notes: (item['notes'] as String).trim().isEmpty ? null : (item['notes'] as String).trim(),
+            ))
+        .toList();
+    await widget.onSave(vehicles);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      maxChildSize: 0.95,
+      builder: (ctx, scrollController) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: Row(
+              children: [
+                Expanded(child: Text('Edit Vehicles', style: theme.textTheme.titleLarge)),
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _saving ? null : _save,
+                  child: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Save'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(),
+          Expanded(
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(16),
+              children: [
+                ..._items.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final item = entry.value;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text('Vehicle ${i + 1}', style: theme.textTheme.titleSmall),
+                              const Spacer(),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                onPressed: () => _removeVehicle(i),
+                                tooltip: 'Remove',
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(child: _field('Make *', item['make'] as String, (v) => setState(() => item['make'] = v))),
+                              const SizedBox(width: 8),
+                              Expanded(child: _field('Model *', item['model'] as String, (v) => setState(() => item['model'] = v))),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(child: _field('Color', item['color'] as String, (v) => setState(() => item['color'] = v))),
+                              const SizedBox(width: 8),
+                              Expanded(child: _field('License Plate', item['licensePlate'] as String, (v) => setState(() => item['licensePlate'] = v))),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          _field('State', item['state'] as String, (v) => setState(() => item['state'] = v)),
+                          const SizedBox(height: 8),
+                          _field('Notes', item['notes'] as String, (v) => setState(() => item['notes'] = v)),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+                OutlinedButton.icon(
+                  onPressed: _addVehicle,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add Vehicle'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _field(String label, String value, ValueChanged<String> onChanged, {TextInputType? keyboard}) {
+    return TextFormField(
+      initialValue: value,
+      keyboardType: keyboard,
+      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), isDense: true),
+      onChanged: onChanged,
     );
   }
 }

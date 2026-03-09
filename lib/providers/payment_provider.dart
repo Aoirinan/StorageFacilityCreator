@@ -1,8 +1,39 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../models/payment_model.dart';
 import '../models/provider_params.dart';
+import '../models/autopay_event_model.dart';
 import '../services/payment_service.dart';
+import '../services/autopay_service.dart';
+import '../services/stripe_connect_service.dart';
+
+// Payments page: selected tab (0 = Transactions, 1 = Autopay, 2 = Take payment)
+final paymentsTabIndexProvider = StateProvider<int>((ref) => 0);
+
+// Payments page Autopay tab: selected tenant id (null = none)
+final paymentsAutopaySelectedTenantIdProvider = StateProvider<String?>((ref) => null);
+
+// Autopay events for a facility. autoDispose cancels listener when no longer watched (e.g. facility switch or leave Payments).
+final autopayEventsProvider = StreamProvider.autoDispose.family<List<AutopayEventModel>, String>((ref, facilityId) {
+  final id = facilityId.trim();
+  if (id.isEmpty) return Stream.value([]);
+  return AutopayService.watchAutopayEvents(id).map((snap) {
+    return snap.docs.map((d) => AutopayEventModel.fromFirestore(d)).toList();
+  }).handleError((e, st) {
+    // Surface permission-denied and other errors so UI shows error state + Retry; no unhandled rejection
+    throw e;
+  });
+});
+
+// Stripe Connect status for a facility. Single source of truth: stripeConnectGetStatus (reads facility.stripeConnectAccountId + Stripe API).
+// autoDispose so leaving Payments stops caching; refetch when returning. Do not swallow errors so UI can show "Retry" vs "Not connected".
+final stripeConnectStatusProvider = FutureProvider.autoDispose.family<StripeConnectStatusResult?, String>((ref, facilityId) async {
+  final id = facilityId.trim();
+  if (id.isEmpty) return null;
+  return StripeConnectService.refreshStatus(id);
+});
 
 // Payment list provider (real-time stream)
 final paymentListProvider = StreamProvider.family<List<PaymentModel>, String>((ref, facilityId) {
@@ -167,6 +198,28 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     state = const AsyncValue.loading();
     try {
       await PaymentService.markTenantAsPaid(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        amount: amount,
+        method: method,
+        notes: notes,
+      );
+      state = const AsyncValue.data(null);
+    } catch (e, stackTrace) {
+      state = AsyncValue.error(e, stackTrace);
+    }
+  }
+
+  Future<void> recordManualPayment({
+    required String facilityId,
+    required String tenantId,
+    required double amount,
+    required PaymentMethod method,
+    String? notes,
+  }) async {
+    state = const AsyncValue.loading();
+    try {
+      await PaymentService.recordManualPayment(
         facilityId: facilityId,
         tenantId: tenantId,
         amount: amount,

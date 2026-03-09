@@ -2,8 +2,8 @@
  * Site configuration. Edit these values to update nav, CTAs, and content.
  */
 
-/** Marketing site version. Bump when you ship changes (e.g. 1.1.0, 1.2.0). */
-export const SITE_VERSION = '1.1.0';
+/** Marketing site version. Bump when you ship changes (e.g. 1.2.0, 1.3.0). */
+export const SITE_VERSION = '1.2.1';
 
 /** Replace with your production app login URL. Used for the Login button in header/footer. */
 export const APP_LOGIN_URL = 'REPLACE_ME';
@@ -12,23 +12,29 @@ export const APP_LOGIN_URL = 'REPLACE_ME';
 export const LOGO_PATH = '/logo.png';
 export const DEMO_IMAGE_PATH = '/demo.png';
 
-export const SITE_NAME = 'Storage Facility Creator';
-export const SUPPORT_EMAIL = 'support@example.com';
-export const SUPPORT_PHONE = '(555) 123-4567';
+/** Optional extra screenshots for Features or "See the app" section. Add paths like '/demo2.png', '/delinquency.png'. */
+export const EXTRA_DEMO_IMAGES: { src: string; alt: string }[] = [
+  // Example: { src: '/demo2.png', alt: 'Delinquency and past due view' },
+];
 
-export const HERO_HEADLINE = 'Modern self-storage management. Flat-rate $75/month.';
+export const SITE_NAME = 'Storage Facility Creator';
+export const SUPPORT_EMAIL = 'support@storagefacilitycreator.com';
+export const SUPPORT_PHONE = '903-715-7504';
+
+export const HERO_HEADLINE = 'Run your storage facility from one place.';
 export const HERO_SUBHEADLINE =
-  'Manage tenants and units, track billing and payments, and automate opt-in SMS/email reminders—without per-unit pricing.';
+  'Tenants and units, billing and ledgers, late notices and reminders—all in one system. See what’s paid, what’s past due, and what’s empty at a glance. Simple, flat-rate pricing when you’re ready.';
 
 export const PRICE_MONTHLY = 75;
 export const TRIAL_DAYS = 30;
 export const TRIAL_LINE = '30-day trial + first month free';
 
 export const TRUST_STRIP_ITEMS = [
-  'Flat-rate $75/month',
-  'No onboarding fee',
-  '30-day trial + first month free',
-  'Opt-in SMS (STOP/HELP)',
+  'Tenant & unit management',
+  'Billing, ledger & payment tracking',
+  'Late notices & delinquency tools',
+  'SMS/email reminders (opt-in, STOP/HELP)',
+  'Reports & activity logs',
 ] as const;
 
 export const A2P_COMPLIANCE_PARAGRAPH =

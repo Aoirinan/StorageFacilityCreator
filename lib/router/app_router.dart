@@ -177,6 +177,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => MarketingLandingPage(),
       ),
       GoRoute(
+        path: AppRoute.marketing,
+        name: 'marketing',
+        builder: (context, state) => MarketingLandingPage(),
+      ),
+      GoRoute(
         path: '/privacy',
         name: 'privacy',
         builder: (context, state) => const PrivacyScreen(),
@@ -1250,8 +1255,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final showTrialExpiredDialog =
                   state.uri.queryParameters['trialExpired'] == '1';
-              final initialTab =
-                  state.uri.queryParameters['tab'] == 'processing' ? 1 : 0;
+              final tabParam = state.uri.queryParameters['tab'];
+              final initialTab = tabParam == 'processing'
+                  ? 1
+                  : tabParam == 'accounting'
+                      ? 2
+                      : 0;
               final subscriptionChild = state.extra is SubscriptionTestScreen
                   ? state.extra as SubscriptionTestScreen
                   : null;

@@ -29,6 +29,8 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
   String? _facilityName;
   String? _roleType;
   String? _invitedByEmail;
+  /// Email the invitation was sent to (for "Log in with invited email" when mismatch)
+  String? _inviteeEmail;
 
   @override
   void initState() {
@@ -139,6 +141,7 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
       // Check if email matches (case-insensitive)
       if (invite.email.toLowerCase() != user.email?.toLowerCase()) {
         setState(() {
+          _inviteeEmail = invite.email;
           _errorMessage = 'This invitation was sent to ${invite.email}, but you are logged in as ${user.email}. Please log in with the correct email address.';
           _isProcessing = false;
         });
@@ -288,12 +291,33 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
                                 if (_errorMessage != null)
                                   Padding(
                                     padding: const EdgeInsets.only(bottom: 16),
-                                    child: Text(
-                                      _errorMessage!,
-                                      style: const TextStyle(
-                                        color: AppTheme.error,
-                                      ),
-                                      textAlign: TextAlign.center,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _errorMessage!,
+                                          style: const TextStyle(
+                                            color: AppTheme.error,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        if (_inviteeEmail != null) ...[
+                                          const SizedBox(height: 16),
+                                          OutlinedButton.icon(
+                                            onPressed: () async {
+                                              await FirebaseAuth.instance.signOut();
+                                              if (!mounted) return;
+                                              final redirect = '${AppRoute.acceptInvite}?facilityId=${widget.facilityId}&inviteId=${widget.inviteId}';
+                                              context.go('${AppRoute.login}?email=${Uri.encodeComponent(_inviteeEmail!)}&redirect=${Uri.encodeComponent(redirect)}');
+                                            },
+                                            icon: const Icon(Icons.login, size: 20),
+                                            label: const Text('Log in with invited email'),
+                                            style: OutlinedButton.styleFrom(
+                                              foregroundColor: AppTheme.primaryBlue,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
                                     ),
                                   ),
                                 ElevatedButton(

@@ -6,6 +6,7 @@ import {
   PRICE_MONTHLY,
   TRIAL_LINE,
   APP_LOGIN_URL,
+  EXTRA_DEMO_IMAGES,
 } from '@/config/site';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
@@ -14,24 +15,34 @@ import { A2pSnippet } from '@/components/A2pSnippet';
 
 const KEY_FEATURES = [
   {
-    title: 'Tenant & Unit Management',
-    description: 'Track tenants and units across facilities. Quick add or bulk import from CSV/Excel.',
+    title: 'Tenants & units',
+    description: 'See every unit’s status and tenant at a glance. Quick add or bulk import from CSV. Unit list and map editor for one facility or many.',
     icon: '👥',
   },
   {
-    title: 'Billing & Payment Tracking',
-    description: 'Recurring charges, one-time payments, and payment history in one place.',
+    title: 'Billing & ledger',
+    description: 'Recurring charges, one-time fees, and full payment history per tenant. Ledger view so you always know what’s paid and what’s due.',
     icon: '💰',
   },
   {
-    title: 'Automated Reminders (SMS/Email)',
-    description: 'Opt-in reminders for payments and notices. Message frequency varies; STOP/HELP supported.',
-    icon: '📬',
+    title: 'Late notices & delinquency',
+    description: 'Past-due dashboard and late notices in seconds. Track overlock and lien workflow when you need it.',
+    icon: '📋',
   },
   {
-    title: 'Reporting & Delinquency',
-    description: 'Past-due views, occupancy rates, and activity logs to stay on top of operations.',
+    title: 'Autopay (Stripe)',
+    description: 'When Stripe is connected, let tenants turn autopay on or off. Fewer missed payments, less chasing.',
+    icon: '🔄',
+  },
+  {
+    title: 'Reports & dashboards',
+    description: 'Occupancy, revenue, and activity by facility. Audit trails and role-based access so you stay in control.',
     icon: '📊',
+  },
+  {
+    title: 'SMS & email reminders',
+    description: 'Opt-in payment reminders and notices. Configurable templates; STOP and HELP supported. Message frequency varies.',
+    icon: '📬',
   },
 ];
 
@@ -54,9 +65,9 @@ const HOW_IT_WORKS = [
 ];
 
 const FAQ_PREVIEW = [
-  { q: 'Do you send SMS text messages to tenants?', a: 'Yes. Tenants who opt in may receive account-related SMS (e.g. payment reminders). Message frequency varies. Reply STOP to opt out, HELP for help.' },
-  { q: 'Is there an onboarding fee?', a: 'No. Flat-rate $75/month with no onboarding fee.' },
-  { q: 'Can I import tenants from CSV/Excel?', a: 'Yes. Bulk import is supported.' },
+  { q: 'Can I manage more than one facility?', a: 'Yes. Switch between facilities in the app and see occupancy, revenue, and activity by location.' },
+  { q: 'Do you send SMS to tenants?', a: 'Yes. Tenants who opt in may receive account-related SMS (e.g. payment reminders). Reply STOP to opt out, HELP for help.' },
+  { q: 'Can I import tenants from CSV/Excel?', a: 'Yes. Bulk import is supported. We can help with migration.' },
 ];
 
 export default function HomePage() {
@@ -82,7 +93,7 @@ export default function HomePage() {
               </a>
             </div>
           </div>
-          <div className="order-first lg:order-none">
+          <div className="order-first lg:order-0">
             <DemoFrame />
           </div>
         </div>
@@ -104,13 +115,13 @@ export default function HomePage() {
 
       {/* Key Features */}
       <Section tint id="features">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Key Features</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Everything you need to run your facility</h2>
         <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          Built for independent operators. No per-unit pricing.
+          Tenant and unit management, billing, late notices, autopay, and reporting—built for independent and multi-site operators.
         </p>
-        <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-4 gap-6" role="list">
+        <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-6" role="list">
           {KEY_FEATURES.map((f) => (
-            <li key={f.title} className="rounded-xl bg-white p-6 shadow-sm border border-slate-100">
+            <li key={f.title} className="rounded-xl bg-white p-6 shadow-xs border border-slate-100">
               <span className="text-2xl" aria-hidden>{f.icon}</span>
               <h3 className="mt-3 font-semibold text-slate-900">{f.title}</h3>
               <p className="mt-2 text-sm text-slate-600">{f.description}</p>
@@ -146,13 +157,30 @@ export default function HomePage() {
         </div>
       </Section>
 
+      {/* Extra screenshots (add paths in src/config/site.ts EXTRA_DEMO_IMAGES) */}
+      {EXTRA_DEMO_IMAGES.length > 0 && (
+        <Section tint>
+          <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">See the app</h2>
+          <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
+            Screenshots from the app.
+          </p>
+          <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-8" role="list">
+            {EXTRA_DEMO_IMAGES.map(({ src, alt }) => (
+              <li key={src}>
+                <DemoFrame src={src} alt={alt} />
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
       {/* Pricing preview */}
       <Section tint>
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Simple pricing</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Simple, predictable pricing</h2>
         <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          ${PRICE_MONTHLY}/month flat rate. {TRIAL_LINE}.
+          One flat rate for all features—no per-unit fees. {TRIAL_LINE}. <Link href="/pricing" className="text-primary font-medium hover:underline">See pricing</Link>.
         </p>
-        <div className="mt-8 flex flex-col items-center">
+        <div className="mt-6 flex flex-col items-center">
           <CtaButton href="/pricing">View pricing</CtaButton>
         </div>
       </Section>

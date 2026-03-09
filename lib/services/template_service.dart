@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/email_template_model.dart';
 import '../models/sms_template_model.dart';
+import 'audit_service.dart';
 
 /// Service for managing email and SMS templates
 class TemplateService {
@@ -240,10 +241,56 @@ class TemplateService {
           id: ref.id,
           createdAt: now,
         ).toFirestore());
+        
+        // Log audit event
+        if (facilityId != null) {
+          await AuditService.logEvent(
+            facilityId: facilityId,
+            eventType: 'template.created',
+            targetType: 'emailTemplate',
+            targetId: ref.id,
+            after: {
+              'name': template.name,
+              'category': template.category,
+            },
+            metadata: {
+              'isGlobal': false,
+            },
+          );
+        }
+        
         return ref.id;
       } else {
+        // Get before snapshot for audit log
+        final beforeDoc = await ref.get();
+        final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
+        
         // Update existing
         await ref.update(templateToSave.toFirestore());
+        
+        // Get after snapshot for audit log
+        final afterDoc = await ref.get();
+        final afterData = afterDoc.exists ? afterDoc.data() : null;
+        
+        // Log audit event
+        if (facilityId != null) {
+          await AuditService.logEvent(
+            facilityId: facilityId,
+            eventType: 'template.edited',
+            targetType: 'emailTemplate',
+            targetId: template.id,
+            before: beforeData != null
+                ? Map<String, dynamic>.from(beforeData as Map)
+                : null,
+            after: afterData != null
+                ? Map<String, dynamic>.from(afterData as Map)
+                : null,
+            metadata: {
+              'isGlobal': false,
+            },
+          );
+        }
+        
         return template.id;
       }
     } catch (e) {
@@ -462,10 +509,56 @@ class TemplateService {
           id: ref.id,
           createdAt: now,
         ).toFirestore());
+        
+        // Log audit event
+        if (facilityId != null) {
+          await AuditService.logEvent(
+            facilityId: facilityId,
+            eventType: 'template.created',
+            targetType: 'smsTemplate',
+            targetId: ref.id,
+            after: {
+              'name': template.name,
+              'category': template.category,
+            },
+            metadata: {
+              'isGlobal': false,
+            },
+          );
+        }
+        
         return ref.id;
       } else {
+        // Get before snapshot for audit log
+        final beforeDoc = await ref.get();
+        final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
+        
         // Update existing
         await ref.update(templateToSave.toFirestore());
+        
+        // Get after snapshot for audit log
+        final afterDoc = await ref.get();
+        final afterData = afterDoc.exists ? afterDoc.data() : null;
+        
+        // Log audit event
+        if (facilityId != null) {
+          await AuditService.logEvent(
+            facilityId: facilityId,
+            eventType: 'template.edited',
+            targetType: 'smsTemplate',
+            targetId: template.id,
+            before: beforeData != null
+                ? Map<String, dynamic>.from(beforeData as Map)
+                : null,
+            after: afterData != null
+                ? Map<String, dynamic>.from(afterData as Map)
+                : null,
+            metadata: {
+              'isGlobal': false,
+            },
+          );
+        }
+        
         return template.id;
       }
     } catch (e) {

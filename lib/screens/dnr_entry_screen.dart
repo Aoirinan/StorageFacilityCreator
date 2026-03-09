@@ -909,13 +909,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/dnr',
-      title: widget.dnrEntry != null ? 'Edit DNR Entry' : 'Add DNR Entry',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: SingleChildScrollView(
+    return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Form(
           key: _formKey,
@@ -1136,8 +1130,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
             ],
           ),
         ),
-      ),
-    );
+      );
   }
 
 }

@@ -43,25 +43,19 @@ service cloud.firestore {
 
     function isSuperAdmin() {
       let email = authEmailLower();
-      // Check if email matches super admin emails (Firebase Auth emails are typically lowercase)
-      // 
-      // NOTE: Super admin emails must be kept in sync with:
-      // - lib/services/superadmin_service.dart (superAdminEmails)
-      // - functions/src/index.ts (SUPER_ADMIN_EMAILS)
-      // 
-      // To add/remove super admins, update all three locations.
+      // ONLY russell_forsyth_1992@outlook.com – no one else can be superadmin.
+      // Keep in sync with lib/services/superadmin_service.dart and functions/src/index.ts
+      // Case-insensitive: Firebase Auth may preserve email case from signup
       return email != null && (
         email == 'russell_forsyth_1992@outlook.com' ||
-        email == 'russellforsyth09091992@gmail.com'
+        email == 'russell_Forsyth_1992@outlook.com'
       );
     }
 
     function stringMatchesTime(value) {
       return value is string &&
         value.size() == 5 &&
-        value.substring(2, 3) == ":" &&
-        value.substring(0, 2).matches('^([01][0-9]|2[0-3])$') &&
-        value.substring(3, 5).matches('^([0-5][0-9])$');
+        value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
     }
 
     function isValidReminderChannels(channels) {
@@ -160,8 +154,8 @@ service cloud.firestore {
     
     // Facility Creator Accounts - users can only access their own account
     match /facilityCreatorAccounts/{accountId} {
-      // Allow read if user owns this account
-      allow read: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      // Allow read if user owns this account OR is superadmin (for platform-wide visibility)
+      allow read: if request.auth != null && (isSuperAdmin() || resource.data.ownerUid == request.auth.uid);
       
       // Allow create if ownerUid matches current user
       allow create: if request.auth != null && 
@@ -190,9 +184,10 @@ service cloud.firestore {
     
     // Facilities - owner-based access with proper validation
     match /facilities/{facilityId} {
-      // Allow read if user owns the facility or is a manager
+      // Allow read if user owns the facility, is a manager, has a role, OR is superadmin
       allow read: if request.auth != null && 
-        (resource.data.ownerUid == request.auth.uid || 
+        (isSuperAdmin() ||
+         resource.data.ownerUid == request.auth.uid || 
          resource.data.managers[request.auth.uid] != null ||
          resource.data.roles[request.auth.uid] != null);
       
@@ -214,12 +209,24 @@ service cloud.firestore {
       
       // Sub-collections under facilities
       match /tenants/{tenantId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+
+        // Tenant Stripe billing (server-only writes; facility staff can read)
+        match /billing/{billingDocId} {
+          allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+          allow write: if false; // Cloud Functions only
+        }
+
+        // Tenant Stripe payment records (server-only writes; facility staff can read)
+        match /payments/{paymentId} {
+          allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+          allow write: if false; // Cloud Functions only
+        }
 
         // Contact logs subcollection
         match /contactLogs/{logId} {
-          allow read: if isFacilityStaff(facilityId);
-          allow create: if isFacilityStaff(facilityId) &&
+          allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+          allow create: if isSuperAdmin() || (isFacilityStaff(facilityId) &&
             request.resource.data.keys().hasAll([
               'tenantId',
               'facilityId',
@@ -235,17 +242,17 @@ service cloud.firestore {
             request.resource.data.contactedBy == request.auth.uid &&
             request.resource.data.type is string &&
             request.resource.data.direction is string &&
-            request.resource.data.contactDate is timestamp;
-          allow update: if isFacilityStaff(facilityId) &&
+            request.resource.data.contactDate is timestamp);
+          allow update: if isSuperAdmin() || (isFacilityStaff(facilityId) &&
             (!('tenantId' in request.resource.data) || request.resource.data.tenantId == tenantId) &&
-            (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
-          allow delete: if isFacilityOwnerOrManager(facilityId);
+            (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId));
+          allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         }
 
         // Payment methods subcollection
         match /paymentMethods/{methodId} {
-          allow read: if isFacilityStaff(facilityId);
-          allow create: if isFacilityStaff(facilityId) &&
+          allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+          allow create: if isSuperAdmin() || (isFacilityStaff(facilityId) &&
             request.resource.data.keys().hasAll([
               'tenantId',
               'facilityId',
@@ -262,17 +269,22 @@ service cloud.firestore {
             request.resource.data.type is string &&
             request.resource.data.isDefault is bool &&
             request.resource.data.autopayEnabled is bool &&
-            request.resource.data.isActive is bool;
-          allow update: if isFacilityStaff(facilityId) &&
+            request.resource.data.isActive is bool);
+          allow update: if isSuperAdmin() || (isFacilityStaff(facilityId) &&
             (!('tenantId' in request.resource.data) || request.resource.data.tenantId == tenantId) &&
             (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
-            (!('type' in request.resource.data) || request.resource.data.type is string);
-          allow delete: if isFacilityOwnerOrManager(facilityId);
+            (!('type' in request.resource.data) || request.resource.data.type is string));
+          allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         }
       }
       
       match /units/{unitId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        match /overlockEvents/{eventId} {
+          allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow create: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow update, delete: if false;
+        }
       }
       
       // Rate limit counters (per facility)
@@ -304,7 +316,8 @@ service cloud.firestore {
           request.resource.data.createdBy == request.auth.uid &&
           request.resource.data.type is string &&
           request.resource.data.status is string &&
-          request.resource.data.isActive is bool;
+          request.resource.data.isActive is bool &&
+          (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus == 'active');
         allow update: if isFacilityStaff(facilityId) &&
           (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
           (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid) &&
@@ -318,6 +331,24 @@ service cloud.firestore {
             (!('moveOutDate' in request.resource.data) || request.resource.data.moveOutDate is timestamp) &&
             (!('moveOutCharges' in request.resource.data) || request.resource.data.moveOutCharges is number) &&
             (!('moveOutRefund' in request.resource.data) || request.resource.data.moveOutRefund is number)
+          );
+        // Compliance operations (disable/enable) require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus is string) &&
+            (!('disabledAt' in request.resource.data) || request.resource.data.disabledAt is timestamp) &&
+            (!('disabledBy' in request.resource.data) || request.resource.data.disabledBy is string) &&
+            (!('disabledReason' in request.resource.data) || request.resource.data.disabledReason is string)
+          );
+        // Super admin can disable any contract
+        allow update: if isSuperAdmin() &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus is string) &&
+            (!('disabledAt' in request.resource.data) || request.resource.data.disabledAt is timestamp) &&
+            (!('disabledBy' in request.resource.data) || request.resource.data.disabledBy is string) &&
+            (!('disabledReason' in request.resource.data) || request.resource.data.disabledReason is string)
           );
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
@@ -582,46 +613,53 @@ service cloud.firestore {
       // Team messaging (conversations and messages) - facility staff can read/write
       // Private conversations: only participants can access
       // Group conversations: all facility staff can access
+      // SuperAdmin bypass: full access for admin account (e.g. after subscription payment)
       match /conversations/{conversationId} {
-        // Read: facility staff can read all conversations, OR participants can read private conversations
-        allow read: if isFacilityStaff(facilityId) || 
+        // Read: facility staff, private participants, OR superadmin
+        allow read: if isSuperAdmin() ||
+                       isFacilityStaff(facilityId) || 
                        isPrivateConversationParticipant(facilityId, conversationId);
         
-        // Create: facility staff can create conversations (validated by isValidConversationCreate)
-        allow create: if isFacilityStaff(facilityId) && isValidConversationCreate(facilityId);
+        // Create: facility staff or superadmin
+        allow create: if isSuperAdmin() ||
+                         (isFacilityStaff(facilityId) && isValidConversationCreate(facilityId));
         
-        // Update: facility staff can update, OR participants can update their private conversation
-        allow update: if isFacilityStaff(facilityId) || 
+        // Update: facility staff, participants, OR superadmin
+        allow update: if isSuperAdmin() ||
+                         isFacilityStaff(facilityId) || 
                          isPrivateConversationParticipant(facilityId, conversationId);
         
-        // Delete: only owners/managers can delete (more restrictive)
-        allow delete: if isFacilityOwnerOrManager(facilityId);
+        // Delete: owners/managers or superadmin
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
 
         match /messages/{messageId} {
-          // Read: facility staff can read all messages, OR participants can read private conversation messages
-          allow read: if isFacilityStaff(facilityId) || 
+          // Read: facility staff, participants, OR superadmin
+          allow read: if isSuperAdmin() ||
+                         isFacilityStaff(facilityId) || 
                          isPrivateConversationParticipant(facilityId, conversationId);
           
-          // Create: facility staff can create messages (validated by isValidMessageCreate)
-          allow create: if isFacilityStaff(facilityId) && isValidMessageCreate(facilityId, conversationId);
+          // Create: facility staff or superadmin
+          allow create: if isSuperAdmin() ||
+                           (isFacilityStaff(facilityId) && isValidMessageCreate(facilityId, conversationId));
           
-          // Update: facility staff can update, OR sender can update their own message
-          allow update: if isFacilityStaff(facilityId) || 
+          // Update: facility staff, sender, OR superadmin
+          allow update: if isSuperAdmin() ||
+                           isFacilityStaff(facilityId) || 
                            (resource.data.senderUid == request.auth.uid);
           
-          // Delete: only owners/managers can delete messages
-          allow delete: if isFacilityOwnerOrManager(facilityId);
+          // Delete: owners/managers or superadmin
+          allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         }
       }
 
-      // SMS conversations - facility owner or manager access
+      // SMS conversations - facility owner or manager access (SuperAdmin bypass)
       match /smsConversations/{conversationId} {
-        allow read: if isFacilityOwnerOrManager(facilityId);
-        allow create, update, delete: if isFacilityOwnerOrManager(facilityId);
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create, update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
 
         match /messages/{messageId} {
-          allow read: if isFacilityOwnerOrManager(facilityId);
-          allow create, update, delete: if isFacilityOwnerOrManager(facilityId);
+          allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow create, update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         }
       }
 
@@ -658,6 +696,18 @@ service cloud.firestore {
 
       match /billing/{billingId} {
         allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Autopay events (Payments > Autopay tab activity). Written by Cloud Functions only.
+      match /AutopayEvents/{eventId} {
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow write: if false; // Cloud Functions only
+      }
+
+      // Facility notifications (autopay, system alerts). Written by Cloud Functions; staff can read. Redirect /notifications -> Settings.
+      match /Notifications/{notificationId} {
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow write: if false; // Cloud Functions only
       }
 
       // Message logs - unified logging for all outbound communications
@@ -805,10 +855,43 @@ service cloud.firestore {
         allow create: if isFacilityOwnerOrManager(facilityId) &&
           request.resource.data.facilityId == facilityId &&
           request.resource.data.keys().hasAll(['name', 'content', 'createdAt', 'isActive', 'facilityId']) &&
-          request.resource.data.createdBy == request.auth.uid;
+          request.resource.data.createdBy == request.auth.uid &&
+          (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus == 'active');
         allow update: if isFacilityOwnerOrManager(facilityId) &&
           (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
         allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Rights Attestations - facility-scoped compliance records
+      match /rightsAttestations/{attestationId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'uploaderUserId',
+            'uploaderEmail',
+            'timestamp',
+            'tosVersion',
+            'attestationText',
+            'documentId'
+          ]) &&
+          request.resource.data.uploaderUserId == request.auth.uid;
+        // No updates or deletes allowed - attestations are immutable
+      }
+
+      // Terms Acceptance - facility-level compliance
+      match /compliance/termsAcceptance {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.keys().hasAll([
+            'acceptedAt',
+            'acceptedByUserId',
+            'tosVersion',
+            'textHash'
+          ]) &&
+          request.resource.data.acceptedByUserId == request.auth.uid;
+        // No updates or deletes - terms acceptance is immutable (new version = new document)
       }
 
       // DNR Entries - facility-scoped (Phase 2)
@@ -857,6 +940,42 @@ service cloud.firestore {
     // Security collections are now account-scoped: facilityCreatorAccounts/{accountId}/security_*/
     // See account-scoped security rules below
     
+    // -------------------------------------------------------------------------
+    // Global DNR (Do Not Rent) - shared across all facilities
+    // ADDITIVE: New collection only; does not change facility-scoped DNR rules.
+    // Read: any authenticated user (so any facility can see global list).
+    // Write: facility owner/manager/admin only (enforced via createdByFacilityId).
+    // -------------------------------------------------------------------------
+    function isCreatorOrCreatorFacilityStaff(entryData) {
+      return isAuthenticated() && (
+        entryData.createdByUserId == request.auth.uid ||
+        (entryData.createdByFacilityId is string && isFacilityOwnerOrManager(entryData.createdByFacilityId))
+      );
+    }
+    match /global_dnr_entries/{entryId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated()
+        && request.resource.data.createdByUserId == request.auth.uid
+        && request.resource.data.createdByFacilityId is string
+        && request.resource.data.createdByFacilityId.size() > 0
+        && isFacilityOwnerOrManager(request.resource.data.createdByFacilityId)
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0;
+      allow update, delete: if isSuperAdmin()
+        || (resource != null && isCreatorOrCreatorFacilityStaff(resource.data));
+      match /evidence/{evidenceId} {
+        allow read: if isAuthenticated();
+        allow create, update, delete: if isSuperAdmin()
+          || (get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByUserId == request.auth.uid
+              || isFacilityOwnerOrManager(get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByFacilityId));
+      }
+    }
+
+    // Rate limits for Cloud Functions (e.g. getContractBySigningToken) - Admin SDK only, deny client
+    match /rateLimits/{docId} {
+      allow read, write: if false; // Cloud Functions use Admin SDK (bypasses rules)
+    }
+
     // System configuration - super admin only
     // Currently only used for system billing defaults (configs/system)
     match /configs/{configId} {
@@ -870,6 +989,11 @@ service cloud.firestore {
       allow write: if request.auth != null && isSuperAdmin();
     }
     
+    // Super admin internal notes - only superadmin can read/write
+    match /superAdminNotes/{noteId} {
+      allow read, write: if request.auth != null && isSuperAdmin();
+    }
+
     // User roles collection - for permission system
     match /user_roles/{roleId} {
       // Super admins can read/write all roles
@@ -915,6 +1039,12 @@ service cloud.firestore {
           )
         )
       );
+    }
+
+    // Bug reports: any authenticated user can create; only superadmin can read/update/delete
+    match /bug_reports/{reportId} {
+      allow create: if isAuthenticated();
+      allow read, update, delete: if isSuperAdmin();
     }
     
   }

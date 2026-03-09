@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../models/dnr_model.dart';
+import '../models/global_dnr_model.dart';
 import '../providers/dnr_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../services/facility_service.dart';
 import '../services/dnr_service.dart';
 import '../services/tenant_service.dart';
@@ -19,6 +21,8 @@ import '../router/app_router.dart';
 import '../router/app_route.dart';
 import 'dnr_entry_screen.dart';
 import 'client_detail_screen.dart';
+import 'global_dnr_entry_screen.dart';
+import 'global_dnr_detail_screen.dart';
 
 class DNRListScreen extends ConsumerStatefulWidget {
   final String? facilityId;
@@ -73,7 +77,16 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
-
+    ref.listen(activeFacilityIdProvider, (prev, next) {
+      final nextId = next.whenOrNull(data: (d) => d);
+      if (mounted) {
+        if (nextId == null) {
+          if (_selectedFacilityId != null) setState(() => _selectedFacilityId = null);
+        } else if (_selectedFacilityId != nextId) {
+          setState(() => _selectedFacilityId = nextId);
+        }
+      }
+    });
     return authState.when(
       data: (user) {
         if (user == null) {
@@ -82,35 +95,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
           );
         }
 
-        return ModernPageWrapper(
-          currentRoute: '/dnr',
-          title: _selectedFacilityId != null ? 'Facility DNR List' : 'Global DNR System',
-          onNavigate: (route) {
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-          actions: [
-            IconButton(
-              icon: Icon(_showArchived ? Icons.visibility : Icons.visibility_off),
-              onPressed: () {
-                setState(() {
-                  _showArchived = !_showArchived;
-                });
-              },
-              tooltip: _showArchived ? 'Hide archived' : 'Show archived',
-            ),
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () => _runBackfillIfNeeded(),
-              tooltip: 'Run backfill for attribution',
-            ),
-            IconButton(
-              icon: const Icon(Icons.add),
-              onPressed: () => _navigateToCreateDNR(),
-              tooltip: 'Add DNR Entry',
-            ),
-          ],
-          child: _buildBodyWithPremiumCheck(context, user.uid),
-        );
+        return _buildBodyWithPremiumCheck(context, user.uid);
       },
       loading: () => const Scaffold(
         body: Center(child: CircularProgressIndicator()),
@@ -225,7 +210,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: _buildFacilitySelector(userId),
         ),
-        // Filter chips
+        // Filter chips and Add to Global DNR (when viewing all facilities)
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           child: Row(
@@ -254,6 +239,14 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                   selectedColor: AppTheme.borderLight,
                   checkmarkColor: AppTheme.textTertiary,
                 ),
+              if (_selectedFacilityId == null) ...[
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _navigateToAddGlobalDNR,
+                  icon: const Icon(Icons.add, size: 20),
+                  label: const Text('Add to Global DNR'),
+                ),
+              ],
             ],
           ),
         ),
@@ -317,20 +310,37 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
 
         final selectedValue = _selectedFacilityId ?? '';
         final items = <DropdownMenuItem<String>>[
-          const DropdownMenuItem(
+          DropdownMenuItem(
             value: '',
-            child: Text('All Facilities'),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'All Facilities',
+                style: AppTheme.dropdownItemTextStyle,
+                softWrap: true,
+              ),
+            ),
           ),
           ...facilities.map(
             (facility) => DropdownMenuItem(
               value: facility.id,
-              child: Text(facility.name),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  facility.name,
+                  style: AppTheme.dropdownItemTextStyle,
+                  softWrap: true,
+                ),
+              ),
             ),
           ),
         ];
 
+        final colorScheme = Theme.of(context).colorScheme;
+        final style = AppTheme.dropdownItemTextStyle.copyWith(color: colorScheme.onSurface);
         return DropdownButtonFormField<String>(
           value: selectedValue,
+          isExpanded: true,
           decoration: InputDecoration(
             labelText: 'Facility',
             prefixIcon: const Icon(Icons.business),
@@ -338,11 +348,18 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
               borderRadius: BorderRadius.circular(12),
             ),
           ),
+          selectedItemBuilder: (context) => [
+            Text('All Facilities', style: style, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ...facilities.map((f) => Text(f.name, style: style, overflow: TextOverflow.ellipsis, maxLines: 1)),
+          ],
           items: items,
           onChanged: (value) {
             setState(() {
               _selectedFacilityId = value != null && value.isNotEmpty ? value : null;
             });
+            ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(
+              value != null && value.isNotEmpty ? value : null,
+            );
           },
         );
       },
@@ -380,14 +397,60 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
   Widget _buildSearchResults() {
     return Consumer(
       builder: (context, ref, child) {
+        final query = _searchController.text.trim();
+        if (_selectedFacilityId == null) {
+          final searchParams = {
+            'query': query,
+            'status': _showArchived ? null : 'active',
+          };
+          final globalSearchAsync = ref.watch(globalDnrSearchProvider(searchParams));
+          return globalSearchAsync.when(
+            data: (entries) {
+              if (entries.isEmpty) {
+                return const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.search_off, size: 64, color: AppTheme.textTertiary),
+                      SizedBox(height: 16),
+                      Text('No DNR entries found'),
+                      SizedBox(height: 8),
+                      Text('Try a different search term'),
+                    ],
+                  ),
+                );
+              }
+              return ListView.builder(
+                itemCount: entries.length,
+                itemBuilder: (context, index) {
+                  return _buildGlobalDNRCard(entries[index]);
+                },
+              );
+            },
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, stackTrace) => Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error, size: 64, color: AppTheme.error),
+                  const SizedBox(height: 16),
+                  Text('Error searching DNR entries: $error'),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () => ref.invalidate(globalDnrSearchProvider(searchParams)),
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         final searchParams = {
           'facilityId': _selectedFacilityId ?? '',
-          'query': _searchController.text,
+          'query': query,
           'active': _showArchived ? null : true,
         };
-        
         final dnrAsync = ref.watch(dnrSearchProvider(searchParams));
-        
         return dnrAsync.when(
           data: (entries) {
             if (entries.isEmpty) {
@@ -404,13 +467,9 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 ),
               );
             }
-            
             return ListView.builder(
               itemCount: entries.length,
-              itemBuilder: (context, index) {
-                final entry = entries[index];
-                return _buildDNRCard(entry);
-              },
+              itemBuilder: (context, index) => _buildDNRCard(entries[index]),
             );
           },
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -423,9 +482,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 Text('Error searching DNR entries: $error'),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () {
-                    ref.invalidate(dnrSearchProvider(searchParams));
-                  },
+                  onPressed: () => ref.invalidate(dnrSearchProvider(searchParams)),
                   child: const Text('Retry'),
                 ),
               ],
@@ -506,18 +563,11 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
   Widget _buildGlobalDNRList() {
     return Consumer(
       builder: (context, ref, child) {
-        // Pass activeOnly filter: if showing archived, get all entries; otherwise, get only active
-        final activeOnly = _showArchived ? null : true;
-        final dnrAsync = ref.watch(globalDnrEntriesProvider(activeOnly));
-        
+        final status = _showArchived ? null : GlobalDnrStatus.active;
+        final dnrAsync = ref.watch(globalDnrEntriesFromGlobalCollectionProvider(status));
         return dnrAsync.when(
           data: (entries) {
-            // Filter archived entries if needed (when activeOnly is null, we get all entries)
-            final filteredEntries = _showArchived 
-                ? entries 
-                : entries.where((entry) => entry.active).toList();
-            
-            if (filteredEntries.isEmpty) {
+            if (entries.isEmpty) {
               return Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -526,20 +576,22 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                     const SizedBox(height: 16),
                     Text(_showArchived ? 'No archived DNR entries' : 'No DNR entries found'),
                     const SizedBox(height: 8),
-                    Text(_showArchived 
-                      ? 'All DNR entries are active' 
-                      : 'DNR entries will appear here when created'),
+                    Text(_showArchived
+                        ? 'All DNR entries are active'
+                        : 'Add a Global DNR entry to share across all facilities'),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _navigateToAddGlobalDNR,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add to Global DNR'),
+                    ),
                   ],
                 ),
               );
             }
-            
             return ListView.builder(
-              itemCount: filteredEntries.length,
-              itemBuilder: (context, index) {
-                final entry = filteredEntries[index];
-                return _buildDNRCard(entry);
-              },
+              itemCount: entries.length,
+              itemBuilder: (context, index) => _buildGlobalDNRCard(entries[index]),
             );
           },
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -552,9 +604,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 Text('Error loading DNR entries: $error'),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () {
-                    ref.invalidate(globalDnrEntriesProvider(activeOnly));
-                  },
+                  onPressed: () => ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider(status)),
                   child: const Text('Retry'),
                 ),
               ],
@@ -563,6 +613,88 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
         );
       },
     );
+  }
+
+  Widget _buildGlobalDNRCard(GlobalDNREntryModel entry) {
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: entry.isActive ? AppTheme.error : AppTheme.borderLight,
+          width: entry.isActive ? 2 : 1,
+        ),
+      ),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: entry.isActive ? AppTheme.error : AppTheme.textTertiary,
+          child: Icon(Icons.person_off, color: AppTheme.textOnDark),
+        ),
+        title: Text(
+          entry.fullName,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            decoration: entry.isActive ? null : TextDecoration.lineThrough,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(entry.email),
+            Text(entry.phone),
+            Text(entry.reason, style: const TextStyle(fontStyle: FontStyle.italic)),
+            Text(
+              entry.createdByFacilityName ?? 'Facility: ${entry.createdByFacilityId}',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+            if (entry.createdByState != null && entry.createdByState!.isNotEmpty)
+              Text(
+                'State: ${entry.createdByState}',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+            Row(
+              children: [
+                Chip(
+                  label: Text(entry.severity.value),
+                  backgroundColor: AppTheme.primaryBlue.withOpacity(0.2),
+                ),
+                const SizedBox(width: 4),
+                Chip(
+                  label: Text(entry.status.value),
+                  backgroundColor: entry.isActive
+                      ? AppTheme.success.withOpacity(0.2)
+                      : AppTheme.textTertiary.withOpacity(0.2),
+                ),
+                if (entry.evidenceCount > 0) ...[
+                  const SizedBox(width: 4),
+                  Chip(
+                    label: Text('${entry.evidenceCount} evidence'),
+                    backgroundColor: AppTheme.textTertiary.withOpacity(0.2),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => _openGlobalDNREntryDetail(entry),
+      ),
+    );
+  }
+
+  void _navigateToAddGlobalDNR() {
+    context.push(AppRoute.legacyScreen, extra: const GlobalDNREntryScreen()).then((_) {
+      ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider);
+      ref.invalidate(globalDnrSearchProvider);
+    });
+  }
+
+  void _openGlobalDNREntryDetail(GlobalDNREntryModel entry) {
+    context.push(AppRoute.legacyScreen, extra: GlobalDNRDetailScreen(entry: entry)).then((_) {
+      ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider);
+      ref.invalidate(globalDnrSearchProvider);
+    });
   }
 
   Widget _buildDNRCard(DNRModel entry) {

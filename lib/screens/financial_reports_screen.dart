@@ -162,21 +162,7 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
       reportsAsync = ref.watch(reportsDataProvider(ReportParams(facilityId: selectedFacilityId)));
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/reports',
-      title: 'Financial Reports',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (reportsAsync?.hasValue == true)
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: () => _exportToCsv(reportsAsync!.value!),
-            tooltip: 'Export CSV',
-          ),
-      ],
-      child: Column(
+    return Column(
         children: [
           _buildFacilitySelector(),
           _buildFilterSection(selectedFilter),
@@ -184,7 +170,6 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
             child: _buildReportBody(reportsAsync),
           ),
         ],
-      ),
     );
   }
 

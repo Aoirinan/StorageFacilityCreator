@@ -8,10 +8,12 @@ import '../services/payment_service.dart';
 import '../services/contract_service.dart';
 import '../services/late_logic_service.dart';
 import '../services/ledger_service.dart';
+import '../services/facility_stats_service.dart';
 import '../models/unit_model.dart';
 import '../models/contract_model.dart';
 import '../models/tenant_model.dart';
 import '../providers/auth_provider.dart';
+import '../providers/active_facility_provider.dart';
 
 /// Dashboard statistics for all facilities
 class DashboardStats {
@@ -84,10 +86,14 @@ class UpcomingMoveOut {
   });
 }
 
-/// Provider for dashboard statistics across all facilities
+/// Provider for dashboard statistics
+/// Filters by activeFacilityId if set, otherwise shows all facilities
 final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
-  final userId = ref.watch(authStateProvider).value?.uid;
+  final userId = ref.watch(authStateProvider).whenOrNull(data: (d) => d)?.uid;
   if (userId == null) {
+    if (kDebugMode) {
+      print('🔍 [Dashboard] No user ID - returning zeros');
+    }
     return DashboardStats(
       totalFacilities: 0,
       totalTenants: 0,
@@ -101,8 +107,54 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     );
   }
 
+  if (kDebugMode) {
+    print('🔍 [Dashboard] User ID: $userId');
+  }
+
+  // Get active facility ID (null = All Facilities)
+  final activeFacilityIdState = ref.watch(activeFacilityIdProvider);
+  final activeFacilityId = activeFacilityIdState.whenOrNull(data: (d) => d);
+
+  if (kDebugMode) {
+    print('🔍 [Dashboard] Active facility ID from provider: $activeFacilityId');
+    print('🔍 [Dashboard] Active facility state: ${activeFacilityIdState.toString()}');
+  }
+
   // Get all facilities for user
-  final facilities = await FacilityService.getUserFacilities();
+  final allFacilities = await FacilityService.getUserFacilities();
+  
+  if (kDebugMode) {
+    print('🔍 [Dashboard] Total facilities for user: ${allFacilities.length}');
+    for (final f in allFacilities) {
+      print('   - ${f.name} (${f.id})');
+    }
+  }
+  
+  // null = "All Facilities" (aggregate across all). Non-null = single facility.
+  final facilities = activeFacilityId == null
+      ? allFacilities
+      : allFacilities.where((f) => f.id == activeFacilityId).toList();
+  
+  if (kDebugMode) {
+    print('🔍 [Dashboard] Querying ${facilities.length} facilities for stats');
+  }
+  
+  if (facilities.isEmpty) {
+    if (kDebugMode) {
+      print('🔍 [Dashboard] No facilities to query - returning zeros');
+    }
+    return DashboardStats(
+      totalFacilities: 0,
+      totalTenants: 0,
+      totalUnits: 0,
+      occupiedUnits: 0,
+      availableUnits: 0,
+      occupancyRate: 0.0,
+      monthlyRevenue: 0.0,
+      pastDueCount: 0,
+      openLeads: 0,
+    );
+  }
   
   int totalTenants = 0;
   int totalUnits = 0;
@@ -110,25 +162,122 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
   double monthlyRevenue = 0.0;
   int pastDueCount = 0;
 
-  // Aggregate data across all facilities
+  // Aggregate data across all facilities using FacilityStatsService
   for (final facility in facilities) {
-    // Get tenants
-    final tenants = await TenantService.getTenantsForFacility(facility.id);
-    totalTenants += tenants.length;
-    
-    // Calculate monthly revenue
-    for (final tenant in tenants) {
-      monthlyRevenue += tenant.monthlyRate;
+    if (kDebugMode) {
+      print('🔍 [Dashboard] Processing facility: ${facility.name} (${facility.id})');
     }
     
-    // Get units
-    final units = await UnitService.getUnitsForFacility(facility.id);
-    totalUnits += units.length;
-    occupiedUnits += units.where((u) => u.status == UnitStatus.occupied).length;
+    // Try to get precomputed stats first (fast path)
+    final stats = await FacilityStatsService.getFacilityStats(facility.id);
     
-    // Get past due payments
-    final payments = await PaymentService.getPaymentsForFacility(facility.id);
-    pastDueCount += payments.where((p) => p.isOverdue).length;
+    if (stats != null) {
+      // Use precomputed stats (faster)
+      final statsActive = (stats['totalTenantsActive'] as int?) ?? 0;
+      final statsUnits = (stats['totalUnits'] as int?) ?? 0;
+      final statsOccupied = (stats['occupiedUnits'] as int?) ?? 0;
+      final statsRevenue = (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
+      final statsPastDue = (stats['totalPastDue'] as int?) ?? 0;
+      
+      totalTenants += statsActive;
+      totalUnits += statsUnits;
+      occupiedUnits += statsOccupied;
+      monthlyRevenue += statsRevenue;
+      pastDueCount += statsPastDue;
+      
+      if (kDebugMode) {
+        print('📊 [Dashboard] Using cached stats for ${facility.name}:');
+        print('   - Tenants: $statsActive');
+        print('   - Units: $statsUnits (occupied: $statsOccupied)');
+        print('   - Revenue: \$${statsRevenue.toStringAsFixed(2)}');
+        print('   - Past due: $statsPastDue');
+      }
+    } else {
+      // Fallback to computing on-the-fly (slower)
+      if (kDebugMode) {
+        print('⚠️ [Dashboard] No cached stats for ${facility.name}, computing on-the-fly...');
+        print('   Query path: facilities/${facility.id}/tenants');
+      }
+      
+      // Get active tenants only (isActive = true)
+      final tenants = await TenantService.getTenantsForFacility(facility.id);
+      if (kDebugMode) {
+        print('   - Raw tenants count: ${tenants.length}');
+      }
+      
+      final activeTenants = tenants.where((t) => t.isActive == true).toList();
+      if (kDebugMode) {
+        print('   - Active tenants count: ${activeTenants.length}');
+        if (tenants.isNotEmpty && activeTenants.isEmpty) {
+          print('   ⚠️ WARNING: Have tenants but NONE are active! Check isActive field.');
+          print('   First tenant isActive value: ${tenants.first.isActive}');
+        }
+      }
+      
+      totalTenants += activeTenants.length;
+      
+      // Calculate monthly revenue from active tenants only
+      double facilityRevenue = 0.0;
+      for (final tenant in activeTenants) {
+        facilityRevenue += tenant.monthlyRate;
+      }
+      monthlyRevenue += facilityRevenue;
+      
+      if (kDebugMode) {
+        print('   - Facility revenue: \$${facilityRevenue.toStringAsFixed(2)}');
+      }
+      
+      // Get units - use canonical occupancy (only count occupied if tenant exists)
+      final units = await UnitService.getUnitsForFacility(facility.id);
+      final tenantIds = activeTenants.map((t) => t.id).toSet();
+      final facilityOccupied = units.where((u) =>
+        u.status == UnitStatus.occupied &&
+        u.tenantId != null &&
+        tenantIds.contains(u.tenantId),
+      ).length;
+      final facilityCapacity = facility.totalUnits;
+      totalUnits += facilityCapacity > 0 ? facilityCapacity : units.length;
+      occupiedUnits += facilityOccupied;
+      
+      if (kDebugMode) {
+        print('   - Units: ${units.length} (occupied: $facilityOccupied)');
+      }
+      
+      // Count past due tenants using facility's grace period (Billing Settings)
+      final grace = facility.billingSettings?['gracePeriodDays'];
+      final graceDays = (grace is int) ? grace : (grace != null ? int.tryParse(grace.toString()) : null) ?? 3;
+      int facilityPastDue = 0;
+      for (final tenant in activeTenants) {
+        if (LateLogicService.isTenantLate(tenant, gracePeriodDays: graceDays)) {
+          facilityPastDue++;
+          if (kDebugMode && facilityPastDue <= 3) {
+            final tenantDaysLate = LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: graceDays);
+            print('   - Late tenant: ${tenant.name}, Days late: $tenantDaysLate, Paid through: ${tenant.paidThrough}');
+          }
+        }
+      }
+      pastDueCount += facilityPastDue;
+      
+      if (kDebugMode) {
+        print('   - Past due: $facilityPastDue');
+        if (facilityPastDue == 0 && activeTenants.isNotEmpty) {
+          // Sample first tenant to check paidThrough logic
+          final sample = activeTenants.first;
+          print('   - Sample tenant: ${sample.name}, paidThrough: ${sample.paidThrough}, daysLate: ${sample.daysLate}');
+        }
+      }
+      
+      // Trigger stats update in background for next time
+      FacilityStatsService.updateFacilityStats(facility.id);
+    }
+  }
+  
+  if (kDebugMode) {
+    print('📊 [Dashboard] FINAL TOTALS:');
+    print('   - Total tenants: $totalTenants');
+    print('   - Total units: $totalUnits (occupied: $occupiedUnits)');
+    print('   - Monthly revenue: \$${monthlyRevenue.toStringAsFixed(2)}');
+    print('   - Past due: $pastDueCount');
   }
 
   final availableUnits = totalUnits - occupiedUnits;

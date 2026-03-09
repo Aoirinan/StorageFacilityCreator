@@ -8,6 +8,13 @@ service firebase.storage {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
     
+    // Global DNR evidence - any authenticated SFC user can read; write for uploads
+    // Path: dnrEvidence/{entryId}/{evidenceId}/{filename}
+    match /dnrEvidence/{entryId}/{allPaths=**} {
+      allow read: if signedIn();
+      allow write: if signedIn();
+    }
+
     // Facility files - owner access only (covers contracts, DNR evidence, documents, invoices, etc.)
     // Path: facilities/{facilityId}/contracts/{contractId}/{fileName}
     // Path: facilities/{facilityId}/documents/{documentId}/{fileName}

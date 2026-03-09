@@ -1,6 +1,7 @@
-import 'dart:html' as html;
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:sfcapp/utils/hostname_stub.dart' if (dart.library.html) 'package:sfcapp/utils/hostname_web.dart' as hostname_util;
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/error_reporter.dart';
 import 'package:sfcapp/services/debug_logger.dart';
 
@@ -54,12 +55,21 @@ class AppCheckService {
   static String? _getHostname() {
     if (!kIsWeb) return null;
     try {
-      // Get hostname from browser location (web only)
-      return html.window.location.hostname;
+      return hostname_util.getHostnameWeb();
     } catch (e) {
-      // Not on web or html not available
       return null;
     }
+  }
+
+  static bool _isLocalhostHost(String? host) {
+    return host == 'localhost' || host == '127.0.0.1';
+  }
+
+  static bool _isLocalhost() {
+    if (!kIsWeb) return false;
+    final uriHost = Uri.base.host;
+    final htmlHost = _getHostname();
+    return _isLocalhostHost(uriHost) || _isLocalhostHost(htmlHost);
   }
 
   /// Determine if we should use debug provider
@@ -103,6 +113,46 @@ class AppCheckService {
     String? webSiteKey,
     bool forceEnable = false,
   }) async {
+    final isLocalhost = _isLocalhost();
+    // #region agent log
+    aiDebugLog(
+      sessionId: 'debug-session',
+      runId: 'pre-fix',
+      hypothesisId: 'H6',
+      location: 'app_check_service.dart:activate.entry',
+      message: 'activate entry',
+      data: {
+        'uriHost': Uri.base.host,
+        'htmlHost': _getHostname(),
+        'isLocalhost': isLocalhost,
+      },
+    );
+    // #endregion
+    // H10: Test enabling App Check in debug mode on localhost instead of skipping
+    // Firebase Auth might require App Check tokens even on localhost
+    if (isLocalhost) {
+      if (kDebugMode) {
+        debugPrint('Localhost detected - will attempt to enable App Check in debug mode');
+      }
+      _hostname = _getHostname() ?? Uri.base.host;
+      // Don't skip - continue to initialize App Check in debug mode
+      // This allows Firebase Auth to receive a valid App Check token
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H10',
+        location: 'app_check_service.dart:activate.localhostContinue',
+        message: 'Continuing App Check init on localhost (debug mode)',
+        data: {
+          'host': _hostname,
+          'kIsWeb': kIsWeb,
+          'willAttemptDebugMode': true,
+        },
+      );
+      // #endregion
+      // Continue to initialization below instead of returning early
+    }
     // CRITICAL: Guard against double initialization - Firebase throws "already-initialized" error
     if (_isActivated) {
       print('⚠️ [AppCheckService] Already activated - skipping duplicate activation');
@@ -111,11 +161,15 @@ class AppCheckService {
     
     const enableAppCheck = bool.fromEnvironment('ENABLE_APPCHECK', defaultValue: false);
     
-    // Always log for visibility
-    print('🔍 [AppCheckService] activate called: enableAppCheck=$enableAppCheck, forceEnable=$forceEnable, webSiteKey=${webSiteKey != null ? "PROVIDED" : "NULL"}, kIsWeb=$kIsWeb');
+    // Log in debug mode only to reduce console noise
+    if (kDebugMode) {
+      print('🔍 [AppCheckService] activate called: enableAppCheck=$enableAppCheck, forceEnable=$forceEnable, webSiteKey=${webSiteKey != null ? "PROVIDED" : "NULL"}, kIsWeb=$kIsWeb');
+    }
     
     if (!enableAppCheck && !forceEnable) {
-      print('⚠️ [AppCheckService] Disabled - ENABLE_APPCHECK=false and forceEnable=false');
+      if (kDebugMode) {
+        print('⚠️ [AppCheckService] Disabled - ENABLE_APPCHECK=false and forceEnable=false');
+      }
       _isActivated = false;
       return;
     }
@@ -151,15 +205,19 @@ class AppCheckService {
     final siteKey = webSiteKey ?? 
         const String.fromEnvironment('APPCHECK_SITE_KEY', defaultValue: '');
 
-    print('🔍 [AppCheckService] Web platform detected');
-    print('   Site Key: ${siteKey.isNotEmpty ? "${siteKey.substring(0, 8)}..." : "EMPTY"}');
-    print('   Hostname: $_hostname');
-    print('   Is Debug Mode: $_isDebugMode');
+    if (kDebugMode) {
+      print('🔍 [AppCheckService] Web platform detected');
+      print('   Site Key: ${siteKey.isNotEmpty ? "${siteKey.substring(0, 8)}..." : "EMPTY"}');
+      print('   Hostname: $_hostname');
+      print('   Is Debug Mode: $_isDebugMode');
+    }
 
     if (siteKey.isEmpty) {
       final error = 'APPCHECK_SITE_KEY not provided for App Check';
-      print('❌ [AppCheckService] $error');
       ErrorReporter.reportError(error, null, context: 'AppCheck.activate');
+      if (kDebugMode) {
+        print('❌ [AppCheckService] $error');
+      }
       _isActivated = false;
       return;
     }
@@ -176,9 +234,11 @@ class AppCheckService {
     }
 
     try {
-      print('🚀 [AppCheckService] Activating Firebase App Check with ReCaptchaV3Provider...');
-      print('   Site Key: ${siteKey.substring(0, 8)}...');
-      print('   Hostname: $_hostname');
+      if (kDebugMode) {
+        print('🚀 [AppCheckService] Activating Firebase App Check with ReCaptchaV3Provider...');
+        print('   Site Key: ${siteKey.substring(0, 8)}...');
+        print('   Hostname: $_hostname');
+      }
       await FirebaseAppCheck.instance.activate(
         webProvider: ReCaptchaV3Provider(siteKey),
       );
@@ -187,12 +247,14 @@ class AppCheckService {
       _isActivated = true;
       _currentProvider = _isDebugMode ? 'recaptcha-v3-debug' : 'recaptcha-v3';
 
-      // Always log activation success (not just in debug mode)
-      print('✅ [AppCheckService] ${_isDebugMode ? "Debug" : "Production"} mode activated');
-      print('   Hostname: $_hostname');
-      print('   Provider: reCAPTCHA v3');
-      print('   Site Key: ${siteKey.substring(0, 8)}...');
-      print('   isActivated: $_isActivated');
+      // Log activation success in debug mode only
+      if (kDebugMode) {
+        print('✅ [AppCheckService] ${_isDebugMode ? "Debug" : "Production"} mode activated');
+        print('   Hostname: $_hostname');
+        print('   Provider: reCAPTCHA v3');
+        print('   Site Key: ${siteKey.substring(0, 8)}...');
+        print('   isActivated: $_isActivated');
+      }
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H3',
@@ -254,7 +316,23 @@ class AppCheckService {
         } catch (e) {
           if (kDebugMode) {
             print('⚠️ [AppCheck] Token request failed (expected until debug token registered): $e');
-            print('   This is normal - add debug token to Firebase Console first');
+            print('');
+            print('📋 HOW TO GET DEBUG TOKEN:');
+            print('═══════════════════════════════════════════════════════');
+            print('1. Open Chrome DevTools (F12 or Right-click > Inspect)');
+            print('2. Go to the "Console" tab');
+            print('3. Look for a message like:');
+            print('   "Firebase App Check debug token: XXXX-XXXX-XXXX-XXXX"');
+            print('4. Copy the entire token (it looks like a UUID)');
+            print('5. Paste it into Firebase Console > App Check > Debug tokens');
+            print('');
+            print('ALTERNATIVE: Check the Network tab:');
+            print('1. Open DevTools > Network tab');
+            print('2. Filter by "firebaseappcheck"');
+            print('3. Look for requests to content-firebaseappcheck.googleapis.com');
+            print('4. Check the response - it may contain the debug token');
+            print('═══════════════════════════════════════════════════════');
+            print('');
           }
         }
       } else {
@@ -293,6 +371,28 @@ class AppCheckService {
   /// Automatically refreshes if token is expired or close to expiration
   /// Returns null if token acquisition fails (non-blocking)
   static Future<String?> getToken({bool forceRefresh = false}) async {
+    // H10: Try to get App Check token even on localhost (debug mode)
+    // Firebase Auth might require App Check tokens even on localhost
+    final isLocalhost = _isLocalhost();
+    if (isLocalhost && !_isActivated) {
+      // If App Check isn't activated on localhost, return null
+      // (This happens if activation failed or was skipped)
+      if (kDebugMode) {
+        debugPrint('App Check not activated on localhost - cannot get token');
+      }
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H10',
+        location: 'app_check_service.dart:getToken.localhostNotActivated',
+        message: 'App Check not activated on localhost',
+        data: {'uriHost': Uri.base.host, 'htmlHost': _getHostname(), 'isActivated': _isActivated},
+      );
+      // #endregion
+      return null;
+    }
+    // If App Check is activated (even on localhost in debug mode), try to get token
     // Auto-refresh if token is old (prevent expiration issues)
     final shouldRefresh = forceRefresh || _shouldRefreshToken();
     if (shouldRefresh && !forceRefresh) {
@@ -308,6 +408,7 @@ class AppCheckService {
         'forceRefresh': forceRefresh,
         'shouldRefresh': shouldRefresh,
         'isActivated': _isActivated,
+        'isLocalhost': isLocalhost,
         'lastRefreshHoursAgo': _lastTokenRefresh != null ? DateTime.now().difference(_lastTokenRefresh!).inHours : null,
       },
     );
@@ -315,12 +416,17 @@ class AppCheckService {
     if (!_isActivated) {
       if (kDebugMode) {
         print('⚠️ [AppCheck] Token requested but App Check not activated');
+        if (isLocalhost) {
+          print('   Note: On localhost, App Check should be activated in debug mode');
+          print('   Check that AppCheckService.activate() was called with forceEnable: true');
+        }
       }
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
         location: 'app_check_service.dart:getToken.notActivated',
         message: 'Token request failed - not activated',
+        data: {'isLocalhost': isLocalhost},
       );
       // #endregion
       return null;
@@ -456,7 +562,9 @@ class AppCheckService {
         },
       );
       if (token != null) {
-        print('✅ [AppCheck] Token generation verified (length: ${token.length})');
+        if (kDebugMode) {
+          print('✅ [AppCheck] Token generation verified (length: ${token.length})');
+        }
         // #region agent log
         DebugLogger.log(
           hypothesisId: 'H1',

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment</title>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; }
+    #payment-element { padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 16px; min-height: 120px; }
+    #card-errors { color: #dc3545; font-size: 14px; margin-bottom: 12px; min-height: 20px; }
+    button { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+    button:hover:not(:disabled) { background: #1d4ed8; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    .loading { display: none; text-align: center; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div id="payment-element"></div>
+  <div id="card-errors" role="alert"></div>
+  <button type="button" id="submit-button" disabled>Loading payment form…</button>
+  <div class="loading" id="loading">Processing…</div>
+
+  <script>
+    let stripe, elements, paymentElement;
+    let config = null;
+    let elementReady = false;
+
+    window.addEventListener('message', function(event) {
+      const d = event.data;
+      if (d && d.type === 'STRIPE_EMBED_INIT') {
+        config = d;
+        initStripe();
+      }
+    });
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'STRIPE_EMBED_READY' }, '*');
+    }
+
+    function postResult(succeeded, error, paymentMethodId, setupIntentId) {
+      if (window.parent && window.parent !== window) {
+        var payload = {
+          type: 'STRIPE_EMBED_RESULT',
+          succeeded: !!succeeded,
+          error: error || null,
+        };
+        if (paymentMethodId) payload.paymentMethodId = paymentMethodId;
+        if (setupIntentId) payload.setupIntentId = setupIntentId;
+        window.parent.postMessage(payload, '*');
+      }
+    }
+
+    function showError(msg) {
+      var el = document.getElementById('card-errors');
+      if (el) el.textContent = msg;
+    }
+
+    function initStripe() {
+      if (!config || !config.publishableKey || !config.clientSecret || !config.mode) {
+        showError('Missing configuration.');
+        document.getElementById('submit-button').textContent = 'Confirm';
+        return;
+      }
+      var btn = document.getElementById('submit-button');
+      var errEl = document.getElementById('card-errors');
+      try {
+        var stripeOptions = {};
+        if (config.stripeAccount) stripeOptions.stripeAccount = config.stripeAccount;
+        stripe = Stripe(config.publishableKey, stripeOptions);
+        elements = stripe.elements({ clientSecret: config.clientSecret });
+        paymentElement = elements.create('payment', {});
+        paymentElement.on('change', function(e) {
+          errEl.textContent = e.error ? e.error.message : '';
+        });
+        paymentElement.on('ready', function() {
+          elementReady = true;
+          btn.disabled = false;
+          btn.textContent = 'Confirm';
+        });
+        paymentElement.on('loaderror', function(e) {
+          elementReady = false;
+          btn.disabled = true;
+          var msg = (e && e.message) ? e.message : 'Payment form could not load. If this continues, your Stripe keys may need to be checked (see docs/STRIPE_401_FIX.md).';
+          showError(msg);
+          btn.textContent = 'Confirm';
+          postResult(false, msg);
+        });
+        paymentElement.mount('#payment-element');
+      } catch (e) {
+        elementReady = false;
+        btn.disabled = true;
+        btn.textContent = 'Confirm';
+        showError(e.message || 'Failed to initialize payment form.');
+        postResult(false, e.message);
+        return;
+      }
+      btn.onclick = onConfirm;
+    }
+
+    async function onConfirm() {
+      if (!config) return;
+      var btn = document.getElementById('submit-button');
+      var errEl = document.getElementById('card-errors');
+      var loading = document.getElementById('loading');
+      if (!elementReady || !paymentElement) {
+        showError('Payment form is still loading or failed to load. Please refresh and try again.');
+        return;
+      }
+      btn.disabled = true;
+      errEl.textContent = '';
+      loading.style.display = 'block';
+
+      var returnUrl = config.returnUrl || (window.location.origin + window.location.pathname);
+
+      try {
+        if (config.mode === 'setup') {
+          var result = await stripe.confirmSetup({
+            elements: elements,
+            confirmParams: { return_url: returnUrl },
+          });
+          var error = result && result.error;
+          if (error) {
+            errEl.textContent = error.message || 'Setup failed';
+            postResult(false, error.message);
+          } else {
+            var si = result && result.setupIntent;
+            var pmId = (si && si.payment_method) ? (typeof si.payment_method === 'string' ? si.payment_method : si.payment_method.id) : null;
+            var siId = (si && si.id) ? si.id : null;
+            postResult(true, null, pmId, siId);
+          }
+        } else {
+          var result = await stripe.confirmPayment({
+            elements: elements,
+            confirmParams: { return_url: returnUrl },
+          });
+          var error = result && result.error;
+          if (error) {
+            errEl.textContent = error.message || 'Payment failed';
+            postResult(false, error.message);
+          } else {
+            postResult(true);
+          }
+        }
+      } catch (e) {
+        var msg = e.message || 'An error occurred';
+        errEl.textContent = msg;
+        postResult(false, msg);
+      }
+      btn.disabled = false;
+      loading.style.display = 'none';
+    }
+  </script>
+</body>
+</html>

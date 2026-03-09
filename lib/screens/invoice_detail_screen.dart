@@ -37,62 +37,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/invoices',
-      title: 'Invoice ${widget.invoice.invoiceNumber}',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (widget.invoice.pdfUrl == null)
-          IconButton(
-            icon: _isGeneratingPDF
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.picture_as_pdf),
-            onPressed: _isGeneratingPDF ? null : _generatePDF,
-            tooltip: 'Generate PDF',
-          ),
-        if (widget.invoice.pdfUrl != null)
-          IconButton(
-            icon: const Icon(Icons.email),
-            onPressed: _isSending ? null : _sendInvoice,
-            tooltip: 'Send Invoice',
-          ),
-        PopupMenuButton<String>(
-          onSelected: _handleMenuAction,
-          itemBuilder: (context) => [
-            if (widget.invoice.status == InvoiceStatus.draft)
-              const PopupMenuItem(
-                value: 'send',
-                child: ListTile(
-                  leading: Icon(Icons.send),
-                  title: Text('Send Invoice'),
-                ),
-              ),
-            if (widget.invoice.status == InvoiceStatus.sent && widget.invoice.balance > 0)
-              const PopupMenuItem(
-                value: 'mark_paid',
-                child: ListTile(
-                  leading: Icon(Icons.check_circle),
-                  title: Text('Mark as Paid'),
-                ),
-              ),
-            if (widget.invoice.status != InvoiceStatus.voided)
-              const PopupMenuItem(
-                value: 'void',
-                child: ListTile(
-                  leading: Icon(Icons.cancel),
-                  title: Text('Void Invoice'),
-                ),
-              ),
-          ],
-        ),
-      ],
-      child: SingleChildScrollView(
+    return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -118,8 +63,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             ],
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatusCard() {

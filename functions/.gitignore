@@ -12,6 +12,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.storage-*
+.env.*.local
 
 # Runtime config (legacy)
 .runtimeconfig.json

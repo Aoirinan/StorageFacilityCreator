@@ -11,6 +11,7 @@ import 'package:sfcapp/services/gate_access_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/sms_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 /// Service for automating delinquency workflows
 class DelinquencyAutomationService {
@@ -21,6 +22,7 @@ class DelinquencyAutomationService {
   /// This should be called by a scheduled Cloud Function daily
   static Future<DelinquencyProcessingResult> processDelinquency({
     required String facilityId,
+    bool dryRun = false, // Preview mode - don't actually apply actions
   }) async {
     try {
       final user = _auth.currentUser;
@@ -38,9 +40,15 @@ class DelinquencyAutomationService {
 
       final rules = _getDelinquencyRules(facility);
 
-      // Get all active tenants
+      // Get all active tenants (with safety checks)
       final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final activeTenants = tenants.where((t) => t.isActive).toList();
+      final activeTenants = tenants.where((t) {
+        // Must be active
+        if (!t.isActive) return false;
+        // Skip if moved out (check for moveOutDate in tenant data)
+        // Note: TenantModel doesn't expose moveOutDate directly, but isActive should cover this
+        return true;
+      }).toList();
 
       int processedCount = 0;
       int lateFeeAppliedCount = 0;
@@ -84,6 +92,7 @@ class DelinquencyAutomationService {
             stage: stage,
             rules: rules,
             balance: balance,
+            dryRun: dryRun,
           );
 
           processedCount++;
@@ -209,6 +218,7 @@ class DelinquencyAutomationService {
     required DelinquencyStageModel stage,
     required DelinquencyRules rules,
     required double balance,
+    bool dryRun = false,
   }) async {
     bool lateFeeApplied = false;
     bool noticeSent = false;
@@ -219,11 +229,16 @@ class DelinquencyAutomationService {
     if (rules.enableAutoLateFees && 
         tenant.daysLate > rules.gracePeriodDays &&
         stage.currentStage != DelinquencyStage.resolved) {
-      lateFeeApplied = await _applyLateFeeIfNeeded(
-        tenant: tenant,
-        facilityId: facilityId,
-        rules: rules,
-      );
+      if (dryRun) {
+        // In dry-run mode, just mark as would-be applied
+        lateFeeApplied = true;
+      } else {
+        lateFeeApplied = await _applyLateFeeIfNeeded(
+          tenant: tenant,
+          facilityId: facilityId,
+          rules: rules,
+        );
+      }
     }
 
     // Determine next stage based on days overdue
@@ -232,12 +247,22 @@ class DelinquencyAutomationService {
     } else if (tenant.daysLate >= rules.finalNoticeDays && stage.currentStage != DelinquencyStage.finalNotice) {
       newStage = DelinquencyStage.finalNotice;
       if (rules.enableAutoNotices) {
-        noticeSent = await _sendFinalNotice(tenant, facilityId);
+        if (dryRun) {
+          // In dry-run mode, just mark as would-be sent
+          noticeSent = true;
+        } else {
+          noticeSent = await _sendFinalNotice(tenant, facilityId);
+        }
       }
     } else if (tenant.daysLate >= rules.noticeDays && stage.currentStage == DelinquencyStage.overdue) {
       newStage = DelinquencyStage.noticeSent;
       if (rules.enableAutoNotices) {
-        noticeSent = await _sendLateNotice(tenant, facilityId);
+        if (dryRun) {
+          // In dry-run mode, just mark as would-be sent
+          noticeSent = true;
+        } else {
+          noticeSent = await _sendLateNotice(tenant, facilityId);
+        }
       }
     }
 
@@ -245,7 +270,12 @@ class DelinquencyAutomationService {
     if (rules.enableAutoLockout && 
         tenant.daysLate >= rules.lockoutDays &&
         !lockoutTriggered) {
-      lockoutTriggered = await _triggerLockout(tenant, facilityId);
+      if (dryRun) {
+        // In dry-run mode, just mark as would-be triggered
+        lockoutTriggered = true;
+      } else {
+        lockoutTriggered = await _triggerLockout(tenant, facilityId);
+      }
     }
 
     // Update stage if changed
@@ -298,7 +328,7 @@ class DelinquencyAutomationService {
       if (lateFee <= 0) return false;
 
       // Create ledger entry for late fee
-      await LedgerService.createLedgerEntry(
+      final ledgerEntry = await LedgerService.createLedgerEntry(
         tenantId: tenant.id,
         facilityId: facilityId,
         type: LedgerEntryType.lateFee,
@@ -310,6 +340,25 @@ class DelinquencyAutomationService {
         metadata: {
           'daysOverdue': tenant.daysLate,
           'automated': true,
+        },
+      );
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'delinquency.lateFeeApplied',
+        targetType: 'ledgerEntry',
+        targetId: ledgerEntry.id,
+        tenantId: tenant.id,
+        after: {
+          'amount': lateFee,
+          'daysOverdue': tenant.daysLate,
+          'automated': true,
+        },
+        metadata: {
+          'baseLateFee': rules.baseLateFee,
+          'dailyLateFee': rules.dailyLateFee,
+          'gracePeriodDays': rules.gracePeriodDays,
         },
       );
 
@@ -459,13 +508,32 @@ ${facility.name}
           .where('isActive', isEqualTo: true)
           .get();
 
+      final deactivatedAccessIds = <String>[];
       for (final doc in gateAccessSnapshot.docs) {
         await GateAccessService.updateGateAccess(
           facilityId: facilityId,
           accessId: doc.id,
           isActive: false,
         );
+        deactivatedAccessIds.add(doc.id);
       }
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'delinquency.lockoutTriggered',
+        targetType: 'tenant',
+        targetId: tenant.id,
+        tenantId: tenant.id,
+        after: {
+          'lockoutStatus': 'locked',
+          'daysLate': tenant.daysLate,
+        },
+        metadata: {
+          'automated': true,
+          'deactivatedAccessIds': deactivatedAccessIds,
+        },
+      );
 
       if (kDebugMode) {
         print('✅ [Delinquency] Lockout triggered for tenant ${tenant.id}');

@@ -51,68 +51,7 @@ class _LienDetailScreenState extends ConsumerState<LienDetailScreen> {
     final lien = _currentLien ?? widget.lien;
     final dateFormat = DateFormat('MMM d, yyyy');
     
-    return ModernPageWrapper(
-      currentRoute: '/liens',
-      title: 'Lien Details',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (lien.isActiveLien)
-          PopupMenuButton<String>(
-            onSelected: _handleMenuAction,
-            itemBuilder: (context) => [
-              if (lien.currentStage == LienStage.notStarted)
-                const PopupMenuItem(
-                  value: 'send_notice',
-                  child: ListTile(
-                    leading: Icon(Icons.send),
-                    title: Text('Send Notice'),
-                  ),
-                ),
-              if (lien.currentStage == LienStage.noticeSent)
-                const PopupMenuItem(
-                  value: 'file_lien',
-                  child: ListTile(
-                    leading: Icon(Icons.description),
-                    title: Text('File Lien'),
-                  ),
-                ),
-              if (lien.currentStage == LienStage.lienFiled)
-                const PopupMenuItem(
-                  value: 'schedule_auction',
-                  child: ListTile(
-                    leading: Icon(Icons.calendar_today),
-                    title: Text('Schedule Auction'),
-                  ),
-                ),
-              if (lien.currentStage == LienStage.auctionScheduled)
-                const PopupMenuItem(
-                  value: 'complete_auction',
-                  child: ListTile(
-                    leading: Icon(Icons.check_circle),
-                    title: Text('Complete Auction'),
-                  ),
-                ),
-              if (lien.isActiveLien)
-                const PopupMenuItem(
-                  value: 'resolve',
-                  child: ListTile(
-                    leading: Icon(Icons.verified),
-                    title: Text('Resolve Lien'),
-                  ),
-                ),
-              const PopupMenuItem(
-                value: 'cancel',
-                child: ListTile(
-                  leading: Icon(Icons.cancel),
-                  title: Text('Cancel Lien'),
-                ),
-              ),
-            ],
-          ),
-      ],
-      child: SingleChildScrollView(
+    return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -134,8 +73,7 @@ class _LienDetailScreenState extends ConsumerState<LienDetailScreen> {
             ],
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatusCard(LienModel lien) {

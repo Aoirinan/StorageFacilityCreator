@@ -1,32 +1,43 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../models/payment_model.dart';
+import '../models/autopay_event_model.dart';
+import '../models/stripe_connect_status_model.dart';
 import '../providers/payment_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../services/facility_creator_account_service.dart';
+import '../services/autopay_service.dart';
+import '../services/stripe_connect_service.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../constants/app_constants.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
+import '../utils/breakpoints.dart';
 import '../utils/error_message_helper.dart';
 import 'payment_detail_screen.dart';
 import 'payment_creation_screen.dart';
 import 'facility_creation_wizard.dart';
 import 'facility_map_editor_screen.dart';
-import 'invoice_list_screen.dart';
-import '../utils/error_message_helper.dart';
 import '../providers/tenant_provider.dart';
 import '../services/tenant_service.dart';
 import '../models/tenant_model.dart';
+import '../models/tenant_autopay_model.dart';
 import '../services/statement_service.dart';
 import '../services/facility_service.dart';
 import 'ledger_screen.dart';
+import '../ui/payments/stripe_embedded_payment_dialog.dart';
+import '../services/stripe_service.dart';
+import '../utils/stripe_redirect_params.dart';
+import '../ui/payments/tenant_billing_panel.dart';
 
 class PaymentListScreen extends ConsumerStatefulWidget {
   const PaymentListScreen({super.key});
@@ -40,11 +51,99 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   String _searchQuery = '';
   PaymentStatus? _statusFilter;
   PaymentMethod? _methodFilter;
+  String? _selectedTenantIdFilter; // null = All tenants
+  DateTime? _filterDateStart;
+  DateTime? _filterDateEnd;
+  String _autopayTenantSearch = '';
+  bool _autopayToggleLoading = false;
+  bool _appliedRouteParams = false;
 
   @override
   void initState() {
     super.initState();
     _loadUserFacilities();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_appliedRouteParams) return;
+    final uri = GoRouterState.of(context).uri;
+    final params = uri.queryParameters;
+    final tab = params['tab'];
+    final tenantId = params['tenantId'];
+    final cardAdded = params['cardAdded'] == '1' || params['cardAdded'] == 'true';
+    final facilityId = params['facilityId'];
+    if (tab == 'autopay' || tab == 'onetime' || tenantId != null || cardAdded) {
+      _appliedRouteParams = true;
+      if (tab == 'autopay') {
+        ref.read(paymentsTabIndexProvider.notifier).state = 1;
+        if (tenantId != null && tenantId.isNotEmpty) {
+          ref.read(paymentsAutopaySelectedTenantIdProvider.notifier).state = tenantId;
+        }
+      }
+      if (tab == 'onetime') {
+        ref.read(paymentsTabIndexProvider.notifier).state = 2;
+        if (tenantId != null && tenantId.isNotEmpty) {
+          ref.read(paymentsAutopaySelectedTenantIdProvider.notifier).state = tenantId;
+        }
+      }
+      if (facilityId != null && facilityId.isNotEmpty) {
+        setState(() => _selectedFacilityId = facilityId);
+      }
+      if (cardAdded && tenantId != null && facilityId != null && facilityId!.isNotEmpty && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _handleCardAddedReturn(tenantId!, facilityId!));
+      }
+    }
+  }
+
+  /// Handles return from add-card flow. If Stripe redirected (Link/3DS), attach the
+  /// payment method now; otherwise the in-page flow already attached it.
+  Future<void> _handleCardAddedReturn(String tenantId, String facilityId) async {
+    if (!mounted) return;
+    if (kIsWeb) {
+      final redirectParams = getStripeRedirectParams();
+      final setupIntentId = redirectParams['setup_intent'];
+      if (setupIntentId != null && setupIntentId.isNotEmpty) {
+        try {
+          await StripeService.attachTenantPaymentMethodFromRedirect(
+            facilityId: facilityId,
+            tenantId: tenantId,
+            setupIntentId: setupIntentId,
+          );
+          clearStripeRedirectParamsFromUrl();
+          if (mounted) ref.invalidate(facilityTenantsProvider(facilityId));
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Card was saved in Stripe but could not link to this tenant. ${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+                ),
+                backgroundColor: AppTheme.error,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+          }
+          return;
+        }
+      }
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Card added successfully.'),
+        backgroundColor: AppTheme.success,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Turn on Autopay?',
+          onPressed: () {
+            ref.read(paymentsAutopaySelectedTenantIdProvider.notifier).state = tenantId;
+            ref.read(paymentsTabIndexProvider.notifier).state = 1;
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _loadUserFacilities() async {
@@ -82,12 +181,16 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         // Small delay to ensure account is fully created and permissions are set
         await Future.delayed(const Duration(milliseconds: 500));
         
-        // Now try to load facilities
+        // Now try to load facilities. Prefer active facility so Payments and Stripe Connect page stay in sync.
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
         if (facilities.isNotEmpty) {
+          final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+          final initialId = (activeId != null && facilities.any((f) => f.id == activeId))
+              ? activeId
+              : facilities.first.id;
           setState(() {
-            _selectedFacilityId = facilities.first.id;
+            _selectedFacilityId = initialId;
           });
         } else {
           if (kDebugMode) {
@@ -141,57 +244,56 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
               return _buildNoFacilitiesMessage();
             }
             
-            // Auto-select first facility if not selected
+            // Auto-select facility if not selected: prefer active facility so Stripe status matches
             if (_selectedFacilityId.isEmpty && facilities.isNotEmpty) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) {
-                  setState(() {
-                    _selectedFacilityId = facilities.first.id;
-                  });
+                  final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+                  final initialId = (activeId != null && facilities.any((f) => f.id == activeId))
+                      ? activeId
+                      : facilities.first.id;
+                  setState(() => _selectedFacilityId = initialId);
                 }
               });
               return const Center(child: CircularProgressIndicator());
             }
             
-            return DefaultTabController(
-              length: 3,
-              child: Column(
-                children: [
-                  // Tab bar
-                  Container(
-                    color: AppTheme.surface,
-                    child: TabBar(
-                      isScrollable: true,
-                      tabs: const [
-                        Tab(text: 'Payments'),
-                        Tab(text: 'Invoices'),
-                        Tab(text: 'Statements'),
-                      ],
-                    ),
+            final tabIndex = ref.watch(paymentsTabIndexProvider);
+            return Column(
+              children: [
+                Container(
+                  color: AppTheme.surface,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Row(
+                    children: [
+                      _TabButton(
+                        label: 'Transactions',
+                        selected: tabIndex == 0,
+                        onTap: () => ref.read(paymentsTabIndexProvider.notifier).state = 0,
+                      ),
+                      const SizedBox(width: 8),
+                      _TabButton(
+                        label: 'Autopay',
+                        selected: tabIndex == 1,
+                        onTap: () => ref.read(paymentsTabIndexProvider.notifier).state = 1,
+                      ),
+                      const SizedBox(width: 8),
+                      _TabButton(
+                        label: 'Take payment',
+                        selected: tabIndex == 2,
+                        onTap: () => ref.read(paymentsTabIndexProvider.notifier).state = 2,
+                      ),
+                    ],
                   ),
-                  // Tab content
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        // Payments tab
-                        Column(
-                          children: [
-                            _buildFilters(),
-                            _buildStats(),
-                            Expanded(
-                              child: _buildPaymentsList(),
-                            ),
-                          ],
-                        ),
-                        // Invoices tab
-                        _buildInvoicesTab(),
-                        // Statements tab
-                        _buildStatementsTab(),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                ),
+                Expanded(
+                  child: tabIndex == 1
+                      ? _buildAutopayTab()
+                      : tabIndex == 2
+                          ? _buildOneTimePaymentTab()
+                          : _buildTransactionsTab(),
+                ),
+              ],
             );
           },
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -231,114 +333,617 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
     );
   }
   
-  Widget _buildInvoicesTab() {
-    if (_selectedFacilityId.isEmpty) {
-      return _buildNoFacilitiesMessage();
-    }
-    
-    // Use the existing InvoiceListScreen but embed it in this tab
-    return const InvoiceListScreen();
+  Widget _buildTransactionsTab() {
+    return Column(
+      children: [
+        _buildFilters(),
+        _buildStats(),
+        Expanded(child: _buildPaymentsList()),
+      ],
+    );
   }
-  
-  Widget _buildStatementsTab() {
-    if (_selectedFacilityId.isEmpty) {
-      return _buildNoFacilitiesMessage();
+
+  Widget _buildAutopayTab() {
+    if (_selectedFacilityId.isEmpty) return _buildNoFacilitiesMessage();
+    final selectedTenantId = ref.watch(paymentsAutopaySelectedTenantIdProvider);
+    final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
+
+    if (isPhone) {
+      // Mobile: stack list then detail, show one at a time
+      final hasSelection = selectedTenantId != null;
+      return Column(
+        children: [
+          if (hasSelection) _buildAutopayMobileBackBar(),
+          Expanded(
+            child: hasSelection
+                ? _buildAutopayDetailPanel(selectedTenantId!)
+                : _buildAutopayTenantList(selectedTenantId, true),
+          ),
+        ],
+      );
     }
-    
+
+    // Desktop: side-by-side
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: 280,
+          child: _buildAutopayTenantList(selectedTenantId, false),
+        ),
+        Expanded(
+          flex: 2,
+          child: selectedTenantId == null
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.person_search, size: 64, color: AppTheme.textTertiary),
+                      const SizedBox(height: 16),
+                      Text('Select a tenant', style: Theme.of(context).textTheme.titleMedium),
+                    ],
+                  ),
+                )
+              : _buildAutopayDetailPanel(selectedTenantId),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOneTimePaymentTab() {
+    if (_selectedFacilityId.isEmpty) return _buildNoFacilitiesMessage();
+    final selectedTenantId = ref.watch(paymentsAutopaySelectedTenantIdProvider);
+    final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
+
+    if (isPhone) {
+      final hasSelection = selectedTenantId != null;
+      return Column(
+        children: [
+          if (hasSelection) _buildAutopayMobileBackBar(),
+          Expanded(
+            child: hasSelection
+                ? _buildOneTimePaymentDetailPanel(selectedTenantId!)
+                : _buildAutopayTenantList(selectedTenantId, true),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: 280,
+          child: _buildAutopayTenantList(selectedTenantId, false),
+        ),
+        Expanded(
+          flex: 2,
+          child: selectedTenantId == null
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.payment, size: 64, color: AppTheme.textTertiary),
+                      const SizedBox(height: 16),
+                      Text('Select a tenant to take a payment', style: Theme.of(context).textTheme.titleMedium),
+                    ],
+                  ),
+                )
+              : _buildOneTimePaymentDetailPanel(selectedTenantId!),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOneTimePaymentDetailPanel(String tenantId) {
     return Consumer(
-      builder: (context, ref, child) {
+      builder: (context, ref, _) {
         final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId));
-        
         return tenantsAsync.when(
           data: (tenants) {
-            if (tenants.isEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.people_outline, size: 64, color: AppTheme.textTertiary),
-                    const SizedBox(height: AppConstants.spacingM),
-                    Text(
-                      'No Tenants Found',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Add tenants to generate statements',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
-                ),
-              );
+            TenantModel? tenant;
+            for (final t in tenants) {
+              if (t.id == tenantId) {
+                tenant = t;
+                break;
+              }
             }
-            
-            return ListView.builder(
+            if (tenant == null) {
+              return const Center(child: Text('Tenant not found'));
+            }
+            return SingleChildScrollView(
               padding: const EdgeInsets.all(16),
-              itemCount: tenants.length,
-              itemBuilder: (context, index) {
-                final tenant = tenants[index];
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: AppTheme.primaryBlue.withOpacity(0.1),
-                      child: Icon(Icons.person, color: AppTheme.primaryBlue),
-                    ),
-                    title: Text(tenant.name),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (tenant.unitNumber.isNotEmpty)
-                          Text('Unit: ${tenant.unitNumber}'),
-                        Text(tenant.email),
-                      ],
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.description),
-                          tooltip: 'View Ledger & Generate Statement',
-                          onPressed: () {
-                            context.push(
-                              '/tenants/${tenant.id}/ledger?facilityId=${tenant.facilityId}',
-                              extra: tenant,
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                    onTap: () {
-                      context.push(
-                        '/tenants/${tenant.id}/ledger?facilityId=${tenant.facilityId}',
-                        extra: tenant,
-                      );
-                    },
-                  ),
-                );
-              },
+              child: TenantBillingPanel(
+                facilityId: _selectedFacilityId,
+                tenantId: tenant!.id,
+                tenantName: tenant.name,
+                defaultPaymentMethodId: tenant.stripe.defaultPaymentMethodId,
+              ),
             );
           },
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, stackTrace) => Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.error, size: 64, color: AppTheme.error),
-                const SizedBox(height: AppConstants.spacingM),
-                Text(
-                  'Error loading tenants',
-                  style: Theme.of(context).textTheme.headlineSmall,
+          error: (e, _) => Center(child: Text(ErrorMessageHelper.getUserFriendlyMessage(e))),
+        );
+      },
+    );
+  }
+
+  Widget _buildAutopayMobileBackBar() {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.surfaceContainerHighest,
+      child: InkWell(
+        onTap: () => ref.read(paymentsAutopaySelectedTenantIdProvider.notifier).state = null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.arrow_back, color: cs.primary, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Back to list',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  ErrorMessageHelper.getUserFriendlyMessage(error),
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
-              ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAutopayTenantList(String? selectedTenantId, bool isPhone) {
+    final theme = Theme.of(context);
+    final isCompact = isPhone;
+    return Card(
+      margin: const EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.all(isCompact ? 6 : 8),
+            child: Text(
+              'Tenants',
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontSize: isCompact ? 12 : null,
+              ),
             ),
           ),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: isCompact ? 6 : 8),
+            child: TextField(
+              decoration: InputDecoration(
+                hintText: 'Search tenant...',
+                prefixIcon: Icon(Icons.search, size: isCompact ? 18 : 20),
+                isDense: true,
+                border: const OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: isCompact ? 8 : 12,
+                  vertical: isCompact ? 8 : 10,
+                ),
+              ),
+              onChanged: (v) => setState(() => _autopayTenantSearch = v.trim().toLowerCase()),
+            ),
+          ),
+          SizedBox(height: isCompact ? 6 : 8),
+          Expanded(
+            child: Consumer(
+              builder: (context, ref, _) {
+                final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId));
+                return tenantsAsync.when(
+                  data: (tenants) {
+                    var list = tenants;
+                    if (_autopayTenantSearch.isNotEmpty) {
+                      list = tenants.where((t) =>
+                        t.name.toLowerCase().contains(_autopayTenantSearch) ||
+                        (t.unitNumber.toLowerCase().contains(_autopayTenantSearch)) ||
+                        (t.email.toLowerCase().contains(_autopayTenantSearch))).toList();
+                    }
+                    if (list.isEmpty) {
+                      return const Center(child: Text('No tenants'));
+                    }
+                    return ListView.builder(
+                      itemCount: list.length,
+                      padding: EdgeInsets.zero,
+                      itemBuilder: (context, i) {
+                        final t = list[i];
+                        final selected = t.id == selectedTenantId;
+                        return ListTile(
+                          dense: isCompact,
+                          selected: selected,
+                          title: Text(
+                            t.name,
+                            style: TextStyle(
+                              fontSize: isCompact ? 13 : null,
+                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: t.unitNumber.isNotEmpty
+                              ? Text(
+                                  'Unit ${t.unitNumber}',
+                                  style: TextStyle(fontSize: isCompact ? 11 : null),
+                                  overflow: TextOverflow.ellipsis,
+                                )
+                              : null,
+                          onTap: () => ref.read(paymentsAutopaySelectedTenantIdProvider.notifier).state = t.id,
+                        );
+                      },
+                    );
+                  },
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (e, _) => Center(child: Text(ErrorMessageHelper.getUserFriendlyMessage(e))),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAutopayDetailPanel(String tenantId) {
+    return Consumer(
+      builder: (context, ref, _) {
+        final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId));
+        final statusAsync = ref.watch(stripeConnectStatusProvider(_selectedFacilityId));
+        return tenantsAsync.when(
+          data: (tenants) {
+            TenantModel? tenant;
+            for (final t in tenants) {
+              if (t.id == tenantId) { tenant = t; break; }
+            }
+            if (tenant == null) {
+              return const Center(child: Text('Tenant not found'));
+            }
+            // Single source of truth: stripeConnectGetStatus. Only treat as connected when we have a successful result with isEnabled.
+            final stripeConnected = statusAsync.whenOrNull(data: (d) => d)?.isEnabled ?? false;
+            // When status failed to load, show error + Retry so we don't wrongly show "not connected"
+            if (statusAsync.hasError) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _autopayDetailContent(tenant!, false),
+                  const SizedBox(height: 16),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          Icon(Icons.warning_amber, size: 40, color: AppTheme.warning),
+                          const SizedBox(height: 8),
+                          Text('Could not load Stripe status', style: Theme.of(context).textTheme.titleSmall),
+                          const SizedBox(height: 4),
+                          Text(ErrorMessageHelper.getUserFriendlyMessage(statusAsync.error!), style: Theme.of(context).textTheme.bodySmall, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed: () => ref.invalidate(stripeConnectStatusProvider(_selectedFacilityId)),
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Refresh status'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (statusAsync.isLoading)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                        const SizedBox(width: 8),
+                        Text('Checking Stripe…', style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                    ),
+                  ),
+                _autopayDetailContent(tenant!, stripeConnected),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(ErrorMessageHelper.getUserFriendlyMessage(e))),
+        );
+      },
+    );
+  }
+
+  Widget _autopayDetailContent(TenantModel tenant, bool stripeConnected) {
+    final autopayOn = tenant.autopay.isOn;
+    final hasCard = tenant.stripe.hasPaymentMethod;
+    final summary = tenant.stripe.paymentMethodSummary?.displayLabel ?? '—';
+    final lastUpdated = tenant.autopay.updatedAt;
+    final lastUpdatedBy = tenant.autopay.updatedBy.value;
+    final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
+    final pad = isPhone ? 12.0 : 16.0;
+    final bodySize = isPhone ? 13.0 : null;
+    final smallSize = isPhone ? 11.0 : null;
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(pad),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            tenant.name,
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              fontSize: isPhone ? 18 : null,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (tenant.unitNumber.isNotEmpty)
+            Text(
+              'Unit ${tenant.unitNumber}',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                fontSize: bodySize,
+              ),
+            ),
+          SizedBox(height: isPhone ? 12 : 16),
+          if (!stripeConnected)
+            Container(
+              padding: EdgeInsets.all(isPhone ? 10 : 12),
+              decoration: BoxDecoration(
+                color: AppTheme.warning.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.warning),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber, color: AppTheme.warning, size: isPhone ? 20 : 24),
+                  SizedBox(width: isPhone ? 8 : 8),
+                  Expanded(
+                    child: Text(
+                      "This facility's Stripe is not connected. Connect Stripe in facility settings to manage payments and autopay.",
+                      style: TextStyle(color: AppTheme.warning, fontSize: bodySize),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (!stripeConnected) SizedBox(height: isPhone ? 12 : 16),
+          Card(
+            child: Padding(
+              padding: EdgeInsets.all(pad),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Autopay status',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(fontSize: isPhone ? 12 : null),
+                  ),
+                  SizedBox(height: isPhone ? 6 : 8),
+                  Row(
+                    children: [
+                      Text(
+                        autopayOn ? 'ON' : 'OFF',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: bodySize,
+                          color: autopayOn ? AppTheme.success : AppTheme.textSecondary,
+                        ),
+                      ),
+                      SizedBox(width: isPhone ? 12 : 16),
+                      if (stripeConnected)
+                        Switch(
+                          value: autopayOn,
+                          onChanged: hasCard || !autopayOn
+                              ? (v) => _showAutopayConfirm(context, tenant, v)
+                              : null,
+                        ),
+                    ],
+                  ),
+                  SizedBox(height: isPhone ? 8 : 12),
+                  Text(
+                    'Payment method on file: ${hasCard ? "Yes" : "No"}',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: bodySize),
+                  ),
+                  if (hasCard)
+                    Text(
+                      'Default: $summary',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: smallSize),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  if (lastUpdated != null) ...[
+                    SizedBox(height: isPhone ? 6 : 8),
+                    Text(
+                      'Last change: $lastUpdatedBy · ${DateFormat.yMMMd().add_Hm().format(lastUpdated)}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: smallSize),
+                    ),
+                  ],
+                  if (!hasCard && !autopayOn && stripeConnected) ...[
+                    SizedBox(height: isPhone ? 10 : 12),
+                    OutlinedButton.icon(
+                      icon: Icon(Icons.credit_card, size: isPhone ? 16 : 20),
+                      label: Text(
+                        'Open tenant to add card',
+                        style: TextStyle(fontSize: isPhone ? 12 : null),
+                      ),
+                      onPressed: () => context.push(AppRoute.tenantDetail, extra: tenant),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          SizedBox(height: isPhone ? 16 : 24),
+          Text(
+            'Autopay Activity',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: isPhone ? 15 : null),
+          ),
+          SizedBox(height: isPhone ? 6 : 8),
+          _buildAutopayActivitySection(),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showAutopayConfirm(BuildContext context, TenantModel tenant, bool enable) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(enable ? 'Turn on Autopay?' : 'Turn off Autopay?'),
+        content: Text(enable
+            ? 'Rent will be charged automatically each month using the card on file for ${tenant.name}.'
+            : 'Autopay will be disabled for ${tenant.name}. They will need to pay manually.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _autopayToggleLoading = true);
+    try {
+      await AutopayService.setTenantAutopay(
+        facilityId: tenant.facilityId,
+        tenantId: tenant.id,
+        enabled: enable,
+        source: 'FACILITY',
+      );
+      if (mounted) {
+        ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(enable ? 'Autopay enabled' : 'Autopay disabled'), backgroundColor: AppTheme.success),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        String message = ErrorMessageHelper.getUserFriendlyMessage(e);
+        if (e is FirebaseFunctionsException) {
+          message = e.message ?? message;
+          if (e.code == 'invalid-argument') {
+            message = 'Invalid request. $message';
+          } else if (e.code == 'failed-precondition') {
+            if (message.contains('saved payment method') || message.contains('Add a card')) {
+              message = 'Add a card for this tenant first, then turn on Autopay. Use "Open tenant to add card" below.';
+            } else if (message.contains('Stripe') && (message.contains('not connected') || message.contains('onboarding'))) {
+              message = 'Connect and complete Stripe for this facility in Settings or facility settings, then try again.';
+            }
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: AppTheme.error, duration: const Duration(seconds: 5)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _autopayToggleLoading = false);
+    }
+  }
+
+  Widget _buildAutopayActivitySection() {
+    if (_selectedFacilityId.isEmpty) {
+      return const Card(child: Padding(padding: EdgeInsets.all(24), child: Text('No facility selected.')));
+    }
+    return Consumer(
+      builder: (context, ref, _) {
+        final eventsAsync = ref.watch(autopayEventsProvider(_selectedFacilityId));
+        return eventsAsync.when(
+          loading: () => const Center(
+            child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()),
+          ),
+          error: (err, _) => Card(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 48, color: AppTheme.error),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Could not load autopay activity',
+                    style: Theme.of(context).textTheme.titleSmall,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    ErrorMessageHelper.getUserFriendlyMessage(err),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => ref.invalidate(autopayEventsProvider(_selectedFacilityId)),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          data: (events) {
+            final selectedId = ref.watch(paymentsAutopaySelectedTenantIdProvider);
+            var filtered = events;
+            if (selectedId != null) {
+              filtered = events.where((e) => e.tenantId == selectedId).toList();
+            }
+            if (filtered.isEmpty) {
+              return Card(
+                child: Padding(
+                  padding: EdgeInsets.all(MediaQuery.of(context).size.width < Breakpoints.xs ? 16 : 24),
+                  child: Text('No autopay activity yet', style: TextStyle(fontSize: MediaQuery.of(context).size.width < Breakpoints.xs ? 13 : null)),
+                ),
+              );
+            }
+            final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
+            final displayed = filtered.take(50).toList();
+            if (isPhone) {
+              return Card(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  itemCount: displayed.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, i) {
+                    final e = displayed[i];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(e.action.displayLabel, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                          Text(e.tenantName ?? '—', style: const TextStyle(fontSize: 12)),
+                          Text('${DateFormat.yMMMd().add_Hm().format(e.createdAt)} · ${e.source.value}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                          if (e.reason != null && e.reason!.isNotEmpty)
+                            Text(e.reason!, style: const TextStyle(fontSize: 11), overflow: TextOverflow.ellipsis),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              );
+            }
+            return Card(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Timestamp')),
+                    DataColumn(label: Text('Tenant')),
+                    DataColumn(label: Text('Action')),
+                    DataColumn(label: Text('Actor')),
+                    DataColumn(label: Text('Notes')),
+                  ],
+                  rows: displayed.map((e) => DataRow(
+                    cells: [
+                      DataCell(Text(DateFormat.yMMMd().add_Hm().format(e.createdAt))),
+                      DataCell(Text(e.tenantName ?? '—')),
+                      DataCell(Text(e.action.displayLabel)),
+                      DataCell(Text(e.source.value)),
+                      DataCell(Text(e.reason ?? '—')),
+                    ],
+                  )).toList(),
+                ),
+              ),
+            );
+          },
         );
       },
     );
@@ -390,26 +995,52 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                   return ref.watch(userFacilitiesProvider(user.uid)).when(
                     data: (facilities) {
                       if (facilities.isEmpty) return const SizedBox.shrink();
-                      
+                      ref.listen(activeFacilityIdProvider, (prev, next) {
+                        final nextId = next.whenOrNull(data: (d) => d);
+                        if (nextId != null && facilities.any((f) => f.id == nextId) &&
+                            _selectedFacilityId != nextId && mounted) {
+                          setState(() => _selectedFacilityId = nextId);
+                        }
+                      });
                       return Row(
                         children: [
                           Expanded(
                             child: DropdownButtonFormField<String>(
                               value: _selectedFacilityId.isNotEmpty ? _selectedFacilityId : null,
+                              isExpanded: true,
                               decoration: const InputDecoration(
                                 labelText: 'Facility',
                                 border: OutlineInputBorder(),
                               ),
+                              selectedItemBuilder: (context) {
+                                final style = AppTheme.dropdownItemTextStyle.copyWith(
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                );
+                                return facilities.map((f) => Text(
+                                  f.name,
+                                  style: style,
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                )).toList();
+                              },
                               items: facilities.map((facility) {
                                 return DropdownMenuItem(
                                   value: facility.id,
-                                  child: Text(facility.name),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                    child: Text(
+                                      facility.name,
+                                      style: AppTheme.dropdownItemTextStyle,
+                                      softWrap: true,
+                                    ),
+                                  ),
                                 );
                               }).toList(),
                               onChanged: (value) {
-                                setState(() {
-                                  _selectedFacilityId = value ?? '';
-                                });
+                                if (value != null) {
+                                  setState(() => _selectedFacilityId = value);
+                                  ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
+                                }
                               },
                             ),
                           ),
@@ -495,67 +1126,95 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             },
           ),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  decoration: const InputDecoration(
-                    labelText: 'Search payments',
-                    prefixIcon: Icon(Icons.search),
-                    border: OutlineInputBorder(),
-                  ),
-                  onChanged: (value) {
-                    setState(() {
-                      _searchQuery = value;
-                    });
-                  },
-                ),
-              ),
-              const SizedBox(width: 16),
-              DropdownButton<PaymentStatus?>(
-                value: _statusFilter,
-                hint: const Text('Status'),
-                items: [
-                  const DropdownMenuItem(
-                    value: null,
-                    child: Text('All Status'),
-                  ),
-                  ...PaymentStatus.values.map((status) {
-                    return DropdownMenuItem(
-                      value: status,
-                      child: Text(status.displayName),
-                    );
-                  }),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    _statusFilter = value;
-                  });
+          Consumer(
+            builder: (context, ref, _) {
+              final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId));
+              return tenantsAsync.when(
+                data: (tenants) {
+                  return Row(
+                    children: [
+                      SizedBox(
+                        width: 200,
+                        child: DropdownButtonFormField<String?>(
+                          value: _selectedTenantIdFilter,
+                          decoration: const InputDecoration(
+                            labelText: 'Tenant',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: [
+                            const DropdownMenuItem(value: null, child: Text('All tenants')),
+                            ...tenants.map((t) => DropdownMenuItem(value: t.id, child: Text('${t.name}${t.unitNumber.isNotEmpty ? ' (${t.unitNumber})' : ''}'))),
+                          ],
+                          onChanged: (v) => setState(() => _selectedTenantIdFilter = v),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 130,
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.calendar_today, size: 18),
+                          label: Text(_filterDateStart == null ? 'Start' : DateFormat.yMMMd().format(_filterDateStart!)),
+                          onPressed: () async {
+                            final d = await showDatePicker(context: context, initialDate: _filterDateStart ?? DateTime.now(), firstDate: DateTime(2020), lastDate: DateTime.now().add(const Duration(days: 365)));
+                            if (d != null) setState(() => _filterDateStart = d);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 130,
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.calendar_today, size: 18),
+                          label: Text(_filterDateEnd == null ? 'End' : DateFormat.yMMMd().format(_filterDateEnd!)),
+                          onPressed: () async {
+                            final d = await showDatePicker(context: context, initialDate: _filterDateEnd ?? DateTime.now(), firstDate: DateTime(2020), lastDate: DateTime.now().add(const Duration(days: 365)));
+                            if (d != null) setState(() => _filterDateEnd = d);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      DropdownButton<PaymentStatus?>(
+                        value: _statusFilter,
+                        hint: const Text('Status'),
+                        items: [
+                          const DropdownMenuItem(value: null, child: Text('All')),
+                          const DropdownMenuItem(value: PaymentStatus.paid, child: Text('Succeeded')),
+                          const DropdownMenuItem(value: PaymentStatus.completed, child: Text('Succeeded')),
+                          const DropdownMenuItem(value: PaymentStatus.pending, child: Text('Pending')),
+                          const DropdownMenuItem(value: PaymentStatus.failed, child: Text('Failed')),
+                        ],
+                        onChanged: (v) => setState(() => _statusFilter = v),
+                      ),
+                      const SizedBox(width: 8),
+                      DropdownButton<PaymentMethod?>(
+                        value: _methodFilter,
+                        hint: const Text('Method'),
+                        items: [
+                          const DropdownMenuItem(value: null, child: Text('All')),
+                          ...PaymentMethod.values.map((m) => DropdownMenuItem(value: m, child: Text(m.displayName))),
+                        ],
+                        onChanged: (v) => setState(() => _methodFilter = v),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          decoration: const InputDecoration(
+                            labelText: 'Search',
+                            prefixIcon: Icon(Icons.search, size: 20),
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          onChanged: (v) => setState(() => _searchQuery = v),
+                        ),
+                      ),
+                    ],
+                  );
                 },
-              ),
-                                const SizedBox(width: AppConstants.spacingS),
-              DropdownButton<PaymentMethod?>(
-                value: _methodFilter,
-                hint: const Text('Method'),
-                items: [
-                  const DropdownMenuItem(
-                    value: null,
-                    child: Text('All Methods'),
-                  ),
-                  ...PaymentMethod.values.map((method) {
-                    return DropdownMenuItem(
-                      value: method,
-                      child: Text(method.displayName),
-                    );
-                  }),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    _methodFilter = value;
-                  });
-                },
-              ),
-            ],
+                loading: () => const SizedBox(height: 48),
+                error: (_, __) => const SizedBox(height: 48),
+              );
+            },
           ),
         ],
       ),
@@ -658,30 +1317,17 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
           data: (payments) {
             // Apply filters
             final filteredPayments = payments.where((payment) {
-              // Status filter
-              if (_statusFilter != null && payment.status != _statusFilter) {
-                return false;
-              }
-              
-              // Method filter
-              if (_methodFilter != null && payment.method != _methodFilter) {
-                return false;
-              }
-              
-              // Search filter
+              if (_selectedTenantIdFilter != null && payment.tenantId != _selectedTenantIdFilter) return false;
+              if (_filterDateStart != null && payment.dueDate.isBefore(_filterDateStart!)) return false;
+              if (_filterDateEnd != null && payment.dueDate.isAfter(_filterDateEnd!)) return false;
+              if (_statusFilter != null && payment.status != _statusFilter) return false;
+              if (_methodFilter != null && payment.method != _methodFilter) return false;
               if (_searchQuery.isNotEmpty) {
-                final query = _searchQuery.toLowerCase();
-                final amount = payment.formattedAmount.toLowerCase();
-                final notes = payment.notes?.toLowerCase() ?? '';
-                final tenantId = payment.tenantId.toLowerCase();
-                
-                if (!amount.contains(query) && 
-                    !notes.contains(query) && 
-                    !tenantId.contains(query)) {
-                  return false;
-                }
+                final q = _searchQuery.toLowerCase();
+                if (!payment.formattedAmount.toLowerCase().contains(q) &&
+                    !(payment.notes?.toLowerCase() ?? '').contains(q) &&
+                    !payment.tenantId.toLowerCase().contains(q)) return false;
               }
-              
               return true;
             }).toList();
             
@@ -899,6 +1545,36 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             child: const Text('Process'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TabButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TabButton({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? AppTheme.primaryBlue.withOpacity(0.12) : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              fontWeight: selected ? FontWeight.w600 : null,
+              color: selected ? AppTheme.primaryBlue : null,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../models/reminder_model.dart';
 import '../services/reminder_automation_service.dart';

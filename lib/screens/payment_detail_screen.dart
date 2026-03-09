@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/payment_model.dart';
 import '../providers/payment_provider.dart';
+import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
+import '../router/app_route.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
   final PaymentModel payment;
-  
+
   const PaymentDetailScreen({
     super.key,
     required this.payment,
@@ -19,165 +23,262 @@ class PaymentDetailScreen extends ConsumerStatefulWidget {
 class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Payment ${widget.payment.id.substring(0, 8)}...'),
-        actions: [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildHeader(),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildStatusCard(),
+                const SizedBox(height: 24),
+                _buildPaymentInfo(),
+                const SizedBox(height: 24),
+                _buildTimeline(),
+                if (widget.payment.receiptUrl != null) ...[
+                  const SizedBox(height: 24),
+                  _buildReceiptSection(),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeader() {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border(
+          bottom: BorderSide(color: cs.outline),
+        ),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => context.go(AppRoute.payments),
+            tooltip: 'Back',
+            color: cs.onSurfaceVariant,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Payment ${widget.payment.formattedAmount}',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
+            ),
+          ),
           if (widget.payment.status == PaymentStatus.pending)
             IconButton(
               icon: const Icon(Icons.payment),
               onPressed: _processPayment,
+              tooltip: 'Process payment',
+              color: cs.primary,
             ),
+          IconButton(
+            icon: const Icon(Icons.open_in_new),
+            onPressed: () {
+              if (widget.payment.receiptUrl != null) {
+                _downloadReceipt();
+              }
+            },
+            tooltip: 'Open receipt',
+            color: cs.onSurfaceVariant,
+          ),
           PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
               const PopupMenuItem(
                 value: 'edit',
-                child: ListTile(
-                  leading: Icon(Icons.edit),
-                  title: Text('Edit'),
+                child: Row(
+                  children: [
+                    Icon(Icons.edit_outlined, size: 20),
+                    SizedBox(width: 12),
+                    Text('Edit'),
+                  ],
                 ),
               ),
               if (widget.payment.status == PaymentStatus.pending)
                 const PopupMenuItem(
                   value: 'cancel',
-                  child: ListTile(
-                    leading: Icon(Icons.cancel),
-                    title: Text('Cancel'),
+                  child: Row(
+                    children: [
+                      Icon(Icons.cancel_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Cancel'),
+                    ],
                   ),
                 ),
               const PopupMenuItem(
                 value: 'delete',
-                child: ListTile(
-                  leading: Icon(Icons.delete),
-                  title: Text('Delete'),
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline, size: 20, color: AppTheme.error),
+                    SizedBox(width: 12),
+                    Text('Delete', style: TextStyle(color: AppTheme.error)),
+                  ],
                 ),
               ),
             ],
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildStatusCard(),
-            const SizedBox(height: 16),
-            _buildPaymentInfo(),
-            const SizedBox(height: 16),
-            _buildTimeline(),
-            if (widget.payment.receiptUrl != null) ...[
-              const SizedBox(height: 16),
-              _buildReceiptSection(),
-            ],
-          ],
-        ),
-      ),
     );
   }
 
   Widget _buildStatusCard() {
-    return Card(
-      color: _getStatusColor(widget.payment.status).withOpacity(0.1),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: _getStatusColor(widget.payment.status),
-              child: Icon(
-                _getStatusIcon(widget.payment.status),
-                color: AppTheme.textOnDark,
-              ),
+    final statusColor = _getStatusColor(widget.payment.status);
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: statusColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: statusColor,
+              shape: BoxShape.circle,
             ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+            child: Icon(
+              _getStatusIcon(widget.payment.status),
+              color: Theme.of(context).colorScheme.onPrimary,
+              size: 28,
+            ),
+          ),
+          const SizedBox(width: 20),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.payment.statusDisplayName,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: statusColor,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.payment.formattedAmount,
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                if (widget.payment.isOverdue) ...[
+                  const SizedBox(height: 4),
                   Text(
-                    widget.payment.statusDisplayName,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: _getStatusColor(widget.payment.status),
-                      fontWeight: FontWeight.bold,
+                    'Overdue by ${widget.payment.daysOverdue} days',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-                  Text(
-                    widget.payment.formattedAmount,
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  if (widget.payment.isOverdue)
-                    Text(
-                      'Overdue by ${widget.payment.daysOverdue} days',
-                      style: TextStyle(
-                        color: AppTheme.error,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildPaymentInfo() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    final cs = Theme.of(context).colorScheme;
+    final transactionId = widget.payment.transactionId ??
+        widget.payment.externalPaymentId ??
+        '—';
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outline),
+        boxShadow: [
+          BoxShadow(
+            color: cs.shadow.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Payment Information',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
+          ),
+          const SizedBox(height: 20),
+          _buildInfoRow('Amount', widget.payment.formattedAmount),
+          _buildInfoRow('Method', widget.payment.methodDisplayName),
+          _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),
+          if (widget.payment.paidDate != null)
+            _buildInfoRow('Paid Date', _formatDate(widget.payment.paidDate!)),
+          _buildInfoRow('Transaction ID', transactionId),
+          _buildInfoRow('Created', _formatDateTime(widget.payment.createdAt)),
+          _buildInfoRow('Updated', _formatDateTime(widget.payment.updatedAt)),
+          if (widget.payment.notes != null && widget.payment.notes!.isNotEmpty) ...[
+            const SizedBox(height: 16),
             Text(
-              'Payment Information',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
+              'Notes',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
               ),
             ),
-            const SizedBox(height: 16),
-            _buildInfoRow('Amount', widget.payment.formattedAmount),
-            _buildInfoRow('Method', widget.payment.methodDisplayName),
-            _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),
-            if (widget.payment.paidDate != null)
-              _buildInfoRow('Paid Date', _formatDate(widget.payment.paidDate!)),
-            _buildInfoRow('Transaction ID', widget.payment.transactionId ?? 'N/A'),
-            if (widget.payment.externalPaymentId != null)
-              _buildInfoRow('External ID', widget.payment.externalPaymentId!),
-            _buildInfoRow('Created', _formatDateTime(widget.payment.createdAt)),
-            _buildInfoRow('Updated', _formatDateTime(widget.payment.updatedAt)),
-            if (widget.payment.notes != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Notes',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+            const SizedBox(height: 8),
+            Text(
+              widget.payment.notes!,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurfaceVariant,
               ),
-              const SizedBox(height: 4),
-              Text(widget.payment.notes!),
-            ],
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
 
   Widget _buildInfoRow(String label, String value) {
+    final cs = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 120,
+            width: 130,
             child: Text(
-              '$label:',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurfaceVariant,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -185,7 +286,10 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           Expanded(
             child: Text(
               value,
-              style: Theme.of(context).textTheme.bodyMedium,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurface,
+              ),
             ),
           ),
         ],
@@ -194,68 +298,131 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   Widget _buildTimeline() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Timeline',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildTimelineItem(
-              'Payment Created',
-              _formatDateTime(widget.payment.createdAt),
-              Icons.add_circle,
-              AppTheme.primaryBlue,
-            ),
-            if (widget.payment.paidDate != null)
-              _buildTimelineItem(
-                'Payment Processed',
-                _formatDateTime(widget.payment.paidDate!),
-                Icons.check_circle,
-                AppTheme.success,
-              ),
-            _buildTimelineItem(
-              'Last Updated',
-              _formatDateTime(widget.payment.updatedAt),
-              Icons.update,
-              AppTheme.warning,
-            ),
-          ],
+    final timelineItems = <_TimelineEntry>[
+      _TimelineEntry(
+        'Payment Created',
+        _formatDateTime(widget.payment.createdAt),
+        Icons.add_circle_outline,
+        AppTheme.primaryBlue,
+      ),
+      if (widget.payment.paidDate != null)
+        _TimelineEntry(
+          'Payment Processed',
+          _formatDateTime(widget.payment.paidDate!),
+          Icons.check_circle_outline,
+          AppTheme.success,
         ),
+    ];
+    // Only add "Last Updated" if it differs from the most recent event
+    final lastEvent = widget.payment.paidDate ?? widget.payment.createdAt;
+    if (widget.payment.updatedAt.difference(lastEvent).inSeconds.abs() > 1) {
+      timelineItems.add(_TimelineEntry(
+        'Last Updated',
+        _formatDateTime(widget.payment.updatedAt),
+        Icons.update,
+        Theme.of(context).colorScheme.onSurfaceVariant,
+      ));
+    }
+
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outline),
+        boxShadow: [
+          BoxShadow(
+            color: cs.shadow.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Timeline',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
+          ),
+          const SizedBox(height: 20),
+          ...timelineItems.asMap().entries.map((entry) {
+            final isLast = entry.key == timelineItems.length - 1;
+            return _buildTimelineItem(
+              entry.value.title,
+              entry.value.date,
+              entry.value.icon,
+              entry.value.color,
+              showConnector: !isLast,
+            );
+          }),
+        ],
       ),
     );
   }
 
-  Widget _buildTimelineItem(String title, String date, IconData icon, Color color) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+  Widget _buildTimelineItem(
+    String title,
+    String date,
+    IconData icon,
+    Color color, {
+    bool showConnector = true,
+  }) {
+    return IntrinsicHeight(
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 12),
+          Column(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: color, size: 18),
+              ),
+              if (showConnector)
+                Expanded(
+                  child: Container(
+                    width: 2,
+                    margin: const EdgeInsets.symmetric(vertical: 4),
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(width: 16),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
                   ),
-                ),
-                Text(
-                  date,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppTheme.textSecondary,
+                  const SizedBox(height: 2),
+                  Text(
+                    date,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ],
@@ -264,34 +431,70 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   Widget _buildReceiptSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Receipt',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outline),
+        boxShadow: [
+          BoxShadow(
+            color: cs.shadow.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Receipt',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                const Icon(Icons.receipt),
-                const SizedBox(width: 8),
-                const Text('Payment Receipt'),
-                const Spacer(),
-                ElevatedButton.icon(
-                  onPressed: _downloadReceipt,
-                  icon: const Icon(Icons.download),
-                  label: const Text('Download'),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: cs.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-              ],
-            ),
-          ],
-        ),
+                child: Icon(
+                  Icons.receipt_long,
+                  color: cs.primary,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  'Payment Receipt',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: _downloadReceipt,
+                icon: const Icon(Icons.download, size: 18),
+                label: const Text('Download'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: cs.primary,
+                  foregroundColor: cs.onPrimary,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -301,7 +504,6 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.pending:
         return AppTheme.warning;
       case PaymentStatus.paid:
-        return AppTheme.success;
       case PaymentStatus.completed:
         return AppTheme.success;
       case PaymentStatus.failed:
@@ -309,7 +511,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.refunded:
         return AppTheme.primaryBlue;
       case PaymentStatus.cancelled:
-        return AppTheme.textTertiary;
+        return Theme.of(context).colorScheme.onSurfaceVariant;
     }
   }
 
@@ -318,15 +520,14 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.pending:
         return Icons.pending;
       case PaymentStatus.paid:
-        return Icons.check;
       case PaymentStatus.completed:
         return Icons.check;
       case PaymentStatus.failed:
-        return Icons.error;
+        return Icons.error_outline;
       case PaymentStatus.refunded:
         return Icons.refresh;
       case PaymentStatus.cancelled:
-        return Icons.cancel;
+        return Icons.cancel_outlined;
     }
   }
 
@@ -358,12 +559,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                 method: widget.payment.method,
               );
               if (mounted) {
-                Navigator.of(context).pop();
+                context.go(AppRoute.payments);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Payment processed successfully')),
+                  const SnackBar(
+                    content: Text('Payment processed successfully'),
+                    backgroundColor: AppTheme.success,
+                  ),
                 );
               }
             },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryBlue,
+              foregroundColor: AppTheme.textOnDark,
+            ),
             child: const Text('Process'),
           ),
         ],
@@ -386,9 +594,136 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   void _editPayment() {
-    // TODO: Implement edit payment
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Edit payment feature coming soon')),
+    final amountController = TextEditingController(
+      text: widget.payment.amount.toStringAsFixed(2),
+    );
+    final notesController = TextEditingController(text: widget.payment.notes ?? '');
+    PaymentMethod selectedMethod = widget.payment.method;
+    DateTime selectedDueDate = widget.payment.dueDate;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit Payment'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: amountController,
+                  decoration: const InputDecoration(
+                    labelText: 'Amount *',
+                    border: OutlineInputBorder(),
+                    prefixText: '\$',
+                  ),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<PaymentMethod>(
+                  value: selectedMethod,
+                  decoration: const InputDecoration(
+                    labelText: 'Payment Method *',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: PaymentMethod.values.map((method) {
+                    return DropdownMenuItem(
+                      value: method,
+                      child: Text(method.displayName),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setDialogState(() => selectedMethod = value);
+                    }
+                  },
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  title: const Text('Due Date'),
+                  subtitle: Text(
+                    '${selectedDueDate.year}-${selectedDueDate.month.toString().padLeft(2, '0')}-${selectedDueDate.day.toString().padLeft(2, '0')}',
+                  ),
+                  trailing: const Icon(Icons.calendar_today),
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: selectedDueDate,
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) {
+                      setDialogState(() => selectedDueDate = picked);
+                    }
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: notesController,
+                  decoration: const InputDecoration(
+                    labelText: 'Notes',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 3,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final amount = double.tryParse(amountController.text);
+                if (amount == null || amount <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please enter a valid amount')),
+                  );
+                  return;
+                }
+                try {
+                  await PaymentService.updatePayment(
+                    facilityId: widget.payment.facilityId,
+                    paymentId: widget.payment.id,
+                    amount: amount,
+                    method: selectedMethod,
+                    dueDate: selectedDueDate,
+                    notes: notesController.text.isEmpty
+                        ? null
+                        : notesController.text,
+                  );
+                  if (context.mounted) {
+                    Navigator.of(context).pop();
+                    setState(() {});
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Payment updated successfully'),
+                        backgroundColor: AppTheme.success,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error updating payment: $e'),
+                        backgroundColor: AppTheme.error,
+                      ),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryBlue,
+                foregroundColor: AppTheme.textOnDark,
+              ),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -397,7 +732,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Cancel Payment'),
-        content: const Text('Are you sure you want to cancel this payment?'),
+        content: const Text(
+          'Are you sure you want to cancel this payment?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -406,17 +743,36 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(paymentOperationsProvider.notifier).updatePayment(
-                facilityId: widget.payment.facilityId,
-                paymentId: widget.payment.id,
-              );
-              if (mounted) {
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Payment cancelled')),
+              try {
+                await PaymentService.updatePayment(
+                  facilityId: widget.payment.facilityId,
+                  paymentId: widget.payment.id,
+                  status: PaymentStatus.cancelled,
                 );
+                if (mounted) {
+                  context.go(AppRoute.payments);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Payment cancelled'),
+                      backgroundColor: AppTheme.success,
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Error cancelling payment: $e'),
+                      backgroundColor: AppTheme.error,
+                    ),
+                  );
+                }
               }
             },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryBlue,
+              foregroundColor: AppTheme.textOnDark,
+            ),
             child: const Text('Yes'),
           ),
         ],
@@ -429,7 +785,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Payment'),
-        content: const Text('Are you sure you want to delete this payment? This action cannot be undone.'),
+        content: const Text(
+          'Are you sure you want to delete this payment? This action cannot be undone.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -438,15 +796,24 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(paymentOperationsProvider.notifier).deletePayment(widget.payment.facilityId, widget.payment.id);
+              await ref.read(paymentOperationsProvider.notifier).deletePayment(
+                widget.payment.facilityId,
+                widget.payment.id,
+              );
               if (mounted) {
-                Navigator.of(context).pop();
+                context.go(AppRoute.payments);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Payment deleted')),
+                  const SnackBar(
+                    content: Text('Payment deleted'),
+                    backgroundColor: AppTheme.success,
+                  ),
                 );
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: AppTheme.textOnDark,
+            ),
             child: const Text('Delete'),
           ),
         ],
@@ -454,10 +821,35 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     );
   }
 
-  void _downloadReceipt() {
-    // TODO: Implement receipt download
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Receipt download feature coming soon')),
-    );
+  void _downloadReceipt() async {
+    if (widget.payment.receiptUrl == null ||
+        widget.payment.receiptUrl!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No receipt available for this payment'),
+        ),
+      );
+      return;
+    }
+
+    final receiptUrl = Uri.parse(widget.payment.receiptUrl!);
+    if (await canLaunchUrl(receiptUrl)) {
+      await launchUrl(receiptUrl, mode: LaunchMode.externalApplication);
+    } else {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open receipt URL')),
+        );
+      }
+    }
   }
+}
+
+class _TimelineEntry {
+  final String title;
+  final String date;
+  final IconData icon;
+  final Color color;
+
+  _TimelineEntry(this.title, this.date, this.icon, this.color);
 }

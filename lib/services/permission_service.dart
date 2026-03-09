@@ -93,6 +93,7 @@ class PermissionService {
         PermissionType.createUnit,
         PermissionType.editUnit,
         PermissionType.viewUnit,
+        PermissionType.manageOverlock,
         // Reminder Management
         PermissionType.createReminder,
         PermissionType.editReminder,
@@ -269,19 +270,39 @@ class PermissionService {
   // Get user's role for a specific facility
   static Future<UserRole?> _getUserRole(String userId, String? facilityId) async {
     try {
-      // Owners always have full access to their facilities
+      // For a specific facility: check owner/manager via direct Firestore read
+      // (FacilityService.getFacility only returns the facility for the current owner,
+      // which would skip managers and cause inconsistent permission results)
       if (facilityId != null) {
-        final facility = await FacilityService.getFacility(facilityId);
-        if (facility != null && facility.ownerUid == userId) {
-          return UserRole(
-            id: 'owner-$facilityId',
-            userId: userId,
-            facilityId: facilityId,
-            roleType: RoleType.owner,
-            assignedAt: DateTime.now(),
-            assignedBy: userId,
-            isActive: true,
-          );
+        final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
+        if (facilityDoc.exists) {
+          final facilityData = facilityDoc.data();
+          final ownerUid = facilityData?['ownerUid'] as String?;
+          final createdAt = (facilityData?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+          if (ownerUid == userId) {
+            return UserRole(
+              id: 'owner-$facilityId',
+              userId: userId,
+              facilityId: facilityId,
+              roleType: RoleType.owner,
+              assignedAt: createdAt,
+              assignedBy: ownerUid ?? 'system',
+              isActive: true,
+            );
+          }
+          final managers = facilityData?['managers'] as Map<String, dynamic>? ?? {};
+          if (managers[userId] == true) {
+            return UserRole(
+              id: 'manager:$facilityId:$userId',
+              userId: userId,
+              facilityId: facilityId,
+              roleType: RoleType.manager,
+              assignedAt: createdAt,
+              assignedBy: ownerUid ?? 'system',
+              expiresAt: null,
+              isActive: true,
+            );
+          }
         }
       }
 

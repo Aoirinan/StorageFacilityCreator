@@ -5,17 +5,21 @@ import 'package:flutter/foundation.dart';
 import '../models/ai_action_model.dart';
 
 /// Config at Firestore /appConfig/aiAssistant
+/// strictnessLevel: 0-100, default 60. Lower = less strict client-side guard (still safe).
 class AIAssistantConfig {
   final bool enabled;
   final bool killSwitch;
   final String? provider;
   final List<String> allowlistFacilityIds;
+  /// 0-100; default 60. Lower values relax client-side topic check slightly.
+  final int strictnessLevel;
 
   const AIAssistantConfig({
     required this.enabled,
     required this.killSwitch,
     this.provider,
     this.allowlistFacilityIds = const [],
+    this.strictnessLevel = 60,
   });
 
   static AIAssistantConfig fromMap(Map<String, dynamic>? data) {
@@ -23,6 +27,10 @@ class AIAssistantConfig {
       return const AIAssistantConfig(enabled: false, killSwitch: false);
     }
     final list = data['allowlistFacilityIds'];
+    final raw = data['strictnessLevel'];
+    int level = 60;
+    if (raw is int) level = raw.clamp(0, 100);
+    if (raw is num) level = raw.toInt().clamp(0, 100);
     return AIAssistantConfig(
       enabled: data['enabled'] as bool? ?? false,
       killSwitch: data['killSwitch'] as bool? ?? false,
@@ -30,6 +38,7 @@ class AIAssistantConfig {
       allowlistFacilityIds: list is List
           ? (list).map((e) => e?.toString() ?? '').where((e) => e.isNotEmpty).toList()
           : [],
+      strictnessLevel: level,
     );
   }
 
@@ -85,6 +94,61 @@ class AIAssistantService {
   static const _aiAssistantDoc = 'aiAssistant';
   static const int maxInputChars = 2000;
 
+  /// Storage-related keywords. Client-side scope check (mirrors backend).
+  /// Broad enough so natural questions about storage facilities pass (e.g. "best practices for my property").
+  static const _storageKeywords = [
+    'storage', 'facility', 'facilities', 'tenant', 'tenants', 'unit', 'units',
+    'occupancy', 'payment', 'payments', 'rent', 'lease', 'contract', 'move-in', 'move-out',
+    'gate', 'access', 'auction', 'lien', 'delinquency', 'pricing', 'yield', 'insurance',
+    'dnr', 'reservation', 'vacancy', 'deposit', 'billing', 'stripe', 'report', 'reports',
+    'late fee', 'self-storage', 'self storage', 'management', 'app ', 'feature', 'how do i', 'how to',
+    'property', 'properties', 'location', 'business', 'customer', 'rental', 'space', 'locker',
+    'owner', 'operate', 'operating', 'running', 'best practice', 'setup', 'set up', 'tips', 'advice',
+    'monthly', 'overdue', 'collections', 'evict', 'overlock', 'lock out', 'lockout',
+    'charge', 'charges', 'fee', 'fees', 'price', 'rates', 'revenue', 'income',
+  ];
+  static const _offTopicKeywords = [
+    'star trek', 'startrek', 'star wars', 'movie', 'movies', 'film', 'recipe', 'recipes',
+    'cook', 'sports', 'football', 'basketball', 'game of thrones', 'lotr', 'music', 'celebrity',
+    'joke', 'jokes', 'meme', 'trivia', 'recipe for',
+    ' dog ', ' cat ', ' puppy', ' kitten', ' dog named', ' cat named', 'a dog', 'a cat',
+  ];
+
+  /// True if the message is about storage facility management. Reject off-topic before calling API.
+  /// [strictnessLevel] 0-100 from config: lower allows slightly longer non-keyword messages (e.g. 35 -> 55 chars).
+  static bool isStorageFacilityRelated(String message, {int strictnessLevel = 60}) {
+    final m = message.trim().toLowerCase();
+    if (m.length < 2) return true;
+    final hasStorage = _storageKeywords.any((k) => m.contains(k));
+    final hasOffTopic = _offTopicKeywords.any((k) => m.contains(k));
+    if (hasOffTopic && !hasStorage) return false;
+    if (hasStorage) return true;
+    final maxLen = strictnessLevel >= 80 ? 25 : (strictnessLevel >= 60 ? 35 : 55);
+    if (m.length <= maxLen && !hasOffTopic) return true;
+    return false;
+  }
+
+  /// Reject personalized-message or nonsense requests (mirrors backend guard rails).
+  static bool containsNonsenseOrPersonalizedRequest(String message) {
+    final m = message.trim().toLowerCase();
+    const personalized = [
+      'give me a message to',
+      'give me a message for',
+      'write a message to',
+      'draft a message to',
+      'send a message to',
+      'email to',
+      'message to send to',
+      'reminder for',
+    ];
+    if (personalized.any((p) => m.contains(p))) return true;
+    const pets = ['dog', 'cat', 'puppy', 'kitten', 'pet'];
+    const tenantCtx = ['rent', 'tenant', 'late', 'payment', 'message to', 'send to', 'email to'];
+    final hasPet = pets.any((p) => m.contains(p));
+    final hasCtx = tenantCtx.any((c) => m.contains(c));
+    return hasPet && hasCtx;
+  }
+
   static AIAssistantConfig? _cachedConfig;
   static Future<AIAssistantConfig>? _configFuture;
 
@@ -106,11 +170,15 @@ class AIAssistantService {
   static Future<AIAssistantConfig> _loadAIAssistantConfig() async {
     try {
       final doc = await _firestore.collection(_appConfigPath).doc(_aiAssistantDoc).get();
-      return AIAssistantConfig.fromMap(doc.data());
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [AIAssistantService] Error reading appConfig/aiAssistant: $e');
+      final config = AIAssistantConfig.fromMap(doc.data());
+      print('📋 [AIAssistantService] Config loaded: enabled=${config.enabled}, killSwitch=${config.killSwitch}, provider=${config.provider}');
+      if (!doc.exists) {
+        print('⚠️ [AIAssistantService] Config document does not exist at appConfig/aiAssistant');
+        print('   Create it in Firestore Console with: {"enabled": true, "killSwitch": false, "provider": "openai", "allowlistFacilityIds": []}');
       }
+      return config;
+    } catch (e) {
+      print('❌ [AIAssistantService] Error reading appConfig/aiAssistant: $e');
       return const AIAssistantConfig(enabled: false, killSwitch: false);
     }
   }
@@ -126,25 +194,44 @@ class AIAssistantService {
     final user = _auth.currentUser;
     if (user == null) throw Exception('User not authenticated');
 
+    print('📞 [AIAssistantService] Calling aiAssistantChat callable...');
+    print('   facilityId: $facilityId');
+    print('   message length: ${message.length}');
+    
     final callable = _functions.httpsCallable('aiAssistantChat');
-    final result = await callable.call(<String, dynamic>{
-      'facilityId': facilityId,
-      'userId': user.uid,
-      'message': message,
-      if (conversationId != null) 'conversationId': conversationId,
-      if (threadId != null) 'threadId': threadId,
-      if (facilityName != null) 'facilityName': facilityName,
-    });
-    return AIAssistantChatResult.fromMap(Map<String, dynamic>.from(result.data as Map));
+    try {
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+        'userId': user.uid,
+        'message': message,
+        if (conversationId != null) 'conversationId': conversationId,
+        if (threadId != null) 'threadId': threadId,
+        if (facilityName != null) 'facilityName': facilityName,
+      });
+      print('✅ [AIAssistantService] Callable response received');
+      return AIAssistantChatResult.fromMap(Map<String, dynamic>.from(result.data as Map));
+    } catch (e) {
+      print('❌ [AIAssistantService] Callable error: $e');
+      rethrow;
+    }
   }
 
   static String? getFriendlyErrorMessage(Object error) {
     if (error is FirebaseFunctionsException) {
       switch (error.code) {
         case 'resource-exhausted':
+          final msg = error.message ?? '';
+          if (msg.contains('Daily limit')) return msg;
           return 'You\'ve hit the AI request limit. Please wait a minute and try again.';
         case 'invalid-argument':
-          return error.message ?? 'Your request was invalid. Please try again.';
+          final msg = error.message ?? '';
+          if (msg.contains('off-topic') ||
+              msg.contains('storage facility management') ||
+              msg.contains('draft messages') ||
+              msg.contains('tenant data')) {
+            return msg;
+          }
+          return msg.isNotEmpty ? msg : 'Your request was invalid. Please try again.';
         case 'permission-denied':
           return 'You don\'t have access to this facility\'s AI assistant.';
         case 'unauthenticated':

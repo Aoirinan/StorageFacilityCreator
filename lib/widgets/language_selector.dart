@@ -31,11 +31,12 @@ class LanguageSelector extends ConsumerWidget {
       currentAppLocale = AppLocale.english;
     }
 
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.borderLight),
+        border: Border.all(color: colorScheme.outline),
         borderRadius: BorderRadius.circular(8),
-        color: Colors.white, // Ensure white background for visibility on dark login screen
+        color: colorScheme.surface,
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<AppLocale>(

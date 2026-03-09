@@ -1,18 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import '../services/insurance_service.dart';
 import '../services/facility_service.dart';
 import '../services/facility_creator_account_service.dart';
-import '../providers/facility_provider.dart';
-import '../providers/auth_provider.dart';
-import '../models/insurance_plan_model.dart';
+import '../services/insurance_service.dart';
+import '../models/facility_model.dart';
 import '../models/tenant_insurance_model.dart';
+import '../providers/search_provider.dart';
 import 'package:flutter/foundation.dart';
-import 'insurance_settings_screen.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+const _kAllFacilitiesIns = '__all__';
 
 class InsuranceScreen extends ConsumerStatefulWidget {
   const InsuranceScreen({super.key});
@@ -21,575 +23,603 @@ class InsuranceScreen extends ConsumerStatefulWidget {
   ConsumerState<InsuranceScreen> createState() => _InsuranceScreenState();
 }
 
-class _InsuranceScreenState extends ConsumerState<InsuranceScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
+  List<FacilityModel> _facilities = [];
+  // null = loading; _kAllFacilitiesIns = all; otherwise a real facility id
   String? _selectedFacilityId;
+  bool _loadingFacilities = true;
+
+  // Per-facility insurance settings stored in Firestore
+  bool _savingSettings = false;
+  final _referralUrlController = TextEditingController();
+  final _referralNameController = TextEditingController();
+  final _referralNotesController = TextEditingController();
+  bool _settingsLoaded = false;
+
+  bool get _isAllFacilities => _selectedFacilityId == _kAllFacilitiesIns;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
     _loadFacilities();
   }
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _referralUrlController.dispose();
+    _referralNameController.dispose();
+    _referralNotesController.dispose();
     super.dispose();
   }
 
   Future<void> _loadFacilities() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
     try {
-      // Ensure account exists before loading facilities
       await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-      
       final facilities = await FacilityService.getUserFacilities();
-      if (facilities.isNotEmpty && mounted) {
+      if (mounted) {
+        // Respect global picker if already set, otherwise default to All Facilities
+        final globalFacility = ref.read(selectedFacilityProvider);
+        final initialId = (globalFacility != null && facilities.any((f) => f.id == globalFacility.id))
+            ? globalFacility.id
+            : _kAllFacilitiesIns;
         setState(() {
-          _selectedFacilityId = facilities.first.id;
+          _facilities = facilities;
+          _selectedFacilityId = initialId;
+          _loadingFacilities = false;
         });
+        if (!_isAllFacilities && _selectedFacilityId != null) {
+          await _loadInsuranceSettings(_selectedFacilityId!);
+        }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Error loading facilities in insurance screen: $e');
+      if (mounted) setState(() => _loadingFacilities = false);
+    }
+  }
+
+  Future<void> _loadInsuranceSettings(String facilityId) async {
+    setState(() => _settingsLoaded = false);
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('settings')
+          .doc('insurance')
+          .get();
+      if (mounted) {
+        final data = doc.data();
+        _referralUrlController.text = data?['referralUrl'] as String? ?? '';
+        _referralNameController.text = data?['referralName'] as String? ?? '';
+        _referralNotesController.text = data?['referralNotes'] as String? ?? '';
+        setState(() => _settingsLoaded = true);
       }
+    } catch (e) {
+      if (mounted) setState(() => _settingsLoaded = true);
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    if (_selectedFacilityId == null || _isAllFacilities) return;
+    setState(() => _savingSettings = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('facilities')
+          .doc(_selectedFacilityId!)
+          .collection('settings')
+          .doc('insurance')
+          .set({
+        'referralUrl': _referralUrlController.text.trim(),
+        'referralName': _referralNameController.text.trim(),
+        'referralNotes': _referralNotesController.text.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Insurance settings saved.'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error saving: $e'), behavior: SnackBarBehavior.floating, backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingSettings = false);
+    }
+  }
+
+  Future<void> _launchUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return _selectedFacilityId == null
-        ? _buildNoFacilityMessage()
-        : Column(
-            children: [
-              _buildFacilitySelector(),
-              TabBar(
-                controller: _tabController,
-                tabs: const [
-                  Tab(text: 'Plans', icon: Icon(Icons.shield)),
-                  Tab(text: 'Tenants', icon: Icon(Icons.people)),
-                  Tab(text: 'Settings', icon: Icon(Icons.settings)),
-                  Tab(text: 'Reports', icon: Icon(Icons.assessment)),
-                ],
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildPlansTab(),
-                    _buildTenantsTab(),
-                    _buildSettingsTab(),
-                    _buildReportsTab(),
-                  ],
-                ),
-              ),
-            ],
-          );
-  }
+    // Sync with global facility picker
+    final globalFacility = ref.watch(selectedFacilityProvider);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final globalId = globalFacility?.id;
+      if (globalId != null && _selectedFacilityId != globalId) {
+        setState(() => _selectedFacilityId = globalId);
+        _loadInsuranceSettings(globalId);
+      }
+    });
 
-  Widget _buildNoFacilityMessage() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.business, size: 64, color: AppTheme.textTertiary),
-          const SizedBox(height: 16),
-          const Text(
-            'No Facilities Found',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+    if (_loadingFacilities) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_facilities.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.shield_outlined, size: 64, color: AppTheme.textTertiary),
+            const SizedBox(height: 16),
+            const Text('No Facilities Found', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Text('Create a facility to manage insurance settings.', style: TextStyle(color: AppTheme.textSecondary)),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildFacilitySelector(),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildInfoBanner(),
+                const SizedBox(height: 16),
+                if (!_isAllFacilities) ...[
+                  _buildReferralCard(),
+                  const SizedBox(height: 16),
+                ],
+                _buildTenantTrackingCard(),
+              ],
+            ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Please create a facility to manage insurance plans.',
-            style: TextStyle(color: AppTheme.textSecondary),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildFacilitySelector() {
-    final authState = ref.watch(authStateProvider);
-    return authState.when(
-      data: (user) {
-        if (user == null) return const SizedBox.shrink();
-        final facilitiesAsync = ref.watch(userFacilitiesProvider(user.uid));
-        return facilitiesAsync.when(
-          data: (facilities) {
-            if (facilities.isEmpty) return const SizedBox.shrink();
-            return Padding(
-              padding: const EdgeInsets.all(16),
-              child: DropdownButtonFormField<String>(
-                value: _selectedFacilityId,
-                decoration: const InputDecoration(
-                  labelText: 'Facility',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.business),
-                ),
-                items: facilities.map((facility) {
-                  return DropdownMenuItem(
-                    value: facility.id,
-                    child: Text(facility.name),
-                  );
-                }).toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _selectedFacilityId = value;
-                  });
-                },
+    if (_facilities.isEmpty) return const SizedBox.shrink();
+
+    final effectiveId = (_selectedFacilityId == _kAllFacilitiesIns ||
+            _facilities.any((f) => f.id == _selectedFacilityId))
+        ? _selectedFacilityId
+        : _kAllFacilitiesIns;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<String>(
+            value: effectiveId,
+            decoration: const InputDecoration(
+              labelText: 'Facility',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              const DropdownMenuItem<String>(
+                value: _kAllFacilitiesIns,
+                child: Text('All Facilities'),
               ),
-            );
-          },
-          loading: () => const LinearProgressIndicator(),
-          error: (_, __) => const SizedBox.shrink(),
-        );
-      },
-      loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
-    );
-  }
-
-  Widget _buildPlansTab() {
-    if (_selectedFacilityId == null) {
-      return const Center(child: Text('Select a facility'));
-    }
-
-    return StreamBuilder<List<InsurancePlanModel>>(
-      stream: InsuranceService.getInsurancePlansStream(_selectedFacilityId!),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        if (snapshot.hasError) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.error, size: 64, color: AppTheme.error),
-                const SizedBox(height: 16),
-                Text('Error loading plans: ${snapshot.error}'),
-              ],
-            ),
-          );
-        }
-
-        final plans = snapshot.data ?? [];
-
-        if (plans.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.shield_outlined, size: 64, color: AppTheme.textTertiary),
-                const SizedBox(height: 16),
-                const Text(
-                  'No Insurance Plans',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Create your first insurance plan to get started',
-                  style: TextStyle(color: AppTheme.textSecondary),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton.icon(
-                  onPressed: () => _showCreatePlanDialog(),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create Plan'),
-                ),
-              ],
-            ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: plans.length,
-          itemBuilder: (context, index) {
-            final plan = plans[index];
-            return _buildPlanCard(plan);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildPlanCard(InsurancePlanModel plan) {
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: plan.isDefault ? AppTheme.primaryBlue : AppTheme.borderLight,
-          width: plan.isDefault ? 2 : 1,
-        ),
-      ),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: AppTheme.primaryBlue.withOpacity(0.1),
-          child: Icon(Icons.shield, color: AppTheme.primaryBlue),
-        ),
-        title: Row(
-          children: [
-            Expanded(child: Text(plan.name, style: const TextStyle(fontWeight: FontWeight.bold))),
-            if (plan.isDefault)
-              Chip(
-                label: const Text('Default', style: TextStyle(fontSize: 10)),
-                backgroundColor: AppTheme.primaryBlue.withOpacity(0.1),
-                padding: EdgeInsets.zero,
-              ),
-            if (plan.isRequired)
-              Chip(
-                label: const Text('Required', style: TextStyle(fontSize: 10)),
-                backgroundColor: AppTheme.error.withOpacity(0.1),
-                padding: EdgeInsets.zero,
-              ),
-          ],
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 4),
-            Text('Monthly: \$${plan.monthlyPrice.toStringAsFixed(2)}'),
-            Text('Coverage: \$${plan.coverageAmount.toStringAsFixed(2)}'),
-            if (plan.description != null && plan.description!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  plan.description!,
-                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                ),
-              ),
-          ],
-        ),
-        trailing: PopupMenuButton(
-          itemBuilder: (context) => [
-            const PopupMenuItem(value: 'edit', child: Text('Edit')),
-            const PopupMenuItem(value: 'delete', child: Text('Delete')),
-          ],
-          onSelected: (value) {
-            if (value == 'edit') {
-              _showEditPlanDialog(plan);
-            } else if (value == 'delete') {
-              _showDeletePlanDialog(plan);
-            }
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTenantsTab() {
-    return const Center(
-      child: Text('Tenant insurance view - to be implemented'),
-    );
-  }
-
-  Widget _buildSettingsTab() {
-    if (_selectedFacilityId == null) {
-      return const Center(child: Text('Select a facility'));
-    }
-    
-    return InsuranceSettingsScreen(facilityId: _selectedFacilityId!);
-  }
-
-  Widget _buildReportsTab() {
-    return const Center(
-      child: Text('Insurance reports - to be implemented'),
-    );
-  }
-
-  void _showCreatePlanDialog() {
-    final nameController = TextEditingController();
-    final priceController = TextEditingController();
-    final coverageController = TextEditingController();
-    final descriptionController = TextEditingController();
-    bool isDefault = false;
-    bool isRequired = false;
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('Create Insurance Plan'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Plan Name',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: priceController,
-                  decoration: const InputDecoration(
-                    labelText: 'Monthly Price (\$)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: coverageController,
-                  decoration: const InputDecoration(
-                    labelText: 'Coverage Amount (\$)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: descriptionController,
-                  decoration: const InputDecoration(
-                    labelText: 'Description (optional)',
-                    border: OutlineInputBorder(),
-                  ),
-                  maxLines: 3,
-                ),
-                const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Set as Default'),
-                  value: isDefault,
-                  onChanged: (value) => setState(() => isDefault = value),
-                ),
-                SwitchListTile(
-                  title: const Text('Required for Tenants'),
-                  value: isRequired,
-                  onChanged: (value) => setState(() => isRequired = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (nameController.text.isEmpty ||
-                    priceController.text.isEmpty ||
-                    coverageController.text.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please fill in all required fields')),
-                  );
-                  return;
-                }
-
-                try {
-                  // Validate numeric inputs
-                  final monthlyPrice = double.tryParse(priceController.text);
-                  final coverageAmount = double.tryParse(coverageController.text);
-                  
-                  if (monthlyPrice == null || monthlyPrice <= 0) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Please enter a valid monthly price')),
-                    );
-                    return;
-                  }
-                  
-                  if (coverageAmount == null || coverageAmount <= 0) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Please enter a valid coverage amount')),
-                    );
-                    return;
-                  }
-                  
-                  await InsuranceService.createInsurancePlan(
-                    facilityId: _selectedFacilityId!,
-                    name: nameController.text.trim(),
-                    monthlyPrice: monthlyPrice,
-                    coverageAmount: coverageAmount,
-                    description: descriptionController.text.trim().isEmpty
-                        ? null
-                        : descriptionController.text.trim(),
-                    isDefault: isDefault,
-                    isRequired: isRequired,
-                  );
-
-                  if (mounted) {
-                    Navigator.of(context).pop();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Insurance plan created successfully'),
-                        backgroundColor: AppTheme.success,
-                      ),
-                    );
-                  }
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Error creating plan: $e'),
-                        backgroundColor: AppTheme.error,
-                      ),
-                    );
-                  }
-                }
-              },
-              child: const Text('Create'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showEditPlanDialog(InsurancePlanModel plan) {
-    final nameController = TextEditingController(text: plan.name);
-    final priceController = TextEditingController(text: plan.monthlyPrice.toString());
-    final coverageController = TextEditingController(text: plan.coverageAmount.toString());
-    final descriptionController = TextEditingController(text: plan.description ?? '');
-    bool isDefault = plan.isDefault;
-    bool isRequired = plan.isRequired;
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('Edit Insurance Plan'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Plan Name',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: priceController,
-                  decoration: const InputDecoration(
-                    labelText: 'Monthly Price (\$)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: coverageController,
-                  decoration: const InputDecoration(
-                    labelText: 'Coverage Amount (\$)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: descriptionController,
-                  decoration: const InputDecoration(
-                    labelText: 'Description (optional)',
-                    border: OutlineInputBorder(),
-                  ),
-                  maxLines: 3,
-                ),
-                const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Set as Default'),
-                  value: isDefault,
-                  onChanged: (value) => setState(() => isDefault = value),
-                ),
-                SwitchListTile(
-                  title: const Text('Required for Tenants'),
-                  value: isRequired,
-                  onChanged: (value) => setState(() => isRequired = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                try {
-                  await InsuranceService.updateInsurancePlan(
-                    facilityId: plan.facilityId,
-                    planId: plan.id,
-                    name: nameController.text,
-                    monthlyPrice: double.parse(priceController.text),
-                    coverageAmount: double.parse(coverageController.text),
-                    description: descriptionController.text.isEmpty
-                        ? null
-                        : descriptionController.text,
-                    isDefault: isDefault,
-                    isRequired: isRequired,
-                  );
-
-                  if (mounted) {
-                    Navigator.of(context).pop();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Insurance plan updated')),
-                    );
-                  }
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error: $e')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showDeletePlanDialog(InsurancePlanModel plan) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Insurance Plan'),
-        content: Text('Are you sure you want to delete "${plan.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              try {
-                await InsuranceService.deleteInsurancePlan(
-                  facilityId: plan.facilityId,
-                  planId: plan.id,
-                );
-
-                if (mounted) {
-                  Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Insurance plan deleted')),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e')),
-                  );
-                }
+              ..._facilities.map((f) => DropdownMenuItem<String>(
+                value: f.id,
+                child: Text(f.name),
+              )),
+            ],
+            onChanged: (id) async {
+              if (id == null) return;
+              setState(() => _selectedFacilityId = id);
+              // Sync global picker
+              if (id == _kAllFacilitiesIns) {
+                ref.read(selectedFacilityProvider.notifier).state = null;
+              } else {
+                final picked = _facilities.firstWhere((f) => f.id == id);
+                ref.read(selectedFacilityProvider.notifier).state = picked;
+                await _loadInsuranceSettings(id);
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
-            child: const Text('Delete'),
+          ),
+          if (_isAllFacilities)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Showing insurance tracking across all your facilities.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoBanner() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryBlue.withOpacity(0.07),
+        border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.25)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, color: AppTheme.primaryBlueDark, size: 20),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'Storage Facility Creator does not provide or sell insurance. '
+              'This section lets you recommend an insurance provider to your tenants '
+              'and keep track of which tenants have coverage.',
+              style: TextStyle(fontSize: 13),
+            ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildReferralCard() {
+    final theme = Theme.of(context);
+    final url = _referralUrlController.text.trim();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Insurance Referral Link', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Add a link to the insurance provider you recommend. This will be visible to your tenants.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _referralNameController,
+              decoration: const InputDecoration(
+                labelText: 'Provider Name (e.g. "StorSmart Insurance")',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _referralUrlController,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: 'Website URL (e.g. https://example.com)',
+                border: OutlineInputBorder(),
+                isDense: true,
+                prefixIcon: Icon(Icons.link),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _referralNotesController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Notes for tenants (optional)',
+                border: OutlineInputBorder(),
+                isDense: true,
+                hintText: 'e.g. "Mention our facility name for a discount."',
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _savingSettings ? null : _saveSettings,
+                  child: _savingSettings
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
+                ),
+                if (url.isNotEmpty) ...[
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => _launchUrl(url),
+                    icon: const Icon(Icons.open_in_new, size: 16),
+                    label: const Text('Preview Link'),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.copy, size: 18),
+                    tooltip: 'Copy URL',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: url));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('URL copied.'), behavior: SnackBarBehavior.floating),
+                      );
+                    },
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTenantTrackingCard() {
+    final theme = Theme.of(context);
+    if (_selectedFacilityId == null) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Tenant Insurance Tracking', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Track which tenants have provided proof of insurance. '
+              'Update a tenant\'s insurance status from their profile page.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            if (_isAllFacilities)
+              _buildAllFacilitiesTenantTracking(theme)
+            else
+              _buildSingleFacilityTenantTracking(_selectedFacilityId!, theme),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSingleFacilityTenantTracking(String facilityId, ThemeData theme) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .where('isActive', isEqualTo: true)
+          .orderBy('name')
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return Text('No active tenants found.', style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary));
+        }
+        return _buildTenantList(snapshot.data!.docs, theme, showFacilityLabel: false);
+      },
+    );
+  }
+
+  Widget _buildAllFacilitiesTenantTracking(ThemeData theme) {
+    if (_facilities.isEmpty) {
+      return Text('No facilities found.', style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary));
+    }
+
+    // Build a stream for each facility and combine results
+    final streams = _facilities
+        .map((f) => FirebaseFirestore.instance
+            .collection('facilities')
+            .doc(f.id)
+            .collection('tenants')
+            .where('isActive', isEqualTo: true)
+            .orderBy('name')
+            .snapshots()
+            .map((snap) => (facilityId: f.id, facilityName: f.name, docs: snap.docs)))
+        .toList();
+
+    return StreamBuilder<List<({String facilityId, String facilityName, List<QueryDocumentSnapshot> docs})>>(
+      stream: _combineStreams(streams),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final allEntries = snapshot.data!;
+        // Flatten all docs, tagging each with its facility name
+        final allDocs = <({QueryDocumentSnapshot doc, String facilityName})>[];
+        for (final entry in allEntries) {
+          for (final doc in entry.docs) {
+            allDocs.add((doc: doc, facilityName: entry.facilityName));
+          }
+        }
+        if (allDocs.isEmpty) {
+          return Text('No active tenants found across any facility.', style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary));
+        }
+
+        final withInsurance = allDocs.where((e) {
+          final status = (e.doc.data() as Map<String, dynamic>)['insuranceStatus'] as String?;
+          return status != null && status != 'none';
+        }).toList();
+        final withoutInsurance = allDocs.where((e) {
+          final status = (e.doc.data() as Map<String, dynamic>)['insuranceStatus'] as String?;
+          return status == null || status == 'none';
+        }).toList();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _summaryChip('${allDocs.length} Total Tenants', AppTheme.primaryBlueDark),
+                _summaryChip('${withInsurance.length} With Insurance', AppTheme.success),
+                _summaryChip('${withoutInsurance.length} No Insurance on File', AppTheme.warning),
+              ],
+            ),
+            if (withInsurance.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('Tenants with insurance on file', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              ...withInsurance.map((e) => _tenantInsuranceRowTagged(e.doc, e.facilityName, theme)),
+            ],
+            if (withoutInsurance.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('No insurance on file', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 8),
+              ...withoutInsurance.map((e) => _tenantInsuranceRowTagged(e.doc, e.facilityName, theme)),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  /// Combines multiple streams into a single stream that emits whenever any upstream emits.
+  Stream<List<T>> _combineStreams<T>(List<Stream<T>> streams) {
+    if (streams.isEmpty) return Stream.value([]);
+    final latest = List<T?>.filled(streams.length, null);
+    int received = 0;
+
+    return Stream.multi((controller) {
+      for (int i = 0; i < streams.length; i++) {
+        final idx = i;
+        streams[idx].listen(
+          (value) {
+            if (latest[idx] == null) received++;
+            latest[idx] = value;
+            if (received == streams.length) {
+              controller.add(latest.cast<T>());
+            }
+          },
+          onError: controller.addError,
+        );
+      }
+    });
+  }
+
+  Widget _buildTenantList(List<QueryDocumentSnapshot> docs, ThemeData theme, {required bool showFacilityLabel}) {
+    final withInsurance = docs.where((d) {
+      final status = (d.data() as Map<String, dynamic>)['insuranceStatus'] as String?;
+      return status != null && status != 'none';
+    }).toList();
+    final withoutInsurance = docs.where((d) {
+      final status = (d.data() as Map<String, dynamic>)['insuranceStatus'] as String?;
+      return status == null || status == 'none';
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _summaryChip('${docs.length} Total Tenants', AppTheme.primaryBlueDark),
+            _summaryChip('${withInsurance.length} With Insurance', AppTheme.success),
+            _summaryChip('${withoutInsurance.length} No Insurance on File', AppTheme.warning),
+          ],
+        ),
+        if (withInsurance.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('Tenants with insurance on file', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 8),
+          ...withInsurance.map((d) => _tenantInsuranceRow(d, theme)),
+        ],
+        if (withoutInsurance.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('No insurance on file', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 8),
+          ...withoutInsurance.map((d) => _tenantInsuranceRow(d, theme)),
+        ],
+      ],
+    );
+  }
+
+  Widget _summaryChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        border: Border.all(color: color.withOpacity(0.3)),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  Widget _tenantInsuranceRow(DocumentSnapshot doc, ThemeData theme, {String? facilityName}) {
+    final data = doc.data() as Map<String, dynamic>;
+    final name = data['name'] as String? ?? 'Unknown';
+    final unit = data['unitNumber'] as String? ?? '';
+    final status = data['insuranceStatus'] as String? ?? 'none';
+    final provider = data['insuranceProvider'] as String?;
+
+    Color statusColor;
+    String statusLabel;
+    switch (status) {
+      case 'providedProof':
+        statusColor = AppTheme.success;
+        statusLabel = 'Proof Provided';
+        break;
+      case 'enrolledInTPP':
+        statusColor = AppTheme.success;
+        statusLabel = 'Enrolled';
+        break;
+      case 'pendingProof':
+        statusColor = AppTheme.warning;
+        statusLabel = 'Pending Proof';
+        break;
+      default:
+        statusColor = AppTheme.textTertiary;
+        statusLabel = 'None';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Icon(Icons.shield_outlined, size: 16, color: statusColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$name${unit.isNotEmpty ? ' · Unit $unit' : ''}${provider != null && provider.isNotEmpty ? ' · $provider' : ''}',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                if (facilityName != null)
+                  Text(
+                    facilityName,
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(statusLabel, style: TextStyle(fontSize: 11, color: statusColor, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tenantInsuranceRowTagged(DocumentSnapshot doc, String facilityName, ThemeData theme) {
+    return _tenantInsuranceRow(doc, theme, facilityName: facilityName);
   }
 }

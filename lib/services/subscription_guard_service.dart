@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_creator_account_model.dart';
 import '../services/facility_creator_account_service.dart';
+import '../services/facility_service.dart';
 import '../services/superadmin_service.dart';
 import 'error_reporter.dart';
 import 'debug_logger.dart';
@@ -97,8 +98,10 @@ class SubscriptionGuardService {
         return const SubscriptionAccessResult(canAccess: true);
       }
 
-      // Check if user can access platform
-      if (!account.canAccessPlatform) {
+      // Check if user can access platform (account-level OR per-facility subs)
+      final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
+      final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
+      if (!hasAccess) {
         if (kDebugMode) {
           print('❌ [SubscriptionGuard] Access denied - subscription status: ${status.name}');
         }
@@ -122,8 +125,15 @@ class SubscriptionGuardService {
         );
         // #endregion
 
-        if (status == SubscriptionStatus.pastDue) {
-          message = 'Your subscription is past due. Please update your payment method to continue using the platform.';
+        if (status == SubscriptionStatus.pendingApproval) {
+          message = 'Your account is pending approval.';
+          redirectRoute = '/pending-approval';
+        } else if (account.hasTrial && account.isTrialExpired) {
+          message = 'Your trial has expired. Please subscribe to continue using the platform.';
+          redirectRoute = '/subscription?trialExpired=1';
+        } else if (status == SubscriptionStatus.pastDue) {
+          message = 'Your subscription payment is past due. Please renew your subscription to continue using the platform.';
+          redirectRoute = '/subscription?pastDue=1';
         } else if (status == SubscriptionStatus.cancelled) {
           if (account.subscriptionCurrentPeriodEnd != null &&
               DateTime.now().isBefore(account.subscriptionCurrentPeriodEnd!)) {
@@ -161,7 +171,7 @@ class SubscriptionGuardService {
       if (status == SubscriptionStatus.pastDue) {
         return SubscriptionAccessResult(
           canAccess: true,
-          message: 'Your subscription is past due. Please update your payment method soon.',
+          message: 'Your subscription payment is past due. Please renew your subscription soon.',
           subscriptionStatus: status,
         );
       }
@@ -205,8 +215,12 @@ class SubscriptionGuardService {
         return false;
       }
 
-      // Show warning if past due or cancelled (but still have access)
-      return account.subscriptionStatus == SubscriptionStatus.pastDue ||
+      // Pending approval accounts see a dedicated screen, not a warning banner
+      if (account.isPendingApproval) return false;
+
+      // Show warning if trial expired, past due, or cancelled (but still have access)
+      return (account.hasTrial && account.isTrialExpired) ||
+             account.subscriptionStatus == SubscriptionStatus.pastDue ||
              (account.subscriptionStatus == SubscriptionStatus.cancelled &&
               account.subscriptionCurrentPeriodEnd != null &&
               DateTime.now().isBefore(account.subscriptionCurrentPeriodEnd!));
@@ -228,8 +242,12 @@ class SubscriptionGuardService {
         return null;
       }
 
+      if (account.hasTrial && account.isTrialExpired) {
+        return 'Your trial has expired. Please subscribe to continue using the app.';
+      }
+
       if (account.subscriptionStatus == SubscriptionStatus.pastDue) {
-        return 'Your subscription is past due. Please update your payment method.';
+        return 'Your subscription payment is past due. Please renew your subscription to continue.';
       }
 
       if (account.subscriptionStatus == SubscriptionStatus.cancelled &&
@@ -240,6 +258,17 @@ class SubscriptionGuardService {
       }
 
       return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Get account for current user (helper for banner)
+  static Future<FacilityCreatorAccountModel?> getCurrentAccount() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return null;
+      return await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
     } catch (e) {
       return null;
     }

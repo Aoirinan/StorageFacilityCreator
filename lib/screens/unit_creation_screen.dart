@@ -112,14 +112,15 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppTheme.backgroundLight,
       appBar: AppBar(
         title: Text(widget.unit == null ? 'Create Unit' : 'Edit Unit'),
-        centerTitle: true,
+        centerTitle: false,
         actions: [
           if (widget.unit != null)
             IconButton(
               onPressed: _showDeleteDialog,
-              icon: const Icon(Icons.delete),
+              icon: const Icon(Icons.delete_outline),
               tooltip: 'Delete Unit',
             ),
         ],
@@ -128,545 +129,730 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
         key: _formKey,
         child: KeyboardScrollable(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Unit Number
-              TextFormField(
-                controller: _unitNumberController,
-                decoration: const InputDecoration(
-                  labelText: 'Unit Number *',
-                  hintText: 'e.g., A101, B205',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.tag),
-                ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Unit number is required';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Unit Type
-              DropdownButtonFormField<String>(
-                value: _selectedUnitType,
-                decoration: const InputDecoration(
-                  labelText: 'Unit Type *',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.category),
-                ),
-                items: [
-                  const DropdownMenuItem(
-                    value: 'standard',
-                    child: Text('Standard'),
-                  ),
-                  const DropdownMenuItem(
-                    value: 'climateControlled',
-                    child: Text('Climate Controlled'),
-                  ),
-                  const DropdownMenuItem(
-                    value: 'vehicle',
-                    child: Text('Vehicle Storage'),
-                  ),
-                  const DropdownMenuItem(
-                    value: 'document',
-                    child: Text('Document Storage'),
-                  ),
-                  const DropdownMenuItem(
-                    value: 'wine',
-                    child: Text('Wine Storage'),
-                  ),
-                  const DropdownMenuItem(
-                    value: 'outdoor',
-                    child: Text('Outdoor Storage'),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value != null && mounted) {
-                    setState(() {
-                      _selectedUnitType = value;
-                    });
-                  }
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Monthly Rate
-              TextFormField(
-                controller: _monthlyRateController,
-                decoration: const InputDecoration(
-                  labelText: 'Monthly Rate *',
-                  hintText: '0.00',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.attach_money),
-                ),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Monthly rate is required';
-                  }
-                  final rate = double.tryParse(value);
-                  if (rate == null || rate < 0) {
-                    return 'Please enter a valid monthly rate';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Security Deposit
-              TextFormField(
-                controller: _securityDepositController,
-                decoration: const InputDecoration(
-                  labelText: 'Security Deposit',
-                  hintText: '0.00',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.security),
-                ),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value != null && value.isNotEmpty) {
-                    final deposit = double.tryParse(value);
-                    if (deposit == null || deposit < 0) {
-                      return 'Please enter a valid security deposit';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Dimensions
-              Text(
-                'Dimensions (feet)',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 8),
-              // Preset sizes
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildPresetSizeChip('5x10', 5, 10, 10),
-                  _buildPresetSizeChip('10x10', 10, 10, 10),
-                  _buildPresetSizeChip('10x15', 10, 15, 10),
-                  _buildPresetSizeChip('10x20', 10, 20, 10),
-                  _buildPresetSizeChip('10x25', 10, 25, 10),
-                  _buildPresetSizeChip('10x30', 10, 30, 10),
-                  _buildPresetSizeChip('15x15', 15, 15, 10),
-                  _buildPresetSizeChip('20x20', 20, 20, 10),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _widthController,
-                      decoration: const InputDecoration(
-                        labelText: 'Width (ft)',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.number,
+                  // Basic Information Card
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: AppTheme.borderLight, width: 1),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _depthController,
-                      decoration: const InputDecoration(
-                        labelText: 'Depth/Length (ft)',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _heightController,
-                      decoration: const InputDecoration(
-                        labelText: 'Height (ft)',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // Features
-              Text(
-                'Features',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _availableFeatures.map((feature) {
-                  final isSelected = _selectedFeatures.contains(feature);
-                  return FilterChip(
-                    label: Text(feature),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      if (mounted) {
-                        setState(() {
-                          if (selected) {
-                            _selectedFeatures.add(feature);
-                          } else {
-                            _selectedFeatures.remove(feature);
-                          }
-                        });
-                      }
-                    },
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 16),
-
-              // Description
-              TextFormField(
-                controller: _descriptionController,
-                decoration: const InputDecoration(
-                  labelText: 'Description',
-                  hintText: 'Unit description...',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.description),
-                ),
-                maxLines: 3,
-              ),
-              const SizedBox(height: 16),
-
-              // Notes
-              TextFormField(
-                controller: _notesController,
-                decoration: const InputDecoration(
-                  labelText: 'Notes',
-                  hintText: 'Internal notes...',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.note),
-                ),
-                maxLines: 2,
-              ),
-              const SizedBox(height: 24),
-
-              // Status Selection
-              DropdownButtonFormField<UnitStatus>(
-                value: _selectedStatus,
-                decoration: const InputDecoration(
-                  labelText: 'Status *',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.info),
-                ),
-                items: UnitStatus.values.map((status) {
-                  return DropdownMenuItem<UnitStatus>(
-                    value: status,
-                    child: Text(status.displayName),
-                  );
-                }).toList(),
-                onChanged: (value) {
-                  if (value != null && mounted) {
-                    setState(() {
-                      _selectedStatus = value;
-                      // Clear tenant fields when status changes to "Available"
-                      if (value == UnitStatus.available) {
-                        _selectedTenantId = null;
-                        _selectedTenantName = null;
-                      }
-                    });
-                  }
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Tenant Selection (only show if status is not "Available" or if editing an occupied unit)
-              if (_selectedStatus != UnitStatus.available || (widget.unit != null && widget.unit!.tenantId != null && widget.unit!.tenantId!.isNotEmpty)) ...[
-                Consumer(
-                  builder: (context, ref, child) {
-                    final tenantsAsync = ref.watch(tenant_provider.facilityTenantsProvider(widget.facilityId));
-                    
-                    return tenantsAsync.when(
-                      data: (tenants) {
-                        if (tenants.isEmpty && _selectedStatus != UnitStatus.available) {
-                          return Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.warning.withValues(alpha: 0.1),
-                              border: Border.all(color: AppTheme.warning),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.person_off, color: AppTheme.warning, size: 20),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'No tenants available. Unit will be saved as ${_selectedStatus.displayName} without tenant assignment.',
-                                    style: TextStyle(
-                                      color: AppTheme.warning,
-                                      fontSize: 12,
-                                    ),
-                                  ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.info_outline, color: AppTheme.primaryBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Basic Information',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
                                 ),
-                              ],
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                          // Unit Number
+                          TextFormField(
+                            controller: _unitNumberController,
+                            decoration: const InputDecoration(
+                              labelText: 'Unit Number *',
+                              hintText: 'e.g., A101, B205',
+                              prefixIcon: Icon(Icons.tag),
                             ),
-                          );
-                        }
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Unit number is required';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
 
-                        if (_selectedStatus == UnitStatus.available) {
-                          // If unit has tenant data but status is Available, show a message to clear it
-                          if (widget.unit != null && 
-                              widget.unit!.tenantId != null && 
-                              widget.unit!.tenantId!.isNotEmpty) {
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 16),
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: AppTheme.warning.withValues(alpha: 0.1),
-                                border: Border.all(color: AppTheme.warning),
-                                borderRadius: BorderRadius.circular(8),
+                          // Unit Type
+                          DropdownButtonFormField<String>(
+                            value: _selectedUnitType,
+                            decoration: const InputDecoration(
+                              labelText: 'Unit Type *',
+                              prefixIcon: Icon(Icons.category),
+                            ),
+                            items: [
+                              const DropdownMenuItem(
+                                value: 'standard',
+                                child: Text('Standard'),
                               ),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.info_outline, color: AppTheme.warning, size: 20),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'Unit has tenant assigned but status is Available',
-                                          style: TextStyle(
-                                            color: AppTheme.warning,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'Tenant: ${widget.unit!.tenantName ?? 'Unknown'}. '
-                                          'Saving will automatically clear the tenant assignment.',
-                                          style: TextStyle(
-                                            color: AppTheme.warning,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
+                              const DropdownMenuItem(
+                                value: 'climateControlled',
+                                child: Text('Climate Controlled'),
+                              ),
+                              const DropdownMenuItem(
+                                value: 'vehicle',
+                                child: Text('Vehicle Storage'),
+                              ),
+                              const DropdownMenuItem(
+                                value: 'document',
+                                child: Text('Document Storage'),
+                              ),
+                              const DropdownMenuItem(
+                                value: 'wine',
+                                child: Text('Wine Storage'),
+                              ),
+                              const DropdownMenuItem(
+                                value: 'outdoor',
+                                child: Text('Outdoor Storage'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null && mounted) {
+                                setState(() {
+                                  _selectedUnitType = value;
+                                });
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 20),
+
+                          // Monthly Rate and Security Deposit Row
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _monthlyRateController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Monthly Rate *',
+                                    hintText: '0.00',
+                                    prefixIcon: Icon(Icons.attach_money),
                                   ),
-                                ],
-                              ),
-                            );
-                          }
-                          return const SizedBox.shrink();
-                        }
-
-                        // Get all units to check for existing tenant assignments
-                        final unitsAsync = ref.watch(facilityUnitsProvider(widget.facilityId));
-                        
-                        return unitsAsync.when(
-                          data: (units) {
-                            // Find tenants already assigned to other units (excluding current unit if editing)
-                            final assignedTenantIds = units
-                                .where((unit) => widget.unit == null || unit.id != widget.unit!.id)
-                                .where((unit) => unit.tenantId != null && unit.tenantId!.isNotEmpty)
-                                .map((unit) => unit.tenantId!)
-                                .toSet();
-                            
-                            return DropdownButtonFormField<String>(
-                              value: _selectedTenantId,
-                              decoration: const InputDecoration(
-                                labelText: 'Assign Tenant (Optional)',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.person),
-                                helperText: 'Select a tenant to assign to this unit',
-                              ),
-                              items: [
-                                const DropdownMenuItem<String>(
-                                  value: null,
-                                  child: Text('No tenant assigned'),
+                                  keyboardType: TextInputType.number,
+                                  validator: (value) {
+                                    if (value == null || value.trim().isEmpty) {
+                                      return 'Monthly rate is required';
+                                    }
+                                    final rate = double.tryParse(value);
+                                    if (rate == null || rate < 0) {
+                                      return 'Please enter a valid monthly rate';
+                                    }
+                                    return null;
+                                  },
                                 ),
-                                ...tenants.map((tenant) {
-                                  final isAlreadyAssigned = assignedTenantIds.contains(tenant.id);
-                                  return DropdownMenuItem<String>(
-                                    value: tenant.id,
-                                    enabled: !isAlreadyAssigned,
-                                    child: Row(
-                                      children: [
-                                        if (isAlreadyAssigned) ...[
-                                          Icon(Icons.warning, size: 16, color: AppTheme.warning),
-                                          const SizedBox(width: 8),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _securityDepositController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Security Deposit',
+                                    hintText: '0.00',
+                                    prefixIcon: Icon(Icons.security),
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  validator: (value) {
+                                    if (value != null && value.isNotEmpty) {
+                                      final deposit = double.tryParse(value);
+                                      if (deposit == null || deposit < 0) {
+                                        return 'Please enter a valid security deposit';
+                                      }
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Dimensions Card
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: AppTheme.borderLight, width: 1),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.straighten, color: AppTheme.primaryBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Dimensions (feet)',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          // Preset sizes
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: [
+                              _buildPresetSizeChip('5x10', 5, 10, 10),
+                              _buildPresetSizeChip('10x10', 10, 10, 10),
+                              _buildPresetSizeChip('10x15', 10, 15, 10),
+                              _buildPresetSizeChip('10x20', 10, 20, 10),
+                              _buildPresetSizeChip('10x25', 10, 25, 10),
+                              _buildPresetSizeChip('10x30', 10, 30, 10),
+                              _buildPresetSizeChip('15x15', 15, 15, 10),
+                              _buildPresetSizeChip('20x20', 20, 20, 10),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _widthController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Width (ft)',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _depthController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Depth/Length (ft)',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _heightController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Height (ft)',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Features Card
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: AppTheme.borderLight, width: 1),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.star_outline, color: AppTheme.primaryBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Features',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: _availableFeatures.map((feature) {
+                              final isSelected = _selectedFeatures.contains(feature);
+                              return FilterChip(
+                                label: Text(feature),
+                                selected: isSelected,
+                                onSelected: (selected) {
+                                  if (mounted) {
+                                    setState(() {
+                                      if (selected) {
+                                        _selectedFeatures.add(feature);
+                                      } else {
+                                        _selectedFeatures.remove(feature);
+                                      }
+                                    });
+                                  }
+                                },
+                                selectedColor: AppTheme.primaryBlue.withValues(alpha: 0.15),
+                                checkmarkColor: AppTheme.primaryBlue,
+                                labelStyle: TextStyle(
+                                  color: isSelected ? AppTheme.primaryBlue : AppTheme.textPrimary,
+                                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                                ),
+                                side: BorderSide(
+                                  color: isSelected ? AppTheme.primaryBlue : AppTheme.borderMedium,
+                                  width: isSelected ? 1.5 : 1,
+                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Additional Information Card
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: AppTheme.borderLight, width: 1),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.description_outlined, color: AppTheme.primaryBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Additional Information',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                          // Description
+                          TextFormField(
+                            controller: _descriptionController,
+                            decoration: const InputDecoration(
+                              labelText: 'Description',
+                              hintText: 'Unit description...',
+                              prefixIcon: Icon(Icons.description),
+                            ),
+                            maxLines: 3,
+                          ),
+                          const SizedBox(height: 20),
+                          // Notes
+                          TextFormField(
+                            controller: _notesController,
+                            decoration: const InputDecoration(
+                              labelText: 'Notes',
+                              hintText: 'Internal notes...',
+                              prefixIcon: Icon(Icons.note_outlined),
+                            ),
+                            maxLines: 2,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Status & Assignment Card
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: AppTheme.borderLight, width: 1),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.assignment_outlined, color: AppTheme.primaryBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Status & Assignment',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                          // Status Selection
+                          DropdownButtonFormField<UnitStatus>(
+                            value: _selectedStatus,
+                            decoration: const InputDecoration(
+                              labelText: 'Status *',
+                              prefixIcon: Icon(Icons.info_outline),
+                            ),
+                            items: UnitStatus.values.map((status) {
+                              return DropdownMenuItem<UnitStatus>(
+                                value: status,
+                                child: Text(status.displayName),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null && mounted) {
+                                setState(() {
+                                  _selectedStatus = value;
+                                  // Clear tenant fields when status changes to "Available"
+                                  if (value == UnitStatus.available) {
+                                    _selectedTenantId = null;
+                                    _selectedTenantName = null;
+                                  }
+                                });
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 20),
+
+                          // Tenant Selection (only show if status is not "Available" or if editing an occupied unit)
+                          if (_selectedStatus != UnitStatus.available || (widget.unit != null && widget.unit!.tenantId != null && widget.unit!.tenantId!.isNotEmpty)) ...[
+                            Consumer(
+                              builder: (context, ref, child) {
+                                final tenantsAsync = ref.watch(tenant_provider.facilityTenantsProvider(widget.facilityId));
+                                
+                                return tenantsAsync.when(
+                                  data: (tenants) {
+                                    if (tenants.isEmpty && _selectedStatus != UnitStatus.available) {
+                                      return Container(
+                                        padding: const EdgeInsets.all(16),
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.warning.withValues(alpha: 0.1),
+                                          border: Border.all(color: AppTheme.warning),
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.person_off, color: AppTheme.warning, size: 20),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Text(
+                                                'No tenants available. Unit will be saved as ${_selectedStatus.displayName} without tenant assignment.',
+                                                style: TextStyle(
+                                                  color: AppTheme.warning,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }
+
+                                    if (_selectedStatus == UnitStatus.available) {
+                                      // If unit has tenant data but status is Available, show a message to clear it
+                                      if (widget.unit != null && 
+                                          widget.unit!.tenantId != null && 
+                                          widget.unit!.tenantId!.isNotEmpty) {
+                                        return Container(
+                                          padding: const EdgeInsets.all(16),
+                                          decoration: BoxDecoration(
+                                            color: AppTheme.warning.withValues(alpha: 0.1),
+                                            border: Border.all(color: AppTheme.warning),
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Icon(Icons.info_outline, color: AppTheme.warning, size: 20),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      'Unit has tenant assigned but status is Available',
+                                                      style: TextStyle(
+                                                        color: AppTheme.warning,
+                                                        fontSize: 14,
+                                                        fontWeight: FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 4),
+                                                    Text(
+                                                      'Tenant: ${widget.unit!.tenantName ?? 'Unknown'}. '
+                                                      'Saving will automatically clear the tenant assignment.',
+                                                      style: TextStyle(
+                                                        color: AppTheme.warning,
+                                                        fontSize: 13,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }
+                                      return const SizedBox.shrink();
+                                    }
+
+                                    // Get all units to check for existing tenant assignments
+                                    final unitsAsync = ref.watch(facilityUnitsProvider(widget.facilityId));
+                                    
+                                    return unitsAsync.when(
+                                      data: (units) {
+                                        // Find tenants already assigned to other units (excluding current unit if editing)
+                                        final assignedTenantIds = units
+                                            .where((unit) => widget.unit == null || unit.id != widget.unit!.id)
+                                            .where((unit) => unit.tenantId != null && unit.tenantId!.isNotEmpty)
+                                            .map((unit) => unit.tenantId!)
+                                            .toSet();
+                                        
+                                        return DropdownButtonFormField<String>(
+                                          value: _selectedTenantId,
+                                          decoration: const InputDecoration(
+                                            labelText: 'Assign Tenant (Optional)',
+                                            prefixIcon: Icon(Icons.person_outline),
+                                            helperText: 'Select a tenant to assign to this unit',
+                                          ),
+                                          items: [
+                                            const DropdownMenuItem<String>(
+                                              value: null,
+                                              child: Text('No tenant assigned'),
+                                            ),
+                                            ...tenants.map((tenant) {
+                                              final isAlreadyAssigned = assignedTenantIds.contains(tenant.id);
+                                              return DropdownMenuItem<String>(
+                                                value: tenant.id,
+                                                enabled: !isAlreadyAssigned,
+                                                child: Row(
+                                                  children: [
+                                                    if (isAlreadyAssigned) ...[
+                                                      Icon(Icons.warning, size: 16, color: AppTheme.warning),
+                                                      const SizedBox(width: 8),
+                                                    ],
+                                                    Expanded(
+                                                      child: Text(
+                                                        '${tenant.name}${tenant.unitNumber.isNotEmpty ? ' (${tenant.unitNumber})' : ''}',
+                                                        style: TextStyle(
+                                                          color: isAlreadyAssigned ? AppTheme.textTertiary : null,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    if (isAlreadyAssigned)
+                                                      Text(
+                                                        ' (Assigned)',
+                                                        style: TextStyle(
+                                                          color: AppTheme.warning,
+                                                          fontSize: 12,
+                                                          fontStyle: FontStyle.italic,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              );
+                                            }),
+                                          ],
+                                          onChanged: (tenantId) {
+                                            if (mounted) {
+                                              // Check if tenant is already assigned
+                                              if (tenantId != null && assignedTenantIds.contains(tenantId)) {
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text('This tenant is already assigned to another unit. Please unassign them first.'),
+                                                    backgroundColor: AppTheme.warning,
+                                                    duration: const Duration(seconds: 3),
+                                                  ),
+                                                );
+                                                return;
+                                              }
+                                              
+                                              setState(() {
+                                                _selectedTenantId = tenantId;
+                                                if (tenantId != null) {
+                                                  final tenant = tenants.firstWhere((t) => t.id == tenantId);
+                                                  _selectedTenantName = tenant.name;
+                                                } else {
+                                                  _selectedTenantName = null;
+                                                }
+                                              });
+                                            }
+                                          },
+                                        );
+                                      },
+                                      loading: () => DropdownButtonFormField<String>(
+                                        value: _selectedTenantId,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Assign Tenant (Optional)',
+                                          prefixIcon: Icon(Icons.person_outline),
+                                        ),
+                                        items: [
+                                          const DropdownMenuItem<String>(
+                                            value: null,
+                                            child: Text('Loading...'),
+                                          ),
                                         ],
-                                        Expanded(
-                                          child: Text(
-                                            '${tenant.name}${tenant.unitNumber.isNotEmpty ? ' (${tenant.unitNumber})' : ''}',
-                                            style: TextStyle(
-                                              color: isAlreadyAssigned ? AppTheme.textTertiary : null,
-                                            ),
-                                          ),
+                                        onChanged: null,
+                                      ),
+                                      error: (_, __) => DropdownButtonFormField<String>(
+                                        value: _selectedTenantId,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Assign Tenant (Optional)',
+                                          prefixIcon: Icon(Icons.person_outline),
                                         ),
-                                        if (isAlreadyAssigned)
-                                          Text(
-                                            ' (Assigned)',
-                                            style: TextStyle(
-                                              color: AppTheme.warning,
-                                              fontSize: 12,
-                                              fontStyle: FontStyle.italic,
-                                            ),
+                                        items: [
+                                          const DropdownMenuItem<String>(
+                                            value: null,
+                                            child: Text('Error loading units'),
                                           ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
-                              onChanged: (tenantId) {
-                                if (mounted) {
-                                  // Check if tenant is already assigned
-                                  if (tenantId != null && assignedTenantIds.contains(tenantId)) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('This tenant is already assigned to another unit. Please unassign them first.'),
-                                        backgroundColor: AppTheme.warning,
-                                        duration: const Duration(seconds: 3),
+                                        ],
+                                        onChanged: null,
                                       ),
                                     );
-                                    return;
-                                  }
-                                  
-                                  setState(() {
-                                    _selectedTenantId = tenantId;
-                                    if (tenantId != null) {
-                                      final tenant = tenants.firstWhere((t) => t.id == tenantId);
-                                      _selectedTenantName = tenant.name;
-                                    } else {
-                                      _selectedTenantName = null;
-                                    }
-                                  });
-                                }
+                                  },
+                                  loading: () => const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  ),
+                                  error: (error, _) => Container(
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.error.withValues(alpha: 0.1),
+                                      border: Border.all(color: AppTheme.error),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.error_outline, color: AppTheme.error, size: 20),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Text(
+                                            'Error loading tenants: ${ErrorMessageHelper.getUserFriendlyMessage(error)}',
+                                            style: TextStyle(color: AppTheme.error, fontSize: 14),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
                               },
-                            );
-                          },
-                          loading: () => DropdownButtonFormField<String>(
-                            value: _selectedTenantId,
-                            decoration: const InputDecoration(
-                              labelText: 'Assign Tenant (Optional)',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.person),
                             ),
-                            items: [
-                              const DropdownMenuItem<String>(
-                                value: null,
-                                child: Text('Loading...'),
-                              ),
-                            ],
-                            onChanged: null,
-                          ),
-                          error: (_, __) => DropdownButtonFormField<String>(
-                            value: _selectedTenantId,
-                            decoration: const InputDecoration(
-                              labelText: 'Assign Tenant (Optional)',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.person),
-                            ),
-                            items: [
-                              const DropdownMenuItem<String>(
-                                value: null,
-                                child: Text('Error loading units'),
-                              ),
-                            ],
-                            onChanged: null,
-                          ),
-                        );
-                      },
-                      loading: () => const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                          ],
+                        ],
                       ),
-                      error: (error, _) => Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppTheme.error.withValues(alpha: 0.1),
-                          border: Border.all(color: AppTheme.error),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Error Message
+                  if (_errorMessage != null)
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: AppTheme.error.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppTheme.error, width: 1),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.error_outline, color: AppTheme.error, size: 20),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: TextStyle(
+                                color: AppTheme.error,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  if (_errorMessage != null) const SizedBox(height: 24),
+
+                  // Submit Button
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _submitForm,
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: Text(
-                          'Error loading tenants: ${ErrorMessageHelper.getUserFriendlyMessage(error)}',
-                          style: TextStyle(color: AppTheme.error, fontSize: 12),
-                        ),
+                        elevation: 0,
                       ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-              ],
-
-              // Error Message
-              if (_errorMessage != null)
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.error.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppTheme.error),
+                      child: _isLoading
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppTheme.textOnDark,
+                              ),
+                            )
+                          : Text(
+                              widget.unit == null ? 'Create Unit' : 'Update Unit',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                    ),
                   ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.error, color: AppTheme.error),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _errorMessage!,
-                          style: TextStyle(color: AppTheme.error),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-              if (_errorMessage != null) const SizedBox(height: 16),
-
-              // Submit Button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _submitForm,
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: _isLoading
-                      ? const CircularProgressIndicator(color: AppTheme.textOnDark)
-                      : Text(
-                          widget.unit == null ? 'Create Unit' : 'Update Unit',
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }
 
   Widget _buildPresetSizeChip(String label, double width, double depth, double height) {
-    return ActionChip(
-      label: Text(label),
-      onPressed: () {
+    return InkWell(
+      onTap: () {
         setState(() {
           _widthController.text = width.toStringAsFixed(0);
           _depthController.text = depth.toStringAsFixed(0);
           _heightController.text = height.toStringAsFixed(0);
         });
       },
-      backgroundColor: AppTheme.primaryBlue.withValues(alpha: 0.1),
-      side: BorderSide(color: AppTheme.primaryBlue),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppTheme.primaryBlue.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: AppTheme.primaryBlue.withValues(alpha: 0.3),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: AppTheme.primaryBlue,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+        ),
+      ),
     );
   }
 

@@ -33,44 +33,7 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('MMM d, yyyy');
     
-    return ModernPageWrapper(
-      currentRoute: '/deposits',
-      title: 'Deposit ${widget.deposit.depositNumber}',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        if (widget.deposit.status != DepositStatus.reconciled && widget.deposit.status != DepositStatus.cancelled)
-          PopupMenuButton<String>(
-            onSelected: _handleMenuAction,
-            itemBuilder: (context) => [
-              if (widget.deposit.status == DepositStatus.pending)
-                const PopupMenuItem(
-                  value: 'mark_deposited',
-                  child: ListTile(
-                    leading: Icon(Icons.check_circle),
-                    title: Text('Mark as Deposited'),
-                  ),
-                ),
-              if (widget.deposit.status == DepositStatus.deposited)
-                const PopupMenuItem(
-                  value: 'reconcile',
-                  child: ListTile(
-                    leading: Icon(Icons.verified),
-                    title: Text('Reconcile'),
-                  ),
-                ),
-              const PopupMenuItem(
-                value: 'cancel',
-                child: ListTile(
-                  leading: Icon(Icons.cancel),
-                  title: Text('Cancel Deposit'),
-                ),
-              ),
-            ],
-          ),
-      ],
-      child: SingleChildScrollView(
+    return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -90,8 +53,7 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
             ],
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatusCard() {

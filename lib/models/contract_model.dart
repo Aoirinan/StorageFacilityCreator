@@ -8,6 +8,12 @@ enum ContractStatus {
   cancelled,
 }
 
+/// Compliance status for contracts/templates
+enum ComplianceStatus {
+  active,
+  disabled,
+}
+
 enum MoveOutStatus {
   notStarted,
   initiated,
@@ -52,6 +58,18 @@ class ContractModel {
   final double? moveOutCharges;
   final double? moveOutRefund;
   final String? moveOutNotes;
+  // Compliance fields
+  final ComplianceStatus complianceStatus;
+  final bool isLicensedForm; // Association/licensed form flag
+  final DateTime? lastReconfirmedAt; // Last rights reconfirmation
+  final String? documentSha256; // SHA-256 hash of uploaded PDF
+  final int? fileSize; // File size in bytes
+  final String? contentType; // MIME type (e.g., 'application/pdf')
+  final DateTime? uploadedAt; // When file was uploaded
+  final String? storagePath; // Storage path in Firebase Storage
+  final DateTime? disabledAt; // When contract was disabled
+  final String? disabledBy; // User ID who disabled it
+  final String? disabledReason; // Reason for disabling
 
   ContractModel({
     required this.id,
@@ -80,7 +98,87 @@ class ContractModel {
     this.moveOutCharges,
     this.moveOutRefund,
     this.moveOutNotes,
+    this.complianceStatus = ComplianceStatus.active,
+    this.isLicensedForm = false,
+    this.lastReconfirmedAt,
+    this.documentSha256,
+    this.fileSize,
+    this.contentType,
+    this.uploadedAt,
+    this.storagePath,
+    this.disabledAt,
+    this.disabledBy,
+    this.disabledReason,
   });
+
+  /// Parse from Cloud Function response (timestamps as {seconds, nanoseconds})
+  static DateTime? _dateFrom(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is Map) {
+      final sec = v['seconds'] as int?;
+      if (sec != null) return DateTime.fromMillisecondsSinceEpoch(sec * 1000);
+    }
+    return null;
+  }
+
+  factory ContractModel.fromMap(Map<String, dynamic> data, {required String id}) {
+    return ContractModel(
+      id: id,
+      facilityId: data['facilityId'] ?? '',
+      facilityOwnerUid: data['facilityOwnerUid'] ?? '',
+      tenantId: data['tenantId'] ?? '',
+      title: data['title'] ?? '',
+      description: data['description'] ?? '',
+      type: ContractType.values.firstWhere(
+        (e) => e.name == data['type'],
+        orElse: () => ContractType.custom,
+      ),
+      status: ContractStatus.values.firstWhere(
+        (e) => e.name == data['status'],
+        orElse: () => ContractStatus.draft,
+      ),
+      templateId: data['templateId'],
+      fileUrl: data['fileUrl'],
+      signedFileUrl: data['signedFileUrl'],
+      createdAt: _dateFrom(data['createdAt']) ?? DateTime.now(),
+      sentAt: _dateFrom(data['sentAt']),
+      signedAt: _dateFrom(data['signedAt']),
+      expiresAt: _dateFrom(data['expiresAt']),
+      createdBy: data['createdBy'] ?? '',
+      sentBy: data['sentBy'],
+      signedBy: data['signedBy'],
+      customFields: data['customFields'] != null ? Map<String, dynamic>.from(data['customFields']) : null,
+      notes: data['notes'],
+      isActive: data['isActive'] ?? true,
+      moveOutStatus: data['moveOutStatus'] != null
+          ? MoveOutStatus.values.firstWhere(
+              (e) => e.name == data['moveOutStatus'],
+              orElse: () => MoveOutStatus.notStarted,
+            )
+          : null,
+      moveOutDate: _dateFrom(data['moveOutDate']),
+      moveOutCharges: data['moveOutCharges'] != null ? (data['moveOutCharges'] as num).toDouble() : null,
+      moveOutRefund: data['moveOutRefund'] != null ? (data['moveOutRefund'] as num).toDouble() : null,
+      moveOutNotes: data['moveOutNotes'],
+      complianceStatus: data['complianceStatus'] != null
+          ? ComplianceStatus.values.firstWhere(
+              (e) => e.name == data['complianceStatus'],
+              orElse: () => ComplianceStatus.active,
+            )
+          : ComplianceStatus.active,
+      isLicensedForm: data['isLicensedForm'] ?? false,
+      lastReconfirmedAt: _dateFrom(data['lastReconfirmedAt']),
+      documentSha256: data['documentSha256'],
+      fileSize: data['fileSize'] != null ? (data['fileSize'] as num).toInt() : null,
+      contentType: data['contentType'],
+      uploadedAt: _dateFrom(data['uploadedAt']),
+      storagePath: data['storagePath'],
+      disabledAt: _dateFrom(data['disabledAt']),
+      disabledBy: data['disabledBy'],
+      disabledReason: data['disabledReason'],
+    );
+  }
 
   factory ContractModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
@@ -122,6 +220,22 @@ class ContractModel {
       moveOutCharges: data['moveOutCharges'] != null ? (data['moveOutCharges'] as num).toDouble() : null,
       moveOutRefund: data['moveOutRefund'] != null ? (data['moveOutRefund'] as num).toDouble() : null,
       moveOutNotes: data['moveOutNotes'],
+      complianceStatus: data['complianceStatus'] != null
+          ? ComplianceStatus.values.firstWhere(
+              (e) => e.name == data['complianceStatus'],
+              orElse: () => ComplianceStatus.active,
+            )
+          : ComplianceStatus.active,
+      isLicensedForm: data['isLicensedForm'] ?? false,
+      lastReconfirmedAt: data['lastReconfirmedAt'] != null ? (data['lastReconfirmedAt'] as Timestamp).toDate() : null,
+      documentSha256: data['documentSha256'],
+      fileSize: data['fileSize'] != null ? (data['fileSize'] as num).toInt() : null,
+      contentType: data['contentType'],
+      uploadedAt: data['uploadedAt'] != null ? (data['uploadedAt'] as Timestamp).toDate() : null,
+      storagePath: data['storagePath'],
+      disabledAt: data['disabledAt'] != null ? (data['disabledAt'] as Timestamp).toDate() : null,
+      disabledBy: data['disabledBy'],
+      disabledReason: data['disabledReason'],
     );
   }
 
@@ -152,6 +266,17 @@ class ContractModel {
       if (moveOutCharges != null) 'moveOutCharges': moveOutCharges,
       if (moveOutRefund != null) 'moveOutRefund': moveOutRefund,
       if (moveOutNotes != null && moveOutNotes!.isNotEmpty) 'moveOutNotes': moveOutNotes,
+      'complianceStatus': complianceStatus.name,
+      'isLicensedForm': isLicensedForm,
+      if (lastReconfirmedAt != null) 'lastReconfirmedAt': Timestamp.fromDate(lastReconfirmedAt!),
+      if (documentSha256 != null) 'documentSha256': documentSha256,
+      if (fileSize != null) 'fileSize': fileSize,
+      if (contentType != null) 'contentType': contentType,
+      if (uploadedAt != null) 'uploadedAt': Timestamp.fromDate(uploadedAt!),
+      if (storagePath != null) 'storagePath': storagePath,
+      if (disabledAt != null) 'disabledAt': Timestamp.fromDate(disabledAt!),
+      if (disabledBy != null) 'disabledBy': disabledBy,
+      if (disabledReason != null) 'disabledReason': disabledReason,
     };
   }
 
@@ -182,6 +307,17 @@ class ContractModel {
     double? moveOutCharges,
     double? moveOutRefund,
     String? moveOutNotes,
+    ComplianceStatus? complianceStatus,
+    bool? isLicensedForm,
+    DateTime? lastReconfirmedAt,
+    String? documentSha256,
+    int? fileSize,
+    String? contentType,
+    DateTime? uploadedAt,
+    String? storagePath,
+    DateTime? disabledAt,
+    String? disabledBy,
+    String? disabledReason,
   }) {
     return ContractModel(
       id: id ?? this.id,
@@ -210,6 +346,17 @@ class ContractModel {
       moveOutCharges: moveOutCharges ?? this.moveOutCharges,
       moveOutRefund: moveOutRefund ?? this.moveOutRefund,
       moveOutNotes: moveOutNotes ?? this.moveOutNotes,
+      complianceStatus: complianceStatus ?? this.complianceStatus,
+      isLicensedForm: isLicensedForm ?? this.isLicensedForm,
+      lastReconfirmedAt: lastReconfirmedAt ?? this.lastReconfirmedAt,
+      documentSha256: documentSha256 ?? this.documentSha256,
+      fileSize: fileSize ?? this.fileSize,
+      contentType: contentType ?? this.contentType,
+      uploadedAt: uploadedAt ?? this.uploadedAt,
+      storagePath: storagePath ?? this.storagePath,
+      disabledAt: disabledAt ?? this.disabledAt,
+      disabledBy: disabledBy ?? this.disabledBy,
+      disabledReason: disabledReason ?? this.disabledReason,
     );
   }
 }

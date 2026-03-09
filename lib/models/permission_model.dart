@@ -55,11 +55,16 @@ enum PermissionType {
   exportData,
   importData,
   manageSettings,
+  manageTemplates, // Manage email/SMS/contract templates
+  manageAutomation, // Manage automation rules, workflows, schedules
   
   // Admin Functions
   manageUsers,
   viewAuditLogs,
   systemAdmin,
+
+  // Manager Overlock (manager/admin only)
+  manageOverlock,
 }
 
 enum RoleType {
@@ -292,6 +297,8 @@ extension PermissionTypeExtension on PermissionType {
         return 'Delete Unit';
       case PermissionType.viewUnit:
         return 'View Unit';
+      case PermissionType.manageOverlock:
+        return 'Manager Overlock';
       case PermissionType.createReminder:
         return 'Create Reminder';
       case PermissionType.editReminder:
@@ -308,12 +315,18 @@ extension PermissionTypeExtension on PermissionType {
         return 'Import Data';
       case PermissionType.manageSettings:
         return 'Manage Settings';
+      case PermissionType.manageTemplates:
+        return 'Manage Templates';
+      case PermissionType.manageAutomation:
+        return 'Manage Automation';
       case PermissionType.manageUsers:
         return 'Manage Users';
       case PermissionType.viewAuditLogs:
         return 'View Audit Logs';
       case PermissionType.systemAdmin:
         return 'System Admin';
+      case PermissionType.manageOverlock:
+        return 'Manager Overlock';
     }
   }
 }

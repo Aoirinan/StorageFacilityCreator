@@ -22,13 +22,14 @@ class MetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cardColor = color ?? AppTheme.primaryBlue;
+    final colorScheme = Theme.of(context).colorScheme;
+    final cardColor = color ?? colorScheme.primary;
     
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.borderLight, width: 1),
+        side: BorderSide(color: colorScheme.outline, width: 1),
       ),
       child: InkWell(
         onTap: onTap,
@@ -47,7 +48,7 @@ class MetricCard extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: AppTheme.textSecondary,
+                        color: colorScheme.onSurfaceVariant,
                         letterSpacing: 0.5,
                       ),
                     ),
@@ -66,7 +67,7 @@ class MetricCard extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.w700,
-                  color: AppTheme.textPrimary,
+                  color: colorScheme.onSurface,
                   letterSpacing: -1,
                 ),
               ),
@@ -76,7 +77,7 @@ class MetricCard extends StatelessWidget {
                   subtitle!,
                   style: TextStyle(
                     fontSize: 12,
-                    color: AppTheme.textSecondary,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],

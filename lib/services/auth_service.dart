@@ -1,8 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, debugPrint;
 import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/services/app_check_service.dart';
+import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/debug_logger.dart';
 
 class AuthService {
@@ -33,8 +34,55 @@ class AuthService {
       // Force refresh token if it's old to prevent expiration issues
       // #region agent log
       final appCheckStats = AppCheckService.getMonitoringStats();
-      // Force refresh if token might be expired or close to expiration
-      final appCheckToken = await AppCheckService.getToken(forceRefresh: true);
+      final isLocalhost = kIsWeb &&
+          (Uri.base.host == 'localhost' || Uri.base.host == '127.0.0.1');
+      // Capture full URL for debugging referer issues
+      final fullUrl = kIsWeb ? Uri.base.toString() : 'not-web';
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H10',
+        location: 'auth_service.dart:signInWithEmailAndPassword.urlCapture',
+        message: 'Captured full URL for referer debugging',
+        data: {
+          'fullUrl': fullUrl,
+          'host': Uri.base.host,
+          'port': Uri.base.port,
+          'scheme': Uri.base.scheme,
+          'isLocalhost': isLocalhost,
+        },
+      );
+      // #endregion
+      // H10: Try to get App Check token even on localhost (if App Check is activated)
+      // Firebase Auth might require App Check tokens even on localhost
+      String? appCheckToken;
+      if (isLocalhost) {
+        // Try to get token even on localhost (if App Check was activated in debug mode)
+        appCheckToken = await AppCheckService.getToken(forceRefresh: true);
+        if (kDebugMode) {
+          debugPrint('App Check token on localhost: ${appCheckToken != null ? "obtained" : "not available"}');
+        }
+        // #region agent log
+        aiDebugLog(
+          sessionId: 'debug-session',
+          runId: 'pre-fix',
+          hypothesisId: 'H10',
+          location: 'auth_service.dart:signInWithEmailAndPassword.localhostTokenAttempt',
+          message: 'Attempted App Check token on localhost',
+          data: {
+            'host': Uri.base.host,
+            'fullUrl': fullUrl,
+            'tokenObtained': appCheckToken != null,
+            'tokenLength': appCheckToken?.length ?? 0,
+          },
+        );
+        // #endregion
+      } else {
+        // Don't block login if App Check token is slow/failing (e.g. custom domain not yet authorized)
+        appCheckToken = await AppCheckService.getToken(forceRefresh: true)
+            .timeout(const Duration(seconds: 4), onTimeout: () => null);
+      }
       DebugLogger.log(
         hypothesisId: 'H2',
         location: 'auth_service.dart:signInWithEmailAndPassword.beforeAuth',
@@ -54,6 +102,21 @@ class AuthService {
         location: 'auth_service.dart:signInWithEmailAndPassword.requestParams',
         message: 'Auth request parameters',
         data: {'emailLength': email.length, 'passwordLength': password.length},
+      );
+      // #endregion
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H7',
+        location: 'auth_service.dart:signInWithEmailAndPassword.beforeAuthCall',
+        message: 'About to call signInWithEmailAndPassword',
+        data: {
+          'appCheckToken': appCheckToken != null,
+          'appCheckTokenLength': appCheckToken?.length ?? 0,
+          'isLocalhost': isLocalhost,
+          'email': email,
+        },
       );
       // #endregion
       final credential = await _auth.signInWithEmailAndPassword(
@@ -79,6 +142,35 @@ class AuthService {
     } on FirebaseAuthException catch (e) {
       if (kDebugMode) {
         print('❌ Sign in error: ${e.message}');
+        // Check for localhost blocking error
+        if (e.code.contains('requests-from-referer') && e.code.contains('localhost')) {
+          print('');
+          print('🚨 LOCALHOST BLOCKED BY FIREBASE AUTH');
+          print('═══════════════════════════════════════════════════════');
+          print('Firebase Auth is blocking requests from localhost.');
+          print('Error code: ${e.code}');
+          print('Current URL: ${kIsWeb ? Uri.base.toString() : "N/A"}');
+          print('');
+          print('NOTE: Even if localhost is in authorized domains, Firebase');
+          print('may block based on HTTP Referer header (which includes port).');
+          print('');
+          print('SOLUTION 1: Try adding the specific port to authorized domains');
+          print('1. Go to Firebase Console: https://console.firebase.google.com');
+          print('2. Select your project');
+          print('3. Go to Authentication > Settings > Authorized domains');
+          print('4. Click "Add domain" and try adding: localhost:${Uri.base.port}');
+          print('   (Note: This may not work - Firebase may not accept ports)');
+          print('');
+          print('SOLUTION 2: Use Firebase Emulators (RECOMMENDED)');
+          print('Run: flutter run -d chrome --dart-define=USE_EMULATORS=true');
+          print('(Make sure Firebase Emulators are running: firebase emulators:start)');
+          print('');
+          print('SOLUTION 3: Check Firebase App Check settings');
+          print('App Check might be enforced at project level. Check:');
+          print('Firebase Console > App Check > Apps > Your web app');
+          print('═══════════════════════════════════════════════════════');
+          print('');
+        }
       }
       // #region agent log
       DebugLogger.log(
@@ -92,6 +184,42 @@ class AuthService {
         },
       );
       // #endregion
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H7',
+        location: 'auth_service.dart:signInWithEmailAndPassword.firebaseAuthException',
+        message: 'FirebaseAuthException caught',
+        data: {
+          'code': e.code,
+          'message': e.message ?? 'null',
+          'credential': e.credential?.toString() ?? 'null',
+          'email': e.email ?? 'null',
+          'phoneNumber': e.phoneNumber ?? 'null',
+        },
+      );
+      // #endregion
+      rethrow;
+    } catch (e, stackTrace) {
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H8',
+        location: 'auth_service.dart:signInWithEmailAndPassword.unexpectedError',
+        message: 'Unexpected error during sign-in',
+        data: {
+          'errorType': e.runtimeType.toString(),
+          'errorMessage': e.toString(),
+          'stackTrace': stackTrace.toString().substring(0, 500), // First 500 chars
+        },
+      );
+      // #endregion
+      if (kDebugMode) {
+        print('❌ Unexpected sign in error: $e');
+        print('Stack trace: $stackTrace');
+      }
       rethrow;
     }
   }

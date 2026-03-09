@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/services/active_facility_service.dart';
 import 'package:sfcapp/services/ai_assistant_service.dart';
+import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
@@ -38,12 +39,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
   void _addWelcomeMessage() {
     setState(() {
       _messages.add(ChatMessage(
-        text: 'Hello! I\'m your storage facility assistant. I can help you with:\n\n'
-            '• Questions about using this app\'s features\n'
-            '• Self-storage operational best practices\n'
-            '• Facility management tips\n'
-            '• Unit pricing and occupancy strategies\n\n'
-            'What would you like to know?',
+        text: 'Hi! I\'m your storage facility assistant. Ask me anything about running your facility, managing tenants, payments, best practices, or how to use this app.',
         isUser: false,
         timestamp: DateTime.now(),
       ));
@@ -54,6 +50,20 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty || _isLoading) return;
 
+    // #region agent log
+    aiDebugLog(
+      sessionId: 'debug-session',
+      runId: 'pre-fix',
+      hypothesisId: 'H5',
+      location: 'ai_assistant_screen.dart:_sendMessage',
+      message: 'Send message entry',
+      data: {
+        'textLength': text.length,
+        'isLoading': _isLoading,
+      },
+    );
+    // #endregion
+
     setState(() {
       _messages.add(ChatMessage(
         text: text,
@@ -63,19 +73,6 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
     });
     _messageController.clear();
     _scrollToBottom();
-
-    if (text.length > AIAssistantService.maxInputChars) {
-      setState(() {
-        _messages.add(ChatMessage(
-          text: 'Your message is too long. Please keep it under '
-              '${AIAssistantService.maxInputChars} characters.',
-          isUser: false,
-          timestamp: DateTime.now(),
-        ));
-      });
-      _scrollToBottom();
-      return;
-    }
 
     setState(() {
       _isLoading = true;
@@ -105,23 +102,105 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
     try {
       final config = await AIAssistantService.getAIAssistantConfig();
       final useOpenAI = facilityId != null && config.shouldUseOpenAI(facilityId);
+      final allowlistHasFacility = facilityId != null
+          ? config.allowlistFacilityIds.contains(facilityId)
+          : false;
+      final facilityIdSuffix = facilityId != null && facilityId.length > 4
+          ? facilityId.substring(facilityId.length - 4)
+          : (facilityId ?? '');
+
+      // PRODUCTION DEBUG: Log config evaluation to console
+      print('🔍 [AI Assistant] Config check:');
+      print('   enabled: ${config.enabled}');
+      print('   killSwitch: ${config.killSwitch}');
+      print('   provider: ${config.provider}');
+      print('   facilityId: ${facilityId ?? "null"}');
+      print('   allowlistLength: ${config.allowlistFacilityIds.length}');
+      print('   allowlistHasFacility: $allowlistHasFacility');
+      print('   useOpenAI: $useOpenAI');
+
+      // #region agent log
+      aiDebugLog(
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H1',
+        location: 'ai_assistant_screen.dart:_sendMessage',
+        message: 'Config evaluated',
+        data: {
+          'enabled': config.enabled,
+          'killSwitch': config.killSwitch,
+          'provider': config.provider,
+          'allowlistLength': config.allowlistFacilityIds.length,
+          'allowlistHasFacility': allowlistHasFacility,
+          'facilityIdPresent': facilityId != null,
+          'facilityIdSuffix': facilityIdSuffix,
+          'useOpenAI': useOpenAI,
+        },
+      );
+      // #endregion
 
       if (useOpenAI) {
         final fid = facilityId;
+        print('🚀 [AI Assistant] Calling OpenAI via aiAssistantChat callable...');
         try {
+          // #region agent log
+          aiDebugLog(
+            sessionId: 'debug-session',
+            runId: 'pre-fix',
+            hypothesisId: 'H2',
+            location: 'ai_assistant_screen.dart:_sendMessage',
+            message: 'Calling aiAssistantChat',
+            data: {
+              'facilityIdSuffix': facilityIdSuffix,
+              'textLength': text.length,
+              'hasFacilityName': facilityName != null,
+            },
+          );
+          // #endregion
           final result = await AIAssistantService.chatWithOpenAI(
             facilityId: fid,
             message: text,
             facilityName: facilityName,
           );
+          print('✅ [AI Assistant] OpenAI response received: ${result.providerUsed} | ${result.model} | ${result.tokensUsed} tokens');
           replyText = result.replyText;
           debugLine = result.debugLine;
+          // #region agent log
+          aiDebugLog(
+            sessionId: 'debug-session',
+            runId: 'pre-fix',
+            hypothesisId: 'H3',
+            location: 'ai_assistant_screen.dart:_sendMessage',
+            message: 'aiAssistantChat success',
+            data: {
+              'providerUsed': result.providerUsed,
+              'model': result.model,
+              'tokensUsed': result.tokensUsed,
+              'latencyMs': result.latencyMs,
+            },
+          );
+          // #endregion
           if (kDebugMode) {
             debugPrint('AI Assistant (OpenAI): ${result.debugLine}');
           }
         } catch (e) {
           final errorCode = AIAssistantService.getErrorCode(e);
+          print('❌ [AI Assistant] OpenAI call failed: $errorCode - ${e.toString()}');
+          // #region agent log
+          aiDebugLog(
+            sessionId: 'debug-session',
+            runId: 'pre-fix',
+            hypothesisId: 'H3',
+            location: 'ai_assistant_screen.dart:_sendMessage',
+            message: 'aiAssistantChat error',
+            data: {
+              'errorCode': errorCode ?? 'unknown',
+              'errorType': e.runtimeType.toString(),
+            },
+          );
+          // #endregion
           if (errorCode == 'failed-precondition') {
+            print('⚠️ [AI Assistant] Falling back to tips due to failed-precondition');
             await Future.delayed(const Duration(milliseconds: 400));
             replyText = await _getAIResponse(text, facilityContext);
           } else {
@@ -130,6 +209,20 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
           }
         }
       } else {
+        print('⚠️ [AI Assistant] OpenAI disabled - using tips fallback');
+        print('   Reason: enabled=${config.enabled}, killSwitch=${config.killSwitch}, provider=${config.provider}, facilityId=${facilityId ?? "null"}');
+        // #region agent log
+        aiDebugLog(
+          sessionId: 'debug-session',
+          runId: 'pre-fix',
+          hypothesisId: 'H1',
+          location: 'ai_assistant_screen.dart:_sendMessage',
+          message: 'OpenAI disabled, using tips fallback',
+          data: {
+            'facilityIdPresent': facilityId != null,
+          },
+        );
+        // #endregion
         await Future.delayed(const Duration(milliseconds: 400));
         replyText = await _getAIResponse(text, facilityContext);
       }

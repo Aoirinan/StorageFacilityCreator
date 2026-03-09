@@ -1,0 +1,377 @@
+{
+  "screens": [
+    {
+      "name": "Marketing Landing",
+      "route": "/",
+      "purpose": "Public marketing page",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:155", "lib/screens/marketing_landing_page.dart"]
+    },
+    {
+      "name": "Login",
+      "route": "/login",
+      "purpose": "User authentication",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:158", "lib/screens/auth/login_screen.dart"]
+    },
+    {
+      "name": "Dashboard",
+      "route": "/dashboard",
+      "purpose": "Main dashboard with metrics and activity feed",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:317", "lib/screens/home_screen_modern.dart"]
+    },
+    {
+      "name": "Facilities",
+      "route": "/facilities",
+      "purpose": "Facility list and management",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:322", "lib/screens/facility_management_screen.dart"]
+    },
+    {
+      "name": "Tenants",
+      "route": "/tenants",
+      "purpose": "Tenant list with search and filters",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:337", "lib/screens/client_list_screen.dart"]
+    },
+    {
+      "name": "Tenant Detail",
+      "route": "/tenants/detail",
+      "purpose": "Comprehensive tenant information and actions",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:359", "lib/screens/client_detail_screen.dart"]
+    },
+    {
+      "name": "Tenant CSV Import",
+      "route": "/tenants/import-csv",
+      "purpose": "Bulk import tenants from CSV file",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:342", "lib/screens/tenant_csv_import_wizard_screen.dart"]
+    },
+    {
+      "name": "Units Map",
+      "route": "/units/map",
+      "purpose": "Visual unit map editor with drag-and-drop",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:448", "lib/screens/facility_map_editor_screen.dart"]
+    },
+    {
+      "name": "Contracts",
+      "route": "/contracts",
+      "purpose": "Contract/lease list and management",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:485", "lib/screens/contract_list_screen.dart"]
+    },
+    {
+      "name": "Payments",
+      "route": "/payments",
+      "purpose": "Payment list and management",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:535", "lib/screens/payment_list_screen.dart"]
+    },
+    {
+      "name": "Invoices",
+      "route": "/invoices",
+      "purpose": "Invoice list and management",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:1031", "lib/screens/invoice_list_screen.dart"]
+    },
+    {
+      "name": "Delinquency Dashboard",
+      "route": "/delinquency",
+      "purpose": "Late payments and delinquency management",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:559", "lib/screens/late_dashboard_screen.dart"]
+    },
+    {
+      "name": "Messaging",
+      "route": "/messaging",
+      "purpose": "Team messaging (group and private conversations)",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:579", "lib/screens/messaging_screen.dart"]
+    },
+    {
+      "name": "SMS Conversations",
+      "route": "/messaging/sms",
+      "purpose": "SMS conversation threads with tenants",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:590", "lib/screens/sms_conversations_screen.dart"]
+    },
+    {
+      "name": "Reports",
+      "route": "/reports",
+      "purpose": "Financial reports and analytics",
+      "status": "Implemented",
+      "evidence": ["lib/router/app_router.dart:803", "lib/screens/financial_reports_screen.dart"]
+    },
+    {
+      "name": "AI Assistant",
+      "route": "/ai-assistant",
+      "purpose": "AI assistant for facility management",
+      "status": "Stub",
+      "evidence": ["lib/router/app_router.dart:798", "lib/screens/ai_assistant_screen.dart:99 (TODO: Replace with actual LLM API call)"]
+    }
+  ],
+  "features": [
+    {
+      "domain": "Authentication & Roles",
+      "feature": "Firebase Authentication",
+      "status": "Implemented",
+      "how_it_works": "Email/password authentication with email verification, password reset, role-based access control (owner, manager, employee), super admin support, facility-scoped permissions, invite system",
+      "evidence": ["lib/services/auth_service.dart", "lib/providers/auth_provider.dart", "firestore.rules:44-57", "lib/screens/auth/"]
+    },
+    {
+      "domain": "Facility Management",
+      "feature": "Facility CRUD",
+      "status": "Implemented",
+      "how_it_works": "Create, edit, archive facilities. Store settings (billing, insurance, hours, timezone, locale). Logo upload. Stripe Connect linking.",
+      "evidence": ["lib/models/facility_model.dart", "lib/screens/facility_creation_wizard.dart", "lib/services/facility_service.dart", "firestore.rules:192-214"]
+    },
+    {
+      "domain": "Tenant Management",
+      "feature": "Tenant CRUD and CSV Import",
+      "status": "Implemented",
+      "how_it_works": "Create/edit/archive tenants. CSV bulk import (5-step wizard: upload, map columns, preview, handle duplicates, import). Contact info, vehicles, occupants, addresses, government ID, portal access, lead source tracking.",
+      "evidence": ["lib/models/tenant_model.dart", "lib/screens/client_detail_screen.dart", "lib/screens/tenant_csv_import_wizard_screen.dart", "lib/services/tenant_service.dart", "firestore.rules:216-272"]
+    },
+    {
+      "domain": "Units Management",
+      "feature": "Unit Management and Visual Map",
+      "status": "Implemented",
+      "how_it_works": "Unit list, detail view, visual map editor (drag-and-drop shapes), unit types, status tracking, pricing, occupancy tracking.",
+      "evidence": ["lib/models/unit_model.dart", "lib/screens/facility_map_editor_screen.dart", "lib/services/unit_service.dart", "firestore.rules:274-276"]
+    },
+    {
+      "domain": "Billing & Invoicing",
+      "feature": "Invoices, Ledger, Deposits",
+      "status": "Implemented",
+      "how_it_works": "Invoice creation, PDF generation, ledger entries (charges, payments, credits, refunds), recurring charges, payment allocation, deposit management and refunds.",
+      "evidence": ["lib/models/invoice_model.dart", "lib/models/ledger_entry_model.dart", "lib/models/deposit_model.dart", "lib/services/invoice_service.dart", "lib/services/ledger_service.dart", "lib/services/deposit_service.dart", "firestore.rules:671-711"]
+    },
+    {
+      "domain": "Payments",
+      "feature": "Stripe Integration and Autopay",
+      "status": "Implemented",
+      "how_it_works": "Stripe payment processing (checkout sessions, payment intents), Stripe Connect (facility accounts), payment methods (cards, ACH), Setup Intents, autopay (daily scheduled), public payment links, tenant portal payments, refunds.",
+      "evidence": ["lib/services/stripe_service.dart", "lib/services/autopay_service.dart", "functions/src/index.ts:2965-8386 (Stripe functions)", "firestore.rules:284-286"]
+    },
+    {
+      "domain": "Messaging",
+      "feature": "SMS, Email, Reminders, Bulk Messaging",
+      "status": "Implemented",
+      "how_it_works": "SMS via Twilio, email via SendGrid, SMS/email templates, email sequences, reminder system (one-time and scheduled), bulk messaging, team messaging (group/private), contact logs (auto-created), message history, communication analytics.",
+      "evidence": ["lib/services/sms_service.dart", "lib/services/email_service.dart", "lib/services/reminder_service.dart", "lib/services/bulk_messaging_service.dart", "functions/src/index.ts:417 (sendEmail)", "functions/src/index.ts:1697 (sendSMS)", "functions/src/index.ts:5741 (payment reminders)", "functions/src/index.ts:3656 (delinquency automation)"]
+    },
+    {
+      "domain": "Documents",
+      "feature": "Document Management and E-Signatures",
+      "status": "Implemented",
+      "how_it_works": "Document upload/storage, PDF generation (invoices, contracts), e-signature integration (Dropbox Sign), envelope creation/status tracking, document attachments, document center.",
+      "evidence": ["lib/services/document_service.dart", "lib/services/esign_service.dart", "functions/src/index.ts:9242 (esignCreateEnvelope)", "functions/src/index.ts:9370 (esignWebhookDropboxSign)", "firestore.rules:349-377", "firestore.rules:772-800"]
+    },
+    {
+      "domain": "Reporting & Analytics",
+      "feature": "Financial Reports, Analytics, Dashboards",
+      "status": "Implemented",
+      "how_it_works": "Financial reports (revenue, expenses, profit), communication analytics, insurance reports, lead source analytics, delinquency dashboard, yield management, report scheduling (automated email delivery).",
+      "evidence": ["lib/screens/financial_reports_screen.dart", "lib/screens/communication_analytics_screen.dart", "lib/services/reports_service.dart", "lib/services/communication_analytics_service.dart"]
+    },
+    {
+      "domain": "Automation",
+      "feature": "Scheduled Automation",
+      "status": "Implemented",
+      "how_it_works": "Payment reminders (3 days before due), delinquency automation (late fees, notices, lockouts), autopay processing (daily), monthly rent charge generation, insurance compliance checks, email digests.",
+      "evidence": ["functions/src/index.ts:5741 (processPaymentReminders)", "functions/src/index.ts:3656 (processDelinquencyAutomation)", "functions/src/index.ts:4819 (processAutopayPayments)", "functions/src/index.ts:3471 (scheduledGenerateMonthlyRentCharges)"]
+    }
+  ],
+  "integrations": [
+    {
+      "name": "Stripe",
+      "status": "Implemented",
+      "evidence": ["functions/src/index.ts:2965-8386 (51 Stripe-related functions)", "lib/services/stripe_service.dart", "lib/services/setup_intent_service.dart", "lib/services/autopay_service.dart", "lib/screens/stripe_connect_onboarding_screen.dart"],
+      "usage": "Payment processing, subscriptions, Stripe Connect (facility accounts), payment methods, Setup Intents, autopay, refunds, customer portal, webhooks"
+    },
+    {
+      "name": "SendGrid",
+      "status": "Implemented",
+      "evidence": ["functions/src/index.ts:417 (sendEmail)", "functions/src/index.ts:1121 (sendDigest)", "functions/src/index.ts:1215 (sendDailyDigests)", "lib/services/email_service.dart", "lib/services/email_template_service.dart"],
+      "usage": "Email sending, email templates, email digests, email tracking (opens/clicks if enabled), email usage tracking"
+    },
+    {
+      "name": "Twilio",
+      "status": "Implemented",
+      "evidence": ["functions/src/index.ts:1697 (sendSMS)", "functions/src/index.ts:8683 (handleIncomingSMS)", "functions/src/index.ts:2598 (getSMSUsageStatus)", "lib/services/sms_service.dart", "lib/services/sms_conversation_service.dart"],
+      "usage": "SMS sending, incoming SMS webhook, SMS conversation threading, SMS usage tracking and limits, monthly usage reset"
+    },
+    {
+      "name": "Dropbox Sign",
+      "status": "Implemented",
+      "evidence": ["functions/src/index.ts:9242 (esignCreateEnvelope)", "functions/src/index.ts:9370 (esignWebhookDropboxSign)", "lib/services/esign_service.dart", "lib/models/esign_envelope_model.dart"],
+      "usage": "E-signature envelope creation, status tracking, webhook handling, envelope resend/void"
+    }
+  ],
+  "firestore": [
+    {
+      "collection": "facilities",
+      "fields": ["name", "ownerUid", "facilityCreatorAccountId", "createdAt", "updatedAt", "address", "phone", "email", "description", "totalUnits", "occupiedUnits", "active", "timeZone", "businessHours", "gateHours", "billingSettings", "insuranceSettings", "stripeConnectAccountId", "stripeConnectOnboardingComplete", "defaultLocale", "logoUrl", "roles", "managers"],
+      "evidence": ["lib/models/facility_model.dart", "firestore.rules:192-214"]
+    },
+    {
+      "collection": "facilities/{facilityId}/tenants",
+      "fields": ["facilityId", "name", "email", "phone", "unitNumber", "monthlyRate", "paidThrough", "isActive", "portalEnabled", "portalAccessCode", "insuranceStatus", "delinquencyStatus", "emergencyContacts", "vehicles", "occupants", "addresses", "governmentIdType", "governmentIdNumber", "leadSource", "preferredLocale", "isOnDNR"],
+      "evidence": ["lib/models/tenant_model.dart", "firestore.rules:216-272"]
+    },
+    {
+      "collection": "facilities/{facilityId}/contracts",
+      "fields": ["facilityId", "facilityOwnerUid", "tenantId", "title", "type", "status", "createdAt", "sentAt", "signedAt", "expiresAt", "fileUrl", "signedFileUrl", "moveOutStatus", "moveOutDate", "moveOutCharges", "moveOutRefund"],
+      "evidence": ["lib/models/contract_model.dart", "firestore.rules:288-323"]
+    },
+    {
+      "collection": "facilities/{facilityId}/payments",
+      "fields": ["facilityId", "tenantId", "amount", "type", "status", "method", "stripePaymentIntentId", "stripeChargeId", "createdAt", "processedAt"],
+      "evidence": ["lib/models/payment_model.dart", "firestore.rules:284-286"]
+    },
+    {
+      "collection": "facilities/{facilityId}/invoices",
+      "fields": ["facilityId", "tenantId", "amount", "status", "dueDate", "lineItems", "createdAt"],
+      "evidence": ["lib/models/invoice_model.dart", "firestore.rules:705-707"]
+    },
+    {
+      "collection": "facilities/{facilityId}/ledgers",
+      "fields": ["facilityId", "tenantId", "type", "amount", "entryDate", "status", "createdAt", "createdBy"],
+      "evidence": ["lib/models/ledger_entry_model.dart", "firestore.rules:671-703"]
+    },
+    {
+      "collection": "facilities/{facilityId}/messageLogs",
+      "fields": ["facilityId", "tenantId", "type", "channel", "status", "sentAt", "messageId"],
+      "evidence": ["firestore.rules:664-669", "functions/src/index.ts:196 (createOrUpdateMessageLog)"]
+    },
+    {
+      "collection": "facilities/{facilityId}/reminders",
+      "fields": ["facilityId", "tenantId", "type", "channels", "title", "message", "scheduledFor", "status", "createdAt", "createdBy"],
+      "evidence": ["lib/models/reminder_model.dart", "firestore.rules:423-448"]
+    },
+    {
+      "collection": "facilities/{facilityId}/esignEnvelopes",
+      "fields": ["facilityId", "facilityOwnerUid", "provider", "status", "providerEnvelopeId", "signerName", "signerEmail", "createdAt", "createdBy"],
+      "evidence": ["lib/models/esign_envelope_model.dart", "firestore.rules:349-377"]
+    }
+  ],
+  "functions": [
+    {
+      "name": "sendEmail",
+      "trigger": "HTTPS Callable",
+      "purpose": "Send email via SendGrid",
+      "evidence": ["functions/src/index.ts:417"]
+    },
+    {
+      "name": "sendSMS",
+      "trigger": "HTTPS Callable",
+      "purpose": "Send SMS via Twilio",
+      "evidence": ["functions/src/index.ts:1697"]
+    },
+    {
+      "name": "processStripePayment",
+      "trigger": "HTTPS Callable",
+      "purpose": "Process Stripe payment",
+      "evidence": ["functions/src/index.ts:2965"]
+    },
+    {
+      "name": "processAutopayPayments",
+      "trigger": "Pub/Sub Scheduled (Daily 2:00 AM UTC)",
+      "purpose": "Process autopay payments for tenants",
+      "evidence": ["functions/src/index.ts:4819"]
+    },
+    {
+      "name": "processDelinquencyAutomation",
+      "trigger": "Pub/Sub Scheduled (Daily 3:00 AM UTC)",
+      "purpose": "Process late fees, notices, and lockouts",
+      "evidence": ["functions/src/index.ts:3656"]
+    },
+    {
+      "name": "processPaymentReminders",
+      "trigger": "Pub/Sub Scheduled (Daily 9:00 AM UTC)",
+      "purpose": "Send payment reminders 3 days before due date",
+      "evidence": ["functions/src/index.ts:5741"]
+    },
+    {
+      "name": "scheduledGenerateMonthlyRentCharges",
+      "trigger": "Pub/Sub Scheduled (Monthly 1st)",
+      "purpose": "Auto-generate monthly rent charges",
+      "evidence": ["functions/src/index.ts:3471"]
+    },
+    {
+      "name": "stripeWebhook",
+      "trigger": "HTTPS Request (Webhook)",
+      "purpose": "Handle Stripe webhook events",
+      "evidence": ["functions/src/index.ts:6661"]
+    },
+    {
+      "name": "handleIncomingSMS",
+      "trigger": "HTTPS Request (Webhook)",
+      "purpose": "Handle incoming SMS from Twilio",
+      "evidence": ["functions/src/index.ts:8683"]
+    },
+    {
+      "name": "esignWebhookDropboxSign",
+      "trigger": "HTTPS Request (Webhook)",
+      "purpose": "Handle Dropbox Sign e-signature events",
+      "evidence": ["functions/src/index.ts:9370"]
+    },
+    {
+      "name": "createStripeConnectAccount",
+      "trigger": "HTTPS Callable",
+      "purpose": "Create Stripe Connect account for facility",
+      "evidence": ["functions/src/index.ts:7507"]
+    },
+    {
+      "name": "tenantPortalFetch",
+      "trigger": "HTTPS Callable",
+      "purpose": "Fetch tenant portal data (email + access code)",
+      "evidence": ["functions/src/index.ts:1446"]
+    }
+  ],
+  "gaps": [
+    {
+      "gap": "AI Assistant is a stub",
+      "impact": "Feature not functional - needs LLM API integration",
+      "evidence": ["lib/screens/ai_assistant_screen.dart:99 (TODO: Replace with actual LLM API call)"]
+    },
+    {
+      "gap": "Reports Consolidated may have stub implementations",
+      "impact": "Some report features may not work on all platforms",
+      "evidence": ["lib/screens/reports_consolidated_stub.dart", "lib/screens/reports_consolidated_web.dart"]
+    },
+    {
+      "gap": "Insurance Report may have stub implementations",
+      "impact": "Insurance reports may not work on all platforms",
+      "evidence": ["lib/screens/insurance_report_stub.dart", "lib/screens/insurance_report_web.dart"]
+    },
+    {
+      "gap": "Audit logs may not be comprehensive",
+      "impact": "May not track all operations for compliance",
+      "evidence": ["lib/services/audit_service.dart", "firestore.rules:417-421, 632-657"]
+    },
+    {
+      "gap": "Tenant mobile app unknown",
+      "impact": "Tenants access via web portal only",
+      "evidence": ["No evidence of mobile app in codebase"]
+    },
+    {
+      "gap": "Two-factor authentication (2FA) unknown",
+      "impact": "Security may rely on email verification only",
+      "evidence": ["No evidence of 2FA in codebase"]
+    },
+    {
+      "gap": "Data export functionality unknown",
+      "impact": "May not be able to export data (CSV import exists, export not confirmed)",
+      "evidence": ["CSV import exists, export not found"]
+    },
+    {
+      "gap": "Accounting software integration unknown",
+      "impact": "No direct integration with QuickBooks or other accounting software",
+      "evidence": ["No evidence of accounting integrations"]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../services/search_service.dart';
 import '../services/facility_service.dart';
@@ -95,7 +96,7 @@ class SearchStateNotifier extends StateNotifier<AsyncValue<List<SearchResult>>> 
 
   void setFacilityFilter(String? facilityId) {
     _facilityId = facilityId;
-    final currentQuery = state.valueOrNull?.isNotEmpty == true ? 'search' : '';
+    final currentQuery = (state.whenOrNull(data: (d) => d)?.isNotEmpty == true) ? 'search' : '';
     if (currentQuery.isNotEmpty) {
       _performSearch(currentQuery);
     }

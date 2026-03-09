@@ -89,21 +89,7 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
       );
     }
 
-    return ModernPageWrapper(
-      currentRoute: '/access',
-      title: 'Gate Access • ${widget.facilityName}',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      floatingActionButton: _canManageAccess
-          ? FloatingActionButton.extended(
-              onPressed: () => _showEditor(),
-              backgroundColor: AppTheme.primaryBlue,
-              icon: const Icon(Icons.add),
-              label: const Text('Add Access Code'),
-            )
-          : null,
-      child: entriesAsync.when(
+    return entriesAsync.when(
         data: (entries) {
           final filtered = entries.where((entry) {
             if (_searchQuery.isEmpty) return true;
@@ -124,7 +110,7 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
               if (!_canManageAccess)
                 MaterialBanner(
                   content: Text(
-                    _permissionReason ?? 'You have read-only access to gate codes for this facility.',
+                    _permissionReason ?? 'You have read-only access to access codes for this facility.',
                   ),
                   backgroundColor: AppTheme.warning.withOpacity(0.1),
                   leading: Icon(Icons.lock_outline, color: AppTheme.warning),
@@ -167,7 +153,7 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
                 const Icon(Icons.error_outline, color: AppTheme.error, size: 48),
                 const SizedBox(height: 12),
                 Text(
-                  'Unable to load gate access records.',
+                        'Unable to load access code records.',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
@@ -179,8 +165,7 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
             ),
           ),
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildEmptyState() {
@@ -197,12 +182,12 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'No gate access codes yet',
+              'No access codes yet',
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 8),
             Text(
-              'Create access codes to manage keypad access for your tenants. '
+              'Generate and manage access codes for your tenants. '
               'Each code can be limited to specific dates and daily time windows.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
@@ -318,7 +303,7 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            _permissionReason ?? 'You do not have permission to manage gate access codes.',
+                    _permissionReason ?? 'You do not have permission to manage access codes.',
           ),
         ),
       );

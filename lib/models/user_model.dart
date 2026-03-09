@@ -7,6 +7,10 @@ class UserModel {
   final DateTime? tosAcceptedAt;
   final DateTime? createdAt;
   final DateTime? lastLoginAt;
+  final String? activeFacilityId; // Active facility ID (null = All Facilities)
+  final bool twoFactorEnabled; // Whether 2FA is enabled for this user
+  final DateTime? lastOTPSentAt; // Last time an OTP was sent (for rate limiting)
+  final bool authDisabled; // Set by super admin when disabling Auth (cannot sign in)
 
   UserModel({
     required this.uid,
@@ -15,6 +19,10 @@ class UserModel {
     this.tosAcceptedAt,
     this.createdAt,
     this.lastLoginAt,
+    this.activeFacilityId,
+    this.twoFactorEnabled = false,
+    this.lastOTPSentAt,
+    this.authDisabled = false,
   });
 
   // Create UserModel from Firestore document
@@ -28,6 +36,10 @@ class UserModel {
       tosAcceptedAt: (data?['tosAcceptedAt'] as Timestamp?)?.toDate(),
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate(),
       lastLoginAt: (data?['lastLoginAt'] as Timestamp?)?.toDate(),
+      activeFacilityId: data?['activeFacilityId'] as String?,
+      twoFactorEnabled: data?['twoFactorEnabled'] ?? false,
+      lastOTPSentAt: (data?['lastOTPSentAt'] as Timestamp?)?.toDate(),
+      authDisabled: data?['authDisabled'] ?? false,
     );
   }
 
@@ -39,6 +51,9 @@ class UserModel {
       'tosAcceptedAt': tosAcceptedAt != null ? Timestamp.fromDate(tosAcceptedAt!) : null,
       'createdAt': createdAt != null ? Timestamp.fromDate(createdAt!) : FieldValue.serverTimestamp(),
       'lastLoginAt': lastLoginAt != null ? Timestamp.fromDate(lastLoginAt!) : FieldValue.serverTimestamp(),
+      'activeFacilityId': activeFacilityId,
+      'twoFactorEnabled': twoFactorEnabled,
+      'lastOTPSentAt': lastOTPSentAt != null ? Timestamp.fromDate(lastOTPSentAt!) : null,
     };
   }
 
@@ -50,6 +65,10 @@ class UserModel {
     DateTime? tosAcceptedAt,
     DateTime? createdAt,
     DateTime? lastLoginAt,
+    String? activeFacilityId,
+    bool? twoFactorEnabled,
+    DateTime? lastOTPSentAt,
+    bool? authDisabled,
   }) {
     return UserModel(
       uid: uid ?? this.uid,
@@ -58,6 +77,10 @@ class UserModel {
       tosAcceptedAt: tosAcceptedAt ?? this.tosAcceptedAt,
       createdAt: createdAt ?? this.createdAt,
       lastLoginAt: lastLoginAt ?? this.lastLoginAt,
+      activeFacilityId: activeFacilityId ?? this.activeFacilityId,
+      twoFactorEnabled: twoFactorEnabled ?? this.twoFactorEnabled,
+      lastOTPSentAt: lastOTPSentAt ?? this.lastOTPSentAt,
+      authDisabled: authDisabled ?? this.authDisabled,
     );
   }
 

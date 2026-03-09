@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode, kIsWeb;
 import 'dart:ui' show PlatformDispatcher;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -14,6 +15,7 @@ import 'services/security_service.dart';
 import 'services/error_reporter.dart';
 import 'services/debug_logger.dart';
 import 'theme/app_theme.dart';
+import 'providers/theme_mode_provider.dart';
 import 'test_firestore_rules.dart';
 import 'widgets/error_banner.dart';
 import 'config/firebase_emulator_config.dart';
@@ -129,6 +131,11 @@ void main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+
+    // Disable Firestore persistence on web to avoid INTERNAL ASSERTION FAILED / listener state issues (apply once only)
+    if (kIsWeb) {
+      FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: false);
+    }
 
     await _activateAppCheckOnce();
     // #region agent log
@@ -309,17 +316,39 @@ class SFCApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(goRouterProvider);
     final locale = ref.watch(localeProvider);
+    final themeMode = ref.watch(themeModeProvider);
 
     return MaterialApp.router(
       title: 'SFC App - Storage Facility Creator',
       theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: themeMode,
       routerConfig: router,
-      builder: (context, child) => ScrollConfiguration(
-        behavior: const _AppScrollBehavior(),
-        child: ErrorBanner(
-          child: child ?? const SizedBox.shrink(),
-        ),
-      ),
+      builder: (context, child) {
+        // Scale text for readability on phone/tablet; prevent words running together
+        final media = MediaQuery.of(context);
+        final width = media.size.width;
+        final systemScale = media.textScaleFactor;
+        double scaleFactor;
+        if (kIsWeb && width < 1024) {
+          // Phone/tablet: keep at least 1.0 so text doesn't shrink and cramp
+          scaleFactor = systemScale.clamp(1.0, 1.4);
+        } else {
+          scaleFactor = systemScale.clamp(0.9, 1.3);
+        }
+        return MediaQuery(
+          data: media.copyWith(
+            textScaleFactor: scaleFactor,
+            boldText: media.boldText,
+          ),
+          child: ScrollConfiguration(
+            behavior: const _AppScrollBehavior(),
+            child: ErrorBanner(
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
+        );
+      },
       scrollBehavior: const _AppScrollBehavior(),
       debugShowCheckedModeBanner: false,
       locale: locale,
@@ -351,5 +380,12 @@ class _AppScrollBehavior extends MaterialScrollBehavior {
         PointerDeviceKind.trackpad,
         PointerDeviceKind.stylus,
       };
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) {
+    return const AlwaysScrollableScrollPhysics(
+      parent: ClampingScrollPhysics(),
+    );
+  }
 }
 

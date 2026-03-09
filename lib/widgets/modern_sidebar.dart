@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../constants/app_version.dart';
+import 'bug_report_dialog.dart';
 
 /// Modern sidebar navigation inspired by Storable's design
 class ModernSidebar extends StatelessWidget {
@@ -16,58 +18,68 @@ class ModernSidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Enhanced route matching: exact match or starts with, and handle query parameters
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    // Enhanced route matching: exact match or starts with, and handle query parameters.
+    // Reminder sub-routes are treated as part of Delinquency so the sidebar stays highlighted.
+    final routeWithoutQuery = currentRoute.split('?').first;
     final isActive = (String route) {
-      final routeWithoutQuery = currentRoute.split('?').first;
+      if (route == '/delinquency' &&
+          (routeWithoutQuery == '/reminders' ||
+              routeWithoutQuery.startsWith('/reminders/'))) {
+        return true;
+      }
       return routeWithoutQuery == route || routeWithoutQuery.startsWith('$route/');
     };
 
     return Container(
       width: isCollapsed ? 80 : 240,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colorScheme.surface,
         border: Border(
           right: BorderSide(
-            color: Theme.of(context).dividerColor,
+            color: theme.dividerColor,
             width: 1,
           ),
         ),
       ),
       child: Column(
         children: [
-          // Logo/Brand area
-          Container(
-            height: 64,
-            padding: EdgeInsets.all(isCollapsed ? 12 : 16),
-            child: isCollapsed
-                ? const Icon(
-                    Icons.storage,
-                    color: AppTheme.primaryBlue,
-                    size: 32,
-                  )
-                : Row(
-                    children: [
-                      const Icon(
-                        Icons.storage,
-                        color: AppTheme.primaryBlue,
-                        size: 28,
-                      ),
-                      const SizedBox(width: 12),
-                      const Text(
-                        'SFC',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.primaryBlue,
-                          letterSpacing: -0.5,
+          // Logo/Brand area (clickable to go to dashboard)
+          InkWell(
+            onTap: () => onNavigate('/dashboard'),
+            child: Container(
+              height: 64,
+              padding: EdgeInsets.all(isCollapsed ? 12 : 16),
+              child: isCollapsed
+                  ? Icon(
+                      Icons.storage,
+                      color: colorScheme.primary,
+                      size: 32,
+                    )
+                  : Row(
+                      children: [
+                        Icon(
+                          Icons.storage,
+                          color: colorScheme.primary,
+                          size: 28,
                         ),
-                      ),
-                    ],
-                  ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'SFC',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                            color: colorScheme.primary,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
           ),
-          const Divider(height: 1),
-          
-          // Navigation items
+          Divider(height: 1, color: theme.dividerColor),
+          // Navigation items: Expanded + ListView only (exactly as pre-2.5 – no Scrollbar wrapper)
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -100,39 +112,14 @@ class ModernSidebar extends StatelessWidget {
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/tenants'),
                 ),
-                _UnitsSection(
-                  isCollapsed: isCollapsed,
-                  isActive: isActive('/units') || isActive('/units/map'),
-                  currentRoute: currentRoute,
-                  onNavigate: onNavigate,
-                ),
                 _SidebarItem(
-                  icon: Icons.description_outlined,
-                  activeIcon: Icons.description,
-                  label: 'Contracts',
-                  route: '/contracts',
-                  isActive: isActive('/contracts'),
+                  icon: Icons.message_outlined,
+                  activeIcon: Icons.message,
+                  label: 'Messaging',
+                  route: '/messaging',
+                  isActive: isActive('/messaging'),
                   isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/contracts'),
-                ),
-                _SidebarItem(
-                  icon: Icons.shield_outlined,
-                  activeIcon: Icons.shield,
-                  label: 'Insurance',
-                  route: '/insurance',
-                  isActive: isActive('/insurance'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/insurance'),
-                ),
-                _SectionHeader(label: 'MONEY', isCollapsed: isCollapsed),
-                _SidebarItem(
-                  icon: Icons.receipt_long_outlined,
-                  activeIcon: Icons.receipt,
-                  label: 'Billing',
-                  route: '/billing',
-                  isActive: isActive('/billing'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/billing'),
+                  onTap: () => onNavigate('/messaging'),
                 ),
                 _SidebarItem(
                   icon: Icons.payments_outlined,
@@ -153,13 +140,55 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate('/delinquency'),
                 ),
                 _SidebarItem(
-                  icon: Icons.trending_up_outlined,
-                  activeIcon: Icons.trending_up,
-                  label: 'Yield Mgmt',
-                  route: '/yield',
-                  isActive: isActive('/yield'),
+                  icon: Icons.receipt_long_outlined,
+                  activeIcon: Icons.receipt,
+                  label: 'Billing',
+                  route: '/billing',
+                  isActive: isActive('/billing'),
                   isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/yield'),
+                  onTap: () => onNavigate('/billing'),
+                ),
+                _SidebarItem(
+                  icon: Icons.calculate_outlined,
+                  activeIcon: Icons.calculate,
+                  label: 'Accounting',
+                  route: '/subscription',
+                  isActive: isActive('/subscription'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/subscription?tab=accounting'),
+                ),
+                _SidebarItem(
+                  icon: Icons.calendar_month_outlined,
+                  activeIcon: Icons.calendar_month,
+                  label: 'Calendar',
+                  route: '/calendar',
+                  isActive: isActive('/calendar'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/calendar'),
+                ),
+                _SidebarItem(
+                  icon: Icons.lock_outlined,
+                  activeIcon: Icons.lock,
+                  label: 'Manager Overlock',
+                  route: '/manager-overlock',
+                  isActive: isActive('/manager-overlock'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/manager-overlock'),
+                ),
+                _SidebarItem(
+                  icon: Icons.description_outlined,
+                  activeIcon: Icons.description,
+                  label: 'Contracts',
+                  route: '/contracts',
+                  isActive: isActive('/contracts'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/contracts'),
+                ),
+                _UnitsSection(
+                  isCollapsed: isCollapsed,
+                  isActive: isActive('/units') || isActive('/units/map'),
+                  currentRoute: currentRoute,
+                  onNavigate: onNavigate,
                 ),
                 _SidebarItem(
                   icon: Icons.assessment_outlined,
@@ -170,35 +199,32 @@ class ModernSidebar extends StatelessWidget {
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/reports'),
                 ),
-                _SectionHeader(label: 'SECURITY', isCollapsed: isCollapsed),
+                _SidebarItem(
+                  icon: Icons.trending_up_outlined,
+                  activeIcon: Icons.trending_up,
+                  label: 'Yield Mgmt',
+                  route: '/yield',
+                  isActive: isActive('/yield'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/yield'),
+                ),
+                _SidebarItem(
+                  icon: Icons.shield_outlined,
+                  activeIcon: Icons.shield,
+                  label: 'Insurance',
+                  route: '/insurance',
+                  isActive: isActive('/insurance'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/insurance'),
+                ),
                 _SidebarItem(
                   icon: Icons.lock_outline,
                   activeIcon: Icons.lock,
-                  label: 'Access',
+                  label: 'Access Codes',
                   route: '/access',
                   isActive: isActive('/access'),
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/access'),
-                ),
-                _SectionHeader(label: 'COMMS', isCollapsed: isCollapsed),
-                _SidebarItem(
-                  icon: Icons.message_outlined,
-                  activeIcon: Icons.message,
-                  label: 'Messaging',
-                  route: '/messaging',
-                  isActive: isActive('/messaging'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/messaging'),
-                ),
-                _SectionHeader(label: 'ADMIN', isCollapsed: isCollapsed),
-                _SidebarItem(
-                  icon: Icons.settings_outlined,
-                  activeIcon: Icons.settings,
-                  label: 'Settings',
-                  route: '/settings',
-                  isActive: isActive('/settings'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/settings'),
                 ),
                 _SidebarItem(
                   icon: Icons.smart_toy_outlined,
@@ -208,6 +234,82 @@ class ModernSidebar extends StatelessWidget {
                   isActive: isActive('/ai-assistant'),
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/ai-assistant'),
+                ),
+                _SidebarItem(
+                  icon: Icons.settings_outlined,
+                  activeIcon: Icons.settings,
+                  label: 'Settings',
+                  route: '/settings',
+                  isActive: isActive('/settings'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/settings'),
+                ),
+              ],
+            ),
+          ),
+          // Report a Bug + version footer
+          Container(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: theme.dividerColor, width: 1),
+              ),
+            ),
+            child: Column(
+              children: [
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => BugReportDialog.show(context),
+                    child: Container(
+                      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: isCollapsed ? 12 : 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                color: AppTheme.error.withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppTheme.error.withValues(alpha: 0.2),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: isCollapsed
+                            ? MainAxisAlignment.center
+                            : MainAxisAlignment.start,
+                        children: [
+                          Icon(Icons.bug_report_outlined,
+                              color: AppTheme.error, size: 18),
+                          if (!isCollapsed) ...[
+                            const SizedBox(width: 10),
+                            Text(
+                              'Report a Bug',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: AppTheme.error,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 4, 8, 10),
+                  child: Center(
+                    child: Text(
+                      AppVersion.displayVersion,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -226,6 +328,7 @@ class _SidebarItem extends StatelessWidget {
   final bool isActive;
   final bool isCollapsed;
   final VoidCallback onTap;
+  final int? badgeCount;
 
   const _SidebarItem({
     required this.icon,
@@ -235,10 +338,14 @@ class _SidebarItem extends StatelessWidget {
     required this.isActive,
     required this.isCollapsed,
     required this.onTap,
+    this.badgeCount,
   });
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final showBadge = badgeCount != null && badgeCount! > 0;
+    final itemColor = isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -250,11 +357,11 @@ class _SidebarItem extends StatelessWidget {
             vertical: 12,
           ),
           decoration: BoxDecoration(
-            color: isActive ? AppTheme.primaryBlue.withOpacity(0.1) : null,
+            color: isActive ? colorScheme.primary.withOpacity(0.15) : null,
             borderRadius: BorderRadius.circular(8),
             border: isActive
                 ? Border.all(
-                    color: AppTheme.primaryBlue.withOpacity(0.3),
+                    color: colorScheme.primary.withOpacity(0.4),
                     width: 1,
                   )
                 : null,
@@ -263,20 +370,38 @@ class _SidebarItem extends StatelessWidget {
             children: [
               Icon(
                 isActive ? activeIcon : icon,
-                color: isActive ? AppTheme.primaryBlue : AppTheme.textSecondary,
+                color: itemColor,
                 size: 20,
               ),
               if (!isCollapsed) ...[
                 const SizedBox(width: 12),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-                    color: isActive ? AppTheme.primaryBlue : AppTheme.textSecondary,
-                    letterSpacing: 0.5,
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                      color: itemColor,
+                      letterSpacing: 0.5,
+                    ),
                   ),
                 ),
+                if (showBadge)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.error,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      badgeCount! > 99 ? '99+' : '$badgeCount',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
               ],
             ],
           ),
@@ -295,14 +420,15 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isCollapsed) return const SizedBox.shrink();
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
       child: Text(
         label,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.bold,
-          color: AppTheme.textSecondary,
+          color: colorScheme.onSurfaceVariant,
           letterSpacing: 1,
         ),
       ),
@@ -339,19 +465,21 @@ class _UnitsSection extends StatelessWidget {
 
     final expanded = currentRoute.startsWith('/units');
 
+    final colorScheme = Theme.of(context).colorScheme;
+    final itemColor = isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
     return ExpansionTile(
       initiallyExpanded: expanded,
       tilePadding: const EdgeInsets.symmetric(horizontal: 12),
       leading: Icon(
         Icons.map_outlined,
-        color: isActive ? AppTheme.primaryBlue : AppTheme.textSecondary,
+        color: itemColor,
       ),
       title: Text(
         'Units',
         style: TextStyle(
           fontSize: 13,
           fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-          color: isActive ? AppTheme.primaryBlue : AppTheme.textSecondary,
+          color: itemColor,
           letterSpacing: 0.5,
         ),
       ),

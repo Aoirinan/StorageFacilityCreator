@@ -1,0 +1,26 @@
+[
+  {
+    "origin": [
+      "https://storagefacilitycreator.com",
+      "https://www.storagefacilitycreator.com",
+      "https://storage-facility-creator.web.app",
+      "https://storage-facility-creator.firebaseapp.com",
+      "http://localhost:8080",
+      "http://localhost:3000",
+      "http://127.0.0.1:8080",
+      "http://127.0.0.1:3000"
+    ],
+    "method": ["GET", "PUT", "POST", "DELETE", "HEAD", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "x-goog-resumable",
+      "Authorization",
+      "Content-Length",
+      "User-Agent",
+      "X-Requested-With",
+      "Accept",
+      "Origin"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

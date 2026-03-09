@@ -99,26 +99,7 @@ class _DepositListScreenState extends ConsumerState<DepositListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/deposits',
-      title: 'Deposits',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.filter_list),
-          onPressed: () => _showFiltersDialog(context),
-          tooltip: 'Filter',
-        ),
-        if (_selectedFacilityId.isNotEmpty)
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: () => _navigateToCreateDeposit(),
-            tooltip: 'Create Deposit',
-          ),
-      ],
-      child: _selectedFacilityId.isEmpty
+    return _selectedFacilityId.isEmpty
           ? _buildNoFacilitiesMessage()
           : Column(
               children: [
@@ -128,8 +109,7 @@ class _DepositListScreenState extends ConsumerState<DepositListScreen> {
                   child: _buildDepositsList(),
                 ),
               ],
-            ),
-    );
+            );
   }
 
   Widget _buildNoFacilitiesMessage() {

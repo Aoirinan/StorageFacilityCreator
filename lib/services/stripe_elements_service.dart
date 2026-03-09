@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 /// Service for managing Stripe Elements on Flutter web
 /// 
@@ -17,7 +18,8 @@ class StripeElementsService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('✅ [StripeElements] Initialized with key: ${publishableKey.substring(0, 12)}...');
+        final mode = publishableKey.startsWith('pk_live_') ? 'LIVE' : 'TEST';
+        print('✅ [StripeElements] Initialized with platform key (mode: $mode)');
       }
     } else {
       if (kDebugMode) {
@@ -123,13 +125,37 @@ class StripeElementsService {
     }
   }
 
-  /// Get Stripe publishable key from environment or config
+  /// Get Stripe publishable key from Cloud Function
   /// 
-  /// This should retrieve the publishable key from a secure source.
-  /// For now, it will need to be provided via initialization.
-  static String? getPublishableKey() {
-    // TODO: Get from environment variable or secure config
-    // For now, must be initialized via initialize() method
+  /// Fetches the publishable key from the backend if not already initialized.
+  static Future<String?> getPublishableKey() async {
+    // If already initialized, return cached key
+    if (_publishableKey != null && _publishableKey!.isNotEmpty) {
+      return _publishableKey;
+    }
+    
+    // Try to fetch from Cloud Function
+    try {
+      final functions = FirebaseFunctions.instance;
+      final result = await functions.httpsCallable('getStripePublishableKey').call();
+      final data = result.data as Map<String, dynamic>?;
+      final key = data?['publishableKey'] as String?;
+      
+      if (key != null && key.isNotEmpty) {
+        _publishableKey = key;
+        _isInitialized = true;
+        if (kDebugMode) {
+          print('✅ [StripeElements] Fetched publishable key from Cloud Function');
+        }
+        return key;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [StripeElements] Failed to fetch publishable key from Cloud Function: $e');
+      }
+    }
+    
+    // Fallback to cached key (if initialized manually)
     return _publishableKey;
   }
 }

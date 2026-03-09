@@ -1,7 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../services/auth_service.dart';
+import '../services/ownership_repair_service.dart';
 
 // Auth service provider
 final authServiceProvider = Provider<AuthService>((ref) => AuthService());
@@ -22,14 +24,21 @@ class LoginStateNotifier extends StateNotifier<AsyncValue<void>> {
 
   LoginStateNotifier(this._authService) : super(const AsyncValue.data(null));
 
-  Future<void> signIn({required String email, required String password}) async {
+  Future<bool> signIn({required String email, required String password}) async {
     state = const AsyncValue.loading();
     try {
       await _authService.signInWithEmailAndPassword(email: email, password: password);
       await _authService.updateLastLogin();
+      
+      // Automatically check and repair ownership issues after login
+      // This fixes cases where facility/account ownership gets out of sync after subscription
+      OwnershipRepairService.checkAndRepairOwnership();
+      
       state = const AsyncValue.data(null);
+      return true; // Return true on success
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      return false; // Return false on error
     }
   }
 

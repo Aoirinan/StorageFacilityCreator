@@ -176,7 +176,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           unselectedLabelColor: AppTheme.textSecondary,
           tabs: const [
             Tab(icon: Icon(Icons.settings_outlined), text: 'Settings'),
-            Tab(icon: Icon(Icons.rocket_launch_outlined), text: 'Onboarding'),
+            Tab(icon: Icon(Icons.flag_outlined), text: 'Onboarding'),
           ],
         ),
         Expanded(
@@ -201,10 +201,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             },
                           ),
                         _SettingsTile(
-                          icon: Icons.account_balance_outlined,
+                          icon: Icons.credit_card_outlined,
                           title: 'Billing & Payments',
                           subtitle:
-                              'Subscription and payment processing (Stripe Connect)',
+                              'Subscription, payment processing (Stripe Connect), and accounting',
                           onTap: () {
                             context.go(AppRoute.subscription);
                           },
@@ -464,6 +464,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     // Legal Section
                     _SettingsSection(
                       title: 'Legal',
+                      icon: Icons.gavel_outlined,
                       children: [
                         _SettingsTile(
                           icon: Icons.description_outlined,
@@ -811,10 +812,12 @@ class _OnboardingStep extends StatelessWidget {
 class _SettingsSection extends StatelessWidget {
   final String title;
   final List<Widget> children;
+  final IconData? icon;
 
   const _SettingsSection({
     required this.title,
     required this.children,
+    this.icon,
   });
 
   @override
@@ -824,13 +827,21 @@ class _SettingsSection extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text(
-            title,
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  color: AppTheme.textSecondary,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.5,
-                ),
+          child: Row(
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 20, color: AppTheme.primaryBlue),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                title,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: AppTheme.textSecondary,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                    ),
+              ),
+            ],
           ),
         ),
         Card(

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../models/contract_model.dart';
 import '../providers/contract_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
@@ -27,9 +28,12 @@ class ContractListScreen extends ConsumerStatefulWidget {
   ConsumerState<ContractListScreen> createState() => _ContractListScreenState();
 }
 
+const _kAllFacilitiesContracts = '__all__';
+
 class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   final TextEditingController _searchController = TextEditingController();
   String? _selectedFacilityId;
+  List<dynamic> _cachedFacilities = [];
 
   @override
   void initState() {
@@ -45,23 +49,24 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   }
 
   Future<void> _loadUserFacilities() async {
-    if (_selectedFacilityId == null) {
-      try {
-        final facilities = await FacilityService.getUserFacilities();
-        if (facilities.isNotEmpty) {
-          setState(() {
-            _selectedFacilityId = facilities.first.id;
-          });
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error loading facilities: $e'),
-              backgroundColor: AppTheme.error,
-            ),
-          );
-        }
+    try {
+      final facilities = await FacilityService.getUserFacilities();
+      if (mounted) setState(() => _cachedFacilities = facilities);
+      if (_selectedFacilityId == null && facilities.isNotEmpty) {
+        final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+        final id = (activeId != null && facilities.any((f) => f.id == activeId))
+            ? activeId
+            : _kAllFacilitiesContracts;
+        setState(() => _selectedFacilityId = id);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading facilities: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
       }
     }
   }
@@ -70,66 +75,31 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
     final contractFilter = ref.watch(contractFilterProvider);
-
+    ref.listen(activeFacilityIdProvider, (prev, next) {
+      final nextId = next.whenOrNull(data: (d) => d);
+      if (nextId != null && _selectedFacilityId != nextId && mounted) {
+        setState(() => _selectedFacilityId = nextId);
+      }
+    });
     return authState.when(
       data: (user) {
         if (user == null) {
-          return const Scaffold(
-            body: Center(child: Text('Please sign in to view contracts')),
-          );
+          return const Center(child: Text('Please sign in to view contracts'));
         }
 
-        return ModernPageWrapper(
-          currentRoute: '/contracts',
-          title: 'Contracts',
-          onNavigate: (route) {
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.description),
-              onPressed: () => _navigateToTemplateManagement(),
-              tooltip: 'Manage Templates',
-            ),
-            IconButton(
-              icon: const Icon(Icons.add),
-              onPressed: () => _navigateToCreateContract(),
-              tooltip: 'Create Contract',
-            ),
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                switch (value) {
-                  case 'clear_filters':
-                    ref.read(contractFilterProvider.notifier).clearFilters();
-                    break;
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'clear_filters',
-                  child: Text('Clear Filters'),
-                ),
-              ],
-            ),
-          ],
-          child: _buildBody(user.uid),
-        );
+        return _buildBody(user.uid);
       },
-      loading: () => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, stackTrace) => Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error, size: 64, color: AppTheme.error),
-              const SizedBox(height: 16),
-              const Text('Error loading contracts'),
-              const SizedBox(height: 8),
-              Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
-            ],
-          ),
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stackTrace) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error, size: 64, color: AppTheme.error),
+            const SizedBox(height: 16),
+            const Text('Error loading contracts'),
+            const SizedBox(height: 8),
+            Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
+          ],
         ),
       ),
     );
@@ -137,34 +107,77 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
 
   Widget _buildBody(String userId) {
     if (_selectedFacilityId == null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.business, size: 64, color: AppTheme.textTertiary),
-            const SizedBox(height: 16),
-            const Text(
-              'No facility selected',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Please select a facility to view contracts',
-              style: TextStyle(color: AppTheme.textSecondary),
-            ),
-          ],
-        ),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     return Column(
       children: [
+        // Title bar with actions (since AppShell doesn't provide page-specific title)
+        Builder(
+          builder: (context) {
+            final cs = Theme.of(context).colorScheme;
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: cs.surface,
+                border: Border(bottom: BorderSide(color: cs.outline)),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    'Contracts',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: cs.onSurface),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _navigateToTemplateManagement,
+                    icon: const Icon(Icons.description, size: 20),
+                    label: const Text('Templates'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    onPressed: _selectedFacilityId == _kAllFacilitiesContracts ? null : () => _navigateToCreateContract(),
+                    icon: const Icon(Icons.add, size: 20),
+                    label: const Text('New contract'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: cs.primary,
+                      foregroundColor: cs.onPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        
         // Facility Selection
         _buildFacilitySelector(),
+        
+        // Disclaimer
+        Builder(
+          builder: (context) {
+            final cs = Theme.of(context).colorScheme;
+            return Container(
+              width: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                border: Border.all(color: cs.outline),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Disclaimer: SFC provides document and e-signature tooling only. You are responsible for the documents you upload and use, including any licensing or membership requirements.',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: cs.onSurfaceVariant,
+                  fontStyle: FontStyle.italic,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            );
+          },
+        ),
         
         // Search and Filters
         _buildSearchAndFilters(),
@@ -178,98 +191,58 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   }
 
   Widget _buildFacilitySelector() {
-    return FutureBuilder<List<dynamic>>(
-      future: FacilityService.getUserFacilities(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Center(
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          );
-        }
+    final facilities = _cachedFacilities;
+    if (facilities.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+      );
+    }
 
-        if (snapshot.hasError) {
-          return Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Center(
-              child: Column(
-                children: [
-                  Icon(Icons.error, color: AppTheme.error),
-                  const SizedBox(height: 8),
-                  Text('Error loading facilities: ${snapshot.error}'),
-                ],
-              ),
-            ),
-          );
-        }
+    final effectiveValue = (_selectedFacilityId == null ||
+            (_selectedFacilityId != _kAllFacilitiesContracts &&
+                !facilities.any((f) => f.id == _selectedFacilityId)))
+        ? _kAllFacilitiesContracts
+        : _selectedFacilityId!;
 
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Center(
-              child: Column(
-                children: [
-                  Icon(Icons.business, color: AppTheme.textTertiary),
-                  SizedBox(height: 8),
-                  Text('No facilities found. Create a facility first.'),
-                ],
-              ),
-            ),
-          );
-        }
-
-        final facilities = snapshot.data!;
-        
-        return Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  value: _selectedFacilityId,
-                  decoration: const InputDecoration(
-                    labelText: 'Select Facility',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.business),
-                  ),
-                  items: facilities.map<DropdownMenuItem<String>>((facility) {
-                    return DropdownMenuItem<String>(
-                      value: facility.id,
-                      child: Text(facility.name),
-                    );
-                  }).toList(),
-                  onChanged: (value) {
-                    if (value != null && mounted) {
-                      setState(() {
-                        _selectedFacilityId = value;
-                      });
-                    }
-                  },
-                ),
-              ),
-              if (_selectedFacilityId != null && _selectedFacilityId!.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                IconButton(
-                  onPressed: () {
-                    if (_selectedFacilityId != null) {
-                      context.push('/units/map?facilityId=${_selectedFacilityId!}');
-                    }
-                  },
-                  icon: const Icon(Icons.map),
-                  tooltip: 'View Map',
-                  color: AppTheme.primaryBlue,
-                ),
-              ],
-            ],
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: DropdownButtonFormField<String>(
+        value: effectiveValue,
+        decoration: const InputDecoration(
+          labelText: 'Facility',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.business),
+        ),
+        selectedItemBuilder: (context) => [
+          Text('All Facilities',
+              style: AppTheme.dropdownItemTextStyle.copyWith(
+                  color: Theme.of(context).colorScheme.onSurface),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1),
+          ...facilities.map((f) => Text(f.name,
+              style: AppTheme.dropdownItemTextStyle.copyWith(
+                  color: Theme.of(context).colorScheme.onSurface),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1)),
+        ],
+        items: [
+          const DropdownMenuItem<String>(
+            value: _kAllFacilitiesContracts,
+            child: Text('All Facilities'),
           ),
-        );
-      },
+          ...facilities.map<DropdownMenuItem<String>>((facility) =>
+              DropdownMenuItem<String>(value: facility.id, child: Text(facility.name))),
+        ],
+        onChanged: (value) {
+          if (value != null && mounted) {
+            setState(() => _selectedFacilityId = value);
+            if (value != _kAllFacilitiesContracts) {
+              ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
+            }
+          }
+        },
+      ),
     );
   }
 
@@ -356,37 +329,31 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
 
   Widget _buildContractsList() {
     if (_selectedFacilityId == null) {
-      return const Center(child: Text('No facility selected'));
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    // All Facilities: merge contracts from every facility
+    if (_selectedFacilityId == _kAllFacilitiesContracts) {
+      if (_cachedFacilities.isEmpty) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      final allAsync = _cachedFacilities
+          .map((f) => ref.watch(contractsProvider(f.id as String)))
+          .toList();
+      final isLoading = allAsync.any((a) => a is AsyncLoading);
+      if (isLoading) return const Center(child: CircularProgressIndicator());
+      final hasError = allAsync.any((a) => a is AsyncError);
+      if (hasError) {
+        return const Center(child: Text('Error loading contracts'));
+      }
+      final merged = allAsync
+          .expand((a) => a.whenOrNull(data: (d) => d) ?? <ContractModel>[])
+          .toList();
+      return _buildContractsListView(merged);
     }
 
     return ref.watch(contractsProvider(_selectedFacilityId!)).when(
-      data: (contracts) {
-        final filteredContracts = _filterContracts(contracts);
-        
-        if (filteredContracts.isEmpty) {
-          return const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.description, size: 64, color: AppTheme.textTertiary),
-                SizedBox(height: 16),
-                Text('No contracts found'),
-                SizedBox(height: 8),
-                Text('Create your first contract to get started'),
-              ],
-            ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16.0),
-          itemCount: filteredContracts.length,
-          itemBuilder: (context, index) {
-            final contract = filteredContracts[index];
-            return _buildContractCard(contract);
-          },
-        );
-      },
+      data: (contracts) => _buildContractsListView(contracts),
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (error, stackTrace) => Center(
         child: Column(
@@ -403,20 +370,48 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
     );
   }
 
+  Widget _buildContractsListView(List<ContractModel> contracts) {
+    final filteredContracts = _filterContracts(contracts);
+    if (filteredContracts.isEmpty) {
+      final cs = Theme.of(context).colorScheme;
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.description, size: 64, color: cs.onSurfaceVariant),
+            const SizedBox(height: 16),
+            const Text('No contracts found'),
+            const SizedBox(height: 8),
+            Text(
+              'Create your first contract to get started',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16.0),
+      itemCount: filteredContracts.length,
+      itemBuilder: (context, index) => _buildContractCard(filteredContracts[index]),
+    );
+  }
+
   Widget _buildContractCard(ContractModel contract) {
+    final cs = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 8.0),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.borderLight, width: 1),
+        side: BorderSide(color: cs.outline, width: 1),
       ),
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: _getStatusColor(contract.status),
           child: Icon(
             _getStatusIcon(contract.status),
-            color: AppTheme.textOnDark,
+            color: cs.onPrimary,
           ),
         ),
         title: Text(
@@ -440,8 +435,8 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
                 'Expires: ${_formatDate(contract.expiresAt!)}',
                 style: TextStyle(
                   color: contract.expiresAt!.isBefore(DateTime.now())
-                      ? AppTheme.error
-                      : AppTheme.textSecondary,
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
           ],
@@ -462,11 +457,16 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
                 value: 'send',
                 child: Text('Send'),
               ),
-            if (contract.status == ContractStatus.sent)
+            if (contract.status == ContractStatus.sent) ...[
+              const PopupMenuItem(
+                value: 'resend',
+                child: Text('Resend Contract'),
+              ),
               const PopupMenuItem(
                 value: 'sign',
                 child: Text('Sign'),
               ),
+            ],
             const PopupMenuItem(
               value: 'delete',
               child: Text('Delete'),
@@ -479,37 +479,40 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   }
 
   Widget _buildStatusChip(ContractStatus status) {
+    final cs = Theme.of(context).colorScheme;
     return Chip(
       label: Text(
         status.displayName,
-        style: TextStyle(fontSize: 12, color: AppTheme.textOnDark),
+        style: TextStyle(fontSize: 12, color: cs.onPrimary),
       ),
       backgroundColor: _getStatusColor(status),
     );
   }
 
   Widget _buildTypeChip(ContractType type) {
+    final cs = Theme.of(context).colorScheme;
     return Chip(
       label: Text(
         type.displayName,
-        style: const TextStyle(fontSize: 12),
+        style: TextStyle(fontSize: 12, color: cs.onSurface),
       ),
-      backgroundColor: AppTheme.backgroundLight,
+      backgroundColor: cs.surfaceContainerHighest,
     );
   }
 
   Color _getStatusColor(ContractStatus status) {
+    final cs = Theme.of(context).colorScheme;
     switch (status) {
       case ContractStatus.draft:
-        return AppTheme.textTertiary;
+        return cs.onSurfaceVariant;
       case ContractStatus.sent:
         return AppTheme.warning;
       case ContractStatus.signed:
         return AppTheme.success;
       case ContractStatus.expired:
-        return AppTheme.error;
+        return cs.error;
       case ContractStatus.cancelled:
-        return AppTheme.error;
+        return cs.error;
     }
   }
 
@@ -606,7 +609,8 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   }
 
   void _navigateToTemplateManagement() {
-    context.push(AppRoute.contractTemplates);
+    final facilityId = _selectedFacilityId ?? '';
+    context.push(facilityId.isEmpty ? AppRoute.contractTemplates : '${AppRoute.contractTemplates}?facilityId=$facilityId');
   }
 
   void _navigateToCreateContract() {
@@ -640,6 +644,9 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
         break;
       case 'send':
         _sendContract(contract);
+        break;
+      case 'resend':
+        _navigateToContractDetail(contract);
         break;
       case 'sign':
         _signContract(contract);
@@ -703,8 +710,8 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
         return;
       }
 
-      // Navigate to signing screen
-      context.push('${AppRoute.contractSign}?token=$signingToken');
+      // Navigate to signing screen - pass contract to skip Firestore lookup
+      context.push('${AppRoute.contractSign}?token=$signingToken', extra: contract);
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

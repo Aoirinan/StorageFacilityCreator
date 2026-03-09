@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 import '../models/map_shape_model.dart';
 import '../models/map_layer_model.dart';
@@ -33,15 +34,16 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:intl/intl.dart';
 import 'dart:typed_data';
 import 'package:flutter/rendering.dart';
-import 'dart:io' if (dart.library.html) 'dart:html' as html;
 import '../utils/error_message_helper.dart';
+import 'package:sfcapp/utils/map_export_stub.dart' if (dart.library.html) 'package:sfcapp/utils/map_export_web.dart' as map_export;
 
 /// Provider for map shapes stream (scoped by facilityId)
 final facilityMapShapesProvider = StreamProvider.family<List<MapShapeModel>, String>((ref, facilityId) {
   return MapLayoutService.getMapShapesStream(facilityId).handleError((error, stackTrace) {
-    if (kDebugMode) {
-      print('❌ Map shapes stream error: $error');
-    }
+    print('❌ Map shapes stream error: $error');
+    print('❌ Stack trace: $stackTrace');
+    // Return empty list on error so UI can still render
+    return <MapShapeModel>[];
   });
 });
 
@@ -81,6 +83,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   Set<String> _selectedUnitIds = {}; // For bulk operations
   Set<MapLayerType> _visibleLayers = {MapLayerType.units}; // Visible layers
   bool _isBulkSelectMode = false; // Toggle for bulk selection mode
+  double? _lastCanvasMinX;
+  double? _lastCanvasMinY;
 
   @override
   bool get wantKeepAlive => true;
@@ -163,8 +167,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       final selectedId = _selectedShapeId;
       if (selectedId == null) return;
       final shape = shapes.firstWhere((s) => s.id == selectedId, orElse: () => throw StateError('Shape not found'));
-      final newX = (shape.x + deltaX).clamp(0.0, 2000.0 - shape.width);
-      final newY = (shape.y + deltaY).clamp(0.0, 1500.0 - shape.height);
+      // Allow shapes to be positioned anywhere (no clamping to original bounds)
+      final newX = (shape.x + deltaX).clamp(0.0, double.infinity);
+      final newY = (shape.y + deltaY).clamp(0.0, double.infinity);
 
       MapLayoutService.updateMapShape(
         facilityId: widget.facilityId,
@@ -183,15 +188,27 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     ref.read(selectedMapShapeProvider.notifier).state = shapeId;
   }
 
+  double _snapToGridValue(double value) {
+    return (value / _gridSize).round() * _gridSize;
+  }
+
   Future<void> _addRectangle() async {
     try {
+      // Place at grid-aligned default; use last canvas origin if we have one so it's visible
+      double defaultX = _lastCanvasMinX ?? 0.0;
+      double defaultY = _lastCanvasMinY ?? 0.0;
+      defaultX = _snapToGridValue(defaultX);
+      defaultY = _snapToGridValue(defaultY);
+      final w = _snapToGridValue(100.0).clamp(_gridSize, 2000.0);
+      final h = _snapToGridValue(80.0).clamp(_gridSize, 1500.0);
+
       await MapLayoutService.createMapShape(
         facilityId: widget.facilityId,
         type: 'rect',
-        x: 400.0,
-        y: 300.0,
-        width: 100.0,
-        height: 80.0,
+        x: defaultX,
+        y: defaultY,
+        width: w,
+        height: h,
       );
 
       if (mounted) {
@@ -328,13 +345,30 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               child: Stack(
                 children: [
                   shapesAsync.when(
-                    data: (shapes) => unitsAsync.when(
-                      data: (units) => _buildCanvas(shapes, units),
-                      loading: () => const Center(child: CircularProgressIndicator()),
-                      error: (e, _) => _buildError('Error loading units: $e'),
-                    ),
-                    loading: () => const Center(child: CircularProgressIndicator()),
-                    error: (e, _) => _buildError('Error loading map: $e'),
+                    data: (shapes) {
+                      print('[MapEditor] Shapes loaded: ${shapes.length}');
+                      return unitsAsync.when(
+                        data: (units) {
+                          print('[MapEditor] Units loaded: ${units.length}');
+                          return _buildCanvas(shapes, units);
+                        },
+                        loading: () => const Center(child: CircularProgressIndicator()),
+                        error: (e, stack) {
+                          print('[MapEditor] ERROR loading units: $e');
+                          print('[MapEditor] Stack: $stack');
+                          return _buildError('Error loading units: $e');
+                        },
+                      );
+                    },
+                    loading: () {
+                      print('[MapEditor] Loading shapes...');
+                      return const Center(child: CircularProgressIndicator());
+                    },
+                    error: (e, stack) {
+                      print('[MapEditor] ERROR loading shapes: $e');
+                      print('[MapEditor] Stack: $stack');
+                      return _buildError('Error loading map: $e');
+                    },
                   ),
                   if (_showLegend)
                     Positioned(
@@ -370,18 +404,19 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   Widget _buildToolbar() {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      color: AppTheme.surface,
+      color: cs.surface,
       child: Row(
         children: [
           ElevatedButton.icon(
             onPressed: _addRectangle,
             icon: const Icon(Icons.add_box, size: 20),
-            label: const Text('Add Rectangle'),
+            label: const Text('Add Unit'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryBlue,
-              foregroundColor: Colors.white,
+              backgroundColor: cs.primary,
+              foregroundColor: cs.onPrimary,
             ),
           ),
           const SizedBox(width: 12),
@@ -389,13 +424,13 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPressed: () => setState(() => _showGrid = !_showGrid),
             icon: Icon(_showGrid ? Icons.grid_on : Icons.grid_off),
             tooltip: 'Toggle Grid',
-            color: _showGrid ? AppTheme.primaryBlue : AppTheme.textSecondary,
+            color: _showGrid ? cs.primary : cs.onSurfaceVariant,
           ),
           IconButton(
             onPressed: () => setState(() => _snapToGrid = !_snapToGrid),
             icon: Icon(_snapToGrid ? Icons.grid_3x3 : Icons.grid_off),
             tooltip: 'Snap to Grid',
-            color: _snapToGrid ? AppTheme.primaryBlue : AppTheme.textSecondary,
+            color: _snapToGrid ? cs.primary : cs.onSurfaceVariant,
           ),
           IconButton(
             onPressed: () {
@@ -408,7 +443,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             },
             icon: Icon(_isBulkSelectMode ? Icons.check_box : Icons.check_box_outline_blank),
             tooltip: 'Bulk Select Mode',
-            color: _isBulkSelectMode ? AppTheme.primaryBlue : AppTheme.textSecondary,
+            color: _isBulkSelectMode ? cs.primary : cs.onSurfaceVariant,
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.layers),
@@ -470,7 +505,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             label: Text(_isSaving ? 'Saving...' : 'Save'),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.success,
-              foregroundColor: Colors.white,
+              foregroundColor: cs.onPrimary,
             ),
           ),
         ],
@@ -498,6 +533,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
   Widget _buildCanvas(List<MapShapeModel> shapes, List<UnitModel> units) {
     try {
+      print('[MapEditor] _buildCanvas called with ${shapes.length} shapes, ${units.length} units');
       final unitsMap = {for (var unit in units) unit.id: unit};
       
       // Filter shapes based on status filters
@@ -507,6 +543,47 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         if (unit == null) return true;
         return _statusFilters.contains(unit.status);
       }).toList();
+      
+      print('[MapEditor] Filtered shapes: ${filteredShapes.length}');
+
+      // Calculate dynamic canvas size based on all shapes (including off-map ones)
+      // Minimum size is 2000x1500, but expand to accommodate all shapes
+      double minX = 0;
+      double minY = 0;
+      double maxX = 2000.0;
+      double maxY = 1500.0;
+      
+      if (filteredShapes.isNotEmpty) {
+        for (final shape in filteredShapes) {
+          final shapeRight = shape.x + shape.width;
+          final shapeBottom = shape.y + shape.height;
+          if (shape.x < minX) minX = shape.x;
+          if (shape.y < minY) minY = shape.y;
+          if (shapeRight > maxX) maxX = shapeRight;
+          if (shapeBottom > maxY) maxY = shapeBottom;
+        }
+        // Add padding around all shapes (allow negative coordinates)
+        minX = minX - 200;
+        minY = minY - 200;
+        maxX = maxX + 200;
+        maxY = maxY + 200;
+      }
+      
+      // Ensure minimum canvas size
+      if (maxX - minX < 2000) {
+        maxX = minX + 2000;
+      }
+      if (maxY - minY < 1500) {
+        maxY = minY + 1500;
+      }
+      
+      final canvasWidth = maxX - minX;
+      final canvasHeight = maxY - minY;
+
+      _lastCanvasMinX = minX;
+      _lastCanvasMinY = minY;
+      
+      print('[MapEditor] Canvas size: ${canvasWidth}x${canvasHeight}, offset: ($minX, $minY)');
 
       return InteractiveViewer(
         transformationController: _transformationController,
@@ -514,7 +591,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         maxScale: 4.0,
         boundaryMargin: const EdgeInsets.all(200),
         panEnabled: _draggingShapeId == null && !_isResizing,
+        scaleEnabled: true,
         child: GestureDetector(
+          behavior: HitTestBehavior.translucent, // Allow clicks to pass through to shapes
           // Handle clicks on empty canvas to deselect
           onTapDown: (details) {
             if (_isDisposed || !mounted) return;
@@ -530,24 +609,33 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               });
             }
           },
-          child: Container(
-            width: 2000,
-            height: 1500,
-            decoration: BoxDecoration(
-              color: AppTheme.backgroundLight,
-              border: Border.all(color: AppTheme.borderLight),
-            ),
+          child: Builder(
+            builder: (context) {
+              final cs = Theme.of(context).colorScheme;
+              return Container(
+                width: canvasWidth,
+                height: canvasHeight,
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest,
+                  border: Border.all(color: cs.outline),
+                ),
             child: Stack(
-              clipBehavior: Clip.none, // Allow resize handles to be visible outside container
+              clipBehavior: Clip.none, // Allow shapes outside bounds to be visible and clickable
               children: [
-                if (_showGrid) _buildGrid(),
+                // Always show grid if enabled, even with no shapes
+                if (_showGrid) _buildGrid(canvasWidth, canvasHeight, minX, minY),
+                // Show shapes
                 ...filteredShapes.map((shape) => _buildShape(
                       shape,
                       unitsMap[shape.unitId],
                       shape.id == _selectedShapeId,
+                      minX,
+                      minY,
                     )),
               ],
             ),
+              );
+            },
           ),
         ),
       );
@@ -555,54 +643,128 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       if (kDebugMode) {
         debugPrint('[MapEditor] Map render error: $e\n$stack');
       }
+      // Log error to console even in production for debugging
+      print('[MapEditor] ERROR: Map render failed: $e');
+      print('[MapEditor] Stack trace: $stack');
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
-          child: Text(
-            'Map is temporarily unavailable.',
-            style: const TextStyle(color: Colors.redAccent),
-            textAlign: TextAlign.center,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
+              const SizedBox(height: 16),
+              Text(
+                'Map is temporarily unavailable.',
+                style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Error: $e',
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => setState(() {}),
+                child: const Text('Retry'),
+              ),
+            ],
           ),
         ),
       );
     }
   }
 
-  Widget _buildGrid() {
+  Widget _buildGrid(double width, double height, double offsetX, double offsetY) {
     return CustomPaint(
       painter: _GridPainter(
         gridSize: _gridSize,
         color: AppTheme.borderLight.withOpacity(0.3),
+        offsetX: offsetX,
+        offsetY: offsetY,
       ),
-      size: const Size(2000, 1500),
+      size: Size(width, height),
     );
   }
 
-  Widget _buildShape(MapShapeModel shape, UnitModel? unit, bool isSelected) {
-    final statusColor = unit != null ? _getUnitStatusColor(unit.status) : AppTheme.textTertiary;
+  Widget _buildShape(MapShapeModel shape, UnitModel? unit, bool isSelected, double canvasOffsetX, double canvasOffsetY) {
+    final statusColor = unit != null
+        ? (unit.isOverlocked ? AppTheme.error : _getUnitStatusColor(unit.status))
+        : AppTheme.textTertiary;
     final borderColor = isSelected ? AppTheme.primaryBlue : statusColor;
     final borderWidth = isSelected ? 3.0 : 2.0;
 
     // Apply drag offset ONLY if this is the shape being dragged
     final isDragging = shape.id == _draggingShapeId && _dragOffset != null;
     final dragOffset = _dragOffset ?? Offset.zero;
-    final displayX = shape.x + (isDragging ? dragOffset.dx : 0);
-    final displayY = shape.y + (isDragging ? dragOffset.dy : 0);
+    final displayX = (shape.x - canvasOffsetX) + (isDragging ? dragOffset.dx : 0);
+    final displayY = (shape.y - canvasOffsetY) + (isDragging ? dragOffset.dy : 0);
 
     return Positioned(
       left: displayX,
       top: displayY,
       child: Listener(
-        // Block pointer events from reaching InteractiveViewer when this shape is being dragged
-        onPointerDown: (event) {
-          if (_draggingShapeId == shape.id) {
-            // Consume the event to prevent InteractiveViewer from handling it
-          }
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (event) {
+            if (_isDisposed || !mounted) return;
+            if (_isResizing) return;
+            if (kDebugMode) {
+              debugPrint('[MapEditor] pointer down (shape) shape=${shape.id}');
+            }
+            _selectShape(shape.id);
+            setState(() {
+              _draggingShapeId = shape.id;
+              _dragOffset = Offset.zero;
+              _isResizing = false;
+            });
+          },
+        onPointerMove: (event) {
+          if (_isDisposed || !mounted) return;
+          if (_draggingShapeId != shape.id || _isResizing) return;
+          final matrix = _transformationController.value;
+          final scale = matrix.getMaxScaleOnAxis();
+          setState(() {
+            _dragOffset = Offset(
+              (_dragOffset?.dx ?? 0) + event.delta.dx / scale,
+              (_dragOffset?.dy ?? 0) + event.delta.dy / scale,
+            );
+          });
         },
-        child: Stack(
-          clipBehavior: Clip.none, // Allow resize handles outside bounds
-          children: [
-            GestureDetector(
+        onPointerUp: (event) {
+          if (_isDisposed || !mounted) return;
+          if (_draggingShapeId != shape.id || _dragOffset == null || _isResizing) {
+            _clearDragState();
+            return;
+          }
+          final dx = _dragOffset!.dx;
+          final dy = _dragOffset!.dy;
+          if (dx.abs() < 0.5 && dy.abs() < 0.5) {
+            _clearDragState();
+            return;
+          }
+          final newX = (shape.x + dx).clamp(0.0, double.infinity);
+          final newY = (shape.y + dy).clamp(0.0, double.infinity);
+          final snappedX = _snapToGrid
+              ? _snapToGridValue(newX)
+              : newX;
+          final snappedY = _snapToGrid
+              ? _snapToGridValue(newY)
+              : newY;
+          MapLayoutService.updateMapShape(
+            facilityId: widget.facilityId,
+            shapeId: shape.id,
+            x: snappedX.clamp(0.0, double.infinity),
+            y: snappedY.clamp(0.0, double.infinity),
+          );
+          _clearDragState();
+        },
+        onPointerCancel: (_) => _clearDragState(),
+            child: Stack(
+              clipBehavior: Clip.none, // Allow resize handles outside bounds
+              children: [
+                GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
                 if (_isDisposed || !mounted) return;
@@ -630,61 +792,6 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 _selectShape(shape.id);
                 _showShapeActions(shape, unit);
               },
-              onPanStart: (details) {
-                if (_isDisposed || !mounted) return;
-                if (_isResizing) return;
-                if (kDebugMode) {
-                  debugPrint('[MapEditor] drag start (body) shape=${shape.id}');
-                }
-                _selectShape(shape.id);
-                setState(() {
-                  _draggingShapeId = shape.id;
-                  _dragOffset = Offset.zero;
-                  _isResizing = false;
-                });
-              },
-              onPanUpdate: (details) {
-                if (_isDisposed || !mounted) return;
-                if (_draggingShapeId == shape.id && !_isResizing) {
-                  final matrix = _transformationController.value;
-                  final scale = matrix.getMaxScaleOnAxis();
-
-                  setState(() {
-                    _dragOffset = Offset(
-                      (_dragOffset?.dx ?? 0) + details.delta.dx / scale,
-                      (_dragOffset?.dy ?? 0) + details.delta.dy / scale,
-                    );
-                  });
-                }
-              },
-              onPanEnd: (details) {
-                if (_isDisposed || !mounted) return;
-                if (_draggingShapeId == shape.id && _dragOffset != null && !_isResizing) {
-                  final newX = (shape.x + _dragOffset!.dx).clamp(0.0, 2000.0 - shape.width);
-                  final newY = (shape.y + _dragOffset!.dy).clamp(0.0, 1500.0 - shape.height);
-
-                  if (_snapToGrid) {
-                    final snappedX = (newX / _gridSize).round() * _gridSize;
-                    final snappedY = (newY / _gridSize).round() * _gridSize;
-
-                    MapLayoutService.updateMapShape(
-                      facilityId: widget.facilityId,
-                      shapeId: shape.id,
-                      x: snappedX.clamp(0.0, 2000.0 - shape.width),
-                      y: snappedY.clamp(0.0, 1500.0 - shape.height),
-                    );
-                  } else {
-                    MapLayoutService.updateMapShape(
-                      facilityId: widget.facilityId,
-                      shapeId: shape.id,
-                      x: newX,
-                      y: newY,
-                    );
-                  }
-                }
-                _clearDragState();
-              },
-              onPanCancel: () => _clearDragState(),
               child: MouseRegion(
                 cursor: SystemMouseCursors.move,
                 onEnter: (_) {
@@ -699,10 +806,20 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                     _hoveredUnitId = null;
                   });
                 },
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
+                child: SizedBox(
+                  width: shape.width,
+                  height: unit != null
+                      ? shape.height + 160
+                      : shape.height,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    alignment: Alignment.bottomCenter,
+                    children: [
+                    Positioned(
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      child: Container(
                       width: shape.width,
                       height: shape.height,
                       decoration: BoxDecoration(
@@ -728,60 +845,90 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                             : null,
                       ),
                       child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (unit != null) ...[
-                              // Display unit number and size (e.g., "301 / 10x10")
-                              Text(
-                                _formatUnitDisplay(unit),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: statusColor,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minWidth: 40, // Ensure minimum width for text
+                            maxWidth: shape.width - 8, // Padding on sides
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (unit != null) ...[
+                                // Display unit number and size (e.g., "301 / 10x10")
+                                Text(
+                                  _formatUnitDisplay(unit),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                    color: statusColor,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  softWrap: false, // Prevent wrapping
                                 ),
-                                textAlign: TextAlign.center,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                unit.statusDisplayName,
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  color: statusColor,
+                                Text(
+                                  unit.statusDisplayName,
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: statusColor,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  softWrap: false, // Prevent wrapping
                                 ),
-                              ),
-                            ] else
-                              Icon(
-                                Icons.crop_free,
-                                size: 24,
-                                color: AppTheme.textTertiary,
-                              ),
-                          ],
+                                if (unit.isOverlocked)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Text(
+                                      'OVERLOCKED',
+                                      style: TextStyle(
+                                        fontSize: 8,
+                                        color: AppTheme.error,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      softWrap: false, // Prevent wrapping
+                                    ),
+                                  ),
+                              ] else
+                                Icon(
+                                  Icons.crop_free,
+                                  size: 24,
+                                  color: AppTheme.textTertiary,
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
+                    ),
                     if (_hoveredUnitId == unit?.id && unit != null)
                       Positioned(
-                        // Position tooltip above the unit, ensuring it doesn't overlap with units above
-                        top: -140,
+                        top: 0,
                         left: 0,
                         right: 0,
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: MapUnitTooltip(
-                            unit: unit,
-                            onViewDetails: () {
-                              _showUnitDetails(unit);
-                            },
-                            onEdit: () {
-                              _showUnitAssignmentDialog(shape);
-                            },
+                        child: Center(
+                          child: OverflowBox(
+                            alignment: Alignment.topCenter,
+                            minWidth: 220,
+                            maxWidth: 320,
+                            child: MapUnitTooltip(
+                              unit: unit,
+                              onViewDetails: () {
+                                _showUnitDetails(unit);
+                              },
+                              onEdit: () {
+                                _showUnitAssignmentDialog(shape);
+                              },
+                            ),
                           ),
                         ),
                       ),
                   ],
+                ),
                 ),
               ),
             ),
@@ -1432,16 +1579,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
       // Web-safe download or file save
       if (kIsWeb) {
-        // Use browser download API for web
-        // Note: html is available via conditional import when on web
         try {
-          final blob = html.Blob([pngBytes]);
-          final url = html.Url.createObjectUrlFromBlob(blob);
-          final anchor = html.AnchorElement(href: url)
-            ..setAttribute('download', filename)
-            ..click();
-          html.Url.revokeObjectUrl(url);
-          
+          map_export.downloadBytesAsFileWeb(pngBytes, filename);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -1656,10 +1795,14 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 class _GridPainter extends CustomPainter {
   final double gridSize;
   final Color color;
+  final double offsetX;
+  final double offsetY;
 
   _GridPainter({
     required this.gridSize,
     required this.color,
+    this.offsetX = 0,
+    this.offsetY = 0,
   });
 
   @override
@@ -1668,7 +1811,11 @@ class _GridPainter extends CustomPainter {
       ..color = color
       ..strokeWidth = 1.0;
 
-    for (double x = 0; x <= size.width; x += gridSize) {
+    // Calculate grid start positions accounting for offset
+    final startX = (offsetX % gridSize) - gridSize;
+    final startY = (offsetY % gridSize) - gridSize;
+
+    for (double x = startX; x <= size.width; x += gridSize) {
       canvas.drawLine(
         Offset(x, 0),
         Offset(x, size.height),
@@ -1676,7 +1823,7 @@ class _GridPainter extends CustomPainter {
       );
     }
 
-    for (double y = 0; y <= size.height; y += gridSize) {
+    for (double y = startY; y <= size.height; y += gridSize) {
       canvas.drawLine(
         Offset(0, y),
         Offset(size.width, y),
@@ -1687,7 +1834,10 @@ class _GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GridPainter oldDelegate) {
-    return oldDelegate.gridSize != gridSize || oldDelegate.color != color;
+    return oldDelegate.gridSize != gridSize || 
+           oldDelegate.color != color ||
+           oldDelegate.offsetX != offsetX ||
+           oldDelegate.offsetY != offsetY;
   }
 }
 

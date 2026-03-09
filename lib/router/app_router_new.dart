@@ -6,6 +6,7 @@ import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
 import 'public_routes.dart';
+import '../providers/auth_provider.dart';
 // Note: Authenticated routes are still in the original app_router.dart
 // This will be fully modularized in a follow-up commit
 

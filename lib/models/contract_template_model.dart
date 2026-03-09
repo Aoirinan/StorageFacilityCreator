@@ -2,11 +2,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'contract_model.dart';
 
+/// Compliance status for contracts/templates
+enum ComplianceStatus {
+  active,
+  disabled,
+}
+
 enum SignatureFieldType {
   signature,
   initials,
   date,
   text,
+  storageUnit,
+  name,
 }
 
 extension SignatureFieldTypeExtension on SignatureFieldType {
@@ -20,6 +28,28 @@ extension SignatureFieldTypeExtension on SignatureFieldType {
         return 'Date';
       case SignatureFieldType.text:
         return 'Text';
+      case SignatureFieldType.storageUnit:
+        return 'Storage Unit Number';
+      case SignatureFieldType.name:
+        return 'Name';
+    }
+  }
+
+  /// Default prompt shown to signer (e.g. "Sign your name")
+  String get defaultPrompt {
+    switch (this) {
+      case SignatureFieldType.signature:
+        return 'Sign your name';
+      case SignatureFieldType.initials:
+        return 'Enter your initials';
+      case SignatureFieldType.date:
+        return 'Sign the date';
+      case SignatureFieldType.text:
+        return 'Enter text';
+      case SignatureFieldType.storageUnit:
+        return 'Sign your contract storage unit number';
+      case SignatureFieldType.name:
+        return 'Enter your full name';
     }
   }
 }
@@ -152,6 +182,18 @@ class ContractTemplateModel {
   final DateTime createdAt;
   final DateTime? updatedAt;
   final String? updatedBy;
+  // Compliance fields
+  final ComplianceStatus complianceStatus;
+  final bool isLicensedForm; // Association/licensed form flag
+  final DateTime? lastReconfirmedAt; // Last rights reconfirmation
+  final String? documentSha256; // SHA-256 hash of uploaded PDF
+  final int? fileSize; // File size in bytes
+  final String? contentType; // MIME type (e.g., 'application/pdf')
+  final DateTime? uploadedAt; // When file was uploaded
+  final String? storagePath; // Storage path in Firebase Storage
+  final DateTime? disabledAt; // When template was disabled
+  final String? disabledBy; // User ID who disabled it
+  final String? disabledReason; // Reason for disabling
 
   ContractTemplateModel({
     required this.id,
@@ -170,6 +212,17 @@ class ContractTemplateModel {
     required this.createdAt,
     this.updatedAt,
     this.updatedBy,
+    this.complianceStatus = ComplianceStatus.active,
+    this.isLicensedForm = false,
+    this.lastReconfirmedAt,
+    this.documentSha256,
+    this.fileSize,
+    this.contentType,
+    this.uploadedAt,
+    this.storagePath,
+    this.disabledAt,
+    this.disabledBy,
+    this.disabledReason,
   });
   
   factory ContractTemplateModel.fromFirestore(DocumentSnapshot doc) {
@@ -195,9 +248,25 @@ class ContractTemplateModel {
       isActive: data['isActive'] ?? true,
       createdBy: data['createdBy'] ?? '',
       facilityId: data['facilityId'] ?? '', // Required for facility-scoped templates
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: data['createdAt'] != null ? (data['createdAt'] as Timestamp).toDate() : DateTime.now(),
       updatedAt: data['updatedAt'] != null ? (data['updatedAt'] as Timestamp).toDate() : null,
       updatedBy: data['updatedBy'],
+      complianceStatus: data['complianceStatus'] != null
+          ? ComplianceStatus.values.firstWhere(
+              (e) => e.name == data['complianceStatus'],
+              orElse: () => ComplianceStatus.active,
+            )
+          : ComplianceStatus.active,
+      isLicensedForm: data['isLicensedForm'] ?? false,
+      lastReconfirmedAt: data['lastReconfirmedAt'] != null ? (data['lastReconfirmedAt'] as Timestamp).toDate() : null,
+      documentSha256: data['documentSha256'],
+      fileSize: data['fileSize'] != null ? (data['fileSize'] as num).toInt() : null,
+      contentType: data['contentType'],
+      uploadedAt: data['uploadedAt'] != null ? (data['uploadedAt'] as Timestamp).toDate() : null,
+      storagePath: data['storagePath'],
+      disabledAt: data['disabledAt'] != null ? (data['disabledAt'] as Timestamp).toDate() : null,
+      disabledBy: data['disabledBy'],
+      disabledReason: data['disabledReason'],
     );
   }
 
@@ -218,6 +287,17 @@ class ContractTemplateModel {
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : null,
       'updatedBy': updatedBy,
+      'complianceStatus': complianceStatus.name,
+      'isLicensedForm': isLicensedForm,
+      if (lastReconfirmedAt != null) 'lastReconfirmedAt': Timestamp.fromDate(lastReconfirmedAt!),
+      if (documentSha256 != null) 'documentSha256': documentSha256,
+      if (fileSize != null) 'fileSize': fileSize,
+      if (contentType != null) 'contentType': contentType,
+      if (uploadedAt != null) 'uploadedAt': Timestamp.fromDate(uploadedAt!),
+      if (storagePath != null) 'storagePath': storagePath,
+      if (disabledAt != null) 'disabledAt': Timestamp.fromDate(disabledAt!),
+      if (disabledBy != null) 'disabledBy': disabledBy,
+      if (disabledReason != null) 'disabledReason': disabledReason,
     };
   }
 
@@ -238,6 +318,17 @@ class ContractTemplateModel {
     DateTime? createdAt,
     DateTime? updatedAt,
     String? updatedBy,
+    ComplianceStatus? complianceStatus,
+    bool? isLicensedForm,
+    DateTime? lastReconfirmedAt,
+    String? documentSha256,
+    int? fileSize,
+    String? contentType,
+    DateTime? uploadedAt,
+    String? storagePath,
+    DateTime? disabledAt,
+    String? disabledBy,
+    String? disabledReason,
   }) {
     return ContractTemplateModel(
       id: id ?? this.id,
@@ -256,6 +347,17 @@ class ContractTemplateModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       updatedBy: updatedBy ?? this.updatedBy,
+      complianceStatus: complianceStatus ?? this.complianceStatus,
+      isLicensedForm: isLicensedForm ?? this.isLicensedForm,
+      lastReconfirmedAt: lastReconfirmedAt ?? this.lastReconfirmedAt,
+      documentSha256: documentSha256 ?? this.documentSha256,
+      fileSize: fileSize ?? this.fileSize,
+      contentType: contentType ?? this.contentType,
+      uploadedAt: uploadedAt ?? this.uploadedAt,
+      storagePath: storagePath ?? this.storagePath,
+      disabledAt: disabledAt ?? this.disabledAt,
+      disabledBy: disabledBy ?? this.disabledBy,
+      disabledReason: disabledReason ?? this.disabledReason,
     );
   }
 }

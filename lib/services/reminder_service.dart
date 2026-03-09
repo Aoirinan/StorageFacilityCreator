@@ -11,6 +11,7 @@ import 'package:sfcapp/services/email_template_service.dart';
 import 'package:sfcapp/services/reminders_digest_service.dart';
 import 'package:sfcapp/services/sms_service.dart';
 import 'package:sfcapp/services/template_integration_service.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 class ReminderService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'overlock_model.dart';
 
 enum UnitStatus {
   available,
@@ -50,6 +51,8 @@ class UnitModel {
   final double? mapY;
   final double? mapWidth;
   final double? mapHeight;
+  /// Manager overlock state (auditable). If absent, treat as not overlocked.
+  final OverlockInfo? overlock;
 
   const UnitModel({
     required this.id,
@@ -81,6 +84,7 @@ class UnitModel {
     this.mapY,
     this.mapWidth,
     this.mapHeight,
+    this.overlock,
   });
 
   factory UnitModel.fromFirestore(DocumentSnapshot doc) {
@@ -125,6 +129,9 @@ class UnitModel {
       mapY: (layout?['y'] as num?)?.toDouble(),
       mapWidth: (layout?['width'] as num?)?.toDouble(),
       mapHeight: (layout?['height'] as num?)?.toDouble(),
+      overlock: data['overlock'] != null
+          ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
+          : null,
     );
   }
 
@@ -196,6 +203,7 @@ class UnitModel {
     double? mapY,
     double? mapWidth,
     double? mapHeight,
+    OverlockInfo? overlock,
   }) {
     return UnitModel(
       id: id ?? this.id,
@@ -227,6 +235,7 @@ class UnitModel {
       mapY: mapY ?? this.mapY,
       mapWidth: mapWidth ?? this.mapWidth,
       mapHeight: mapHeight ?? this.mapHeight,
+      overlock: overlock ?? this.overlock,
     );
   }
 
@@ -236,7 +245,11 @@ class UnitModel {
   bool get isReserved => status == UnitStatus.reserved;
   bool get isMaintenance => status == UnitStatus.maintenance;
   bool get isOutOfOrder => status == UnitStatus.outOfOrder;
-  bool get isOverlocked => status == UnitStatus.overlocked || status == UnitStatus.lockout;
+  /// True if unit has overlock flag set (manager overlock). Prefers overlock.isOverlocked when present; otherwise status.
+  bool get isOverlocked {
+    if (overlock != null) return overlock!.isOverlocked;
+    return status == UnitStatus.overlocked || status == UnitStatus.lockout;
+  }
 
   String get statusDisplayName {
     switch (status) {

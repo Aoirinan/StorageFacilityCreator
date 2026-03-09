@@ -600,6 +600,8 @@ class InvoiceService {
   }
 
   /// Get invoices for a facility (real-time stream)
+  /// Uses where('isActive') only and sorts in memory so the list works even if
+  /// the composite index (isActive + issueDate) is missing or still building.
   static Stream<List<InvoiceModel>> getInvoicesForFacilityStream(String facilityId) {
     try {
       final user = _auth.currentUser;
@@ -612,12 +614,13 @@ class InvoiceService {
           .doc(facilityId)
           .collection('invoices')
           .where('isActive', isEqualTo: true)
-          .orderBy('issueDate', descending: true)
           .snapshots()
           .map((snapshot) {
-        return snapshot.docs
+        final list = snapshot.docs
             .map((doc) => InvoiceModel.fromFirestore(doc))
             .toList();
+        list.sort((a, b) => b.issueDate.compareTo(a.issueDate));
+        return list;
       });
     } catch (e) {
       if (kDebugMode) {

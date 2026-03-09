@@ -123,6 +123,7 @@ class FacilityService {
         Map<String, dynamic>? businessHours,
         Map<String, dynamic>? gateHours,
         Map<String, dynamic>? billingSettings,
+        int totalUnits = 0, // Physical capacity - set at creation, used for occupancy math
         bool skipSubscriptionCheck = false, // For superadmins or testing
       }) async {
         try {
@@ -162,13 +163,18 @@ class FacilityService {
             }
           }
 
+          // Enforce totalUnits: required, 1–200
+          if (totalUnits < 1 || totalUnits > 200) {
+            throw Exception('Total units must be between 1 and 200.');
+          }
+
           final ref = _firestore.collection('facilities').doc();
           final facilityData = {
             'name': name,
             'ownerUid': user.uid,  // ✅ REQUIRED by Firestore rules
             'createdAt': FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
-            'totalUnits': 0,
+            'totalUnits': totalUnits, // Physical capacity - fixed at creation
             'occupiedUnits': 0,
             'active': true,  // ✅ Explicitly set as active - NEVER appears in archived
             'roles': {
@@ -283,7 +289,10 @@ class FacilityService {
   }
 
   // Get user's facilities (owner-scoped query)
-  static Future<List<FacilityModel>> getUserFacilities({bool includeArchived = false}) async {
+  static Future<List<FacilityModel>> getUserFacilities({
+    bool includeArchived = false,
+    bool forceRefresh = false,
+  }) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
@@ -294,7 +303,7 @@ class FacilityService {
           _lastFacilitiesFetch != null &&
           DateTime.now().difference(_lastFacilitiesFetch!) < _facilityCacheTtl;
 
-      if (!includeArchived && cacheFresh) {
+      if (!includeArchived && !forceRefresh && cacheFresh) {
         // #region agent log
         DebugLogger.log(
           hypothesisId: 'H3',
@@ -367,7 +376,7 @@ class FacilityService {
         hypothesisId: 'H3',
         location: 'facility_service.dart:getUserFacilities',
         message: 'Facilities fetched',
-        data: {'count': facilities.length, 'includeArchived': includeArchived},
+        data: {'count': facilities.length, 'includeArchived': includeArchived, 'forceRefresh': forceRefresh},
       );
       // #endregion
       
@@ -632,6 +641,7 @@ class FacilityService {
     Map<String, dynamic>? gateHours,
     Map<String, dynamic>? billingSettings,
     Map<String, dynamic>? insuranceSettings,
+    int? totalUnits, // Physical capacity - when provided, updates facility capacity
   }) async {
     try {
       final user = _auth.currentUser;
@@ -663,6 +673,12 @@ class FacilityService {
       if (gateHours != null) updateData['gateHours'] = gateHours;
       if (billingSettings != null) updateData['billingSettings'] = billingSettings;
       if (insuranceSettings != null) updateData['insuranceSettings'] = insuranceSettings;
+      if (totalUnits != null) {
+        if (totalUnits < 1 || totalUnits > 200) {
+          throw Exception('Total units must be between 1 and 200.');
+        }
+        updateData['totalUnits'] = totalUnits;
+      }
 
       await _firestore.collection('facilities').doc(facilityId).update(updateData);
 
@@ -701,6 +717,27 @@ class FacilityService {
         'archivedByUid': user.uid,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      // Keep account.facilityIds in sync so subscription/billing reflects actual facilities
+      bool accountSyncOk = false;
+      try {
+        final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+        await FacilityCreatorAccountService.removeFacilityFromAccount(
+          accountId: account.accountId,
+          facilityId: facilityId,
+        );
+        accountSyncOk = true;
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Could not remove facility from account (archived anyway): $e');
+        }
+      }
+      // Fallback: server-side reconcile overwrites facilityIds from actual facilities
+      if (!accountSyncOk) {
+        try {
+          await FacilityCreatorAccountService.callReconcileAccountFacilityIds();
+        } catch (_) {}
+      }
 
       if (kDebugMode) {
         print('✅ Facility archived successfully: $facilityId');
@@ -777,11 +814,33 @@ class FacilityService {
         print('🔄 Deleting facility permanently: $facilityId');
       }
 
+      // Keep account.facilityIds in sync before we delete the facility doc
+      bool accountSyncOk = false;
+      try {
+        final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+        await FacilityCreatorAccountService.removeFacilityFromAccount(
+          accountId: account.accountId,
+          facilityId: facilityId,
+        );
+        accountSyncOk = true;
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Could not remove facility from account (deleting anyway): $e');
+        }
+      }
+
       // Delete all sub-collections first (tenants, units, etc.)
       await _deleteFacilitySubCollections(facilityId);
 
       // Delete the facility document
       await _firestore.collection('facilities').doc(facilityId).delete();
+
+      // Fallback: if we couldn't remove from account, reconcile now (facility is gone)
+      if (!accountSyncOk) {
+        try {
+          await FacilityCreatorAccountService.callReconcileAccountFacilityIds();
+        } catch (_) {}
+      }
 
       if (kDebugMode) {
         print('✅ Facility deleted permanently: $facilityId');

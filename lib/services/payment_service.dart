@@ -5,6 +5,7 @@ import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/services/email_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 class PaymentService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -55,6 +56,23 @@ class PaymentService {
       };
 
       await ref.set(paymentData);
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'payment.created',
+        targetType: 'payment',
+        targetId: ref.id,
+        tenantId: tenantId,
+        after: {
+          'amount': amount,
+          'method': method.name,
+          'status': 'pending',
+        },
+        metadata: {
+          'contractId': contractId,
+        },
+      );
 
       final payment = PaymentModel(
         id: ref.id,
@@ -323,6 +341,89 @@ class PaymentService {
     };
   }
 
+  // Update payment
+  static Future<void> updatePayment({
+    required String facilityId,
+    required String paymentId,
+    double? amount,
+    PaymentMethod? method,
+    DateTime? dueDate,
+    String? notes,
+    PaymentStatus? status,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) throw Exception('User not authenticated');
+
+      if (kDebugMode) {
+        print('🔄 Updating payment: $paymentId');
+      }
+
+      // Get before snapshot for audit log
+      final beforeDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('payments')
+          .doc(paymentId)
+          .get();
+
+      if (!beforeDoc.exists) {
+        throw Exception('Payment not found');
+      }
+
+      final beforeData = beforeDoc.data()!;
+
+      final updateData = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (amount != null) updateData['amount'] = amount;
+      if (method != null) updateData['method'] = method.name;
+      if (dueDate != null) updateData['dueDate'] = Timestamp.fromDate(dueDate);
+      if (notes != null) updateData['notes'] = notes;
+      if (status != null) updateData['status'] = status.name;
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('payments')
+          .doc(paymentId)
+          .update(updateData);
+
+      // Get after snapshot for audit log
+      final afterDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('payments')
+          .doc(paymentId)
+          .get();
+      final afterData = afterDoc.data()!;
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'payment.edited',
+        targetType: 'payment',
+        targetId: paymentId,
+        tenantId: beforeData['tenantId'],
+        before: Map<String, dynamic>.from(beforeData),
+        after: Map<String, dynamic>.from(afterData),
+        metadata: {
+          'fieldsChanged': updateData.keys.toList(),
+        },
+      );
+
+      if (kDebugMode) {
+        print('✅ Payment updated successfully: $paymentId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error updating payment: $e');
+      }
+      rethrow;
+    }
+  }
+
   // Mark payment as paid
   static Future<void> markPaymentAsPaid({
     required String facilityId,
@@ -380,6 +481,113 @@ class PaymentService {
       if (kDebugMode) {
         print('❌ Error marking payment as paid: $e');
       }
+      rethrow;
+    }
+  }
+
+  /// Record a manual payment (cash, check, etc.) - writes to facility payments and tenant
+  /// payments so it shows in both the main Payments list and Payment History in the panel.
+  static Future<String> recordManualPayment({
+    required String facilityId,
+    required String tenantId,
+    required double amount,
+    required PaymentMethod method,
+    String? notes,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) throw Exception('User not authenticated');
+
+      if (kDebugMode) {
+        print('🔄 Recording manual payment: $tenantId, \$$amount, ${method.name}');
+      }
+
+      final tenantDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .get();
+
+      if (!tenantDoc.exists) {
+        throw Exception('Tenant not found');
+      }
+
+      final tenantData = tenantDoc.data()!;
+      final contractId = tenantData['contractId'] as String? ?? '';
+      final now = DateTime.now();
+      final nowTimestamp = Timestamp.fromDate(now);
+
+      // 1. Create facility-level payment (shows in main Payments screen)
+      final facilityPaymentRef = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('payments')
+          .add({
+        'tenantId': tenantId,
+        'facilityId': facilityId,
+        'contractId': contractId,
+        'amount': amount,
+        'status': 'completed',
+        'method': method.name,
+        'paidAt': nowTimestamp,
+        'paidDate': nowTimestamp,
+        'dueDate': nowTimestamp,
+        'notes': notes,
+        'createdAt': nowTimestamp,
+        'updatedAt': nowTimestamp,
+        'createdBy': user.uid,
+        'isActive': true,
+      });
+
+      // 2. Create tenant payment (shows in Payment History in panel)
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .collection('payments')
+          .add({
+        'facilityId': facilityId,
+        'tenantId': tenantId,
+        'type': 'manual',
+        'amountCents': (amount * 100).round(),
+        'currency': 'usd',
+        'chargeType': 'manual_${method.name}',
+        'status': 'succeeded',
+        'description': notes ?? '${method.displayName} payment',
+        'createdAt': nowTimestamp,
+        'updatedAt': nowTimestamp,
+        'failureCode': null,
+        'failureMessage': null,
+      });
+
+      // 3. Ledger entry
+      try {
+        await LedgerService.createLedgerEntry(
+          tenantId: tenantId,
+          facilityId: facilityId,
+          type: LedgerEntryType.payment,
+          amount: -amount,
+          description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
+          referenceId: facilityPaymentRef.id,
+          entryDate: now,
+          status: LedgerEntryStatus.posted,
+          metadata: {
+            'paymentMethod': method.name,
+            'paymentId': facilityPaymentRef.id,
+          },
+        );
+      } catch (e) {
+        if (kDebugMode) print('⚠️ Ledger entry failed: $e');
+      }
+
+      if (kDebugMode) {
+        print('✅ Manual payment recorded: ${facilityPaymentRef.id}');
+      }
+      return facilityPaymentRef.id;
+    } catch (e) {
+      if (kDebugMode) print('❌ Error recording manual payment: $e');
       rethrow;
     }
   }

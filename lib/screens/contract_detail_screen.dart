@@ -11,6 +11,7 @@ import '../providers/auth_provider.dart';
 import '../services/contract_service.dart';
 import '../services/email_service.dart';
 import '../services/tenant_service.dart';
+import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 import 'contract_signing_screen.dart';
 import 'contract_creation_screen.dart';
@@ -20,60 +21,87 @@ import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../utils/error_message_helper.dart';
 
-class ContractDetailScreen extends ConsumerWidget {
+class ContractDetailScreen extends ConsumerStatefulWidget {
   final ContractModel contract;
   
   const ContractDetailScreen({super.key, required this.contract});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ContractDetailScreen> createState() => _ContractDetailScreenState();
+}
+
+class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
+  ContractModel get contract => widget.contract;
+
+  String? _facilityName;
+  String? _tenantName;
+  String? _tenantEmail;
+  final Map<String, String> _userDisplayNames = {};
+  bool _partiesLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPartyDetails();
+  }
+
+  Future<void> _loadPartyDetails() async {
+    try {
+      final facilityFuture = FacilityService.getFacility(contract.facilityId);
+      final tenantFuture = TenantService.getTenantById(contract.facilityId, contract.tenantId);
+
+      final facility = await facilityFuture;
+      final tenant = await tenantFuture;
+
+      final uidsToResolve = <String>{contract.createdBy};
+      if (contract.sentBy != null) uidsToResolve.add(contract.sentBy!);
+      if (contract.signedBy != null) uidsToResolve.add(contract.signedBy!);
+
+      final resolvedNames = <String, String>{};
+      await Future.wait(uidsToResolve.map((uid) async {
+        try {
+          final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+          final data = doc.data();
+          if (data != null) {
+            final name = data['displayName'] as String? ??
+                data['name'] as String? ??
+                data['email'] as String?;
+            if (name != null && name.isNotEmpty) {
+              resolvedNames[uid] = name;
+            }
+          }
+        } catch (_) {}
+      }));
+
+      if (mounted) {
+        setState(() {
+          _facilityName = facility?.name;
+          _tenantName = tenant?.name;
+          _tenantEmail = tenant?.email;
+          _userDisplayNames.addAll(resolvedNames);
+          _partiesLoaded = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _partiesLoaded = true);
+    }
+  }
+
+  String _resolveUid(String uid) {
+    return _userDisplayNames[uid] ?? uid;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
 
     return authState.when(
       data: (user) {
         if (user == null) {
-          return const Scaffold(
-            body: Center(child: Text('Please sign in to view contracts')),
-          );
+          return const Center(child: Text('Please sign in to view contracts'));
         }
 
-        return ModernPageWrapper(
-          currentRoute: '/contracts',
-          title: contract.title,
-          onNavigate: (route) {
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-          actions: [
-            PopupMenuButton<String>(
-              onSelected: (value) => _handleAction(context, ref, value),
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'edit',
-                  child: Text('Edit'),
-                ),
-                if (contract.status == ContractStatus.draft)
-                  const PopupMenuItem(
-                    value: 'send',
-                    child: Text('Send'),
-                  ),
-                if (contract.status == ContractStatus.sent)
-                  const PopupMenuItem(
-                    value: 'sign',
-                    child: Text('Sign'),
-                  ),
-                if (contract.status == ContractStatus.signed)
-                  const PopupMenuItem(
-                    value: 'download',
-                    child: Text('Download'),
-                  ),
-                const PopupMenuItem(
-                  value: 'delete',
-                  child: Text('Delete'),
-                ),
-              ],
-            ),
-          ],
-          child: SingleChildScrollView(
+        return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -94,27 +122,44 @@ class ContractDetailScreen extends ConsumerWidget {
             
             // Parties Information
             _buildSection(context, 'Parties', [
-              _buildInfoRow('Facility ID', contract.facilityId),
-              _buildInfoRow('Tenant ID', contract.tenantId),
-              _buildInfoRow('Created By', contract.createdBy),
+              _buildInfoRow(
+                'Facility',
+                _facilityName ?? (_partiesLoaded ? contract.facilityId : '...'),
+              ),
+              _buildInfoRow(
+                'Tenant',
+                _tenantName != null
+                    ? (_tenantEmail != null ? '$_tenantName ($_tenantEmail)' : _tenantName!)
+                    : (_partiesLoaded ? contract.tenantId : '...'),
+              ),
+              _buildInfoRow(
+                'Created By',
+                _partiesLoaded ? _resolveUid(contract.createdBy) : '...',
+              ),
               if (contract.sentBy != null)
-                _buildInfoRow('Sent By', contract.sentBy!),
+                _buildInfoRow(
+                  'Sent By',
+                  _partiesLoaded ? _resolveUid(contract.sentBy!) : '...',
+                ),
               if (contract.signedBy != null)
-                _buildInfoRow('Signed By', contract.signedBy!),
+                _buildInfoRow(
+                  'Signed By',
+                  _partiesLoaded ? _resolveUid(contract.signedBy!) : '...',
+                ),
             ]),
             const SizedBox(height: 24),
             
             // Timeline Information
             _buildSection(context, 'Timeline', [
-              _buildInfoRow('Created', _formatDate(contract.createdAt)),
+              _buildInfoRow('Created', _formatDateTime(contract.createdAt)),
               if (contract.sentAt != null)
-                _buildInfoRow('Sent', _formatDate(contract.sentAt!)),
+                _buildInfoRow('Sent', _formatDateTime(contract.sentAt!)),
               if (contract.signedAt != null)
-                _buildInfoRow('Signed', _formatDate(contract.signedAt!)),
+                _buildInfoRow('Signed', _formatDateTime(contract.signedAt!)),
               if (contract.expiresAt != null)
                 _buildInfoRow(
                   'Expires', 
-                  _formatDate(contract.expiresAt!),
+                  _formatDateTime(contract.expiresAt!),
                   isExpired: contract.expiresAt!.isBefore(DateTime.now()),
                 ),
             ]),
@@ -145,24 +190,19 @@ class ContractDetailScreen extends ConsumerWidget {
             _buildActionButtons(context, ref),
           ],
         ),
-      ),
-        );
+      );
       },
-      loading: () => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, stackTrace) => Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error, size: 64, color: AppTheme.error),
-              const SizedBox(height: 16),
-              const Text('Error loading contract'),
-              const SizedBox(height: 8),
-              Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
-            ],
-          ),
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stackTrace) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error, size: 64, color: AppTheme.error),
+            const SizedBox(height: 16),
+            const Text('Error loading contract'),
+            const SizedBox(height: 8),
+            Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
+          ],
         ),
       ),
     );
@@ -292,7 +332,29 @@ class ContractDetailScreen extends ConsumerWidget {
     );
   }
 
+  static const _internalCustomFieldKeys = {
+    'signers',
+    'signaturePlaceholders',
+    'templateSigners',
+    'signaturePlaceholderDers',
+    'requiredFields',
+    'defaultValues',
+    'templateId',
+    'facilityOwnerUid',
+  };
+
   Widget _buildCustomFieldsSection(BuildContext context, Map<String, dynamic> customFields) {
+    final visibleEntries = customFields.entries
+        .where((e) =>
+            !_internalCustomFieldKeys.contains(e.key) &&
+            e.value != null &&
+            e.value.toString().isNotEmpty &&
+            e.value is! List &&
+            e.value is! Map)
+        .toList();
+
+    if (visibleEntries.isEmpty) return const SizedBox.shrink();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -312,11 +374,8 @@ class ContractDetailScreen extends ConsumerWidget {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Column(
-            children: customFields.entries.map((entry) {
-              return _buildInfoRow(
-                entry.key,
-                entry.value.toString(),
-              );
+            children: visibleEntries.map((entry) {
+              return _buildInfoRow(entry.key, entry.value.toString());
             }).toList(),
           ),
         ),
@@ -352,7 +411,18 @@ class ContractDetailScreen extends ConsumerWidget {
               ),
             ),
           ),
-        if (contract.status == ContractStatus.sent)
+        if (contract.status == ContractStatus.sent) ...[
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => _resendContract(context, ref),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Resend Contract'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
           Expanded(
             child: ElevatedButton.icon(
               onPressed: () => _signContract(context, ref),
@@ -365,6 +435,7 @@ class ContractDetailScreen extends ConsumerWidget {
               ),
             ),
           ),
+        ],
       ],
     );
   }
@@ -403,6 +474,17 @@ class ContractDetailScreen extends ConsumerWidget {
     return '${date.month}/${date.day}/${date.year}';
   }
 
+  String _formatDateTime(DateTime date) {
+    final hour = date.hour == 0
+        ? 12
+        : date.hour > 12
+            ? date.hour - 12
+            : date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final period = date.hour < 12 ? 'AM' : 'PM';
+    return '${date.month}/${date.day}/${date.year} at $hour:$minute $period';
+  }
+
   Future<void> _openFile(BuildContext context, String url) async {
     try {
       final uri = Uri.parse(url);
@@ -437,6 +519,9 @@ class ContractDetailScreen extends ConsumerWidget {
         break;
       case 'send':
         _sendContract(context, ref);
+        break;
+      case 'resend':
+        _resendContract(context, ref);
         break;
       case 'sign':
         _signContract(context, ref);
@@ -571,12 +656,18 @@ class ContractDetailScreen extends ConsumerWidget {
             context: context,
             builder: (context) => AlertDialog(
               title: const Text('Contract Sent Successfully!'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('The contract has been sent to the tenant.'),
-                  const SizedBox(height: 16),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('The contract has been sent to the tenant.'),
+                    const SizedBox(height: 8),
+                    Text(
+                      'If the email doesn\'t arrive, check the spam/junk folder. You can also copy the signing link below and send it manually.',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 16),
                   const Text(
                     'Signing Token (for testing):',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
@@ -624,22 +715,25 @@ class ContractDetailScreen extends ConsumerWidget {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      // Copy URL to clipboard
-                      Clipboard.setData(ClipboardData(text: signingUrl));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('URL copied to clipboard! Paste it in a new browser tab.'),
-                          backgroundColor: AppTheme.success,
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.copy, size: 16),
-                    label: const Text('Copy URL'),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: signingUrl));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Signing link copied! Send it to the tenant if the email didn\'t arrive.'),
+                            backgroundColor: AppTheme.success,
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.copy, size: 16),
+                      label: const Text('Copy signing link (if email didn\'t arrive)'),
+                    ),
                   ),
                 ],
               ),
+            ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
@@ -666,20 +760,122 @@ class ContractDetailScreen extends ConsumerWidget {
     }
   }
 
+  Future<void> _resendContract(BuildContext context, WidgetRef ref) async {
+    String? tenantEmail;
+    try {
+      final tenant = await TenantService.getTenantById(contract.facilityId, contract.tenantId);
+      tenantEmail = tenant?.email;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ Could not load tenant email: $e');
+      }
+    }
+
+    if (tenantEmail == null || tenantEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Tenant email not found. Please add an email address for the tenant.'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    final shouldResend = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Resend Contract'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will send a new signing link to the tenant. The previous link will stop working.',
+            ),
+            const SizedBox(height: 16),
+            Text('Recipient: $tenantEmail'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Resend'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldResend != true) return;
+
+    try {
+      final signingToken = await ContractService.resendContract(
+        facilityId: contract.facilityId,
+        contractId: contract.id,
+      );
+
+      final signingUrl = _generateSigningUrl(signingToken);
+      final html = _generateSigningEmailHtml(contract, signingUrl);
+      final text = _generateSigningEmailText(contract, signingUrl);
+
+      // Retry once if first attempt fails (handles Cloud Function cold start)
+      EmailResult emailResult = await EmailService.sendEmail(
+        to: tenantEmail,
+        subject: 'Contract Signature Required (Resent): ${contract.title}',
+        html: html,
+        text: text,
+        facilityId: contract.facilityId,
+      );
+      if (!emailResult.success && context.mounted) {
+        await Future.delayed(const Duration(seconds: 2));
+        if (context.mounted) {
+          emailResult = await EmailService.sendEmail(
+            to: tenantEmail,
+            subject: 'Contract Signature Required (Resent): ${contract.title}',
+            html: html,
+            text: text,
+            facilityId: contract.facilityId,
+          );
+        }
+      }
+
+      if (emailResult.success && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Contract resent successfully. The tenant will receive a new signing link.'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Contract link updated, but email failed: ${emailResult.error}'),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error resending contract: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
+  }
+
   String _generateSigningUrl(String signingToken) {
-    // In production, this should be a proper web URL pointing to your app
-    // For web apps, this could be: https://yourapp.com/sign-contract?token=$signingToken
-    // For mobile apps, use deep links: sfcapp://sign-contract?token=$signingToken
-    // 
-    // NOTE: The actual URL needs to be configured based on your deployment.
-    // This is a placeholder that should be replaced with your actual app URL.
+    // Must match AppRoute.contractSign (/contracts/sign). App uses hash routing (/#/) for web.
     if (kIsWeb) {
-      // For web, construct a full URL
       final baseUrl = Uri.base.origin;
-      return '$baseUrl/sign-contract?token=$signingToken';
+      return '$baseUrl/#/contracts/sign?token=$signingToken';
     } else {
-      // For mobile, use deep link
-      return 'sfcapp://sign-contract?token=$signingToken';
+      return 'sfcapp://contracts/sign?token=$signingToken';
     }
   }
 
@@ -698,7 +894,7 @@ class ContractDetailScreen extends ConsumerWidget {
             </div>
             <p>Please click the button below to review and sign the contract electronically:</p>
             <div style="text-align: center; margin: 30px 0;">
-              <a href="$signingUrl" style="background-color: #7B1FA2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              <a clicktracking="off" href="$signingUrl" style="background-color: #7B1FA2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
                 Sign Contract
               </a>
             </div>
@@ -760,9 +956,9 @@ This is an automated message. Please do not reply to this email.
         return;
       }
 
-      // Navigate to signing screen
+      // Navigate to signing screen - pass contract so we skip Firestore lookup (works for managers)
       if (context.mounted) {
-        context.push('${AppRoute.contractSign}?token=$signingToken');
+        context.push('${AppRoute.contractSign}?token=$signingToken', extra: contract);
       }
     } catch (e) {
       if (context.mounted) {

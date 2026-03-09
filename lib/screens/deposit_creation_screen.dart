@@ -155,13 +155,7 @@ class _DepositCreationScreenState extends ConsumerState<DepositCreationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/deposits',
-      title: 'Create Deposit',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Form(
+    return Form(
         key: _formKey,
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
@@ -433,8 +427,7 @@ class _DepositCreationScreenState extends ConsumerState<DepositCreationScreen> {
             ],
           ),
         ),
-      ),
-    );
+      );
   }
 
   String _getMethodLabel(DepositMethod method) {

@@ -16,6 +16,7 @@ import '../screens/subscription_test_screen.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/time_zone_helper.dart';
 
 class FacilityCreationWizard extends ConsumerStatefulWidget {
   final VoidCallback? onFacilityCreated;
@@ -41,6 +42,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   final _gracePeriodController = TextEditingController(text: '5');
   final _lateFeeAmountController = TextEditingController(text: '25.00');
   String _lateFeeType = 'flat'; // 'flat' or 'percentage'
+  final _totalUnitsController = TextEditingController(text: '');
   
   bool _isLoading = false;
   String? _errorMessage;
@@ -57,6 +59,12 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _selectedTimeZone ??= TimeZoneHelper.defaultTimeZoneId;
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _addressController.dispose();
@@ -64,6 +72,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
     _emailController.dispose();
     _gracePeriodController.dispose();
     _lateFeeAmountController.dispose();
+    _totalUnitsController.dispose();
     super.dispose();
   }
 
@@ -398,6 +407,69 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
               }
               return;
             }
+
+            // Active subscribers adding 2nd+ facility: require explicit consent before charging
+            if (account.hasActiveSubscription && currentFacilityCount >= 1) {
+              if (mounted) {
+                setState(() {
+                  _isLoading = false;
+                });
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => AlertDialog(
+                    title: const Row(
+                      children: [
+                        Icon(Icons.add_business, color: AppTheme.primaryBlue),
+                        SizedBox(width: 8),
+                        Text('Add Facility to Subscription'),
+                      ],
+                    ),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Adding another facility will add \$75/month to your subscription.',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'This amount will be included in your next monthly invoice—you will not be charged immediately.',
+                          style: TextStyle(fontSize: 14),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Do you agree to add this facility and the \$75/month charge?',
+                          style: TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: () => Navigator.of(context).pop(true),
+                        icon: const Icon(Icons.check_circle),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.success,
+                          foregroundColor: AppTheme.textOnDark,
+                        ),
+                        label: const Text('Yes, Add Facility'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed != true || !mounted) {
+                  return;
+                }
+                setState(() {
+                  _isLoading = true;
+                });
+              }
+            }
           }
         } catch (e) {
           if (kDebugMode) {
@@ -431,13 +503,15 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
           }
         }
         
+        final totalUnits = int.tryParse(_totalUnitsController.text.trim()) ?? 0;
         facilityId = await FacilityService.createFacility(
           name: _nameController.text.trim(),
           address: _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
           phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
           email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
-          timeZone: _selectedTimeZone,
+          timeZone: _selectedTimeZone ?? TimeZoneHelper.defaultTimeZoneId,
           billingSettings: billingSettings,
+          totalUnits: totalUnits,
         );
       } catch (e) {
         if (kDebugMode) {
@@ -669,229 +743,387 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
     return authState.when(
       data: (user) {
         if (user == null) {
-          return const Scaffold(
-            body: Center(child: Text('Please sign in to create facilities')),
-          );
+          return const Center(child: Text('Please sign in to create facilities'));
         }
         
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Create New Facility'),
-            backgroundColor: AppTheme.primaryBlue,
-            foregroundColor: AppTheme.textOnDark,
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Form(
-              key: _formKey,
-              child: KeyboardScrollable(
-                child: SingleChildScrollView(
-                  child: Column(
+        return Container(
+          color: AppTheme.backgroundLight,
+          child: Form(
+            key: _formKey,
+            child: KeyboardScrollable(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text(
-                      'Facility Information',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primaryBlue,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    
-                    // Facility Name
-                    TextFormField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Facility Name *',
-                        hintText: 'e.g., Keepsake Self Storage',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.business),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Please enter a facility name';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Address
-                    TextFormField(
-                      controller: _addressController,
-                      decoration: const InputDecoration(
-                        labelText: 'Address',
-                        hintText: '123 Main St, City, State 12345',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.location_on),
-                      ),
-                      maxLines: 2,
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Phone
-                    TextFormField(
-                      controller: _phoneController,
-                      decoration: const InputDecoration(
-                        labelText: 'Phone Number',
-                        hintText: '(555) 123-4567',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.phone),
-                      ),
-                      keyboardType: TextInputType.phone,
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Email
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(
-                        labelText: 'Email',
-                        hintText: 'contact@facility.com',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.email),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                    ),
-                    const SizedBox(height: 24),
-                    
-                    // Divider for settings section
-                    const Divider(),
-                    const SizedBox(height: 16),
-                    
-                    const Text(
-                      'Settings',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primaryBlue,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Time Zone
-                    DropdownButtonFormField<String>(
-                      value: _selectedTimeZone,
-                      decoration: const InputDecoration(
-                        labelText: 'Time Zone',
-                        hintText: 'Select time zone',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.access_time),
-                      ),
-                      items: _timeZones.map((tz) {
-                        return DropdownMenuItem<String>(
-                          value: tz,
-                          child: Text(tz.replaceAll('America/', '').replaceAll('Pacific/', '')),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedTimeZone = value;
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 24),
-                    
-                    // Billing Settings Section
-                    const Text(
-                      'Billing Settings',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primaryBlue,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Grace Period
-                    TextFormField(
-                      controller: _gracePeriodController,
-                      decoration: const InputDecoration(
-                        labelText: 'Grace Period (Days)',
-                        hintText: '5',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.calendar_today),
-                        helperText: 'Number of days before late fees apply',
-                      ),
-                      keyboardType: TextInputType.number,
-                      validator: (value) {
-                        if (value != null && value.isNotEmpty) {
-                          final days = int.tryParse(value);
-                          if (days == null || days < 0) {
-                            return 'Please enter a valid number of days';
-                          }
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Late Fee Type
-                    DropdownButtonFormField<String>(
-                      value: _lateFeeType,
-                      decoration: const InputDecoration(
-                        labelText: 'Late Fee Type',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.attach_money),
-                      ),
-                      items: const [
-                        DropdownMenuItem(value: 'flat', child: Text('Flat Amount')),
-                        DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
+                    // Header Section
+                    Row(
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryBlue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.add_business,
+                            color: AppTheme.primaryBlue,
+                            size: 24,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Create New Facility',
+                                style: TextStyle(
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary,
+                                  letterSpacing: -0.5,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'Set up your storage facility with basic information and billing settings',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: AppTheme.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
-                      onChanged: (value) {
-                        setState(() {
-                          _lateFeeType = value ?? 'flat';
-                        });
-                      },
+                    ),
+                    const SizedBox(height: 32),
+                    
+                    // Facility Information Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: AppTheme.borderLight, width: 1),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.primaryBlue.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.business,
+                                    color: AppTheme.primaryBlue,
+                                    size: 20,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                const Text(
+                                  'Facility Information',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 24),
+                            
+                            // Facility Name
+                            TextFormField(
+                              controller: _nameController,
+                              decoration: const InputDecoration(
+                                labelText: 'Facility Name *',
+                                hintText: 'e.g., Keepsake Self Storage',
+                                prefixIcon: Icon(Icons.business),
+                              ),
+                              validator: (value) {
+                                if (value == null || value.trim().isEmpty) {
+                                  return 'Please enter a facility name';
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Address
+                            TextFormField(
+                              controller: _addressController,
+                              decoration: const InputDecoration(
+                                labelText: 'Address',
+                                hintText: '123 Main St, City, State 12345',
+                                prefixIcon: Icon(Icons.location_on),
+                              ),
+                              maxLines: 2,
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Phone
+                            TextFormField(
+                              controller: _phoneController,
+                              decoration: const InputDecoration(
+                                labelText: 'Phone Number',
+                                hintText: '(555) 123-4567',
+                                prefixIcon: Icon(Icons.phone),
+                              ),
+                              keyboardType: TextInputType.phone,
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Email
+                            TextFormField(
+                              controller: _emailController,
+                              decoration: const InputDecoration(
+                                labelText: 'Email',
+                                hintText: 'contact@facility.com',
+                                prefixIcon: Icon(Icons.email),
+                              ),
+                              keyboardType: TextInputType.emailAddress,
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Total Units (required, 1–200)
+                            TextFormField(
+                              controller: _totalUnitsController,
+                              decoration: const InputDecoration(
+                                labelText: 'Total Units',
+                                hintText: 'e.g., 50',
+                                prefixIcon: Icon(Icons.grid_view),
+                                helperText: 'Total physical capacity (1–200). Used for occupancy calculations.',
+                              ),
+                              keyboardType: TextInputType.number,
+                              validator: (value) {
+                                final raw = value?.trim() ?? '';
+                                if (raw.isEmpty) {
+                                  return 'Total units is required.';
+                                }
+                                final n = int.tryParse(raw);
+                                if (n == null || n < 1 || n > 200) {
+                                  return 'Total units must be between 1 and 200.';
+                                }
+                                return null;
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 16),
                     
-                    // Late Fee Amount
-                    TextFormField(
-                      controller: _lateFeeAmountController,
-                      decoration: InputDecoration(
-                        labelText: _lateFeeType == 'flat' ? 'Late Fee Amount (\$)' : 'Late Fee Percentage (%)',
-                        hintText: _lateFeeType == 'flat' ? '25.00' : '5.0',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.money),
-                        helperText: _lateFeeType == 'flat' 
-                            ? 'Fixed late fee amount in dollars'
-                            : 'Late fee as percentage of rent',
+                    // Settings Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: AppTheme.borderLight, width: 1),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      validator: (value) {
-                        if (value != null && value.isNotEmpty) {
-                          final amount = double.tryParse(value);
-                          if (amount == null || amount < 0) {
-                            return 'Please enter a valid amount';
-                          }
-                        }
-                        return null;
-                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.info.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.settings,
+                                    color: AppTheme.info,
+                                    size: 20,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                const Text(
+                                  'Settings',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 24),
+                            
+                            // Time Zone
+                            DropdownButtonFormField<String>(
+                              value: _selectedTimeZone,
+                              decoration: const InputDecoration(
+                                labelText: 'Time Zone',
+                                hintText: 'Select time zone',
+                                prefixIcon: Icon(Icons.access_time),
+                              ),
+                              items: _timeZones.map((tz) {
+                                return DropdownMenuItem<String>(
+                                  value: tz,
+                                  child: Text(TimeZoneHelper.displayLabel(tz)),
+                                );
+                              }).toList(),
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedTimeZone = value;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    // Billing Settings Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: AppTheme.borderLight, width: 1),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.success.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.payment,
+                                    color: AppTheme.success,
+                                    size: 20,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                const Text(
+                                  'Billing Settings',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 24),
+                            
+                            // Grace Period
+                            TextFormField(
+                              controller: _gracePeriodController,
+                              decoration: const InputDecoration(
+                                labelText: 'Grace Period (Days)',
+                                hintText: '5',
+                                prefixIcon: Icon(Icons.calendar_today),
+                                helperText: 'Number of days before late fees apply',
+                              ),
+                              keyboardType: TextInputType.number,
+                              validator: (value) {
+                                if (value != null && value.isNotEmpty) {
+                                  final days = int.tryParse(value);
+                                  if (days == null || days < 0) {
+                                    return 'Please enter a valid number of days';
+                                  }
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Late Fee Type
+                            DropdownButtonFormField<String>(
+                              value: _lateFeeType,
+                              decoration: const InputDecoration(
+                                labelText: 'Late Fee Type',
+                                prefixIcon: Icon(Icons.attach_money),
+                              ),
+                              items: const [
+                                DropdownMenuItem(value: 'flat', child: Text('Flat Amount')),
+                                DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
+                              ],
+                              onChanged: (value) {
+                                setState(() {
+                                  _lateFeeType = value ?? 'flat';
+                                });
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Late Fee Amount
+                            TextFormField(
+                              controller: _lateFeeAmountController,
+                              decoration: InputDecoration(
+                                labelText: _lateFeeType == 'flat' ? 'Late Fee Amount (\$)' : 'Late Fee Percentage (%)',
+                                hintText: _lateFeeType == 'flat' ? '25.00' : '5.0',
+                                prefixIcon: const Icon(Icons.money),
+                                helperText: _lateFeeType == 'flat' 
+                                    ? 'Fixed late fee amount in dollars'
+                                    : 'Late fee as percentage of rent',
+                              ),
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              validator: (value) {
+                                if (value != null && value.isNotEmpty) {
+                                  final amount = double.tryParse(value);
+                                  if (amount == null || amount < 0) {
+                                    return 'Please enter a valid amount';
+                                  }
+                                }
+                                return null;
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 24),
                     
                     // Error Message
                     if (_errorMessage != null)
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppTheme.error.withOpacity(0.1),
-                          border: Border.all(color: AppTheme.error),
-                          borderRadius: BorderRadius.circular(8),
+                      Card(
+                        elevation: 0,
+                        color: AppTheme.error.withOpacity(0.1),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: AppTheme.error, width: 1),
                         ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.error, color: AppTheme.error),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _errorMessage!,
-                                style: TextStyle(color: AppTheme.error),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Icon(Icons.error_outline, color: AppTheme.error, size: 24),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _errorMessage!,
+                                  style: TextStyle(
+                                    color: AppTheme.error,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     
@@ -907,6 +1139,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
+                        elevation: 0,
                       ),
                       child: _isLoading
                           ? const Row(
@@ -921,44 +1154,61 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                                   ),
                                 ),
                                 SizedBox(width: 12),
-                                Text('Creating Facility...\nThis may take a moment'),
+                                Text(
+                                  'Creating Facility...',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ],
                             )
-                      : const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.add_business),
-                            SizedBox(width: 8),
-                            Text('Create Facility'),
-                          ],
-                        ),
+                          : const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_business, size: 20),
+                                SizedBox(width: 8),
+                                Text(
+                                  'Create Facility',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                     ),
                     
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
                     
+                    // Helper text
+                    Center(
+                      child: Text(
+                        'This may take a moment',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
           ),
-        ),
         );
       },
-      loading: () => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, stackTrace) => Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error, size: 64, color: AppTheme.error),
-              const SizedBox(height: 16),
-              const Text('Error loading user data'),
-              const SizedBox(height: 8),
-              Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
-            ],
-          ),
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stackTrace) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error, size: 64, color: AppTheme.error),
+            const SizedBox(height: 16),
+            const Text('Error loading user data'),
+            const SizedBox(height: 8),
+            Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
+          ],
         ),
       ),
     );

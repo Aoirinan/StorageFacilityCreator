@@ -14,11 +14,12 @@ class ActivityFeed extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.borderLight, width: 1),
+        side: BorderSide(color: colorScheme.outline, width: 1),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -27,10 +28,10 @@ class ActivityFeed extends StatelessWidget {
           children: [
             Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+                color: colorScheme.onSurface,
               ),
             ),
             const SizedBox(height: 16),
@@ -42,7 +43,7 @@ class ActivityFeed extends StatelessWidget {
                     'No recent activity',
                     style: TextStyle(
                       fontSize: 14,
-                      color: AppTheme.textSecondary,
+                      color: colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -98,6 +99,8 @@ class _ActivityItemWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final iconColor = item.iconColor ?? colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(
@@ -107,12 +110,12 @@ class _ActivityItemWidget extends StatelessWidget {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: (item.iconColor ?? AppTheme.primaryBlue).withOpacity(0.1),
+              color: iconColor.withOpacity(0.1),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
               item.icon,
-              color: item.iconColor ?? AppTheme.primaryBlue,
+              color: iconColor,
               size: 20,
             ),
           ),
@@ -123,18 +126,18 @@ class _ActivityItemWidget extends StatelessWidget {
               children: [
                 Text(
                   item.title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w500,
-                    color: AppTheme.textPrimary,
+                    color: colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   item.subtitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
-                    color: AppTheme.textSecondary,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
@@ -142,9 +145,9 @@ class _ActivityItemWidget extends StatelessWidget {
           ),
           Text(
             _formatTimestamp(item.timestamp),
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
-              color: AppTheme.textSecondary,
+              color: colorScheme.onSurfaceVariant,
             ),
           ),
         ],

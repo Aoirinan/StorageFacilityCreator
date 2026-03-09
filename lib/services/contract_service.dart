@@ -1,16 +1,42 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:http/http.dart' as http;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/contract_template_model.dart';
 import 'package:sfcapp/services/facility_limits_service.dart';
+import 'package:sfcapp/services/compliance_service.dart';
 
 class ContractService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseStorage _storage = FirebaseStorage.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  /// On web, fetches via same-origin proxy to avoid Firebase Storage CORS from custom domain.
+  /// Returns proxy URL when on web and fileUrl is firebasestorage; otherwise returns fileUrl.
+  static String getPdfFetchUrl(String? fileUrl) {
+    if (fileUrl == null || fileUrl.isEmpty) return fileUrl ?? '';
+    if (!kIsWeb) return fileUrl;
+    final isGoogleStorageUrl =
+        fileUrl.contains('firebasestorage.googleapis.com') ||
+        fileUrl.contains('storage.googleapis.com');
+    if (!isGoogleStorageUrl) return fileUrl;
+    final proxyPath = '/api/proxyContractPdf?url=${Uri.encodeComponent(fileUrl)}';
+    try {
+      return Uri.base.resolve(proxyPath).toString();
+    } catch (_) {
+      return fileUrl;
+    }
+  }
+
+  /// Signing token time-to-live (14 days). Configurable for security hardening.
+  static const Duration signingTokenTtl = Duration(days: 14);
 
   // Contract CRUD Operations
   static Future<String> createContract({
@@ -296,6 +322,7 @@ class ContractService {
     DateTime? expiresAt,
     String? sentBy,
     String? signedBy,
+    String? signedByEmail,
     Map<String, dynamic>? customFields,
     String? notes,
   }) async {
@@ -325,6 +352,7 @@ class ContractService {
       if (expiresAt != null) updateData['expiresAt'] = Timestamp.fromDate(expiresAt);
       if (sentBy != null) updateData['sentBy'] = sentBy;
       if (signedBy != null) updateData['signedBy'] = signedBy;
+      if (signedByEmail != null) updateData['signedByEmail'] = signedByEmail;
       if (customFields != null) updateData['customFields'] = customFields;
       if (notes != null) updateData['notes'] = notes;
 
@@ -394,7 +422,7 @@ class ContractService {
         sentBy: sentBy,
       );
 
-      // Generate signing token and store it
+      // Generate signing token and store it (TTL configurable for security hardening)
       final signingToken = _generateSigningToken(contractId, facilityId);
       await _firestore
           .collection('facilities')
@@ -404,7 +432,7 @@ class ContractService {
           .update({
         'signingToken': signingToken,
         'signingTokenExpiresAt': Timestamp.fromDate(
-          DateTime.now().add(const Duration(days: 30)),
+          DateTime.now().add(ContractService.signingTokenTtl),
         ),
       });
 
@@ -427,38 +455,69 @@ class ContractService {
     return '${contractId}_${facilityId}_$timestamp$random';
   }
 
-  // Get contract by signing token (for tenant access)
+  /// Resend contract for signature (regenerates signing token and extends expiry).
+  /// Returns the new signing token for immediate use (avoids read-after-write race).
+  static Future<String> resendContract({
+    required String facilityId,
+    required String contractId,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      final contract = await getContract(facilityId, contractId);
+      if (contract == null) {
+        throw Exception('Contract not found');
+      }
+      if (contract.status != ContractStatus.sent) {
+        throw Exception('Can only resend contracts that have been sent');
+      }
+
+      final signingToken = _generateSigningToken(contractId, facilityId);
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contracts')
+          .doc(contractId)
+          .update({
+        'signingToken': signingToken,
+        'signingTokenExpiresAt': Timestamp.fromDate(
+          DateTime.now().add(ContractService.signingTokenTtl),
+        ),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (kDebugMode) {
+        print('✅ Contract resend token generated: $contractId');
+      }
+      return signingToken;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error resending contract: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Get contract by signing token (for tenant access via email link - uses Cloud Function to bypass Firestore rules)
   static Future<ContractModel?> getContractBySigningToken(String signingToken) async {
     try {
       if (kDebugMode) {
-        print('🔄 Looking up contract by signing token');
+        print('🔄 Looking up contract by signing token via Cloud Function');
       }
 
-      // Search across all facilities for a contract with this token
-      final querySnapshot = await _firestore
-          .collectionGroup('contracts')
-          .where('signingToken', isEqualTo: signingToken)
-          .where('status', isEqualTo: 'sent')
-          .limit(1)
-          .get();
+      final callable = FirebaseFunctions.instance.httpsCallable('getContractBySigningToken');
+      final result = await callable.call<Map<String, dynamic>>({'signingToken': signingToken});
+      final data = result.data;
 
-      if (querySnapshot.docs.isEmpty) {
-        return null;
-      }
+      if (data == null) return null;
 
-      final doc = querySnapshot.docs.first;
-      final contract = ContractModel.fromFirestore(doc);
+      final id = data['id'] as String? ?? '';
+      if (id.isEmpty) return null;
 
-      // Check if token is expired
-      final tokenExpiresAt = doc.data()['signingTokenExpiresAt'] as Timestamp?;
-      if (tokenExpiresAt != null && tokenExpiresAt.toDate().isBefore(DateTime.now())) {
-        if (kDebugMode) {
-          print('⚠️ Signing token expired');
-        }
-        return null;
-      }
-
-      return contract;
+      return ContractModel.fromMap(data, id: id);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting contract by token: $e');
@@ -472,6 +531,7 @@ class ContractService {
     required String facilityId,
     required String contractId,
     required String signedBy,
+    String? signedByEmail,
     String? signedFileUrl,
     String? signingToken,
   }) async {
@@ -500,6 +560,7 @@ class ContractService {
         status: ContractStatus.signed,
         signedAt: DateTime.now(),
         signedBy: signedBy,
+        signedByEmail: signedByEmail,
         signedFileUrl: signedFileUrl,
       );
 
@@ -525,30 +586,67 @@ class ContractService {
     }
   }
 
-  // Upload signed contract PDF
+  // Upload signed contract PDF via Cloud Function (bypasses Storage CORS from custom domain)
+  // On web, uses same-origin /api/uploadSignedContract to avoid CORS preflight 403.
   static Future<String> uploadSignedContract({
     required String facilityId,
     required String contractId,
     required Uint8List pdfData,
+    String? signingToken,
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Uploading signed contract PDF: $contractId');
+        print('🔄 Uploading signed contract PDF via Cloud Function: $contractId');
       }
 
-      final ref = _storage
-          .ref()
-          .child('facilities/$facilityId/contracts/$contractId/signed_contract.pdf');
+      final pdfBase64 = base64Encode(pdfData);
+      final Map<String, dynamic> payload = {
+        'facilityId': facilityId,
+        'contractId': contractId,
+        'pdfBase64': pdfBase64,
+        if (signingToken != null && signingToken.isNotEmpty) 'signingToken': signingToken,
+      };
 
-      final uploadTask = ref.putData(pdfData);
-      final snapshot = await uploadTask;
-      final downloadUrl = await snapshot.ref.getDownloadURL();
+      String url;
+      if (kIsWeb) {
+        // Same-origin request avoids CORS preflight 403 (Hosting rewrite to uploadSignedContractHttp)
+        final baseUrl = Uri.base.origin;
+        final apiUrl = '$baseUrl/api/uploadSignedContract';
+        final headers = <String, String>{
+          'Content-Type': 'application/json',
+        };
+        final user = _auth.currentUser;
+        if (user != null) {
+          final token = await user.getIdToken();
+          headers['Authorization'] = 'Bearer $token';
+        }
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: headers,
+          body: jsonEncode({'data': payload}),
+        );
+        if (response.statusCode != 200) {
+          final errBody = response.body;
+          throw Exception('Upload failed: ${response.statusCode} $errBody');
+        }
+        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+        final result = decoded['result'];
+        url = result is String ? result : result.toString();
+      } else {
+        final callable = FirebaseFunctions.instance.httpsCallable('uploadSignedContract');
+        final result = await callable.call<String>(payload);
+        url = result.data ?? '';
+      }
+
+      if (url.isEmpty) {
+        throw Exception('Invalid response from upload function');
+      }
 
       if (kDebugMode) {
-        print('✅ Signed contract uploaded successfully: $downloadUrl');
+        print('✅ Signed contract uploaded successfully: $url');
       }
 
-      return downloadUrl;
+      return url;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error uploading signed contract: $e');
@@ -622,12 +720,16 @@ class ContractService {
     }
   }
 
-  // Upload contract file
+  // Upload contract file with compliance metadata.
+  // On web, uses same-origin /api/uploadContractPdf to avoid CORS preflight 403.
+  // [onProgress] optional: (bytesTransferred, totalBytes) for progress UI.
   static Future<String> uploadContractFile({
     required String facilityId,
     required String contractId,
     required Uint8List fileData,
     required String fileName,
+    void Function(int bytesTransferred, int totalBytes)? onProgress,
+    bool skipFirestoreUpdate = false,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -639,16 +741,89 @@ class ContractService {
         print('🔄 Uploading contract file: $fileName');
       }
 
-      final ref = _storage
-          .ref()
-          .child('facilities/$facilityId/contracts/$contractId/$fileName');
+      final storagePath = 'facilities/$facilityId/contracts/$contractId/$fileName';
+      String downloadUrl;
 
-      final uploadTask = ref.putData(fileData);
-      final snapshot = await uploadTask;
-      final downloadUrl = await snapshot.ref.getDownloadURL();
+      if (kIsWeb) {
+        // Same-origin request avoids CORS preflight 403 (Hosting rewrite to uploadContractPdfHttp)
+        onProgress?.call(0, fileData.length);
+        final baseUrl = Uri.base.origin;
+        final apiUrl = '$baseUrl/api/uploadContractPdf';
+        final headers = <String, String>{'Content-Type': 'application/json'};
+        final token = await user.getIdToken();
+        headers['Authorization'] = 'Bearer $token';
+        final payload = {
+          'facilityId': facilityId,
+          'contractId': contractId,
+          'fileName': fileName,
+          'pdfBase64': base64Encode(fileData),
+        };
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: headers,
+          body: jsonEncode({'data': payload}),
+        );
+        if (response.statusCode != 200) {
+          throw Exception('Upload failed: ${response.statusCode} ${response.body}');
+        }
+        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+        final result = decoded['result'];
+        downloadUrl = result is String ? result : result.toString();
+        onProgress?.call(fileData.length, fileData.length);
+      } else {
+        final ref = _storage.ref().child(storagePath);
+        final uploadTask = ref.putData(
+          fileData,
+          SettableMetadata(contentType: 'application/pdf'),
+        );
+        final sub = uploadTask.snapshotEvents.listen((snapshot) {
+          onProgress?.call(snapshot.bytesTransferred, snapshot.totalBytes);
+        });
+        try {
+          final snapshot = await uploadTask;
+          downloadUrl = await snapshot.ref.getDownloadURL();
+        } finally {
+          await sub.cancel();
+        }
+      }
+
+      // Compute SHA-256 hash via Cloud Function (timeout so upload UI never hangs)
+      String? documentSha256;
+      try {
+        final functions = FirebaseFunctions.instance;
+        final callable = functions.httpsCallable('computeDocumentHash');
+        final result = await callable
+            .call({'fileData': fileData})
+            .timeout(const Duration(seconds: 10));
+        documentSha256 = result.data['sha256'] as String?;
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Error computing hash (non-blocking): $e');
+        }
+      }
+
+      if (!skipFirestoreUpdate) {
+        await _firestore
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('contracts')
+            .doc(contractId)
+            .update({
+          'fileUrl': downloadUrl,
+          'fileSize': fileData.length,
+          'contentType': 'application/pdf',
+          'uploadedAt': FieldValue.serverTimestamp(),
+          'storagePath': storagePath,
+          if (documentSha256 != null) 'documentSha256': documentSha256,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
 
       if (kDebugMode) {
         print('✅ Contract file uploaded successfully: $downloadUrl');
+        if (documentSha256 != null) {
+          print('📝 Document SHA-256: $documentSha256');
+        }
       }
 
       return downloadUrl;
@@ -660,6 +835,176 @@ class ContractService {
     }
   }
 
+  /// Generate a PDF from template content (markdown/text).
+  /// Used when creating a contract from a template without an uploaded file.
+  static Future<Uint8List> generatePdfFromTemplateContent({
+    required String content,
+    required String title,
+  }) async {
+    // Simple markdown-to-plain conversion for PDF rendering
+    String plain(String s) {
+      return s
+          .replaceAll(RegExp(r'^#+\s*'), '')
+          .replaceAllMapped(RegExp(r'\*\*(.+?)\*\*'), (m) => m.group(1)!)
+          .replaceAllMapped(RegExp(r'\*(.+?)\*'), (m) => m.group(1)!)
+          .replaceAll(RegExp(r'^-\s*'), '• ')
+          .trim();
+    }
+
+    final paragraphs = content
+        .split(RegExp(r'\n\s*\n'))
+        .where((p) => p.trim().isNotEmpty)
+        .map((p) => plain(p))
+        .where((p) => p.isNotEmpty)
+        .toList();
+
+    if (paragraphs.isEmpty) {
+      paragraphs.add('(No content)');
+    }
+
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(40),
+        build: (pw.Context context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Text(
+                title,
+                style: pw.TextStyle(
+                  fontSize: 20,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+            ),
+            pw.SizedBox(height: 20),
+            ...paragraphs.expand((p) => [
+                  pw.Text(
+                    p,
+                    style: const pw.TextStyle(fontSize: 11),
+                  ),
+                  pw.SizedBox(height: 12),
+                ]),
+          ];
+        },
+      ),
+    );
+    return await pdf.save();
+  }
+
+  /// Disable a contract (prevents new envelopes from being created)
+  static Future<void> disableContract({
+    required String facilityId,
+    required String contractId,
+    required String reason,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 Disabling contract: $contractId');
+      }
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contracts')
+          .doc(contractId)
+          .update({
+        'complianceStatus': 'disabled',
+        'disabledAt': FieldValue.serverTimestamp(),
+        'disabledBy': user.uid,
+        'disabledReason': reason,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (kDebugMode) {
+        print('✅ Contract disabled successfully: $contractId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error disabling contract: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Enable a contract (re-enables for new envelopes)
+  static Future<void> enableContract({
+    required String facilityId,
+    required String contractId,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 Enabling contract: $contractId');
+      }
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contracts')
+          .doc(contractId)
+          .update({
+        'complianceStatus': 'active',
+        'disabledAt': FieldValue.delete(),
+        'disabledBy': FieldValue.delete(),
+        'disabledReason': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (kDebugMode) {
+        print('✅ Contract enabled successfully: $contractId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error enabling contract: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Check if a contract can be used for new envelopes (not disabled)
+  static Future<bool> canUseContractForNewEnvelopes({
+    required String facilityId,
+    required String contractId,
+  }) async {
+    try {
+      final doc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contracts')
+          .doc(contractId)
+          .get();
+
+      if (!doc.exists) {
+        return false;
+      }
+
+      final data = doc.data();
+      if (data == null) {
+        return false;
+      }
+
+      final complianceStatus = data['complianceStatus'] as String?;
+      return complianceStatus != 'disabled';
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error checking contract usability: $e');
+      }
+      return false;
+    }
+  }
+
   // Contract Template Operations
   static Future<String> createContractTemplate({
     required String facilityId,
@@ -668,6 +1013,7 @@ class ContractService {
     required String content,
     required ContractType type,
     String? createdBy,
+    String? fileUrl,
     List<TemplateSigner>? signers,
     List<SignaturePlaceholder>? signaturePlaceholders,
     List<String>? requiredFields,
@@ -748,11 +1094,12 @@ class ContractService {
         'description': description,
         'content': content,
         'type': type.name,
-        'facilityId': facilityId, // Required for facility-scoped templates
+        'facilityId': facilityId,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': createdBy ?? user.uid,
         'isActive': true,
+        if (fileUrl != null) 'fileUrl': fileUrl,
         'requiredFields': requiredFields ?? const <String>[],
         'defaultValues': defaultValues ?? <String, dynamic>{},
         'signers': resolvedSigners.map((signer) => signer.toMap()).toList(),
@@ -790,13 +1137,24 @@ class ContractService {
           .collection('facilities')
           .doc(facilityId)
           .collection('contractTemplates')
-          .where('isActive', isEqualTo: true)
-          .orderBy('name')
           .get();
 
-      final templates = querySnapshot.docs
-          .map((doc) => ContractTemplateModel.fromFirestore(doc))
-          .toList();
+      if (kDebugMode) {
+        print('📄 Query returned ${querySnapshot.docs.length} template docs for facility: $facilityId');
+      }
+
+      final templates = <ContractTemplateModel>[];
+      for (final doc in querySnapshot.docs) {
+        try {
+          final t = ContractTemplateModel.fromFirestore(doc);
+          if (t.isActive) templates.add(t);
+        } catch (parseErr) {
+          if (kDebugMode) {
+            print('⚠️ Error parsing template ${doc.id}: $parseErr');
+          }
+        }
+      }
+      templates.sort((a, b) => a.name.compareTo(b.name));
 
       if (kDebugMode) {
         print('✅ Successfully retrieved ${templates.length} contract templates for facility: $facilityId');
@@ -807,7 +1165,7 @@ class ContractService {
       if (kDebugMode) {
         print('❌ Error getting contract templates: $e');
       }
-      return [];
+      rethrow;
     }
   }
 
@@ -897,6 +1255,7 @@ class ContractService {
     String? description,
     String? content,
     ContractType? type,
+    String? fileUrl,
     List<TemplateSigner>? signers,
     List<SignaturePlaceholder>? signaturePlaceholders,
     List<String>? requiredFields,
@@ -921,6 +1280,7 @@ class ContractService {
       if (description != null) updateData['description'] = description;
       if (content != null) updateData['content'] = content;
       if (type != null) updateData['type'] = type.name;
+      if (fileUrl != null) updateData['fileUrl'] = fileUrl;
       if (signers != null) {
         updateData['signers'] = signers.map((signer) => signer.toMap()).toList();
       }
@@ -945,6 +1305,117 @@ class ContractService {
         print('❌ Error updating contract template: $e');
       }
       rethrow;
+    }
+  }
+
+  /// Disable a contract template (prevents new envelopes from being created)
+  static Future<void> disableContractTemplate({
+    required String facilityId,
+    required String templateId,
+    required String reason,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 Disabling contract template: $templateId');
+      }
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contractTemplates')
+          .doc(templateId)
+          .update({
+        'complianceStatus': 'disabled',
+        'disabledAt': FieldValue.serverTimestamp(),
+        'disabledBy': user.uid,
+        'disabledReason': reason,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (kDebugMode) {
+        print('✅ Contract template disabled successfully: $templateId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error disabling contract template: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Enable a contract template (re-enables for new envelopes)
+  static Future<void> enableContractTemplate({
+    required String facilityId,
+    required String templateId,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 Enabling contract template: $templateId');
+      }
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contractTemplates')
+          .doc(templateId)
+          .update({
+        'complianceStatus': 'active',
+        'disabledAt': FieldValue.delete(),
+        'disabledBy': FieldValue.delete(),
+        'disabledReason': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (kDebugMode) {
+        print('✅ Contract template enabled successfully: $templateId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error enabling contract template: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Check if a template can be used for new envelopes (not disabled)
+  static Future<bool> canUseTemplateForNewEnvelopes({
+    required String facilityId,
+    required String templateId,
+  }) async {
+    try {
+      final doc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contractTemplates')
+          .doc(templateId)
+          .get();
+
+      if (!doc.exists) {
+        return false;
+      }
+
+      final data = doc.data();
+      if (data == null) {
+        return false;
+      }
+
+      final complianceStatus = data['complianceStatus'] as String?;
+      return complianceStatus != 'disabled';
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error checking template usability: $e');
+      }
+      return false;
     }
   }
 }

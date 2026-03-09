@@ -29,6 +29,13 @@ class SMSService {
         'to': to,
         'message': message,
         'facilityId': facilityId,
+        if (tenantId != null) 'tenantId': tenantId,
+        // Determine source based on relatedEntityType
+        'source': relatedEntityType == 'reminder' || relatedEntityType == 'automation'
+            ? 'automation'
+            : relatedEntityType == 'bulk'
+                ? 'bulk'
+                : 'manual',
       });
 
       final data = result.data as Map<String, dynamic>;

@@ -5,38 +5,101 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
-  <meta name="description" content="Storage Facility Creator - Manage your storage facilities with ease">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover, shrink-to-fit=no">
+  <meta name="description" content="Storage Facility Creator - Modern SaaS platform for multi-facility self-storage operators. Manage tenants, billing, payments, messaging, and reporting across all your facilities from one workspace.">
+  <meta name="keywords" content="self storage software, storage facility management, storage facility CRM, storage facility billing, storage facility payments, multi-facility management, storage facility automation">
+  <meta name="author" content="Storage Facility Creator">
+  <meta property="og:title" content="Storage Facility Creator - Modern Self Storage Management Software">
+  <meta property="og:description" content="Track occupancy across facilities. Automate late notices. Send payment reminders. Unify rentals, billing, access control, messaging, and reporting.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storagefacilitycreator.com">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Storage Facility Creator - Modern Self Storage Management Software">
+  <meta name="twitter:description" content="Track occupancy across facilities. Automate late notices. Send payment reminders. Unify rentals, billing, access control, messaging, and reporting.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="SFC App">
+  <meta name="apple-mobile-web-app-title" content="Storage Facility Creator">
   <meta name="apple-touch-fullscreen" content="yes">
   <meta name="format-detection" content="telephone=no">
-  <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>SFC App - Storage Facility Creator</title>
+  <title>Storage Facility Creator - Modern Self Storage Management Software</title>
+  <meta name="app-version" content="2.6.22">
   <!-- Manifest removed - PWA installability disabled for web-only SaaS -->
   <!-- Canonical domain -->
   <link rel="canonical" href="https://storagefacilitycreator.com">
   
+  <!-- Noto Sans - reduces "Could not find a set of Noto fonts" warning on Flutter web -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  
   <!-- Stripe.js for Payment Elements (Phase 11: Stripe Embedded UI) -->
   <script src="https://js.stripe.com/v3/"></script>
+
+  <!-- PDF.js for pdfx package (tap-to-place PDF rendering on web) -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.js" type="text/javascript"></script>
+  <script type="text/javascript">
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.worker.min.js";
+  </script>
   
   <!-- AGGRESSIVE CACHE BUSTING - FORCE NEW CODE -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0, private">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
 </head>
-<body>
+<body style="margin: 0; padding: 0; overflow-x: hidden;">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow-x: hidden;
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+      /* Prevent words running together on phone/tablet: allow wrapping and readable minimum size */
+      word-break: break-word;
+      overflow-wrap: break-word;
+      -webkit-hyphens: auto;
+      hyphens: auto;
+    }
+    #flutter-view {
+      width: 100%;
+      height: 100%;
+      min-width: 0; /* Let flex children shrink so text can wrap instead of overflow */
+    }
+    /* Ensure Flutter-rendered text wraps on small viewports */
+    @media (max-width: 1024px) {
+      html, body {
+        font-size: 16px; /* Base so 1rem is readable on mobile */
+      }
+    }
+  </style>
   <script>
     (function() {
       'use strict';
+      
+      // Redirect Firebase default domains to custom domain
+      const hostname = window.location.hostname;
+      const isFirebaseDomain = hostname.includes('.web.app') || hostname.includes('.firebaseapp.com');
+      const canonicalDomain = 'storagefacilitycreator.com';
+      
+      if (isFirebaseDomain && hostname !== canonicalDomain) {
+        const path = window.location.pathname;
+        const search = window.location.search;
+        const hash = window.location.hash;
+        const redirectUrl = `https://${canonicalDomain}${path}${search}${hash}`;
+        
+        // Use replace to avoid adding to history
+        window.location.replace(redirectUrl);
+        return; // Stop execution
+      }
       // Global error handler to catch and suppress known non-critical errors
       window.addEventListener('error', function(event) {
         const errorMsg = event.error?.message || event.error?.toString() || '';
@@ -76,6 +139,24 @@
           return true;
         }
         
+        // Firestore INTERNAL ASSERTION FAILED: prevent crash; listener lifecycle handled by autoDispose
+        if (errorMsg.includes('INTERNAL ASSERTION') || errorMsg.includes('Unexpected state') ||
+            errorStack.includes('INTERNAL ASSERTION') || errorStack.includes('ca9')) {
+          console.warn('Firestore internal state (caught):', errorMsg);
+          event.preventDefault();
+          return true;
+        }
+        
+        // Suppress CSP violations from Google's reCAPTCHA (report-only violations)
+        // These occur when reCAPTCHA loads and are non-blocking
+        if (errorMsg.includes('Content Security Policy') && 
+            (errorMsg.includes('frame-ancestors') || errorMsg.includes('google.com'))) {
+          // This is a report-only CSP violation from Google's servers, not our site
+          // It doesn't block functionality, just a logging quirk with reCAPTCHA
+          event.preventDefault();
+          return true;
+        }
+        
         // Log other errors but don't break the app
         console.error('❌ Uncaught error:', event.error);
         return false;
@@ -100,6 +181,22 @@
         // Suppress Firestore BloomFilter errors in promise rejections
         if (reason.includes('BloomFilter') || reason.includes('BloomFilterError')) {
           // Non-critical Firestore SDK warning - suppress to reduce console noise
+          event.preventDefault();
+          return;
+        }
+        
+        // Firestore INTERNAL ASSERTION FAILED: catch so app does not crash; listener lifecycle is handled by autoDispose providers
+        if (reason.includes('INTERNAL ASSERTION') || reason.includes('Unexpected state')) {
+          console.warn('Firestore internal state warning (caught):', reason);
+          event.preventDefault();
+          return;
+        }
+        
+        // Suppress CSP violations from Google's reCAPTCHA (report-only violations)
+        if (reason.includes('Content Security Policy') && 
+            (reason.includes('frame-ancestors') || reason.includes('google.com'))) {
+          // This is a report-only CSP violation from Google's servers, not our site
+          // It doesn't block functionality, just a logging quirk with reCAPTCHA
           event.preventDefault();
           return;
         }

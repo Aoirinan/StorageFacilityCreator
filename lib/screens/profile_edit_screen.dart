@@ -94,26 +94,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     final authState = ref.watch(authStateProvider);
     final user = authState.value;
 
-    return ModernPageWrapper(
-      currentRoute: '/settings',
-      title: 'Edit Profile',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          icon: _isLoading
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.save),
-          onPressed: _isLoading ? null : _updateProfile,
-          tooltip: 'Save Changes',
-        ),
-      ],
-      child: KeyboardScrollable(
+    return KeyboardScrollable(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
           child: Form(
@@ -290,7 +271,6 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
             ),
           ),
         ),
-      ),
     );
   }
 }

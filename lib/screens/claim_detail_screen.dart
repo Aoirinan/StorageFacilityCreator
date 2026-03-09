@@ -294,10 +294,7 @@ class _ClaimDetailScreenState extends State<ClaimDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/insurance/claims';
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
-      title: widget.isNewClaim ? 'File New Claim' : 'Claim Details',
-      child: _isLoading
+    return _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Form(
               key: _formKey,
@@ -605,8 +602,7 @@ class _ClaimDetailScreenState extends State<ClaimDetailScreen> {
                   ),
                 ],
               ),
-            ),
-    );
+            );
   }
 
   String _formatDate(DateTime date) {

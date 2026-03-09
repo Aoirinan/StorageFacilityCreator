@@ -1,29 +1,35 @@
 import 'package:flutter/material.dart';
-import '../widgets/modern_page_wrapper.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/app_theme.dart';
+import '../providers/theme_mode_provider.dart';
 import '../services/modern_navigation_service.dart';
 import '../widgets/keyboard_scrollable.dart';
 
-class AppearanceSettingsScreen extends StatefulWidget {
+class AppearanceSettingsScreen extends ConsumerStatefulWidget {
   const AppearanceSettingsScreen({super.key});
 
   @override
-  State<AppearanceSettingsScreen> createState() => _AppearanceSettingsScreenState();
+  ConsumerState<AppearanceSettingsScreen> createState() => _AppearanceSettingsScreenState();
 }
 
-class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
-  String _selectedTheme = 'light'; // 'light', 'dark', 'system'
+class _AppearanceSettingsScreenState extends ConsumerState<AppearanceSettingsScreen> {
   double _fontSize = 1.0; // 0.8, 0.9, 1.0, 1.1, 1.2
   bool _compactMode = false;
 
+  String _themeModeToString(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light: return 'light';
+      case ThemeMode.dark: return 'dark';
+      case ThemeMode.system: return 'system';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/settings',
-      title: 'Appearance Settings',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
+    final themeMode = ref.watch(themeModeProvider);
+    final selectedTheme = _themeModeToString(themeMode);
+    // Note: No ModernPageWrapper needed - already inside AppShell which provides sidebar
+    return SizedBox.expand(
       child: KeyboardScrollable(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
@@ -48,51 +54,45 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
                         title: const Text('Light'),
                         subtitle: const Text('Use light theme'),
                         value: 'light',
-                        groupValue: _selectedTheme,
+                        groupValue: selectedTheme,
                         onChanged: (value) {
-                          setState(() {
-                            _selectedTheme = value!;
-                          });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Theme preference saved (will apply on next app restart)'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
+                          if (value == null) return;
+                          ref.read(themeModeProvider.notifier).setThemeMode(ThemeMode.light);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Theme set to Light'), duration: Duration(seconds: 2)),
+                            );
+                          }
                         },
                       ),
                       RadioListTile<String>(
                         title: const Text('Dark'),
                         subtitle: const Text('Use dark theme'),
                         value: 'dark',
-                        groupValue: _selectedTheme,
+                        groupValue: selectedTheme,
                         onChanged: (value) {
-                          setState(() {
-                            _selectedTheme = value!;
-                          });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Theme preference saved (will apply on next app restart)'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
+                          if (value == null) return;
+                          ref.read(themeModeProvider.notifier).setThemeMode(ThemeMode.dark);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Theme set to Dark'), duration: Duration(seconds: 2)),
+                            );
+                          }
                         },
                       ),
                       RadioListTile<String>(
                         title: const Text('System Default'),
                         subtitle: const Text('Follow system theme'),
                         value: 'system',
-                        groupValue: _selectedTheme,
+                        groupValue: selectedTheme,
                         onChanged: (value) {
-                          setState(() {
-                            _selectedTheme = value!;
-                          });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Theme preference saved (will apply on next app restart)'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
+                          if (value == null) return;
+                          ref.read(themeModeProvider.notifier).setThemeMode(ThemeMode.system);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Theme set to System default'), duration: Duration(seconds: 2)),
+                            );
+                          }
                         },
                       ),
                     ],

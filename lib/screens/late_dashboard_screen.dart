@@ -5,6 +5,7 @@ import '../providers/late_logic_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/badge_widget.dart';
 import '../widgets/modern_page_wrapper.dart';
@@ -16,12 +17,16 @@ import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
 import '../services/reminder_service.dart';
 import '../models/reminder_model.dart';
+import '../providers/reminder_provider.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 import 'payment_detail_screen.dart';
 import 'client_detail_screen.dart';
 import 'facility_creation_wizard.dart';
 import '../services/facility_creator_account_service.dart';
+import 'reminder_list_screen.dart';
+import 'dnr_list_screen.dart';
+import 'facility_edit_screen.dart';
 
 class LateDashboardScreen extends ConsumerStatefulWidget {
   const LateDashboardScreen({super.key});
@@ -30,13 +35,35 @@ class LateDashboardScreen extends ConsumerStatefulWidget {
   ConsumerState<LateDashboardScreen> createState() => _LateDashboardScreenState();
 }
 
-class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
-  String _selectedFacilityId = '';
+class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with SingleTickerProviderStateMixin {
+  String? _selectedFacilityId; // Changed to nullable to match Yield pattern
+  late TabController _tabController;
+  int _previousTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(_handleTabChange);
     _loadUserFacilities();
+  }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_handleTabChange);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _handleTabChange() {
+    final currentIndex = _tabController.index;
+    
+    // DO NOT navigate away when tabs are clicked
+    // Show content inline in the tab instead
+    // Just update the previous tab index for reference
+    _previousTabIndex = currentIndex;
+    
+    // Removed navigation logic - tabs now show content inline
   }
 
   Future<void> _loadUserFacilities() async {
@@ -49,8 +76,13 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
         final facilitiesAsync = await ref.read(userFacilitiesProvider(authState.value!.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
         if (facilities.isNotEmpty && mounted) {
+          // Use active facility (same as dashboard) so Delinquency stays in sync when navigating back
+          final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+          final id = activeId != null && facilities.any((f) => f.id == activeId)
+              ? activeId
+              : facilities.first.id;
           setState(() {
-            _selectedFacilityId = facilities.first.id;
+            _selectedFacilityId = id;
           });
         }
       } catch (e) {
@@ -68,61 +100,125 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: ModernPageWrapper(
-        currentRoute: '/delinquency',
-        title: 'Delinquency',
-        onNavigate: (route) {
-          ModernNavigationService.navigateToRoute(context, route);
-        },
-        actions: [
-          if (_selectedFacilityId.isNotEmpty) ...[
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () => _refreshData(),
-              tooltip: 'Refresh',
+    // When _selectedFacilityId is null (e.g. after navigating back), use active facility
+    // so we don't flash "No Facilities Found" and stay in sync with dashboard.
+    return Consumer(
+      builder: (context, ref, _) {
+        final auth = ref.watch(authStateProvider);
+        final activeId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+        final facilities = auth.whenOrNull(data: (d) => d) != null
+            ? ref.watch(userFacilitiesProvider(auth.whenOrNull(data: (d) => d)!.uid)).whenOrNull(data: (d) => d)
+            : null;
+
+        ref.listen(activeFacilityIdProvider, (prev, next) {
+          final nextId = next.whenOrNull(data: (d) => d);
+          if (nextId != null && facilities != null && facilities.any((f) => f.id == nextId) &&
+              _selectedFacilityId != nextId && mounted) {
+            setState(() => _selectedFacilityId = nextId);
+          }
+        });
+
+        String? effectiveId = _selectedFacilityId;
+        if (effectiveId == null && facilities != null && facilities.isNotEmpty) {
+          effectiveId = (activeId != null && facilities.any((f) => f.id == activeId))
+              ? activeId
+              : facilities.first.id;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _selectedFacilityId != effectiveId) {
+              setState(() => _selectedFacilityId = effectiveId);
+            }
+          });
+        }
+
+        if (effectiveId == null) {
+          return _buildNoFacilitiesMessage();
+        }
+
+        final facilityId = effectiveId;
+        final colorScheme = Theme.of(context).colorScheme;
+        return Column(
+          children: [
+            _buildFacilitySelector(facilityId),
+            Container(
+              color: colorScheme.surface,
+              child: TabBar(
+                controller: _tabController,
+                isScrollable: true,
+                tabs: const [
+                  Tab(text: 'Overview'),
+                  Tab(text: 'Past Due'),
+                  Tab(text: 'Reminders'),
+                  Tab(text: 'Global DNR System'),
+                ],
+              ),
             ),
-            IconButton(
-              icon: const Icon(Icons.money_off),
-              onPressed: () => _applyLateFees(),
-              tooltip: 'Apply Late Fees',
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                physics: const NeverScrollableScrollPhysics(),
+                children: [
+                  _buildDashboard(facilityId),
+                  _buildPastDueTab(facilityId),
+                  _buildRemindersTab(context, facilityId),
+                  _buildDnrTab(context),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildHowLateWorks(String facilityId, FacilityModel? facility) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 20, color: colorScheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'How we determine who\'s late',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'A tenant is marked late when their paid-through date is before the start of the current month minus your grace period. You can set the grace period and late fee in Facility → Billing settings.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          if (facility != null) ...[
+            const SizedBox(height: 10),
+            TextButton.icon(
+              onPressed: () {
+                context.push(AppRoute.legacyScreen, extra: FacilityEditScreen(facility: facility));
+              },
+              icon: const Icon(Icons.settings, size: 18),
+              label: const Text('Edit grace period & late fees'),
             ),
           ],
         ],
-        child: _selectedFacilityId.isEmpty
-            ? _buildNoFacilitiesMessage()
-            : Column(
-                children: [
-                  Container(
-                    color: AppTheme.surface,
-                    child: const TabBar(
-                      isScrollable: true,
-                      tabs: [
-                        Tab(text: 'Overview'),
-                        Tab(text: 'Past Due'),
-                        Tab(text: 'Reminders'),
-                        Tab(text: 'Global DNR System'),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        _buildDashboard(),
-                        _buildPastDueTab(),
-                        _buildRemindersTab(context),
-                        _buildDnrTab(context),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
       ),
     );
   }
 
   Widget _buildNoFacilitiesMessage() {
+    final colorScheme = Theme.of(context).colorScheme;
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -130,7 +226,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
           Icon(
             Icons.business,
             size: 64,
-            color: AppTheme.textTertiary,
+            color: colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 16),
           Text(
@@ -153,52 +249,492 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     );
   }
 
-  Widget _buildDashboard() {
+  Widget _buildDashboard(String facilityId) {
+    final facilityAsync = ref.watch(facilityProvider(facilityId));
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildFacilitySelector(),
-          _buildStatistics(),
+          _buildFacilitySelector(facilityId),
+          _buildHowLateWorks(facilityId, facilityAsync.whenOrNull(data: (d) => d)),
+          const SizedBox(height: 16),
+          _buildStatistics(facilityId),
           const SizedBox(height: 24),
-          _buildOverduePayments(),
+          _buildOverduePayments(facilityId),
           const SizedBox(height: 24),
-          _buildTenantsWithOverdue(),
+          _buildTenantsWithOverdue(facilityId),
           const SizedBox(height: 24),
-          _buildLateAlerts(),
+          _buildLateAlerts(facilityId),
         ],
       ),
     );
   }
 
-  Widget _buildPastDueTab() {
+  Widget _buildPastDueTab(String facilityId) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildFacilitySelector(),
-          _buildOverduePayments(),
+          _buildFacilitySelector(facilityId),
+          _buildOverduePayments(facilityId),
           const SizedBox(height: 24),
-          _buildTenantsWithOverdue(),
+          _buildTenantsWithOverdue(facilityId),
         ],
       ),
     );
   }
 
-  Widget _buildRemindersTab(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.notifications_outlined, size: 64, color: AppTheme.textTertiary),
-          const SizedBox(height: 12),
-          const Text('Reminders are managed in the Reminders module.'),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            onPressed: () => context.go('/reminders'),
-            child: const Text('Open Reminders'),
+  // ── Reminders tab state ──────────────────────────────────────────────────
+  String _reminderSearch = '';
+  ReminderType? _reminderTypeFilter;
+  ReminderStatus? _reminderStatusFilter;
+
+  Widget _buildRemindersTab(BuildContext context, String facilityId) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Header bar ──────────────────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Payment Reminders',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Manage and automate payment reminders for this facility',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () => _navigateToReminderSchedules(facilityId),
+                icon: const Icon(Icons.schedule, size: 16),
+                label: const Text('Schedules'),
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: () => _navigateToCreateReminder(facilityId),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('New Reminder'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        // ── Stats row ────────────────────────────────────────────────────
+        _buildReminderStats(facilityId),
+        const SizedBox(height: 12),
+        // ── Filters ──────────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search reminders…',
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onChanged: (v) => setState(() => _reminderSearch = v),
+                ),
+              ),
+              const SizedBox(width: 10),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<ReminderType?>(
+                  value: _reminderTypeFilter,
+                  hint: const Text('All Types'),
+                  isDense: true,
+                  borderRadius: BorderRadius.circular(8),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('All Types')),
+                    ...ReminderType.values.map((t) => DropdownMenuItem(
+                          value: t,
+                          child: Text(t.displayName),
+                        )),
+                  ],
+                  onChanged: (v) => setState(() => _reminderTypeFilter = v),
+                ),
+              ),
+              const SizedBox(width: 10),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<ReminderStatus?>(
+                  value: _reminderStatusFilter,
+                  hint: const Text('All Status'),
+                  isDense: true,
+                  borderRadius: BorderRadius.circular(8),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('All Status')),
+                    ...ReminderStatus.values.map((s) => DropdownMenuItem(
+                          value: s,
+                          child: Text(s.displayName),
+                        )),
+                  ],
+                  onChanged: (v) => setState(() => _reminderStatusFilter = v),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Divider(height: 1, color: colorScheme.outlineVariant),
+        // ── List ─────────────────────────────────────────────────────────
+        Expanded(
+          child: _buildReminderList(context, facilityId),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReminderStats(String facilityId) {
+    return Consumer(
+      builder: (context, ref, _) {
+        return ref.watch(reminderStatsProvider(facilityId)).when(
+          data: (stats) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                _buildReminderStatChip('Total', stats['total'] ?? 0, null),
+                const SizedBox(width: 8),
+                _buildReminderStatChip('Pending', stats['pending'] ?? 0, AppTheme.warning),
+                const SizedBox(width: 8),
+                _buildReminderStatChip('Sent', stats['sent'] ?? 0, AppTheme.success),
+                const SizedBox(width: 8),
+                _buildReminderStatChip('Overdue', stats['overdue'] ?? 0, AppTheme.error),
+              ],
+            ),
+          ),
+          loading: () => const SizedBox(height: 40, child: Center(child: LinearProgressIndicator())),
+          error: (_, __) => const SizedBox.shrink(),
+        );
+      },
+    );
+  }
+
+  Widget _buildReminderStatChip(String label, int count, Color? color) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final effectiveColor = color ?? colorScheme.primary;
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+        decoration: BoxDecoration(
+          color: effectiveColor.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: effectiveColor.withOpacity(0.25)),
+        ),
+        child: Column(
+          children: [
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: effectiveColor,
+              ),
+            ),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReminderList(BuildContext context, String facilityId) {
+    return Consumer(
+      builder: (context, ref, _) {
+        return ref.watch(reminderListProvider(facilityId)).when(
+          data: (reminders) {
+            final filtered = reminders.where((r) {
+              if (_reminderTypeFilter != null && r.type != _reminderTypeFilter) return false;
+              if (_reminderStatusFilter != null && r.status != _reminderStatusFilter) return false;
+              if (_reminderSearch.isNotEmpty) {
+                final q = _reminderSearch.toLowerCase();
+                if (!r.title.toLowerCase().contains(q) &&
+                    !r.message.toLowerCase().contains(q)) return false;
+              }
+              return true;
+            }).toList();
+
+            if (filtered.isEmpty) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.notifications_none,
+                        size: 56, color: Theme.of(context).colorScheme.outlineVariant),
+                    const SizedBox(height: 12),
+                    Text('No reminders found',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 6),
+                    Text(
+                      reminders.isEmpty
+                          ? 'Create your first reminder using the button above.'
+                          : 'Try adjusting your filters.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                    if (reminders.isEmpty) ...[
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () => _navigateToCreateReminder(facilityId),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create Reminder'),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }
+
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+              itemCount: filtered.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, index) =>
+                  _buildInlineReminderCard(context, filtered[index], facilityId),
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (err, _) => Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.error_outline,
+                    size: 48, color: AppTheme.error),
+                const SizedBox(height: 12),
+                Text('Error loading reminders',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 6),
+                Text(err.toString(),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                OutlinedButton(
+                  onPressed: () => ref.invalidate(reminderListProvider(facilityId)),
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildInlineReminderCard(
+      BuildContext context, ReminderModel reminder, String facilityId) {
+    final colorScheme = Theme.of(context).colorScheme;
+    Color statusColor;
+    IconData statusIcon;
+    switch (reminder.status) {
+      case ReminderStatus.pending:
+        statusColor = AppTheme.warning;
+        statusIcon = Icons.schedule;
+        break;
+      case ReminderStatus.sent:
+        statusColor = AppTheme.success;
+        statusIcon = Icons.check_circle_outline;
+        break;
+      case ReminderStatus.failed:
+        statusColor = AppTheme.error;
+        statusIcon = Icons.error_outline;
+        break;
+      case ReminderStatus.cancelled:
+        statusColor = colorScheme.outlineVariant;
+        statusIcon = Icons.cancel_outlined;
+        break;
+    }
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colorScheme.outlineVariant),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _navigateToReminderDetail(reminder, facilityId),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(statusIcon, size: 18, color: statusColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      reminder.title,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      reminder.message,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        _reminderChip(reminder.type.displayName, colorScheme.primary),
+                        _reminderChip(reminder.statusDisplayName, statusColor),
+                        _reminderChip(
+                          '${reminder.scheduledFor.month}/${reminder.scheduledFor.day}/${reminder.scheduledFor.year}',
+                          colorScheme.onSurfaceVariant,
+                        ),
+                        if (reminder.isOverdue)
+                          _reminderChip(
+                              '${reminder.daysUntilDue}d overdue', AppTheme.error),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (reminder.status == ReminderStatus.pending) ...[
+                IconButton(
+                  icon: const Icon(Icons.send, size: 18),
+                  tooltip: 'Send now',
+                  onPressed: () => _sendReminderInline(reminder, facilityId),
+                  color: colorScheme.primary,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+              Icon(Icons.chevron_right,
+                  size: 18, color: colorScheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _reminderChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w500),
+      ),
+    );
+  }
+
+  void _navigateToCreateReminder(String facilityId) {
+    context.push('${AppRoute.reminderCreate}?facilityId=$facilityId').then((_) {
+      if (mounted) {
+        ref.invalidate(reminderListProvider(facilityId));
+        ref.invalidate(reminderStatsProvider(facilityId));
+      }
+    });
+  }
+
+  void _navigateToReminderDetail(ReminderModel reminder, String facilityId) {
+    context.push(AppRoute.reminderDetail, extra: reminder).then((_) {
+      if (mounted) {
+        ref.invalidate(reminderListProvider(facilityId));
+        ref.invalidate(reminderStatsProvider(facilityId));
+      }
+    });
+  }
+
+  void _navigateToReminderSchedules(String facilityId) {
+    // Get facility name for the schedule screen
+    final auth = ref.read(authStateProvider);
+    final uid = auth.whenOrNull(data: (u) => u?.uid) ?? '';
+    final facilities = uid.isNotEmpty
+        ? ref.read(userFacilitiesProvider(uid)).whenOrNull(data: (d) => d)
+        : null;
+    final facilityName = facilities
+            ?.firstWhere((f) => f.id == facilityId,
+                orElse: () => facilities.first)
+            .name ??
+        'Facility';
+    context.push(
+      '${AppRoute.reminderSchedule}?facilityId=$facilityId&facilityName=${Uri.encodeComponent(facilityName)}',
+    );
+  }
+
+  void _sendReminderInline(ReminderModel reminder, String facilityId) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Send Reminder'),
+        content: Text('Send "${reminder.title}" now?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              await ref.read(reminderOperationsProvider.notifier).sendReminder(
+                    facilityId: reminder.facilityId,
+                    reminderId: reminder.id,
+                    tenantEmail: reminder.tenantEmail ?? '',
+                    tenantPhone: reminder.tenantPhone ?? '',
+                    message: reminder.message,
+                    channels: reminder.channels,
+                  );
+              if (mounted) {
+                ref.invalidate(reminderListProvider(facilityId));
+                ref.invalidate(reminderStatsProvider(facilityId));
+              }
+            },
+            child: const Text('Send'),
           ),
         ],
       ),
@@ -206,27 +742,44 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
   }
 
   Widget _buildDnrTab(BuildContext context) {
-    return Center(
+    // Show DNR info inline - no full navigation
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.block_outlined, size: 64, color: AppTheme.textTertiary),
-          const SizedBox(height: 12),
-          const Text('Global DNR System is available in the DNR module.'),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            onPressed: () => context.go('/dnr'),
-            child: const Text('Open DNR System'),
+          const Text(
+            'Global DNR System',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Do Not Rent list - shared across all facilities',
+            style: TextStyle(color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'The Global DNR System is available via the dedicated DNR menu.',
+            style: TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: () {
+              // This navigates to dedicated DNR page
+              context.push('/dnr');
+            },
+            icon: const Icon(Icons.block),
+            label: const Text('Manage DNR List'),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildStatistics() {
+  Widget _buildStatistics(String facilityId) {
     return Consumer(
       builder: (context, ref, child) {
-        return ref.watch(lateStatisticsProvider(_selectedFacilityId)).when(
+        return ref.watch(lateStatisticsProvider(facilityId)).when(
           data: (stats) => Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -305,7 +858,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
                 Text('Error loading statistics: $error'),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () => ref.invalidate(lateStatisticsProvider(_selectedFacilityId)),
+                  onPressed: () => ref.invalidate(lateStatisticsProvider(facilityId)),
                   child: const Text('Retry'),
                 ),
               ],
@@ -316,7 +869,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     );
   }
 
-  Widget _buildFacilitySelector() {
+  Widget _buildFacilitySelector(String facilityId) {
     return Consumer(
       builder: (context, ref, child) {
         final auth = ref.watch(authStateProvider);
@@ -329,15 +882,9 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
                 if (facilities.isEmpty) {
                   return const SizedBox.shrink();
                 }
-                var currentId = _selectedFacilityId;
-                if (currentId.isEmpty || !facilities.any((facility) => facility.id == currentId)) {
-                  currentId = facilities.first.id;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && _selectedFacilityId != currentId) {
-                      setState(() => _selectedFacilityId = currentId);
-                    }
-                  });
-                }
+                final currentId = facilities.any((f) => f.id == facilityId)
+                    ? facilityId
+                    : facilities.first.id;
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -348,22 +895,41 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
-                      value: currentId.isEmpty ? null : currentId,
+                      value: currentId,
+                      isExpanded: true,
                       decoration: const InputDecoration(
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.business),
                       ),
+                      selectedItemBuilder: (context) => facilities
+                          .map((f) => Text(
+                                f.name,
+                                style: AppTheme.dropdownItemTextStyle.copyWith(
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ))
+                          .toList(),
                       items: facilities
                           .map(
                             (facility) => DropdownMenuItem<String>(
                               value: facility.id,
-                              child: Text(facility.name),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  facility.name,
+                                  style: AppTheme.dropdownItemTextStyle,
+                                  softWrap: true,
+                                ),
+                              ),
                             ),
                           )
                           .toList(),
                       onChanged: (value) {
                         if (value == null || value == _selectedFacilityId) return;
                         setState(() => _selectedFacilityId = value);
+                        ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
                         _refreshData();
                       },
                     ),
@@ -413,61 +979,104 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     );
   }
 
-  Widget _buildOverduePayments() {
+  Widget _buildOverduePayments(String facilityId) {
     return Consumer(
       builder: (context, ref, child) {
-        return ref.watch(overduePaymentsProvider(_selectedFacilityId)).when(
-          data: (payments) => Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Overdue Payments',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
+        final paymentsAsync = ref.watch(overduePaymentsProvider(facilityId));
+        final tenantsAsync = ref.watch(tenantsWithOverdueProvider(facilityId));
+        return paymentsAsync.when(
+          data: (payments) {
+            return tenantsAsync.when(
+              data: (tenantsWithOverdue) {
+                final hasOverdueByTenants = tenantsWithOverdue.isNotEmpty;
+                final hasOverdueByPayments = payments.isNotEmpty;
+                final countLabel = hasOverdueByPayments
+                    ? '${payments.length} payments'
+                    : hasOverdueByTenants
+                        ? '${tenantsWithOverdue.length} tenant(s) with overdue balance'
+                        : '0 payments';
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Overdue Payments',
+                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              countLabel,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: hasOverdueByPayments || hasOverdueByTenants
+                                    ? AppTheme.error
+                                    : AppTheme.textSecondary,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                      Text(
-                        '${payments.length} payments',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: AppTheme.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  if (payments.isEmpty)
-                    Center(
-                      child: Column(
-                        children: [
-                          Icon(Icons.check_circle, color: AppTheme.success, size: 64),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No overdue payments',
-                            style: Theme.of(context).textTheme.titleMedium,
+                        const SizedBox(height: 16),
+                        if (payments.isNotEmpty)
+                          ListView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: payments.length,
+                            itemBuilder: (context, index) {
+                              final payment = payments[index];
+                              return _buildPaymentCard(payment, facilityId);
+                            },
+                          )
+                        else if (tenantsWithOverdue.isNotEmpty)
+                          Center(
+                            child: Column(
+                              children: [
+                                Icon(Icons.warning_amber_rounded, color: AppTheme.warning, size: 64),
+                                const SizedBox(height: 16),
+                                Text(
+                                  '${tenantsWithOverdue.length} tenant(s) with overdue balance',
+                                  style: Theme.of(context).textTheme.titleMedium,
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'See "Tenants with Overdue Payments" below for details.',
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          Center(
+                            child: Column(
+                              children: [
+                                Icon(Icons.check_circle, color: AppTheme.success, size: 64),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No overdue payments',
+                                  style: Theme.of(context).textTheme.titleMedium,
+                                ),
+                              ],
+                            ),
                           ),
-                        ],
-                      ),
-                    )
-                  else
-                    ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: payments.length,
-                      itemBuilder: (context, index) {
-                        final payment = payments[index];
-                        return _buildPaymentCard(payment);
-                      },
+                      ],
                     ),
-                ],
+                  ),
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, _) => Center(
+                child: Text('Error loading tenants: $error'),
               ),
-            ),
-          ),
+            );
+          },
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (error, stackTrace) => Center(
             child: Text('Error loading overdue payments: $error'),
@@ -477,7 +1086,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     );
   }
 
-  Widget _buildPaymentCard(PaymentModel payment) {
+  Widget _buildPaymentCard(PaymentModel payment, String facilityId) {
     final badgeInfo = ref.read(paymentBadgeProvider(payment));
     final lateFee = LateLogicService.calculateLateFee(payment);
 
@@ -496,7 +1105,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: FutureBuilder<String?>(
-          future: _getTenantUnitNumber(payment.tenantId),
+          future: _getTenantUnitNumber(payment.tenantId, facilityId),
           builder: (context, snapshot) {
             final unitNumber = snapshot.data;
             return Column(
@@ -524,21 +1133,21 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
             IconButton(
               icon: const Icon(Icons.send),
               tooltip: 'Send Reminder',
-              onPressed: () => _sendPaymentReminder(payment),
+              onPressed: () => _sendPaymentReminder(payment, facilityId),
               color: AppTheme.primaryBlue,
             ),
             BadgeWidget(badgeInfo: badgeInfo),
           ],
         ),
-        onTap: () => _navigateToPaymentDetail(payment),
+        onTap: () => _navigateToPaymentDetail(payment, facilityId),
       ),
     );
   }
 
-  Future<void> _sendPaymentReminder(PaymentModel payment) async {
+  Future<void> _sendPaymentReminder(PaymentModel payment, String facilityId) async {
     try {
       // Get tenant info
-      final tenant = await TenantService.getTenantById(_selectedFacilityId, payment.tenantId);
+      final tenant = await TenantService.getTenantById(facilityId, payment.tenantId);
       if (tenant == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -550,7 +1159,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
 
       // Create reminder
       final reminder = await ReminderService.createReminder(
-        facilityId: _selectedFacilityId,
+        facilityId: facilityId,
         tenantId: payment.tenantId,
         type: ReminderType.rentOverdue,
         title: 'Payment Overdue Reminder',
@@ -565,7 +1174,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
 
       // Send reminder immediately
       final sent = await ReminderService.sendReminder(
-        facilityId: _selectedFacilityId,
+        facilityId: _selectedFacilityId!,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
@@ -590,10 +1199,10 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     }
   }
 
-  Widget _buildTenantsWithOverdue() {
+  Widget _buildTenantsWithOverdue(String facilityId) {
     return Consumer(
       builder: (context, ref, child) {
-        return ref.watch(tenantsWithOverdueProvider(_selectedFacilityId)).when(
+        return ref.watch(tenantsWithOverdueProvider(facilityId)).when(
           data: (tenants) => Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -638,7 +1247,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
                       itemCount: tenants.length,
                       itemBuilder: (context, index) {
                         final tenant = tenants[index];
-                        return _buildTenantCard(tenant);
+                        return _buildTenantCard(tenant, facilityId);
                       },
                     ),
                 ],
@@ -654,10 +1263,15 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     );
   }
 
-  Widget _buildTenantCard(TenantOverdueInfo tenantInfo) {
+  Widget _buildTenantCard(TenantOverdueInfo tenantInfo, String facilityId) {
     final badgeInfo = LateLogicService.getTenantBadge(tenantInfo.status);
     final balanceText = 'Balance: \$${tenantInfo.totalBalance.toStringAsFixed(2)}';
-    final baseText = 'Payments overdue: ${tenantInfo.overduePayments}';
+    final hasBalanceDue = tenantInfo.totalBalance > 0;
+    final baseText = tenantInfo.overduePayments > 0
+        ? 'Payments overdue: ${tenantInfo.overduePayments}'
+        : hasBalanceDue
+            ? 'Balance due (past due)'
+            : 'Payments overdue: 0';
     final lateFeesText = tenantInfo.totalLateFees > 0
         ? 'Late fees: \$${tenantInfo.totalLateFees.toStringAsFixed(2)}'
         : null;
@@ -698,34 +1312,35 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
             IconButton(
               icon: const Icon(Icons.send),
               tooltip: 'Send Reminder',
-              onPressed: () => _sendTenantReminder(tenantInfo),
+              onPressed: () => _sendTenantReminder(tenantInfo, facilityId),
               color: AppTheme.primaryBlue,
             ),
             BadgeWidget(badgeInfo: badgeInfo),
           ],
         ),
-        onTap: () => _navigateToTenantDetail(tenantInfo.tenant),
+        onTap: () => _navigateToTenantDetail(tenantInfo.tenant, facilityId),
       ),
     );
   }
 
-  Future<String?> _getTenantUnitNumber(String tenantId) async {
+  Future<String?> _getTenantUnitNumber(String tenantId, String facilityId) async {
     try {
-      final tenant = await TenantService.getTenantById(_selectedFacilityId, tenantId);
+      final tenant = await TenantService.getTenantById(facilityId, tenantId);
       return tenant?.unitNumber;
     } catch (e) {
       return null;
     }
   }
 
-  Future<void> _sendTenantReminder(TenantOverdueInfo tenantInfo) async {
+  Future<void> _sendTenantReminder(TenantOverdueInfo tenantInfo, String facilityId) async {
     try {
       final tenant = tenantInfo.tenant;
-      final message = 'You have ${tenantInfo.overduePayments} overdue payment(s) totaling \$${tenantInfo.totalBalance.toStringAsFixed(2)}. Please make payment as soon as possible.';
+      final paymentCount = tenantInfo.overduePayments > 0 ? tenantInfo.overduePayments : 1;
+      final message = 'You have $paymentCount overdue payment(s) totaling \$${tenantInfo.totalBalance.toStringAsFixed(2)}. Please make payment as soon as possible.';
 
       // Create reminder
       final reminder = await ReminderService.createReminder(
-        facilityId: _selectedFacilityId,
+        facilityId: facilityId,
         tenantId: tenant.id,
         type: ReminderType.rentOverdue,
         title: 'Overdue Payment Reminder',
@@ -738,7 +1353,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
 
       // Send reminder immediately
       final sent = await ReminderService.sendReminder(
-        facilityId: _selectedFacilityId,
+        facilityId: facilityId,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
@@ -763,10 +1378,10 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     }
   }
 
-  Widget _buildLateAlerts() {
+  Widget _buildLateAlerts(String facilityId) {
     return Consumer(
       builder: (context, ref, child) {
-        return ref.watch(lateAlertsProvider(_selectedFacilityId)).when(
+        return ref.watch(lateAlertsProvider(facilityId)).when(
           data: (alerts) => Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -938,19 +1553,20 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
     return '${date.month}/${date.day}/${date.year}';
   }
 
-  void _navigateToPaymentDetail(PaymentModel payment) {
+  void _navigateToPaymentDetail(PaymentModel payment, String facilityId) {
     context.push(AppRoute.paymentDetail, extra: payment);
   }
 
-  void _navigateToTenantDetail(TenantModel tenant) {
+  void _navigateToTenantDetail(TenantModel tenant, String facilityId) {
     context.push(AppRoute.tenantDetail, extra: tenant);
   }
 
   void _refreshData() {
-    ref.invalidate(lateStatisticsProvider(_selectedFacilityId));
-    ref.invalidate(overduePaymentsProvider(_selectedFacilityId));
-    ref.invalidate(tenantsWithOverdueProvider(_selectedFacilityId));
-    ref.invalidate(lateAlertsProvider(_selectedFacilityId));
+    if (_selectedFacilityId == null) return;
+    ref.invalidate(lateStatisticsProvider(_selectedFacilityId!));
+    ref.invalidate(overduePaymentsProvider(_selectedFacilityId!));
+    ref.invalidate(tenantsWithOverdueProvider(_selectedFacilityId!));
+    ref.invalidate(lateAlertsProvider(_selectedFacilityId!));
   }
 
   void _applyLateFees() {
@@ -967,7 +1583,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(lateLogicOperationsProvider.notifier).applyLateFees(_selectedFacilityId);
+              await ref.read(lateLogicOperationsProvider.notifier).applyLateFees(_selectedFacilityId!);
               _refreshData();
             },
             child: const Text('Apply'),

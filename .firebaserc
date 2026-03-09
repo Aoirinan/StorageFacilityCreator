@@ -2,6 +2,14 @@
   "projects": {
     "default": "storage-facility-creator"
   },
-  "targets": {},
+  "targets": {
+    "storage-facility-creator": {
+      "hosting": {
+        "prod": [
+          "storage-facility-creator"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import '../models/tenant_model.dart';
 import 'unit_service.dart';
 import 'facility_limits_service.dart';
+import 'audit_service.dart';
+import 'facility_stats_service.dart';
 
 class TenantService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -31,6 +33,7 @@ class TenantService {
     String? portalAccessCode,
     String? portalWelcomeMessage,
     String? leadSource,
+    DateTime? smsOptInDate,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -89,6 +92,8 @@ class TenantService {
         'portalLastAccessAt': null,
         'portalVisitCount': 0,
         if (leadSource != null && leadSource.isNotEmpty) 'leadSource': leadSource,
+        'smsOptOut': false,
+        if (smsOptInDate != null) 'smsOptInDate': Timestamp.fromDate(smsOptInDate),
       };
 
       if (kDebugMode) {
@@ -96,6 +101,26 @@ class TenantService {
       }
 
       await ref.set(tenantData);
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'tenant.created',
+        targetType: 'tenant',
+        targetId: ref.id,
+        tenantId: ref.id,
+        after: {
+          'name': name,
+          'email': email,
+          'phone': phone,
+          'unitNumber': unitNumber,
+          'monthlyRate': monthlyRate,
+        },
+        metadata: {
+          'leadSource': leadSource,
+          'portalEnabled': portalEnabled,
+        },
+      );
 
       // Update unit status to occupied if unitNumber is provided
       // If unit doesn't exist, create it automatically
@@ -340,6 +365,8 @@ class TenantService {
     String? phone,
     String? unitNumber,
     double? monthlyRate,
+    DateTime? paidThrough, // NEW: Allow updating paid through date
+    bool clearPaidThrough = false, // NEW: Allow clearing paid through date
     String? notes,
     bool? isActive,
     String? governmentIdType,
@@ -360,9 +387,13 @@ class TenantService {
     bool resetPortalStats = false,
     InsuranceStatus? insuranceStatus,
     String? insuranceProvider,
+    String? insuranceProofUrl,
+    bool clearInsuranceProofUrl = false,
     double? coverageAmount,
     DateTime? tppEnrollmentDate,
     String? tppCoverageLevel,
+    DateTime? smsOptInDate,
+    Map<String, String>? monthStatusOverrides,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -393,6 +424,11 @@ class TenantService {
       if (unitNumber != null) updateData['unitNumber'] = unitNumber;
       if (monthlyRate != null) {
         updateData['monthlyRate'] = monthlyRate;
+      }
+      if (paidThrough != null) {
+        updateData['paidThrough'] = Timestamp.fromDate(paidThrough);
+      } else if (clearPaidThrough) {
+        updateData['paidThrough'] = FieldValue.delete();
       }
       if (notes != null) updateData['notes'] = notes;
       if (isActive != null) updateData['isActive'] = isActive;
@@ -451,6 +487,12 @@ class TenantService {
       if (insuranceProvider != null) {
         updateData['insuranceProvider'] = insuranceProvider.isEmpty ? FieldValue.delete() : insuranceProvider;
       }
+      if (insuranceProofUrl != null) {
+        updateData['insuranceProofUrl'] = insuranceProofUrl.isEmpty ? FieldValue.delete() : insuranceProofUrl;
+      }
+      if (clearInsuranceProofUrl) {
+        updateData['insuranceProofUrl'] = FieldValue.delete();
+      }
       if (coverageAmount != null) {
         updateData['coverageAmount'] = coverageAmount;
       }
@@ -459,6 +501,87 @@ class TenantService {
       }
       if (tppCoverageLevel != null) {
         updateData['tppCoverageLevel'] = tppCoverageLevel.isEmpty ? FieldValue.delete() : tppCoverageLevel;
+      }
+      if (smsOptInDate != null) {
+        updateData['smsOptInDate'] = Timestamp.fromDate(smsOptInDate);
+        // If opting in, clear opt-out status
+        updateData['smsOptOut'] = false;
+        updateData['smsOptOutDate'] = FieldValue.delete();
+      }
+
+      // Month status overrides: Map<String, String> keyed by "yyyy-MM", value "paid"|"late"|"moved_out"
+      if (monthStatusOverrides != null) {
+        updateData['monthStatusOverrides'] = monthStatusOverrides;
+      }
+
+      // Get before snapshot for audit log
+      final beforeDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .get();
+      final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
+
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .update(updateData);
+
+      // Get after snapshot for audit log
+      final afterDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .get();
+      final afterData = afterDoc.exists ? afterDoc.data() : null;
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'tenant.edited',
+        targetType: 'tenant',
+        targetId: tenantId,
+        tenantId: tenantId,
+        before: beforeData != null ? Map<String, dynamic>.from(beforeData) : null,
+        after: afterData != null ? Map<String, dynamic>.from(afterData) : null,
+        metadata: {
+          'fieldsChanged': updateData.keys.toList(),
+        },
+      );
+
+      if (kDebugMode) {
+        print('✅ Tenant updated successfully: $tenantId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error updating tenant: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Update manual month status override. yearMonth: "yyyy-MM", status: "paid"|"late"|"moved_out" or null to clear.
+  static Future<void> updateTenantMonthStatus({
+    required String facilityId,
+    required String tenantId,
+    required String yearMonth,
+    required String? status,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) throw Exception('Not signed in');
+
+      final updateData = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (status != null) {
+        updateData['monthStatusOverrides.$yearMonth'] = status;
+      } else {
+        updateData['monthStatusOverrides.$yearMonth'] = FieldValue.delete();
       }
 
       await _firestore
@@ -469,12 +592,10 @@ class TenantService {
           .update(updateData);
 
       if (kDebugMode) {
-        print('✅ Tenant updated successfully: $tenantId');
+        print('✅ Tenant month status updated: $tenantId $yearMonth -> $status');
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error updating tenant: $e');
-      }
+      if (kDebugMode) print('❌ Error updating tenant month status: $e');
       rethrow;
     }
   }
@@ -562,6 +683,15 @@ class TenantService {
         print('🔄 Archiving tenant: $tenantId');
       }
 
+      // Get before snapshot for audit log
+      final beforeDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .get();
+      final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
+
       await _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -571,6 +701,17 @@ class TenantService {
         'isActive': false,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      // Log audit event
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'tenant.archived',
+        targetType: 'tenant',
+        targetId: tenantId,
+        tenantId: tenantId,
+        before: beforeData != null ? Map<String, dynamic>.from(beforeData) : null,
+        after: {'isActive': false},
+      );
 
       if (kDebugMode) {
         print('✅ Tenant archived successfully: $tenantId');
@@ -583,7 +724,8 @@ class TenantService {
     }
   }
 
-  // Delete tenant permanently
+  // Delete tenant permanently.
+  // Cascade: unlink all units referencing this tenant, then delete tenant doc, then refresh facility counts.
   static Future<void> deleteTenant({
     required String facilityId,
     required String tenantId,
@@ -595,9 +737,27 @@ class TenantService {
       }
 
       if (kDebugMode) {
-        print('🔄 Deleting tenant: $tenantId');
+        print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
       }
 
+      // 1) Find and unlink all units that reference this tenant (avoid ghost data)
+      final units = await UnitService.getUnitsForFacility(facilityId);
+      final unitsWithTenant = units.where((u) => u.tenantId == tenantId).toList();
+      if (kDebugMode) {
+        print('   [TenantService] Units referencing tenant: ${unitsWithTenant.length}');
+      }
+      for (final unit in unitsWithTenant) {
+        await UnitService.removeTenantFromUnit(
+          facilityId: facilityId,
+          unitId: unit.id,
+          moveOutDate: DateTime.now(),
+        );
+        if (kDebugMode) {
+          print('   [TenantService] Unlinked unit ${unit.unitNumber} (${unit.id})');
+        }
+      }
+
+      // 2) Delete tenant document
       await _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -606,11 +766,69 @@ class TenantService {
           .delete();
 
       if (kDebugMode) {
-        print('✅ Tenant deleted successfully: $tenantId');
+        print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${unitsWithTenant.length} unit(s)');
       }
+
+      // 3) Refresh facility counts so dashboard/list stay correct
+      await FacilityStatsService.updateFacilityStats(facilityId);
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error deleting tenant: $e');
+        print('❌ [TenantService] Error deleting tenant: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Delete multiple tenants permanently.
+  // Cascade: for each tenant, unlink units then delete; then refresh facility counts once.
+  static Future<void> deleteTenants({
+    required String facilityId,
+    required List<String> tenantIds,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 [TenantService] Deleting ${tenantIds.length} tenants (facility: $facilityId)');
+      }
+
+      final units = await UnitService.getUnitsForFacility(facilityId);
+      final tenantIdSet = tenantIds.toSet();
+      int unlinked = 0;
+      for (final unit in units) {
+        if (unit.tenantId != null && tenantIdSet.contains(unit.tenantId)) {
+          await UnitService.removeTenantFromUnit(
+            facilityId: facilityId,
+            unitId: unit.id,
+            moveOutDate: DateTime.now(),
+          );
+          unlinked++;
+        }
+      }
+
+      final batch = _firestore.batch();
+      final tenantsRef = _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants');
+
+      for (final tenantId in tenantIds) {
+        batch.delete(tenantsRef.doc(tenantId));
+      }
+
+      await batch.commit();
+
+      if (kDebugMode) {
+        print('✅ [TenantService] Deleted ${tenantIds.length} tenants, unlinked $unlinked unit(s)');
+      }
+
+      await FacilityStatsService.updateFacilityStats(facilityId);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [TenantService] Error deleting tenants: $e');
       }
       rethrow;
     }

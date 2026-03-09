@@ -33,7 +33,7 @@ class EmailService {
       final callable = _functions.httpsCallable('sendEmail');
       print('📧 [EmailService] Calling Firebase Function sendEmail...');
       
-      final result = await callable.call({
+      final payload = {
         'to': to,
         'subject': subject,
         'html': html,
@@ -42,7 +42,28 @@ class EmailService {
         'templateId': templateId,
         'variables': variables,
         if (fromName != null) 'fromName': fromName,
-      });
+        if (tenantId != null) 'tenantId': tenantId,
+        // Determine source based on relatedEntityType
+        'source': relatedEntityType == 'reminder' || relatedEntityType == 'automation'
+            ? 'automation'
+            : relatedEntityType == 'bulk'
+                ? 'bulk'
+                : 'manual',
+      };
+      
+      // #region agent log
+      // Log exact payload being sent to compare with working invite emails
+      print('📧 [EmailService:H9] Payload to sendEmail function:');
+      print('   to: ${payload['to']}');
+      print('   subject: ${payload['subject']}');
+      print('   facilityId: ${payload['facilityId']}');
+      print('   hasHtml: ${payload['html'] != null} (length: ${(payload['html'] as String?)?.length ?? 0})');
+      print('   hasText: ${payload['text'] != null} (length: ${(payload['text'] as String?)?.length ?? 0})');
+      print('   fromName: ${payload['fromName'] ?? 'null (will use default)'}');
+      print('   templateId: ${payload['templateId'] ?? 'null'}');
+      // #endregion
+      
+      final result = await callable.call(payload);
       
       print('📧 [EmailService] Function call completed, processing result...');
 

@@ -118,6 +118,120 @@ function isSuperAdmin(userEmail: string | undefined): boolean {
   );
 }
 
+/**
+ * Super admin only: delete a user from Firebase Auth and Firestore users collection.
+ */
+export const superAdminDeleteUser = functions.https.onCall(async (data: { uid: string }, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can delete users');
+  }
+  const uid = (data?.uid || '').toString().trim();
+  if (!uid) {
+    throw new functions.https.HttpsError('invalid-argument', 'uid is required');
+  }
+  const targetUser = await admin.auth().getUser(uid);
+  if (isSuperAdmin(targetUser.email)) {
+    throw new functions.https.HttpsError('permission-denied', 'Cannot delete a super admin account');
+  }
+  await admin.auth().deleteUser(uid);
+  await admin.firestore().collection('users').doc(uid).delete();
+  functions.logger.info('superAdminDeleteUser', { uid, deletedBy: callerEmail });
+  return { success: true };
+});
+
+/**
+ * Super admin only: disable a user in Firebase Auth (they cannot sign in).
+ */
+export const superAdminDisableUser = functions.https.onCall(async (data: { uid: string }, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can disable users');
+  }
+  const uid = (data?.uid || '').toString().trim();
+  if (!uid) {
+    throw new functions.https.HttpsError('invalid-argument', 'uid is required');
+  }
+  const targetUser = await admin.auth().getUser(uid);
+  if (isSuperAdmin(targetUser.email)) {
+    throw new functions.https.HttpsError('permission-denied', 'Cannot disable a super admin account');
+  }
+  await admin.auth().updateUser(uid, { disabled: true });
+  await admin.firestore().collection('users').doc(uid).set(
+    { authDisabled: true, authDisabledAt: admin.firestore.FieldValue.serverTimestamp() },
+    { merge: true },
+  );
+  functions.logger.info('superAdminDisableUser', { uid, disabledBy: callerEmail });
+  return { success: true };
+});
+
+/**
+ * Super admin only: re-enable a disabled user in Firebase Auth.
+ */
+export const superAdminEnableUser = functions.https.onCall(async (data: { uid: string }, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can enable users');
+  }
+  const uid = (data?.uid || '').toString().trim();
+  if (!uid) {
+    throw new functions.https.HttpsError('invalid-argument', 'uid is required');
+  }
+  await admin.auth().updateUser(uid, { disabled: false });
+  await admin.firestore().collection('users').doc(uid).set(
+    { authDisabled: false, authDisabledAt: admin.firestore.FieldValue.delete() },
+    { merge: true },
+  );
+  functions.logger.info('superAdminEnableUser', { uid, enabledBy: callerEmail });
+  return { success: true };
+});
+
+/**
+ * Super admin only: send a password reset email to the user (Firebase Auth link via SendGrid).
+ */
+export const superAdminSendPasswordReset = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(
+  async (data: { uid: string }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError('permission-denied', 'Only super admins can send password reset');
+    }
+    const uid = (data?.uid || '').toString().trim();
+    if (!uid) {
+      throw new functions.https.HttpsError('invalid-argument', 'uid is required');
+    }
+    const targetUser = await admin.auth().getUser(uid);
+    const userEmail = targetUser.email;
+    if (!userEmail) {
+      throw new functions.https.HttpsError('invalid-argument', 'User has no email address');
+    }
+    const resetLink = await admin.auth().generatePasswordResetLink(userEmail);
+    const sendGridFromEmail = SENDGRID_FROM_EMAIL.value();
+    const fromName = SENDGRID_FROM_NAME.value();
+    const msg = {
+      to: userEmail,
+      from: { email: sendGridFromEmail, name: fromName },
+      subject: 'Reset your password - Storage Facility Creator',
+      html: `<p>You requested a password reset. Click the link below to set a new password:</p><p><a href="${resetLink}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
+      text: `Reset your password: ${resetLink}\n\nIf you did not request this, you can ignore this email.`,
+    };
+    await sgMail.send(msg);
+    functions.logger.info('superAdminSendPasswordReset', { uid, to: userEmail, sentBy: callerEmail });
+    return { success: true };
+  },
+);
+
 // Generate a short numeric access code for gate access / tokens
 function generateAccessCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -5257,6 +5371,80 @@ export const syncPaymentToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_S
   enforceAppCheckOrThrow(context);
   return quickBooksAccounting.syncPaymentToQuickBooks(data, context, getQuickBooksConfig());
 });
+
+/**
+ * Enables/disables facility QuickBooks auto-sync.
+ */
+export const setQuickBooksAutoSync = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  return quickBooksAccounting.setQuickBooksAutoSync(data, context);
+});
+
+/**
+ * Auto-sync invoice changes into QuickBooks when integration is connected.
+ */
+export const autoSyncInvoiceToQuickBooks = functions
+  .runWith({ secrets: QUICKBOOKS_SECRETS, timeoutSeconds: 120, memory: '256MB' })
+  .firestore
+  .document('facilities/{facilityId}/invoices/{invoiceId}')
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return;
+
+    const afterData = (change.after.data() || {}) as Record<string, any>;
+    const beforeData = (change.before.data() || {}) as Record<string, any>;
+    const afterQuickbooks = (afterData.quickbooks || {}) as Record<string, any>;
+
+    // Already synced; skip to avoid loops.
+    if (typeof afterQuickbooks.invoiceId === 'string' && afterQuickbooks.invoiceId.trim() !== '') return;
+
+    const status = String(afterData.status || '').toLowerCase();
+    // Sync non-draft invoices only.
+    if (status === '' || status === 'draft' || status === 'voided') return;
+
+    const beforeStatus = String(beforeData.status || '').toLowerCase();
+    const beforeQuickbooks = (beforeData.quickbooks || {}) as Record<string, any>;
+    const hadQboInvoiceId = typeof beforeQuickbooks.invoiceId === 'string' && beforeQuickbooks.invoiceId.trim() !== '';
+    const statusChanged = beforeStatus !== status;
+    const createdNow = !change.before.exists;
+    const lineItemsChanged = JSON.stringify(beforeData.lineItems || []) !== JSON.stringify(afterData.lineItems || []);
+    const totalChanged = Number(beforeData.total || 0) !== Number(afterData.total || 0);
+
+    if (!createdNow && !statusChanged && !lineItemsChanged && !totalChanged && !hadQboInvoiceId) return;
+
+    const facilityId = context.params.facilityId as string;
+    const invoiceId = context.params.invoiceId as string;
+    await quickBooksAccounting.autoSyncInvoiceIfEligible(facilityId, invoiceId, getQuickBooksConfig());
+  });
+
+/**
+ * Auto-sync completed payments into QuickBooks when integration is connected.
+ */
+export const autoSyncPaymentToQuickBooks = functions
+  .runWith({ secrets: QUICKBOOKS_SECRETS, timeoutSeconds: 120, memory: '256MB' })
+  .firestore
+  .document('facilities/{facilityId}/payments/{paymentId}')
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return;
+
+    const afterData = (change.after.data() || {}) as Record<string, any>;
+    const beforeData = (change.before.data() || {}) as Record<string, any>;
+    const afterQuickbooks = (afterData.quickbooks || {}) as Record<string, any>;
+
+    // Already synced; skip to avoid loops.
+    if (typeof afterQuickbooks.paymentId === 'string' && afterQuickbooks.paymentId.trim() !== '') return;
+
+    const status = String(afterData.status || '').toLowerCase();
+    const isPaidStatus = status === 'paid' || status === 'completed';
+    if (!isPaidStatus) return;
+
+    const beforeStatus = String(beforeData.status || '').toLowerCase();
+    const becamePaid = beforeStatus !== 'paid' && beforeStatus !== 'completed';
+    if (!change.before.exists || becamePaid) {
+      const facilityId = context.params.facilityId as string;
+      const paymentId = context.params.paymentId as string;
+      await quickBooksAccounting.autoSyncPaymentIfEligible(facilityId, paymentId, getQuickBooksConfig());
+    }
+  });
 
 /**
  * Create or get Stripe Customer for a facility (for SaaS billing)

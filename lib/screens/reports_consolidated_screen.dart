@@ -11,6 +11,7 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/report_models.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/providers/search_provider.dart' hide userFacilitiesProvider;
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/reports_service.dart';
@@ -21,6 +22,8 @@ import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 import 'package:sfcapp/screens/reports_consolidated_stub.dart'
     if (dart.library.html) 'package:sfcapp/screens/reports_consolidated_web.dart'
     as platform;
+
+const _kAllFacilitiesReport = '__all__';
 
 enum ReportType {
   financial,
@@ -40,7 +43,9 @@ class ReportsConsolidatedScreen extends ConsumerStatefulWidget {
 enum ExportFormat { csv, pdf }
 
 class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedScreen> {
-  String _selectedFacilityId = '';
+  // _kAllFacilitiesReport = show aggregated view; '' = not yet loaded; otherwise a real facility id
+  String _selectedFacilityId = _kAllFacilitiesReport;
+  List<FacilityModel> _allFacilities = [];
   ReportType _selectedReportType = ReportType.financial;
   ExportFormat _exportFormat = ExportFormat.csv;
   bool _isLoading = false;
@@ -64,7 +69,7 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
       final authState = ref.read(authStateProvider);
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
-        
+
         try {
           await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
         } catch (accountError) {
@@ -78,14 +83,21 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
             return;
           }
         }
-        
+
         await Future.delayed(const Duration(milliseconds: 500));
-        
+
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
-        if (facilities.isNotEmpty) {
+        if (mounted) {
+          // Respect the global facility picker if one is already set
+          final globalFacility = ref.read(selectedFacilityProvider);
           setState(() {
-            _selectedFacilityId = facilities.first.id;
+            _allFacilities = facilities;
+            if (globalFacility != null && facilities.any((f) => f.id == globalFacility.id)) {
+              _selectedFacilityId = globalFacility.id;
+            } else {
+              _selectedFacilityId = _kAllFacilitiesReport;
+            }
           });
           _loadReport();
         }
@@ -102,40 +114,18 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
     }
   }
 
+  bool get _isAllFacilities => _selectedFacilityId == _kAllFacilitiesReport;
+
   Future<void> _loadReport() async {
     if (_selectedFacilityId.isEmpty) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      switch (_selectedReportType) {
-        case ReportType.arAging:
-          _arAgingReport = await ReportsService.generateARAgingReport(
-            facilityId: _selectedFacilityId,
-          );
-          break;
-        case ReportType.occupancy:
-          _occupancyMetrics = await ReportsService.generateOccupancyReport(
-            facilityId: _selectedFacilityId,
-          );
-          break;
-        case ReportType.delinquency:
-          _delinquencySummary = await ReportsService.generateDelinquencyReport(
-            facilityId: _selectedFacilityId,
-          );
-          break;
-        case ReportType.deposits:
-          _depositSummary = await ReportsService.generateDepositReport(
-            facilityId: _selectedFacilityId,
-            startDate: _startDate,
-            endDate: _endDate,
-          );
-          break;
-        case ReportType.financial:
-          // Use existing financial reports screen
-          break;
+      if (_isAllFacilities) {
+        await _loadAggregatedReport();
+      } else {
+        await _loadSingleFacilityReport(_selectedFacilityId);
       }
     } catch (e) {
       if (mounted) {
@@ -147,31 +137,197 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
         );
       }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _loadSingleFacilityReport(String facilityId) async {
+    switch (_selectedReportType) {
+      case ReportType.arAging:
+        _arAgingReport = await ReportsService.generateARAgingReport(facilityId: facilityId);
+        break;
+      case ReportType.occupancy:
+        _occupancyMetrics = await ReportsService.generateOccupancyReport(facilityId: facilityId);
+        break;
+      case ReportType.delinquency:
+        _delinquencySummary = await ReportsService.generateDelinquencyReport(facilityId: facilityId);
+        break;
+      case ReportType.deposits:
+        _depositSummary = await ReportsService.generateDepositReport(
+          facilityId: facilityId,
+          startDate: _startDate,
+          endDate: _endDate,
+        );
+        break;
+      case ReportType.financial:
+        break;
+    }
+  }
+
+  Future<void> _loadAggregatedReport() async {
+    final facilities = _allFacilities;
+    if (facilities.isEmpty) return;
+
+    switch (_selectedReportType) {
+      case ReportType.arAging:
+        final reports = await Future.wait(
+          facilities.map((f) => ReportsService.generateARAgingReport(facilityId: f.id)),
+        );
+        _arAgingReport = _mergeARAgingReports(reports);
+        break;
+      case ReportType.occupancy:
+        final reports = await Future.wait(
+          facilities.map((f) => ReportsService.generateOccupancyReport(facilityId: f.id)),
+        );
+        _occupancyMetrics = _mergeOccupancyMetrics(reports);
+        break;
+      case ReportType.delinquency:
+        final reports = await Future.wait(
+          facilities.map((f) => ReportsService.generateDelinquencyReport(facilityId: f.id)),
+        );
+        _delinquencySummary = _mergeDelinquencySummaries(reports);
+        break;
+      case ReportType.deposits:
+        final reports = await Future.wait(
+          facilities.map((f) => ReportsService.generateDepositReport(
+            facilityId: f.id,
+            startDate: _startDate,
+            endDate: _endDate,
+          )),
+        );
+        _depositSummary = _mergeDepositSummaries(reports);
+        break;
+      case ReportType.financial:
+        break;
+    }
+  }
+
+  ARAgingReport _mergeARAgingReports(List<ARAgingReport> reports) {
+    final bucketMap = <String, ARAgingBucket>{};
+    double totalAR = 0;
+    int totalTenants = 0;
+    for (final r in reports) {
+      totalAR += r.totalAR;
+      totalTenants += r.totalTenants;
+      for (final b in r.buckets) {
+        final existing = bucketMap[b.range];
+        bucketMap[b.range] = ARAgingBucket(
+          range: b.range,
+          amount: (existing?.amount ?? 0) + b.amount,
+          tenantCount: (existing?.tenantCount ?? 0) + b.tenantCount,
+        );
+      }
+    }
+    return ARAgingReport(
+      buckets: bucketMap.values.toList(),
+      totalAR: totalAR,
+      totalTenants: totalTenants,
+    );
+  }
+
+  OccupancyMetrics _mergeOccupancyMetrics(List<OccupancyMetrics> reports) {
+    int totalUnits = 0, occupied = 0, available = 0, reserved = 0, maintenance = 0;
+    double potential = 0, actual = 0;
+    for (final r in reports) {
+      totalUnits += r.totalUnits;
+      occupied += r.occupiedUnits;
+      available += r.availableUnits;
+      reserved += r.reservedUnits;
+      maintenance += r.maintenanceUnits;
+      potential += r.potentialMonthlyRevenue;
+      actual += r.actualMonthlyRevenue;
+    }
+    final rate = totalUnits > 0 ? (occupied / totalUnits) * 100 : 0.0;
+    final avgRate = occupied > 0 ? actual / occupied : 0.0;
+    return OccupancyMetrics(
+      totalUnits: totalUnits,
+      occupiedUnits: occupied,
+      availableUnits: available,
+      reservedUnits: reserved,
+      maintenanceUnits: maintenance,
+      occupancyRate: rate,
+      averageMonthlyRate: avgRate,
+      potentialMonthlyRevenue: potential,
+      actualMonthlyRevenue: actual,
+    );
+  }
+
+  DelinquencySummary _mergeDelinquencySummaries(List<DelinquencySummary> reports) {
+    int currentCount = 0, lateCount = 0, overdueCount = 0, severelyCount = 0;
+    double currentAmt = 0, lateAmt = 0, overdueAmt = 0, severelyAmt = 0;
+    for (final r in reports) {
+      currentCount += r.currentCount;
+      lateCount += r.lateCount;
+      overdueCount += r.overdueCount;
+      severelyCount += r.severelyOverdueCount;
+      currentAmt += r.currentAmount;
+      lateAmt += r.lateAmount;
+      overdueAmt += r.overdueAmount;
+      severelyAmt += r.severelyOverdueAmount;
+    }
+    return DelinquencySummary(
+      currentCount: currentCount,
+      lateCount: lateCount,
+      overdueCount: overdueCount,
+      severelyOverdueCount: severelyCount,
+      currentAmount: currentAmt,
+      lateAmount: lateAmt,
+      overdueAmount: overdueAmt,
+      severelyOverdueAmount: severelyAmt,
+      totalDelinquentAmount: lateAmt + overdueAmt + severelyAmt,
+    );
+  }
+
+  DepositSummary _mergeDepositSummaries(List<DepositSummary> reports) {
+    int total = 0, pending = 0, deposited = 0, reconciled = 0;
+    double totalAmt = 0, pendingAmt = 0, depositedAmt = 0, reconciledAmt = 0, overShort = 0;
+    for (final r in reports) {
+      total += r.totalDeposits;
+      pending += r.pendingDeposits;
+      deposited += r.depositedCount;
+      reconciled += r.reconciledCount;
+      totalAmt += r.totalAmount;
+      pendingAmt += r.pendingAmount;
+      depositedAmt += r.depositedAmount;
+      reconciledAmt += r.reconciledAmount;
+      overShort += r.totalOverShort;
+    }
+    return DepositSummary(
+      totalDeposits: total,
+      pendingDeposits: pending,
+      depositedCount: deposited,
+      reconciledCount: reconciled,
+      totalAmount: totalAmt,
+      pendingAmount: pendingAmt,
+      depositedAmount: depositedAmt,
+      reconciledAmount: reconciledAmt,
+      totalOverShort: overShort,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/reports',
-      title: 'Reports',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Column(
-        children: [
-          _buildReportSelector(),
-          _buildFacilitySelector(),
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _buildReportContent(),
-          ),
-        ],
-      ),
+    // Sync with global facility picker
+    final globalFacility = ref.watch(selectedFacilityProvider);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final globalId = globalFacility?.id;
+      if (globalId != null && _selectedFacilityId != globalId) {
+        setState(() => _selectedFacilityId = globalId);
+        _loadReport();
+      }
+    });
+
+    return Column(
+      children: [
+        _buildReportSelector(),
+        _buildFacilitySelector(),
+        Expanded(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _buildReportContent(),
+        ),
+      ],
     );
   }
 
@@ -202,93 +358,92 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
   }
 
   Widget _buildFacilitySelector() {
+    final facilities = _allFacilities;
+    if (facilities.isEmpty) return const SizedBox.shrink();
+
+    // Ensure current selection is valid
+    final effectiveId = (_selectedFacilityId == _kAllFacilitiesReport ||
+            facilities.any((f) => f.id == _selectedFacilityId))
+        ? _selectedFacilityId
+        : _kAllFacilitiesReport;
+
     return Container(
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
         color: AppTheme.backgroundLight,
         border: Border(bottom: BorderSide(color: AppTheme.borderLight)),
       ),
-      child: FutureBuilder<List<FacilityModel>>(
-        future: ref.read(authStateProvider).maybeWhen(
-          data: (user) => user != null
-              ? ref.read(userFacilitiesProvider(user.uid).future)
-              : Future.value(<FacilityModel>[]),
-          orElse: () => Future.value(<FacilityModel>[]),
-        ),
-        builder: (context, snapshot) {
-          final facilities = snapshot.data ?? [];
-          if (facilities.isEmpty) return const SizedBox.shrink();
-          
-          return Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
-                  decoration: InputDecoration(
-                    labelText: 'Facility',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  ),
-                  items: facilities.map((facility) {
-                    return DropdownMenuItem(
-                      value: facility.id,
-                      child: Text(facility.name),
-                    );
-                  }).toList(),
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() {
-                        _selectedFacilityId = value;
-                      });
-                      _loadReport();
-                    }
-                  },
-                ),
+      child: Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: effectiveId,
+              decoration: InputDecoration(
+                labelText: 'Facility',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               ),
-              if (_selectedReportType == ReportType.deposits) ...[
-                const SizedBox(width: 12),
-                IconButton(
-                  icon: const Icon(Icons.calendar_today),
-                  onPressed: () => _showDateRangeDialog(),
-                  tooltip: 'Select Date Range',
+              items: [
+                const DropdownMenuItem<String>(
+                  value: _kAllFacilitiesReport,
+                  child: Text('All Facilities'),
                 ),
+                ...facilities.map((facility) => DropdownMenuItem<String>(
+                  value: facility.id,
+                  child: Text(facility.name),
+                )),
               ],
-              const SizedBox(width: 12),
-              // Export Format Selector
-              DropdownButton<ExportFormat>(
-                value: _exportFormat,
-                items: const [
-                  DropdownMenuItem(value: ExportFormat.csv, child: Text('CSV')),
-                  DropdownMenuItem(value: ExportFormat.pdf, child: Text('PDF')),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _exportFormat = value;
-                    });
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _selectedFacilityId = value);
+                  // Sync global picker
+                  if (value == _kAllFacilitiesReport) {
+                    ref.read(selectedFacilityProvider.notifier).state = null;
+                  } else {
+                    final picked = facilities.firstWhere((f) => f.id == value);
+                    ref.read(selectedFacilityProvider.notifier).state = picked;
                   }
-                },
-              ),
-              const SizedBox(width: 12),
-              // Export Button
-              ElevatedButton.icon(
-                icon: Icon(_exportFormat == ExportFormat.csv ? Icons.file_download : Icons.picture_as_pdf),
-                label: Text(_exportFormat == ExportFormat.csv ? 'Export CSV' : 'Export PDF'),
-                onPressed: _canExport() ? _exportReport : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryBlue,
-                  foregroundColor: AppTheme.textOnDark,
-                ),
-              ),
-              const SizedBox(width: 12),
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: _loadReport,
-                tooltip: 'Refresh Report',
-              ),
+                  _loadReport();
+                }
+              },
+            ),
+          ),
+          if (_selectedReportType == ReportType.deposits) ...[
+            const SizedBox(width: 12),
+            IconButton(
+              icon: const Icon(Icons.calendar_today),
+              onPressed: () => _showDateRangeDialog(),
+              tooltip: 'Select Date Range',
+            ),
+          ],
+          const SizedBox(width: 12),
+          DropdownButton<ExportFormat>(
+            value: _exportFormat,
+            items: const [
+              DropdownMenuItem(value: ExportFormat.csv, child: Text('CSV')),
+              DropdownMenuItem(value: ExportFormat.pdf, child: Text('PDF')),
             ],
-          );
-        },
+            onChanged: (value) {
+              if (value != null) setState(() => _exportFormat = value);
+            },
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton.icon(
+            icon: Icon(_exportFormat == ExportFormat.csv ? Icons.file_download : Icons.picture_as_pdf),
+            label: Text(_exportFormat == ExportFormat.csv ? 'Export CSV' : 'Export PDF'),
+            onPressed: _canExport() ? _exportReport : null,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryBlue,
+              foregroundColor: AppTheme.textOnDark,
+            ),
+          ),
+          const SizedBox(width: 12),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadReport,
+            tooltip: 'Refresh Report',
+          ),
+        ],
       ),
     );
   }
@@ -309,8 +464,6 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
   }
 
   Future<void> _exportReport() async {
-    if (_selectedFacilityId.isEmpty) return;
-
     if (_exportFormat == ExportFormat.csv) {
       _exportToCsv();
     } else {
@@ -319,7 +472,8 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
   }
 
   Future<void> _exportToCsv() async {
-    if (_selectedFacilityId.isEmpty) return;
+    final facilityLabel = _isAllFacilities ? 'all' : _selectedFacilityId;
+    final dateSuffix = DateFormat('yyyyMMdd').format(DateTime.now());
 
     String csvContent;
     String filename;
@@ -328,22 +482,22 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
       case ReportType.arAging:
         if (_arAgingReport == null) return;
         csvContent = ReportsService.exportARAgingToCsv(_arAgingReport!);
-        filename = 'ar_aging_report_${_selectedFacilityId}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv';
+        filename = 'ar_aging_report_${facilityLabel}_$dateSuffix.csv';
         break;
       case ReportType.occupancy:
         if (_occupancyMetrics == null) return;
         csvContent = ReportsService.exportOccupancyToCsv(_occupancyMetrics!);
-        filename = 'occupancy_report_${_selectedFacilityId}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv';
+        filename = 'occupancy_report_${facilityLabel}_$dateSuffix.csv';
         break;
       case ReportType.delinquency:
         if (_delinquencySummary == null) return;
         csvContent = ReportsService.exportDelinquencyToCsv(_delinquencySummary!);
-        filename = 'delinquency_report_${_selectedFacilityId}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv';
+        filename = 'delinquency_report_${facilityLabel}_$dateSuffix.csv';
         break;
       case ReportType.deposits:
         if (_depositSummary == null) return;
         csvContent = ReportsService.exportDepositToCsv(_depositSummary!);
-        filename = 'deposits_report_${_selectedFacilityId}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv';
+        filename = 'deposits_report_${facilityLabel}_$dateSuffix.csv';
         break;
       case ReportType.financial:
         return; // Use FinancialReportsScreen
@@ -414,12 +568,10 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
   }
 
   Future<void> _exportToPdf() async {
-    if (_selectedFacilityId.isEmpty) return;
+    final facilityLabel = _isAllFacilities ? 'all_facilities' : _selectedFacilityId;
 
     try {
-      setState(() {
-        _isLoading = true;
-      });
+      setState(() => _isLoading = true);
 
       Uint8List pdfData;
 
@@ -428,28 +580,28 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
           if (_arAgingReport == null) return;
           pdfData = await ReportsService.exportARAgingToPdf(
             report: _arAgingReport!,
-            facilityId: _selectedFacilityId,
+            facilityId: facilityLabel,
           );
           break;
         case ReportType.occupancy:
           if (_occupancyMetrics == null) return;
           pdfData = await ReportsService.exportOccupancyToPdf(
             metrics: _occupancyMetrics!,
-            facilityId: _selectedFacilityId,
+            facilityId: facilityLabel,
           );
           break;
         case ReportType.delinquency:
           if (_delinquencySummary == null) return;
           pdfData = await ReportsService.exportDelinquencyToPdf(
             summary: _delinquencySummary!,
-            facilityId: _selectedFacilityId,
+            facilityId: facilityLabel,
           );
           break;
         case ReportType.deposits:
           if (_depositSummary == null) return;
           pdfData = await ReportsService.exportDepositToPdf(
             summary: _depositSummary!,
-            facilityId: _selectedFacilityId,
+            facilityId: facilityLabel,
           );
           break;
         case ReportType.financial:
@@ -488,17 +640,6 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
   }
 
   Widget _buildReportContent() {
-    if (_selectedFacilityId.isEmpty) {
-      return Center(
-        child: Text(
-          'Select a facility to view reports',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            color: AppTheme.textSecondary,
-          ),
-        ),
-      );
-    }
-
     switch (_selectedReportType) {
       case ReportType.financial:
         return const Center(

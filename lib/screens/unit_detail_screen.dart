@@ -7,8 +7,8 @@ import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/screens/unit_creation_screen.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/dnr_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
@@ -516,13 +516,8 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
   }
 
   void _navigateToEditUnit(BuildContext context) {
-    context.push(
-      AppRoute.legacyScreen,
-      extra: UnitCreationScreen(
-        facilityId: widget.facilityId,
-        unit: _unit,
-      ),
-    );
+    if (_unit == null) return;
+    context.push(AppRoute.unitEdit, extra: _unit);
   }
 
   void _handleMenuAction(BuildContext context, String action) {
@@ -764,21 +759,22 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
     if (confirmed == true && _unit!.tenantId != null) {
       try {
-        await UnitService.updateUnit(
+        await UnitService.removeTenantFromUnit(
           facilityId: widget.facilityId,
           unitId: widget.unitId,
-          tenantId: null,
-          status: UnitStatus.available,
+          moveOutDate: DateTime.now(),
         );
 
         if (mounted) {
+          ref.invalidate(facilityUnitsProvider(widget.facilityId));
+          ref.invalidate(facilityTenantsProvider(widget.facilityId));
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Tenant unassigned successfully'),
               backgroundColor: AppTheme.success,
             ),
           );
-          _loadUnit(); // Refresh
+          _loadUnit();
         }
       } catch (e) {
         if (mounted) {

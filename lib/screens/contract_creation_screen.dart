@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/contract_model.dart';
 import '../models/contract_template_model.dart';
 import '../models/tenant_model.dart';
@@ -15,18 +16,24 @@ import '../services/tenant_service.dart';
 import '../services/contract_service.dart';
 import '../services/dnr_service.dart';
 import '../services/audit_service.dart';
+import '../services/compliance_service.dart';
+import '../router/app_route.dart';
 import '../theme/app_theme.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../widgets/modern_page_wrapper.dart';
+import '../widgets/signature_field_configurator.dart';
 import '../services/modern_navigation_service.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ContractCreationScreen extends ConsumerStatefulWidget {
   final String? facilityId;
+  final String? tenantId; // Optional: pre-selects a tenant
   final ContractModel? contract; // Optional: if provided, screen is in edit mode
   
   const ContractCreationScreen({
     super.key,
     this.facilityId,
+    this.tenantId,
     this.contract,
   });
 
@@ -83,6 +90,7 @@ class _SignerAssignment {
 }
 
 class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen> {
+  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
@@ -104,12 +112,35 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
   // File upload state
   PlatformFile? _selectedFile;
   String? _uploadedFileUrl;
+  String? _uploadedFileName;
   bool _isUploading = false;
+  /// Contracts with PDFs in this facility (for reuse dropdown)
+  List<ContractModel> _contractsWithPdf = [];
+  bool _loadingContractsWithPdf = false;
+  /// 0.0..1.0 or null when not uploading
+  double? _uploadProgress;
+  
+  // Compliance state
+  bool _hasAcceptedTerms = false;
+  bool _rightsAttestationChecked = false;
+  bool _isLicensedForm = false;
+  bool _termsModalShown = false;
+
+  // Custom signature field configuration (when PDF is present)
+  List<SignaturePlaceholder>? _customSignaturePlaceholders;
 
   @override
   void initState() {
     super.initState();
     _selectedFacilityId = widget.facilityId ?? widget.contract?.facilityId;
+
+    // Pre-select tenant when navigating from tenant detail
+    if (widget.tenantId != null && widget.tenantId!.isNotEmpty) {
+      _selectedTenantId = widget.tenantId;
+      if (_selectedFacilityId != null && _selectedFacilityId!.isNotEmpty) {
+        _loadTenant(_selectedFacilityId!, widget.tenantId!);
+      }
+    }
     
     // If in edit mode, populate fields with contract data
     if (widget.isEditMode && widget.contract != null) {
@@ -129,6 +160,32 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     }
     
     _loadInitialData();
+    _checkTermsAcceptance();
+  }
+  
+  Future<void> _checkTermsAcceptance() async {
+    if (_selectedFacilityId == null) return;
+    
+    try {
+      final hasAccepted = await ComplianceService.hasAcceptedTerms(_selectedFacilityId!);
+      if (mounted) {
+        setState(() {
+          _hasAcceptedTerms = hasAccepted;
+        });
+        
+        // Show terms modal if not accepted
+        if (!hasAccepted && !_termsModalShown) {
+          _termsModalShown = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showTermsAcceptanceModal();
+          });
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ Error checking terms acceptance: $e');
+      }
+    }
   }
   
   Future<void> _loadTenant(String facilityId, String tenantId) async {
@@ -164,6 +221,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           setState(() {
             _selectedFacilityId = facilities.first.id;
           });
+          _loadContractsWithPdf();
         }
       } catch (e) {
         if (mounted) {
@@ -175,16 +233,47 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           );
         }
       }
+    } else {
+      _loadContractsWithPdf();
+    }
+  }
+
+  Future<void> _loadContractsWithPdf() async {
+    if (_selectedFacilityId == null) return;
+    setState(() => _loadingContractsWithPdf = true);
+    try {
+      final contracts = await ContractService.getContractsForFacility(_selectedFacilityId!);
+      final withPdf = contracts.where((c) => c.fileUrl != null && c.fileUrl!.isNotEmpty).toList();
+      if (mounted) {
+        setState(() {
+          _contractsWithPdf = withPdf;
+          _loadingContractsWithPdf = false;
+        });
+      }
+    } catch (e) {
+      if (kDebugMode) print('⚠️ Error loading contracts with PDF: $e');
+      if (mounted) {
+        setState(() {
+          _contractsWithPdf = [];
+          _loadingContractsWithPdf = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/contracts',
-      title: widget.isEditMode ? 'Edit Contract' : 'Create Contract',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
+    return PopScope(
+      canPop: !_isUploading,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _isUploading && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Upload in progress. Please wait for it to finish.'),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
       },
       child: KeyboardScrollable(
         child: SingleChildScrollView(
@@ -281,6 +370,14 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
               _buildFileUploadSection(),
               const SizedBox(height: 24),
               
+              // Compliance Section (only shown when file is selected)
+              if (_selectedFile != null || _uploadedFileUrl != null) ...[
+                _buildComplianceSection(),
+                const SizedBox(height: 24),
+                _buildSignatureFieldConfigurator(),
+                const SizedBox(height: 24),
+              ],
+              
               if (_activeTemplate != null) ...[
                 _buildSignerSection(),
                 const SizedBox(height: 24),
@@ -335,7 +432,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                 children: [
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+                      onPressed: (_isLoading || _isUploading) ? null : () => Navigator.of(context).pop(),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
@@ -369,7 +466,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           ),
         ),
       ),
-      ),
+    ),
     );
   }
 
@@ -389,6 +486,18 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     setState(() {
       _selectedTemplateId = value;
       _activeTemplate = template;
+      if (template != null) {
+        if (_titleController.text.trim().isEmpty) _titleController.text = template.name;
+        if (_descriptionController.text.trim().isEmpty) _descriptionController.text = template.description;
+        if (template.fileUrl != null && template.fileUrl!.isNotEmpty) {
+          _uploadedFileUrl = template.fileUrl;
+          _uploadedFileName = '${template.name} (template PDF)';
+          _selectedFile = null;
+          if (template.signaturePlaceholders.isNotEmpty) {
+            _customSignaturePlaceholders = template.signaturePlaceholders;
+          }
+        }
+      }
     });
     _syncSignerAssignments();
   }
@@ -670,6 +779,10 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         return Icons.event;
       case SignatureFieldType.text:
         return Icons.short_text;
+      case SignatureFieldType.storageUnit:
+        return Icons.garage;
+      case SignatureFieldType.name:
+        return Icons.person;
     }
   }
 
@@ -696,11 +809,47 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
   }
 
   Map<String, dynamic> _buildCustomFieldsForTemplate(ContractTemplateModel template) {
+    final placeholders = _customSignaturePlaceholders ?? template.signaturePlaceholders;
     return {
       'signers': _signerAssignments.map((key, value) => MapEntry(key, value.toMap())),
-      'signaturePlaceholders': template.signaturePlaceholders.map((field) => field.toMap()).toList(),
+      'signaturePlaceholders': placeholders.map((field) => field.toMap()).toList(),
       'templateSigners': template.signers.map((signer) => signer.toMap()).toList(),
     };
+  }
+
+  Widget _buildSignatureFieldConfigurator() {
+    return ExpansionTile(
+      title: Row(
+        children: [
+          Icon(Icons.edit_location_alt, color: AppTheme.primaryBlue, size: 20),
+          const SizedBox(width: 8),
+          Text(
+            'Configure signature fields',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+      subtitle: Text(
+        'Choose where "Sign your name", "Sign the date", "Storage unit number", etc. appear on the PDF',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+      ),
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: SignatureFieldConfigurator(
+            pdfBytes: _selectedFile?.bytes != null ? Uint8List.fromList(_selectedFile!.bytes!) : null,
+            pdfUrl: _uploadedFileUrl,
+            initialPlaceholders: _customSignaturePlaceholders ?? _activeTemplate?.signaturePlaceholders ?? [],
+            tenantSignerId: _activeTemplate?.signers.any((s) => s.isTenantSigner) == true
+                ? _activeTemplate!.signers.firstWhere((s) => s.isTenantSigner).id
+                : 'tenantPrimary',
+            onPlaceholdersChanged: (placeholders) {
+              setState(() => _customSignaturePlaceholders = placeholders);
+            },
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildSectionHeader(String title) {
@@ -779,6 +928,16 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
             border: OutlineInputBorder(),
             prefixIcon: Icon(Icons.business),
           ),
+          selectedItemBuilder: (context) => facilities
+              .map((f) => Text(
+                    f.name,
+                    style: AppTheme.dropdownItemTextStyle.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ))
+              .toList(),
           items: facilities.map<DropdownMenuItem<String>>((facility) {
             return DropdownMenuItem<String>(
               value: facility.id,
@@ -791,8 +950,13 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                 _selectedFacilityId = value;
                 _selectedTenantId = null; // Reset tenant selection
                 _selectedTenantModel = null;
+                _selectedFile = null;
+                _uploadedFileUrl = null;
+                _uploadedFileName = null;
+                _customSignaturePlaceholders = null;
               });
               _syncSignerAssignments();
+              _loadContractsWithPdf();
             }
           },
           validator: (value) {
@@ -827,8 +991,12 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       );
     }
 
-    return FutureBuilder<List<dynamic>>(
-      future: TenantService.getTenantsForFacility(_selectedFacilityId!),
+    final facilityId = _selectedFacilityId!;
+    if (kDebugMode) {
+      print('📋 [ContractCreation] Loading tenants for facility: $facilityId');
+    }
+    return FutureBuilder<List<TenantModel>>(
+      future: TenantService.getTenantsForFacility(facilityId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
@@ -841,6 +1009,9 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         }
 
         if (snapshot.hasError) {
+          if (kDebugMode) {
+            print('❌ [ContractCreation] Tenant load error for $facilityId: ${snapshot.error}');
+          }
           return Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -863,7 +1034,13 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           );
         }
 
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+        final allTenants = snapshot.data ?? [];
+        final tenants = allTenants.where((t) => t.isActive).toList();
+        if (kDebugMode) {
+          print('📋 [ContractCreation] Facility $facilityId: ${allTenants.length} total, ${tenants.length} active tenants');
+        }
+
+        if (tenants.isEmpty) {
           return Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -875,15 +1052,17 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
               children: [
                 Icon(Icons.person, color: AppTheme.warning),
                 const SizedBox(width: 8),
-                const Expanded(
-                  child: Text('No tenants found for this facility.'),
+                Expanded(
+                  child: Text(
+                    allTenants.isEmpty
+                        ? 'No tenants found for this facility. Add tenants under Tenants first.'
+                        : 'No active tenants for this facility. ${allTenants.length} tenant(s) are inactive.',
+                  ),
                 ),
               ],
             ),
           );
         }
-
-        final tenants = snapshot.data!.cast<TenantModel>();
         
         return DropdownButtonFormField<String>(
           value: _selectedTenantId,
@@ -935,8 +1114,9 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     if (_selectedFacilityId == null) {
       return const Text('Please select a facility first to view templates.');
     }
-    
-    return ref.watch(contractTemplatesProvider(_selectedFacilityId!)).when(
+
+    final facilityId = _selectedFacilityId!;
+    return ref.watch(contractTemplatesProvider(facilityId)).when(
       data: (templates) {
         final initial = _findTemplateById(templates, _selectedTemplateId);
         if (_selectedTemplateId != null && initial != null && _activeTemplate?.id != initial.id) {
@@ -950,34 +1130,70 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         }
 
         if (templates.isEmpty) {
-          return const Text('No templates available. You can create a contract without a template.');
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('No templates available. You can create a contract without a template.'),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () => _openManageTemplatesForFacility(),
+                icon: const Icon(Icons.settings, size: 18),
+                label: const Text('Manage templates for this facility'),
+              ),
+            ],
+          );
         }
 
-        return DropdownButtonFormField<String?>(
-          value: _selectedTemplateId,
-          decoration: const InputDecoration(
-            labelText: 'Template (Optional)',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.description),
-          ),
-          items: [
-            const DropdownMenuItem<String?>(
-              value: null,
-              child: Text('No Template'),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButtonFormField<String?>(
+              value: _selectedTemplateId,
+              decoration: const InputDecoration(
+                labelText: 'Template (Optional)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.description),
+              ),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('No Template'),
+                ),
+                ...templates.map<DropdownMenuItem<String?>>((template) {
+                  return DropdownMenuItem<String?>(
+                    value: template.id,
+                    child: Text(template.name),
+                  );
+                }),
+              ],
+              onChanged: (value) => _handleTemplateSelection(value, templates),
             ),
-            ...templates.map<DropdownMenuItem<String?>>((template) {
-              return DropdownMenuItem<String?>(
-                value: template.id,
-                child: Text(template.name),
-              );
-            }),
+            const SizedBox(height: 6),
+            Text(
+              'Templates are per facility. Not seeing yours?',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () => _openManageTemplatesForFacility(),
+              icon: const Icon(Icons.settings, size: 18),
+              label: const Text('Manage templates for this facility'),
+            ),
           ],
-          onChanged: (value) => _handleTemplateSelection(value, templates),
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (error, stackTrace) => const Text('Error loading templates'),
     );
+  }
+
+  void _openManageTemplatesForFacility() {
+    if (_selectedFacilityId == null) return;
+    context.push('${AppRoute.contractTemplates}?facilityId=$_selectedFacilityId').then((_) {
+      if (!mounted) return;
+      ref.invalidate(contractTemplatesProvider(_selectedFacilityId!));
+    });
   }
 
   Widget _buildFileUploadSection() {
@@ -1009,6 +1225,67 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 ),
               ),
+              if (_selectedFacilityId != null &&
+                  _contractsWithPdf.where((c) => widget.contract?.id != c.id).isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Or use PDF from existing contract:',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _loadingContractsWithPdf
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : DropdownButtonFormField<ContractModel>(
+                        value: null,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.copy, size: 20),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        hint: const Text('Select contract to reuse PDF'),
+                        isExpanded: true,
+                        items: _contractsWithPdf
+                            .where((c) => widget.contract?.id != c.id)
+                            .map((c) {
+                          return DropdownMenuItem<ContractModel>(
+                            value: c,
+                            child: Text(
+                              c.title,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (contract) {
+                          if (contract != null && mounted) {
+                            setState(() {
+                              _uploadedFileUrl = contract.fileUrl;
+                              _uploadedFileName = '${contract.title} (from existing)';
+                              // Optionally copy signature placeholders from source
+                              final placeholders = contract.customFields?['signaturePlaceholders'];
+                              if (placeholders is List && placeholders.isNotEmpty) {
+                                _customSignaturePlaceholders = placeholders
+                                    .map((e) => SignaturePlaceholder.fromMap(Map<String, dynamic>.from(e as Map)))
+                                    .toList();
+                              }
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Using PDF from "${contract.title}"'),
+                                backgroundColor: AppTheme.success,
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+              ],
               const SizedBox(height: 8),
               Text(
                 'Upload a PDF contract document (optional). You can also use a template above.',
@@ -1017,29 +1294,53 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                 ),
               ),
             ] else if (_isUploading) ...[
-              Row(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: _uploadProgress != null && _uploadProgress! < 1.0
+                            ? CircularProgressIndicator(
+                                value: _uploadProgress,
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryBlue),
+                              )
+                            : CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryBlue),
+                              ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _uploadProgress != null && _uploadProgress! < 1.0
+                            ? 'Uploading... ${(_uploadProgress! * 100).round()}%'
+                            : 'Uploading file...',
+                      ),
+                    ],
+                  ),
+                  if (_uploadProgress != null && _uploadProgress! > 0 && _uploadProgress! < 1.0) ...[
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: _uploadProgress,
+                      backgroundColor: AppTheme.backgroundSecondary,
                       valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryBlue),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Text('Uploading file...'),
+                  ],
                 ],
               ),
             ] else if (_uploadedFileUrl != null) ...[
-              // Show uploaded file (success state)
+              // Uploaded file: filename, View, Replace, Remove
               Row(
                 children: [
                   Icon(Icons.check_circle, color: AppTheme.success, size: 20),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'File uploaded successfully',
+                      _uploadedFileName ?? 'File uploaded',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppTheme.success,
                         fontWeight: FontWeight.w500,
@@ -1047,12 +1348,25 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (_uploadedFileUrl != null)
+                    IconButton(
+                      icon: const Icon(Icons.open_in_new, size: 20),
+                      onPressed: () => _openPdfUrl(_uploadedFileUrl!),
+                      tooltip: 'View PDF',
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    onPressed: _isUploading ? null : _pickFile,
+                    tooltip: 'Replace PDF',
+                  ),
                   IconButton(
                     icon: const Icon(Icons.close, size: 20),
                     onPressed: () {
                       setState(() {
                         _selectedFile = null;
                         _uploadedFileUrl = null;
+                        _uploadedFileName = null;
+                        _customSignaturePlaceholders = null;
                         _selectedTemplateId = null;
                         _activeTemplate = null;
                       });
@@ -1080,6 +1394,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                       setState(() {
                         _selectedFile = null;
                         _uploadedFileUrl = null;
+                        _customSignaturePlaceholders = null;
                         _selectedTemplateId = null;
                         _activeTemplate = null;
                       });
@@ -1148,7 +1463,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         setState(() {
           _selectedFile = file;
           _uploadedFileUrl = null;
-          // Clear template selection when file is selected
+          _uploadedFileName = null;
           _selectedTemplateId = null;
           _activeTemplate = null;
         });
@@ -1173,6 +1488,12 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         );
       }
     }
+  }
+
+  Future<void> _openPdfUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !await canLaunchUrl(uri)) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   Widget _buildExpirationDateSelector() {
@@ -1231,10 +1552,23 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       _errorMessage = null;
     });
 
-    // Validate that either template or file is provided (or neither, but not both)
-    if (_selectedTemplateId != null && _selectedFile != null) {
+    // When both template and file are selected, use the uploaded file as the document.
+    // Template provides signers/metadata; file provides the PDF.
+    
+    // Validate terms acceptance
+    if (!_hasAcceptedTerms) {
       setState(() {
-        _errorMessage = 'Please select either a template OR upload a file, not both.';
+        _errorMessage = 'You must accept the Terms of Service to use contract features.';
+        _isLoading = false;
+      });
+      await _showTermsAcceptanceModal();
+      return;
+    }
+    
+    // Validate rights attestation if file is being uploaded
+    if ((_selectedFile != null || _uploadedFileUrl != null) && !_rightsAttestationChecked) {
+      setState(() {
+        _errorMessage = 'You must confirm your legal rights to upload and use this document.';
         _isLoading = false;
       });
       return;
@@ -1248,23 +1582,36 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
 
     Map<String, dynamic>? customFields;
     String? fileUrl = _uploadedFileUrl;
+
+    // Build customFields when we have PDF and configured placeholders or template
+    if (_activeTemplate != null) {
+      customFields = _buildCustomFieldsForTemplate(_activeTemplate!);
+    } else if (_customSignaturePlaceholders != null && _customSignaturePlaceholders!.isNotEmpty) {
+      customFields = {
+        'signers': [
+          {'signerId': 'tenantPrimary', 'label': 'Tenant', 'role': 'tenant', 'name': _selectedTenantModel?.name ?? '', 'email': _selectedTenantModel?.email},
+        ],
+        'signaturePlaceholders': _customSignaturePlaceholders!.map((f) => f.toMap()).toList(),
+      };
+    }
     
     // If file is selected, upload it first
     if (_selectedFile != null && _selectedFile!.bytes != null) {
       setState(() {
         _isUploading = true;
+        _uploadProgress = 0.0;
       });
-      
+      final fileName = _selectedFile!.name;
       try {
         // Verify file bytes are available before proceeding
         if (_selectedFile!.bytes == null || _selectedFile!.bytes!.isEmpty) {
           throw Exception('File data is missing. Please select the file again.');
         }
-        
+
         if (kDebugMode) {
-          print('📄 Creating contract and uploading PDF: ${_selectedFile!.name}');
+          print('📄 Creating contract and uploading PDF: $fileName');
         }
-        
+
         // Create contract first to get contract ID (call service directly to get ID)
         final contractId = await ContractService.createContract(
           facilityId: _selectedFacilityId!,
@@ -1279,53 +1626,293 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         );
 
+        // Update contract with compliance fields
+        await _firestore
+            .collection('facilities')
+            .doc(_selectedFacilityId!)
+            .collection('contracts')
+            .doc(contractId)
+            .update({
+          'isLicensedForm': _isLicensedForm,
+          'complianceStatus': 'active',
+        });
+
         if (kDebugMode) {
           print('✅ Contract created with ID: $contractId');
           print('📤 Uploading PDF file...');
         }
 
-        // Upload file
+        // Upload file with progress (always clears spinner in finally)
         fileUrl = await ContractService.uploadContractFile(
           facilityId: _selectedFacilityId!,
           contractId: contractId,
           fileData: Uint8List.fromList(_selectedFile!.bytes!),
-          fileName: _selectedFile!.name,
+          fileName: fileName,
+          onProgress: (bytes, total) {
+            if (!mounted) return;
+            setState(() {
+              _uploadProgress = total > 0 ? bytes / total : 0.0;
+            });
+          },
         );
-        
+
         if (kDebugMode) {
           print('✅ PDF uploaded successfully: $fileUrl');
         }
 
-        // Update contract with file URL
-        await ContractService.updateContract(
+        // Record rights attestation (use exact text from ComplianceService)
+        final attestationText = ComplianceService.rightsAttestationText;
+        final contractDoc = await _firestore
+            .collection('facilities')
+            .doc(_selectedFacilityId!)
+            .collection('contracts')
+            .doc(contractId)
+            .get();
+        final documentSha256 = contractDoc.data()?['documentSha256'] as String?;
+
+        await ComplianceService.recordRightsAttestation(
           facilityId: _selectedFacilityId!,
-          contractId: contractId,
-          fileUrl: fileUrl,
+          documentId: contractId,
+          attestationText: attestationText,
+          documentSha256: documentSha256,
+          userAgent: _getUserAgent(),
         );
 
-        // Update state - clear uploading state and set uploaded URL
+        await AuditService.logContractUploaded(
+          facilityId: _selectedFacilityId!,
+          contractId: contractId,
+          fileName: fileName,
+          isLicensedForm: _isLicensedForm,
+          documentSha256: documentSha256,
+        );
+
+        await AuditService.logRightsAttested(
+          facilityId: _selectedFacilityId!,
+          documentId: contractId,
+          documentType: 'contract',
+          documentSha256: documentSha256,
+        );
+
+        // Update state so UI shows success immediately (no spinner)
         if (mounted) {
           setState(() {
             _isUploading = false;
+            _uploadProgress = null;
+            _isLoading = false;
             _uploadedFileUrl = fileUrl;
-            _selectedFile = null; // Clear selected file since it's now uploaded
+            _uploadedFileName = fileName;
+            _selectedFile = null;
           });
-          
-          // Wait for next frame to ensure UI rebuilds before showing dialog
           await Future.microtask(() {});
           if (!mounted) return;
-          
-          // Show success dialog
           _showSuccessDialog();
         }
         return;
       } catch (e) {
-        setState(() {
-          _isUploading = false;
-          _errorMessage = 'Error uploading file: $e';
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Error uploading file: $e';
+            _isLoading = false;
+          });
+        }
         return;
+      } finally {
+        // Always clear uploading state so spinner never sticks
+        if (mounted) {
+          setState(() {
+            _isUploading = false;
+            _uploadProgress = null;
+          });
+        }
+      }
+    }
+
+    // Template selected but no file: generate PDF from template content
+    if (_selectedTemplateId != null &&
+        _selectedFile == null &&
+        _uploadedFileUrl == null) {
+      try {
+        final template = await ContractService.getContractTemplate(
+          facilityId: _selectedFacilityId!,
+          templateId: _selectedTemplateId!,
+        );
+        if (template == null) {
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Template not found. Please select a different template or upload a PDF.';
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+        if (template.content.isNotEmpty) {
+          if (_activeTemplate != null) {
+            final validationMessage = _validateSignerAssignments(_activeTemplate!);
+            if (validationMessage != null) {
+              setState(() {
+                _errorMessage = validationMessage;
+                _isLoading = false;
+              });
+              return;
+            }
+            customFields ??= _buildCustomFieldsForTemplate(_activeTemplate!);
+          }
+
+          // DNR check before creating
+          if (!_dnrOverride && _selectedTenantModel != null) {
+            try {
+              final dnrMatches = await DNRService.findDNRMatches(
+                facilityId: _selectedFacilityId!,
+                name: _selectedTenantModel!.name,
+                email: _selectedTenantModel!.email,
+                phone: _selectedTenantModel!.phone,
+              );
+              if (dnrMatches.isNotEmpty) {
+                setState(() {
+                  _dnrMatches = dnrMatches;
+                  _isLoading = false;
+                });
+                final shouldProceed = await _showDNRBlockingDialog(context, dnrMatches);
+                if (!shouldProceed) return;
+                _dnrOverride = true;
+                setState(() => _isLoading = true);
+              }
+            } catch (e) {
+              if (kDebugMode) print('⚠️ Error checking DNR: $e');
+            }
+          }
+
+          setState(() {
+            _isUploading = true;
+            _uploadProgress = 0.0;
+          });
+
+          final contractTitle = _titleController.text.trim();
+          final pdfBytes = await ContractService.generatePdfFromTemplateContent(
+            content: template.content,
+            title: contractTitle,
+          );
+
+          final contractId = await ContractService.createContract(
+            facilityId: _selectedFacilityId!,
+            tenantId: _selectedTenantId!,
+            title: contractTitle,
+            description: _descriptionController.text.trim(),
+            type: _selectedType,
+            templateId: _selectedTemplateId,
+            fileUrl: null,
+            expiresAt: _expiresAt,
+            customFields: customFields,
+            notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+          );
+
+          await _firestore
+              .collection('facilities')
+              .doc(_selectedFacilityId!)
+              .collection('contracts')
+              .doc(contractId)
+              .update({
+            'isLicensedForm': _isLicensedForm,
+            'complianceStatus': 'active',
+          });
+
+          final fileName = '${template.name.replaceAll(RegExp(r'[^\w\s-]'), '').trim().replaceAll(RegExp(r'\s+'), '_')}.pdf';
+          fileUrl = await ContractService.uploadContractFile(
+            facilityId: _selectedFacilityId!,
+            contractId: contractId,
+            fileData: pdfBytes,
+            fileName: fileName,
+            onProgress: (bytes, total) {
+              if (!mounted) return;
+              setState(() {
+                _uploadProgress = total > 0 ? bytes / total : 1.0;
+              });
+            },
+          );
+
+          final contractDoc = await _firestore
+              .collection('facilities')
+              .doc(_selectedFacilityId!)
+              .collection('contracts')
+              .doc(contractId)
+              .get();
+          final documentSha256 = contractDoc.data()?['documentSha256'] as String?;
+
+          await ComplianceService.recordRightsAttestation(
+            facilityId: _selectedFacilityId!,
+            documentId: contractId,
+            attestationText: ComplianceService.rightsAttestationText,
+            documentSha256: documentSha256,
+            userAgent: _getUserAgent(),
+          );
+
+          await AuditService.logContractUploaded(
+            facilityId: _selectedFacilityId!,
+            contractId: contractId,
+            fileName: fileName,
+            isLicensedForm: _isLicensedForm,
+            documentSha256: documentSha256,
+          );
+
+          await AuditService.logRightsAttested(
+            facilityId: _selectedFacilityId!,
+            documentId: contractId,
+            documentType: 'contract',
+            documentSha256: documentSha256,
+          );
+
+          if (_dnrOverride && _dnrMatches != null && _dnrMatches!.isNotEmpty && _selectedTenantModel != null) {
+            try {
+              await AuditService.logDNRAction(
+                facilityId: _selectedFacilityId!,
+                action: 'dnr.override.contract',
+                targetId: _selectedTenantId!,
+                details: {
+                  'tenantName': _selectedTenantModel!.name,
+                  'tenantEmail': _selectedTenantModel!.email,
+                  'contractTitle': contractTitle,
+                  'matchedDnrIds': _dnrMatches!.map((m) => m.id).toList(),
+                  'matchedDnrNames': _dnrMatches!.map((m) => m.name).toList(),
+                },
+              );
+            } catch (e) {
+              if (kDebugMode) print('⚠️ Error logging DNR override: $e');
+            }
+          }
+
+          if (mounted) {
+            setState(() {
+              _isUploading = false;
+              _uploadProgress = null;
+              _isLoading = false;
+            });
+            _showSuccessDialog();
+          }
+          return;
+        }
+        // Template has no content
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'This template has no content. Please edit the template to add terms, or upload a PDF file instead.';
+            _isLoading = false;
+          });
+        }
+        return;
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Failed to generate document from template: $e';
+            _isLoading = false;
+          });
+        }
+        return;
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isUploading = false;
+            _uploadProgress = null;
+          });
+        }
       }
     }
 
@@ -1440,28 +2027,45 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       if (_selectedFile != null && _selectedFile!.bytes != null) {
         setState(() {
           _isUploading = true;
+          _uploadProgress = 0.0;
         });
-        
         try {
           fileUrl = await ContractService.uploadContractFile(
             facilityId: _selectedFacilityId!,
             contractId: widget.contract!.id,
             fileData: Uint8List.fromList(_selectedFile!.bytes!),
             fileName: _selectedFile!.name,
+            onProgress: (bytes, total) {
+              if (!mounted) return;
+              setState(() {
+                _uploadProgress = total > 0 ? bytes / total : 0.0;
+              });
+            },
           );
-          
-          setState(() {
-            _isUploading = false;
-            _uploadedFileUrl = fileUrl;
-            _selectedFile = null;
-          });
+          if (mounted) {
+            setState(() {
+              _isUploading = false;
+              _uploadProgress = null;
+              _uploadedFileUrl = fileUrl;
+              _uploadedFileName = _selectedFile!.name;
+              _selectedFile = null;
+            });
+          }
         } catch (e) {
-          setState(() {
-            _isUploading = false;
-            _errorMessage = 'Error uploading file: $e';
-            _isLoading = false;
-          });
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Error uploading file: $e';
+              _isLoading = false;
+            });
+          }
           return;
+        } finally {
+          if (mounted) {
+            setState(() {
+              _isUploading = false;
+              _uploadProgress = null;
+            });
+          }
         }
       }
 
@@ -1595,6 +2199,203 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     ) ?? false; // Default to false if dialog is dismissed
   }
 
+  Widget _buildComplianceSection() {
+    return Card(
+      color: AppTheme.backgroundLight,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.verified_user, color: AppTheme.primaryBlueDark),
+                const SizedBox(width: 8),
+                Text(
+                  'Compliance & Rights',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            
+            // Rights Attestation (Required)
+            CheckboxListTile(
+              value: _rightsAttestationChecked,
+              onChanged: (value) {
+                setState(() {
+                  _rightsAttestationChecked = value ?? false;
+                });
+              },
+              title: const Text(
+                'I confirm I have the legal right to upload and use this document and to request signatures for it (including any association or licensed forms).',
+                style: TextStyle(fontSize: 14),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 40, top: 4),
+              child: Text(
+                'You are responsible for ensuring you have any required rights, licenses, or memberships to use this document.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // Licensed Form Checkbox (Optional)
+            CheckboxListTile(
+              value: _isLicensedForm,
+              onChanged: (value) {
+                setState(() {
+                  _isLicensedForm = value ?? false;
+                });
+              },
+              title: const Text(
+                'This is an association/licensed form (e.g., TSSA).',
+                style: TextStyle(fontSize: 14),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+            
+            // Show note if licensed form is checked
+            if (_isLicensedForm) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.warning.withOpacity(0.1),
+                  border: Border.all(color: AppTheme.warning),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, color: AppTheme.warning, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'You are responsible for maintaining any required membership/license to use this form. SFC does not verify membership status.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            
+            const SizedBox(height: 12),
+            
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Future<void> _showTermsAcceptanceModal() async {
+    if (!mounted) return;
+    
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Contract Upload & e-Signing Terms'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Storage Facility Creator ("SFC") provides tools to upload documents and request electronic signatures. SFC does not provide legal advice and does not create, own, or license the documents you upload.',
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'By enabling contract upload and e-signing for your facility, you agree that:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                const Text('1) Your documents; your responsibility. You are solely responsible for the documents you upload, send, and use (including any association or licensed forms).'),
+                const SizedBox(height: 12),
+                const Text('2) Rights and permissions. You represent and warrant that you have all necessary rights, permissions, licenses, and consents to upload, store, send, and request signatures on the documents you use in SFC.'),
+                const SizedBox(height: 12),
+                const Text('3) No distribution by SFC. You understand SFC does not provide association forms or distribute third-party contracts to other customers.'),
+                const SizedBox(height: 12),
+                const Text('4) Takedown / disabling. If SFC receives a complaint, legal notice, or otherwise believes a document may be unauthorized, SFC may disable the document/template and suspend its use for new signature requests.'),
+                const SizedBox(height: 12),
+                const Text('5) Indemnification. You agree to defend and indemnify SFC from claims, damages, liabilities, and expenses (including reasonable attorneys\' fees) arising out of your documents, your use of third-party or licensed forms, or your violation of any rights or laws.'),
+                const SizedBox(height: 16),
+                Text(
+                  'We store an audit record of your acceptance (date/time, facility, and Terms version).',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.textSecondary,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Decline'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryBlueDark,
+                foregroundColor: AppTheme.textOnDark,
+              ),
+              child: const Text('I Agree & Enable'),
+            ),
+          ],
+        );
+      },
+    );
+    
+    if (accepted == true && _selectedFacilityId != null) {
+      try {
+        await ComplianceService.acceptTerms(_selectedFacilityId!);
+        if (mounted) {
+          setState(() {
+            _hasAcceptedTerms = true;
+          });
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error accepting terms: $e'),
+              backgroundColor: AppTheme.error,
+            ),
+          );
+        }
+      }
+    } else if (accepted == false) {
+      // User cancelled - navigate back
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+  
+  String? _getUserAgent() {
+    // User agent capture would require JavaScript interop
+    // For now, return null - it's optional and can be added later
+    return null;
+  }
+  
   void _showSuccessDialog() {
     setState(() {
       _isLoading = false;
@@ -1617,12 +2418,14 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop(); // Close dialog
-                // Invalidate providers to refresh contract lists
-                if (widget.facilityId != null) {
+                if (widget.facilityId != null && widget.facilityId!.isNotEmpty) {
                   ref.invalidate(contractsProvider(widget.facilityId!));
                 }
-                // Navigate back
-                Navigator.of(context).pop(); // Pop contract creation screen
+                // Explicit navigation avoids blank screen from Navigator.pop stack issues
+                final uri = widget.facilityId != null && widget.facilityId!.isNotEmpty
+                    ? '${AppRoute.contracts}?facilityId=${widget.facilityId}'
+                    : AppRoute.contracts;
+                context.go(uri);
               },
               child: const Text('Continue'),
             ),

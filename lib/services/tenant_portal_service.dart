@@ -1,4 +1,5 @@
 import 'package:cloud_functions/cloud_functions.dart';
+import '../models/tenant_model.dart';
 import '../models/tenant_portal_models.dart';
 
 class TenantPortalService {
@@ -21,6 +22,38 @@ class TenantPortalService {
     } on FirebaseFunctionsException catch (error) {
       throw TenantPortalException(
         message: error.message ?? 'Unable to load tenant portal data.',
+        code: error.code,
+      );
+    } catch (error) {
+      throw TenantPortalException(
+        message: error.toString(),
+        code: 'unknown',
+      );
+    }
+  }
+
+  static Future<void> updateProfile({
+    required String email,
+    required String accessCode,
+    String? phone,
+    List<TenantContact>? emergencyContacts,
+    List<TenantVehicle>? vehicles,
+  }) async {
+    final callable = _functions.httpsCallable('tenantUpdateProfile');
+    try {
+      final payload = <String, dynamic>{
+        'email': email.trim(),
+        'accessCode': accessCode.trim(),
+        if (phone != null) 'phone': phone.trim(),
+        if (emergencyContacts != null)
+          'emergencyContacts': emergencyContacts.map((c) => c.toMap()).toList(),
+        if (vehicles != null)
+          'vehicles': vehicles.map((v) => v.toMap()).toList(),
+      };
+      await callable.call(payload);
+    } on FirebaseFunctionsException catch (error) {
+      throw TenantPortalException(
+        message: error.message ?? 'Unable to update profile.',
         code: error.code,
       );
     } catch (error) {

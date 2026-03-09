@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/messaging_model.dart';
@@ -6,6 +7,7 @@ import '../models/sms_conversation_model.dart';
 import '../models/tenant_model.dart';
 import '../providers/messaging_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/search_provider.dart';
 import '../services/permission_service.dart';
 import '../services/sms_conversation_service.dart';
 import '../services/sms_service.dart';
@@ -15,11 +17,31 @@ import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/tenant_service.dart';
 import '../services/messaging_service.dart';
+import '../services/debug_logger.dart';
+import '../services/tenant_message_history_service.dart';
+import '../models/tenant_message_history_model.dart';
+import '../providers/tenant_provider.dart';
+import '../providers/active_facility_provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:go_router/go_router.dart';
+import '../models/facility_model.dart';
+import '../router/app_route.dart';
+import '../utils/breakpoints.dart';
+import 'bulk_messaging_screen.dart';
+import '../widgets/email_composition_widget.dart';
 
 // Provider for SMS conversations
 final smsConversationsProvider = FutureProvider.family<List<SMSConversationModel>, String>((ref, facilityId) async {
   return await SMSConversationService.getConversationsForFacility(facilityId: facilityId);
+});
+
+// Provider for tenant message history (real-time stream)
+final tenantMessageHistoryProvider = StreamProvider.family<List<TenantMessageHistoryModel>, String>((ref, facilityId) {
+  ref.keepAlive();
+  if (facilityId == 'all' || facilityId.isEmpty) {
+    return TenantMessageHistoryService.streamAllTenantMessagesForAllFacilities();
+  }
+  return TenantMessageHistoryService.streamAllTenantMessages(facilityId: facilityId);
 });
 
 class MessagingScreen extends ConsumerStatefulWidget {
@@ -42,7 +64,15 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   bool _canViewConversations = false;
   bool _canManageConversations = false;
   String? _permissionReason;
-  int _selectedTab = 0; // 0 = Conversations, 1 = SMS
+  int _selectedTab = 0; // 0 = Employee Chat, 1 = Bulk Messaging, 2 = Email, 3 = SMS, 4 = Message History
+  
+  // Message history filters
+  String? _selectedTenantId;
+  TenantMessageType? _selectedMessageType; // null = all
+  TenantMessageStatus? _selectedStatus; // null = all
+  DateTime? _startDate;
+  DateTime? _endDate;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
@@ -54,20 +84,13 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     setState(() {
       _loadingPermissions = true;
     });
-    final viewCheck = await PermissionService.hasPermission(
-      permission: PermissionType.viewReminder,
-      facilityId: widget.facilityId,
-    );
-    final manageCheck = await PermissionService.hasPermission(
-      permission: PermissionType.editReminder,
-      facilityId: widget.facilityId,
-    );
+    // Messaging is available to everyone with facility access - no permission restrictions
     if (!mounted) return;
     setState(() {
       _loadingPermissions = false;
-      _canViewConversations = viewCheck.hasPermission;
-      _canManageConversations = manageCheck.hasPermission;
-      _permissionReason = viewCheck.reason ?? manageCheck.reason;
+      _canViewConversations = true;
+      _canManageConversations = true;
+      _permissionReason = null;
     });
   }
 
@@ -75,6 +98,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   void dispose() {
     _messageController.dispose();
     _conversationTitleController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -110,60 +134,167 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       );
     }
 
-    return Column(
-        children: [
-          // Tabs
-          Container(
-            decoration: BoxDecoration(
-              color: AppTheme.backgroundSecondary,
-              border: Border(
-                bottom: BorderSide(color: AppTheme.borderLight),
-              ),
+    return Consumer(
+      builder: (context, ref, child) {
+        // Pre-watch the message history provider to keep stream active
+        ref.watch(tenantMessageHistoryProvider(widget.facilityId));
+        // Sync with header: when top facility dropdown changes, navigate to match
+        ref.listen(activeFacilityIdProvider, (prev, next) {
+          if (!context.mounted) return;
+          final activeId = next.whenOrNull(data: (d) => d);
+          final wantedFacilityId = activeId == null ? 'all' : activeId;
+          if (wantedFacilityId != widget.facilityId) {
+            context.go('/messaging?facilityId=$wantedFacilityId');
+          }
+        });
+        return Column(
+          children: [
+            // Facility selector header
+            _buildFacilitySelector(),
+            // Tabs — wrap on mobile so all visible; scroll on desktop if needed
+            Builder(
+              builder: (context) {
+                final cs = Theme.of(context).colorScheme;
+                final width = MediaQuery.of(context).size.width;
+                final isPhone = Breakpoints.isPhone(width);
+                final tabs = [
+                  _buildTab(0, isPhone ? 'Chat' : 'Employee Chat', Icons.chat_bubble_outline, isPhone),
+                  _buildTab(1, isPhone ? 'Bulk' : 'Bulk Messaging', Icons.message_outlined, isPhone),
+                  _buildTab(2, 'Email', Icons.email_outlined, isPhone),
+                  _buildTab(3, 'SMS', Icons.sms, isPhone),
+                  _buildTab(4, isPhone ? 'History' : 'Message History', Icons.history, isPhone),
+                ];
+                return Container(
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest,
+                    border: Border(
+                      bottom: BorderSide(color: cs.outline),
+                    ),
+                  ),
+                  child: isPhone
+                      ? Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          child: Wrap(
+                            spacing: 4,
+                            runSpacing: 4,
+                            children: tabs,
+                          ),
+                        )
+                      : SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Row(children: tabs),
+                        ),
+                );
+              },
             ),
-            child: Row(
-              children: [
-                _buildTab(0, 'Conversations', Icons.chat_bubble_outline),
-                _buildTab(1, 'SMS', Icons.sms),
-              ],
-            ),
-          ),
           
-          // Content based on selected tab
+          // Content based on selected tab (when "All Facilities" is selected, Bulk Messaging and Message History work)
           Expanded(
-            child: Row(
-              children: [
-                // Conversations/SMS list
-                Expanded(
-                  flex: 1,
-                  child: _selectedTab == 0
-                      ? _buildConversationsList()
-                      : _buildSMSConversationsList(),
-                ),
-                
-                // Messages pane
-                Expanded(
-                  flex: 2,
-                  child: _selectedTab == 0
-                      ? (_selectedConversationId != null
-                          ? _buildMessagesPane()
-                          : _buildNoConversationSelected())
-                      : (_selectedConversationId != null
-                          ? _buildSMSMessagesPane()
-                          : _buildNoConversationSelected()),
-                ),
-              ],
-            ),
+            child: widget.facilityId == 'all' && _selectedTab != 1 && _selectedTab != 4
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        'Select a specific facility from the dropdown above to use Employee Chat, Email, or SMS.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                  )
+                : _selectedTab == 1
+                    ? _buildBulkMessagingTab()
+                    : _selectedTab == 2
+                        ? _buildEmailTab()
+                        : _selectedTab == 4
+                            ? _buildMessageHistoryTab()
+                            : LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final isPhone = constraints.maxWidth < Breakpoints.xs;
+                                  if (isPhone) {
+                                    // Mobile: stack — show list OR messages, not both side-by-side
+                                    final hasSelection = _selectedConversationId != null;
+                                    return Column(
+                                      children: [
+                                        if (hasSelection)
+                                          _buildMobileBackBar()
+                                        else
+                                          const SizedBox.shrink(),
+                                        Expanded(
+                                          child: hasSelection
+                                              ? (_selectedTab == 0
+                                                  ? _buildMessagesPane()
+                                                  : _buildSMSMessagesPane())
+                                              : (_selectedTab == 0
+                                                  ? _buildConversationsList()
+                                                  : _buildSMSConversationsList()),
+                                        ),
+                                      ],
+                                    );
+                                  }
+                                  return Row(
+                                    children: [
+                                      Expanded(
+                                        flex: 1,
+                                        child: _selectedTab == 0
+                                            ? _buildConversationsList()
+                                            : _buildSMSConversationsList(),
+                                      ),
+                                      Expanded(
+                                        flex: 2,
+                                        child: _selectedTab == 0
+                                            ? (_selectedConversationId != null
+                                                ? _buildMessagesPane()
+                                                : _buildNoConversationSelected())
+                                            : (_selectedConversationId != null
+                                                ? _buildSMSMessagesPane()
+                                                : _buildNoConversationSelected()),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
           ),
-        ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildMobileBackBar() {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.surfaceContainerHighest,
+      child: InkWell(
+        onTap: () => setState(() => _selectedConversationId = null),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            children: [
+              Icon(Icons.arrow_back, color: cs.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Back to list',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildConversationsList() {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
         border: Border(
-          right: BorderSide(color: AppTheme.borderLight),
+          right: BorderSide(color: cs.outline),
         ),
       ),
       child: Column(
@@ -190,9 +321,9 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppTheme.backgroundLight,
+              color: cs.surfaceContainerHighest,
               border: Border(
-                bottom: BorderSide(color: AppTheme.borderLight),
+                bottom: BorderSide(color: cs.outline),
               ),
             ),
             child: Row(
@@ -259,11 +390,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                         
                         // For private conversations, show the other participant's name
                         String displayTitle = conversation.title;
+                        final cs = Theme.of(context).colorScheme;
                         Widget leadingIcon = CircleAvatar(
-                          backgroundColor: isSelected ? AppTheme.primaryBlue : AppTheme.borderLight,
+                          backgroundColor: isSelected ? cs.primary : cs.outline,
                           child: Icon(
                             conversation.isPrivate ? Icons.person : Icons.chat_bubble,
-                            color: isSelected ? AppTheme.textOnDark : AppTheme.textSecondary,
+                            color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
                           ),
                         );
                         
@@ -271,15 +403,14 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                           final otherParticipantName = conversation.getOtherParticipantName(currentUserId);
                           if (otherParticipantName != null) {
                             displayTitle = otherParticipantName;
-                            // Show avatar with initial
                             leadingIcon = CircleAvatar(
-                              backgroundColor: isSelected ? AppTheme.primaryBlue : AppTheme.borderLight,
+                              backgroundColor: isSelected ? cs.primary : cs.outline,
                               child: Text(
                                 otherParticipantName.isNotEmpty 
                                     ? otherParticipantName[0].toUpperCase() 
                                     : '?',
                                 style: TextStyle(
-                                  color: isSelected ? AppTheme.textOnDark : AppTheme.textSecondary,
+                                  color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -289,7 +420,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                         
                         return ListTile(
                           selected: isSelected,
-                          selectedTileColor: AppTheme.primaryBlue.withOpacity(0.1),
+                          selectedTileColor: cs.primary.withOpacity(0.1),
                           leading: leadingIcon,
                           title: Row(
                             children: [
@@ -307,7 +438,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                   child: Icon(
                                     Icons.lock_outline,
                                     size: 14,
-                                    color: AppTheme.textTertiary,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                             ],
@@ -321,7 +452,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: AppTheme.textSecondary,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                               const SizedBox(height: 2),
@@ -331,7 +462,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                     : _formatTime(conversation.createdAt),
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: AppTheme.textTertiary,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ],
@@ -882,78 +1013,246 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     }
   }
 
-  Widget _buildTab(int index, String label, IconData icon) {
-    final isSelected = _selectedTab == index;
-    return Expanded(
-      child: InkWell(
-        onTap: () {
-          setState(() {
-            _selectedTab = index;
-            _selectedConversationId = null; // Reset selection when switching tabs
-          });
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: isSelected ? AppTheme.primaryBlue : Colors.transparent,
-                width: 2,
+  Widget _buildFacilitySelector() {
+    return Consumer(
+      builder: (context, ref, child) {
+        final authState = ref.watch(authStateProvider);
+        return authState.when(
+          data: (user) {
+            if (user == null) return const SizedBox.shrink();
+            final facilitiesAsync = ref.watch(userFacilitiesProvider(user.uid));
+            return facilitiesAsync.when(
+              data: (facilities) {
+                if (facilities.isEmpty) return const SizedBox.shrink();
+                final width = MediaQuery.of(context).size.width;
+                final isPhone = Breakpoints.isPhone(width);
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.backgroundLight,
+                    border: Border(bottom: BorderSide(color: AppTheme.borderLight)),
+                  ),
+                  child: Row(
+                    children: [
+                      if (!isPhone) ...[
+                        const Icon(Icons.business, color: AppTheme.primaryBlue),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Facility:',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                      ],
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: (widget.facilityId.isEmpty || widget.facilityId == 'all') ? 'all' : widget.facilityId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            isDense: true,
+                          ),
+                          selectedItemBuilder: (context) {
+                            final style = AppTheme.dropdownItemTextStyle.copyWith(
+                              color: Theme.of(context).colorScheme.onSurface,
+                            );
+                            return [
+                              Text(
+                                'All Facilities',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: style,
+                              ),
+                              ...facilities.map((f) => Text(
+                                f.name,
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: style,
+                              )),
+                            ];
+                          },
+                          items: [
+                            DropdownMenuItem<String>(
+                              value: 'all',
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'All Facilities',
+                                  style: AppTheme.dropdownItemTextStyle,
+                                  softWrap: true,
+                                ),
+                              ),
+                            ),
+                            ...facilities.map((facility) {
+                              return DropdownMenuItem<String>(
+                                value: facility.id,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  child: Text(
+                                    facility.name,
+                                    style: AppTheme.dropdownItemTextStyle,
+                                    softWrap: true,
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                          onChanged: (value) {
+                            if (value != null && value != widget.facilityId) {
+                              ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(
+                                value == 'all' ? null : value,
+                              );
+                              context.go('/messaging?facilityId=$value');
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              loading: () => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: const LinearProgressIndicator(),
               ),
+              error: (_, __) => const SizedBox.shrink(),
+            );
+          },
+          loading: () => const SizedBox.shrink(),
+          error: (_, __) => const SizedBox.shrink(),
+        );
+      },
+    );
+  }
+
+  Widget _buildTab(int index, String label, IconData icon, [bool isPhone = false]) {
+    final cs = Theme.of(context).colorScheme;
+    final isSelected = _selectedTab == index;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _selectedTab = index;
+          _selectedConversationId = null;
+        });
+      },
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          vertical: isPhone ? 12 : 16,
+          horizontal: isPhone ? 12 : 24,
+        ),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: isSelected ? cs.primary : Colors.transparent,
+              width: 2,
             ),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                color: isSelected ? AppTheme.primaryBlue : AppTheme.textSecondary,
-                size: 20,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: isSelected ? cs.primary : cs.onSurfaceVariant,
+              size: isPhone ? 18 : 20,
+            ),
+            SizedBox(width: isPhone ? 6 : 8),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: isSelected ? cs.primary : cs.onSurfaceVariant,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: isPhone ? 13 : null,
               ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: isSelected ? AppTheme.primaryBlue : AppTheme.textSecondary,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _buildSMSConversationsList() {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
         border: Border(
-          right: BorderSide(color: AppTheme.borderLight),
+          right: BorderSide(color: cs.outline),
         ),
       ),
       child: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.backgroundLight,
-              border: Border(
-                bottom: BorderSide(color: AppTheme.borderLight),
-              ),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.sms),
-                const SizedBox(width: 8),
-                Text(
-                  'SMS Conversations',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isPhone = constraints.maxWidth < Breakpoints.xs;
+              return Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest,
+                  border: Border(
+                    bottom: BorderSide(color: cs.outline),
                   ),
                 ),
-              ],
-            ),
+                child: isPhone
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.sms),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'SMS Conversations',
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: _showSendSMSDialog,
+                              icon: const Icon(Icons.send, size: 18),
+                              label: const Text('Send SMS'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.primaryBlue,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          const Icon(Icons.sms),
+                          const SizedBox(width: 8),
+                          Text(
+                            'SMS Conversations',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          ElevatedButton.icon(
+                            onPressed: _showSendSMSDialog,
+                            icon: const Icon(Icons.send, size: 18),
+                            label: const Text('Send SMS'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primaryBlue,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            ),
+                          ),
+                        ],
+                      ),
+              );
+            },
           ),
           Expanded(
             child: Consumer(
@@ -990,14 +1289,15 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                         final conversation = conversations[index];
                         final isSelected = conversation.id == _selectedConversationId;
                         
+                        final csTile = Theme.of(context).colorScheme;
                         return ListTile(
                           selected: isSelected,
-                          selectedTileColor: AppTheme.primaryBlue.withOpacity(0.1),
+                          selectedTileColor: csTile.primary.withOpacity(0.1),
                           leading: CircleAvatar(
-                            backgroundColor: isSelected ? AppTheme.primaryBlue : AppTheme.borderLight,
+                            backgroundColor: isSelected ? csTile.primary : csTile.outline,
                             child: Icon(
                               Icons.sms,
-                              color: isSelected ? AppTheme.textOnDark : AppTheme.textSecondary,
+                              color: isSelected ? csTile.onPrimary : csTile.onSurfaceVariant,
                             ),
                           ),
                           title: Text(
@@ -1014,7 +1314,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: AppTheme.textSecondary,
+                                  color: csTile.onSurfaceVariant,
                                   fontWeight: conversation.unreadCount > 0 ? FontWeight.w500 : FontWeight.normal,
                                 ),
                               ),
@@ -1025,7 +1325,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                     : '',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: AppTheme.textTertiary,
+                                  color: csTile.onSurfaceVariant,
                                 ),
                               ),
                             ],
@@ -1034,13 +1334,13 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                               ? Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                   decoration: BoxDecoration(
-                                    color: AppTheme.primaryBlue,
+                                    color: csTile.primary,
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Text(
                                     '${conversation.unreadCount}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
+                                    style: TextStyle(
+                                      color: csTile.onPrimary,
                                       fontSize: 12,
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -1150,16 +1450,788 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   }
 
   void _showSendSMSDialog() {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H5',
+      location: 'messaging_screen.dart:_showSendSMSDialog',
+      message: 'Show send SMS dialog called',
+      data: {'facilityId': widget.facilityId},
+    );
+    // #endregion
+    
     showDialog(
       context: context,
       builder: (context) => _SendSMSDialog(
         facilityId: widget.facilityId,
         onSent: () {
-          // Refresh SMS conversations after sending
+          // #region agent log
+          DebugLogger.log(
+            hypothesisId: 'H5',
+            location: 'messaging_screen.dart:_showSendSMSDialog:onSent',
+            message: 'SMS sent, refreshing providers',
+            data: {},
+          );
+          // #endregion
+          
+          // Refresh SMS conversations after sending (message history will update automatically via stream)
           ref.invalidate(smsConversationsProvider(widget.facilityId));
         },
       ),
     );
+  }
+
+  Widget _buildMessageHistoryTab() {
+    return Consumer(
+      builder: (context, ref, child) {
+        // Watch the provider to ensure stream stays active
+        final messagesAsync = ref.watch(tenantMessageHistoryProvider(widget.facilityId));
+        
+        return messagesAsync.when(
+          data: (messages) {
+            // Debug: Log when data updates
+            if (kDebugMode) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                print('📊 [MessageHistory] UI updated with ${messages.length} messages');
+              });
+            }
+            if (messages.isEmpty) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.history, size: 64, color: AppTheme.textTertiary),
+                    const SizedBox(height: 16),
+                    Text(
+                      'No message history',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Messages sent to tenants will appear here.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            // Apply filters
+            final filteredMessages = _applyFilters(messages);
+            
+            return Column(
+              children: [
+                // Header with count and actions
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isPhone = constraints.maxWidth < Breakpoints.xs;
+                    return Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: AppTheme.backgroundLight,
+                        border: Border(
+                          bottom: BorderSide(color: AppTheme.borderLight),
+                        ),
+                      ),
+                      child: isPhone
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.history, color: AppTheme.primaryBlue),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        'Message History',
+                                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  '${filteredMessages.length} of ${messages.length} messages',
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      onPressed: () {
+                                        ref.invalidate(tenantMessageHistoryProvider(widget.facilityId));
+                                      },
+                                      icon: const Icon(Icons.refresh),
+                                      tooltip: 'Refresh',
+                                    ),
+                                    Expanded(
+                                      child: ElevatedButton.icon(
+                                        onPressed: _showSendSMSDialog,
+                                        icon: const Icon(Icons.send, size: 18),
+                                        label: const Text('Send SMS'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: AppTheme.primaryBlue,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            )
+                          : Row(
+                              children: [
+                                const Icon(Icons.history, color: AppTheme.primaryBlue),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Message History',
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  '${filteredMessages.length} of ${messages.length} messages',
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                IconButton(
+                                  onPressed: () {
+                                    ref.invalidate(tenantMessageHistoryProvider(widget.facilityId));
+                                  },
+                                  icon: const Icon(Icons.refresh),
+                                  tooltip: 'Refresh message history',
+                                ),
+                                const SizedBox(width: 8),
+                                ElevatedButton.icon(
+                                  onPressed: _showSendSMSDialog,
+                                  icon: const Icon(Icons.send, size: 18),
+                                  label: const Text('Send SMS'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppTheme.primaryBlue,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                  ),
+                                ),
+                              ],
+                            ),
+                    );
+                  },
+                ),
+                
+                // Filters section
+                _buildMessageHistoryFilters(ref),
+                
+                // Messages list
+                Expanded(
+                  child: filteredMessages.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.filter_alt_off, size: 64, color: AppTheme.textTertiary),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No messages match your filters',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              TextButton(
+                                onPressed: () {
+                                  setState(() {
+                                    _selectedTenantId = null;
+                                    _selectedMessageType = null;
+                                    _selectedStatus = null;
+                                    _startDate = null;
+                                    _endDate = null;
+                                    _searchController.clear();
+                                  });
+                                },
+                                child: const Text('Clear all filters'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(8),
+                          itemCount: filteredMessages.length,
+                          itemBuilder: (context, index) {
+                            final message = filteredMessages[index];
+                            return _buildMessageHistoryItem(message);
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, stackTrace) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline, size: 48, color: AppTheme.error),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Error loading message history',
+                    style: TextStyle(color: AppTheme.error),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    error.toString(),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () {
+                      ref.invalidate(tenantMessageHistoryProvider(widget.facilityId));
+                    },
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBulkMessagingTab() {
+    final isAllFacilities = widget.facilityId == 'all';
+    final tenantsKey = isAllFacilities ? 'all' : widget.facilityId;
+    return BulkMessagingScreen(
+      facilityId: isAllFacilities ? '' : widget.facilityId,
+      tenantsKey: tenantsKey,
+      allFacilities: isAllFacilities,
+    );
+  }
+
+  Widget _buildEmailTab() {
+    return EmailCompositionWidget(facilityId: widget.facilityId);
+  }
+
+  List<TenantMessageHistoryModel> _applyFilters(List<TenantMessageHistoryModel> messages) {
+    var filtered = messages;
+    
+    // Filter by tenant
+    if (_selectedTenantId != null) {
+      filtered = filtered.where((m) => m.tenantId == _selectedTenantId).toList();
+    }
+    
+    // Filter by message type
+    if (_selectedMessageType != null) {
+      filtered = filtered.where((m) => m.type == _selectedMessageType).toList();
+    }
+    
+    // Filter by status
+    if (_selectedStatus != null) {
+      filtered = filtered.where((m) => m.status == _selectedStatus).toList();
+    }
+    
+    // Filter by date range
+    if (_startDate != null) {
+      filtered = filtered.where((m) => m.sentAt.isAfter(_startDate!) || m.sentAt.isAtSameMomentAs(_startDate!)).toList();
+    }
+    if (_endDate != null) {
+      final endDate = DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59);
+      filtered = filtered.where((m) => m.sentAt.isBefore(endDate) || m.sentAt.isAtSameMomentAs(endDate)).toList();
+    }
+    
+    // Filter by search text
+    final searchText = _searchController.text.toLowerCase().trim();
+    if (searchText.isNotEmpty) {
+      filtered = filtered.where((m) {
+        return (m.title.toLowerCase().contains(searchText) ||
+                m.message.toLowerCase().contains(searchText) ||
+                (m.tenantName?.toLowerCase().contains(searchText) ?? false) ||
+                (m.tenantEmail?.toLowerCase().contains(searchText) ?? false) ||
+                (m.tenantPhone?.toLowerCase().contains(searchText) ?? false));
+      }).toList();
+    }
+    
+    return filtered;
+  }
+
+  Widget _buildMessageHistoryFilters(WidgetRef ref) {
+    final isAllFacilities = widget.facilityId == 'all' || widget.facilityId.isEmpty;
+    final tenantsAsync = isAllFacilities
+        ? ref.watch(multiFacilityTenantsProvider('all'))
+        : ref.watch(facilityTenantsProvider(widget.facilityId));
+    final isMobile = MediaQuery.of(context).size.width < 900;
+    
+    return Container(
+      padding: EdgeInsets.all(isMobile ? 12 : 16),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundSecondary,
+        border: Border(
+          bottom: BorderSide(color: AppTheme.borderLight),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final filtersRowNarrow = constraints.maxWidth < 400;
+              final hasFilters = _selectedTenantId != null ||
+                  _selectedMessageType != null ||
+                  _selectedStatus != null ||
+                  _startDate != null ||
+                  _endDate != null ||
+                  _searchController.text.isNotEmpty;
+              return filtersRowNarrow
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Filters',
+                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (hasFilters) ...[
+                          const SizedBox(height: 8),
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _selectedTenantId = null;
+                                _selectedMessageType = null;
+                                _selectedStatus = null;
+                                _startDate = null;
+                                _endDate = null;
+                                _searchController.clear();
+                              });
+                            },
+                            icon: const Icon(Icons.clear, size: 16),
+                            label: const Text('Clear'),
+                          ),
+                        ],
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Filters',
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        if (hasFilters)
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _selectedTenantId = null;
+                                _selectedMessageType = null;
+                                _selectedStatus = null;
+                                _startDate = null;
+                                _endDate = null;
+                                _searchController.clear();
+                              });
+                            },
+                            icon: const Icon(Icons.clear, size: 16),
+                            label: const Text('Clear'),
+                          ),
+                      ],
+                    );
+            },
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: isMobile ? 8 : 12,
+            runSpacing: isMobile ? 8 : 12,
+            children: [
+              // Search text filter
+              SizedBox(
+                width: isMobile ? double.infinity : 250,
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Search messages...',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: _searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 20),
+                            onPressed: () {
+                              setState(() {
+                                _searchController.clear();
+                              });
+                            },
+                          )
+                        : null,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    isDense: true,
+                  ),
+                  onChanged: (value) => setState(() {}),
+                ),
+              ),
+              
+              // Tenant filter
+              SizedBox(
+                width: isMobile ? double.infinity : 200,
+                child: tenantsAsync.when(
+                  data: (tenants) => DropdownButtonFormField<String>(
+                    value: _selectedTenantId,
+                    decoration: InputDecoration(
+                      labelText: 'Tenant',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<String>(
+                        value: null,
+                        child: Text('All Tenants'),
+                      ),
+                      ...tenants.map((tenant) => DropdownMenuItem<String>(
+                        value: tenant.id,
+                        child: Text(tenant.name, overflow: TextOverflow.ellipsis),
+                      )),
+                    ],
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedTenantId = value;
+                      });
+                    },
+                  ),
+                  loading: () => SizedBox(
+                    width: isMobile ? double.infinity : 200,
+                    height: 40,
+                    child: const Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+                  ),
+                  error: (_, __) => const SizedBox.shrink(),
+                ),
+              ),
+              
+              // Message type filter
+              SizedBox(
+                width: isMobile ? double.infinity : 150,
+                child: DropdownButtonFormField<TenantMessageType?>(
+                  value: _selectedMessageType,
+                  decoration: InputDecoration(
+                    labelText: 'Type',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem<TenantMessageType?>(
+                      value: null,
+                      child: Text('All Types'),
+                    ),
+                    DropdownMenuItem<TenantMessageType?>(
+                      value: TenantMessageType.email,
+                      child: Text('Email'),
+                    ),
+                    DropdownMenuItem<TenantMessageType?>(
+                      value: TenantMessageType.sms,
+                      child: Text('SMS'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedMessageType = value;
+                    });
+                  },
+                ),
+              ),
+              
+              // Status filter
+              SizedBox(
+                width: isMobile ? double.infinity : 150,
+                child: DropdownButtonFormField<TenantMessageStatus?>(
+                  value: _selectedStatus,
+                  decoration: InputDecoration(
+                    labelText: 'Status',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem<TenantMessageStatus?>(
+                      value: null,
+                      child: Text('All Statuses'),
+                    ),
+                    DropdownMenuItem<TenantMessageStatus?>(
+                      value: TenantMessageStatus.pending,
+                      child: Text('Pending'),
+                    ),
+                    DropdownMenuItem<TenantMessageStatus?>(
+                      value: TenantMessageStatus.sent,
+                      child: Text('Sent'),
+                    ),
+                    DropdownMenuItem<TenantMessageStatus?>(
+                      value: TenantMessageStatus.delivered,
+                      child: Text('Delivered'),
+                    ),
+                    DropdownMenuItem<TenantMessageStatus?>(
+                      value: TenantMessageStatus.failed,
+                      child: Text('Failed'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedStatus = value;
+                    });
+                  },
+                ),
+              ),
+              
+              // Date range filters
+              SizedBox(
+                width: isMobile ? double.infinity : 150,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: _startDate ?? DateTime.now(),
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now(),
+                    );
+                    if (date != null) {
+                      setState(() {
+                        _startDate = date;
+                      });
+                    }
+                  },
+                  icon: const Icon(Icons.calendar_today, size: 16),
+                  label: Text(_startDate == null 
+                      ? 'Start Date' 
+                      : '${_startDate!.month}/${_startDate!.day}/${_startDate!.year}'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+              ),
+              
+              SizedBox(
+                width: isMobile ? double.infinity : 150,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: _endDate ?? DateTime.now(),
+                      firstDate: _startDate ?? DateTime(2020),
+                      lastDate: DateTime.now(),
+                    );
+                    if (date != null) {
+                      setState(() {
+                        _endDate = date;
+                      });
+                    }
+                  },
+                  icon: const Icon(Icons.calendar_today, size: 16),
+                  label: Text(_endDate == null 
+                      ? 'End Date' 
+                      : '${_endDate!.month}/${_endDate!.day}/${_endDate!.year}'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageHistoryItem(TenantMessageHistoryModel message) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row: Type, Status, Date
+            Row(
+              children: [
+                // Message type icon
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: message.type == TenantMessageType.sms
+                        ? AppTheme.primaryBlue.withOpacity(0.1)
+                        : AppTheme.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        message.type == TenantMessageType.sms
+                            ? Icons.sms
+                            : Icons.notifications,
+                        size: 16,
+                        color: message.type == TenantMessageType.sms
+                            ? AppTheme.primaryBlue
+                            : AppTheme.success,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        message.type.displayName,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: message.type == TenantMessageType.sms
+                              ? AppTheme.primaryBlue
+                              : AppTheme.success,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                // Status badge
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _getStatusColor(message.status).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    message.status.displayName,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _getStatusColor(message.status),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Date
+                Text(
+                  _formatTime(message.sentAt),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            
+            // Tenant name
+            if (message.tenantName != null) ...[
+              Row(
+                children: [
+                  const Icon(Icons.person, size: 16, color: AppTheme.textSecondary),
+                  const SizedBox(width: 4),
+                  Text(
+                    message.tenantName!,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
+            
+            // Title
+            Text(
+              message.title,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            
+            // Message content
+            Text(
+              message.message,
+              style: Theme.of(context).textTheme.bodyMedium,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+            
+            // Channels and metadata
+            if (message.channels.isNotEmpty || message.tenantPhone != null) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  // Channels
+                  ...message.channels.map((channel) => Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.backgroundSecondary,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Text(
+                      channel.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  )),
+                  // Phone number
+                  if (message.tenantPhone != null)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.phone, size: 12, color: AppTheme.textSecondary),
+                        const SizedBox(width: 2),
+                        Text(
+                          message.tenantPhone!,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _getStatusColor(TenantMessageStatus status) {
+    switch (status) {
+      case TenantMessageStatus.pending:
+        return const Color(0xFFFF9800); // Orange
+      case TenantMessageStatus.sent:
+        return const Color(0xFF2196F3); // Blue
+      case TenantMessageStatus.delivered:
+        return const Color(0xFF4CAF50); // Green
+      case TenantMessageStatus.failed:
+        return const Color(0xFFF44336); // Red
+    }
   }
 
   String _formatTime(DateTime dateTime) {
@@ -1172,6 +2244,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       return '${difference.inMinutes}m ago';
     } else if (difference.inHours < 24) {
       return '${difference.inHours}h ago';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays}d ago';
     } else {
       return '${dateTime.month}/${dateTime.day}/${dateTime.year}';
     }
@@ -1215,13 +2289,41 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
   }
 
   Future<void> _loadTenants() async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H5',
+      location: 'messaging_screen.dart:_SendSMSDialog:_loadTenants',
+      message: 'Loading tenants for facility',
+      data: {'facilityId': widget.facilityId},
+    );
+    // #endregion
+    
     try {
       final tenants = await TenantService.getTenantsForFacility(widget.facilityId);
+      
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_loadTenants',
+        message: 'Tenants loaded',
+        data: {'totalTenants': tenants.length, 'tenantsWithPhone': tenants.where((t) => t.isActive && t.phone.isNotEmpty).length},
+      );
+      // #endregion
+      
       setState(() {
         _allTenants = tenants.where((t) => t.isActive && t.phone.isNotEmpty).toList();
         _filteredTenants = _allTenants;
       });
     } catch (e) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_loadTenants',
+        message: 'Error loading tenants',
+        data: {'error': e.toString()},
+      );
+      // #endregion
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1249,7 +2351,25 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
   }
 
   Future<void> _sendSMS() async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H5',
+      location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+      message: 'Send SMS initiated',
+      data: {'selectedTenantId': _selectedTenantId, 'messageLength': _messageController.text.length},
+    );
+    // #endregion
+    
     if (_selectedTenantId == null) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'Validation failed - no tenant selected',
+        data: {},
+      );
+      // #endregion
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please select a tenant'),
@@ -1261,6 +2381,15 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
 
     final message = _messageController.text.trim();
     if (message.isEmpty) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'Validation failed - empty message',
+        data: {},
+      );
+      // #endregion
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please enter a message'),
@@ -1272,6 +2401,15 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
 
     final tenant = _allTenants.firstWhere((t) => t.id == _selectedTenantId);
     if (tenant.phone.isEmpty) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'Validation failed - tenant has no phone',
+        data: {'tenantId': tenant.id, 'tenantName': tenant.name},
+      );
+      // #endregion
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Selected tenant does not have a phone number'),
@@ -1286,6 +2424,15 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
     });
 
     try {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'Calling SMSService.sendSMS',
+        data: {'to': tenant.phone, 'facilityId': widget.facilityId, 'tenantId': tenant.id, 'messageLength': message.length},
+      );
+      // #endregion
+      
       final result = await SMSService.sendSMS(
         to: tenant.phone,
         message: message,
@@ -1294,17 +2441,35 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
         relatedEntityType: 'direct_sms',
       );
 
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'SMS send result received',
+        data: {'success': result.success, 'twilioStatus': result.twilioStatus, 'messageId': result.messageId},
+      );
+      // #endregion
+
       if (result.success) {
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H5',
+          location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+          message: 'SMS sent successfully',
+          data: {'twilioStatus': result.twilioStatus, 'statusMessage': result.statusMessage},
+        );
+        // #endregion
+        
         if (mounted) {
           // Show status message if available (e.g., "queued" status with campaign approval info)
-          final message = result.statusMessage ?? 'SMS sent successfully';
+          final statusMsg = result.statusMessage ?? 'SMS sent successfully';
           final backgroundColor = result.twilioStatus == 'queued' 
               ? AppTheme.warning 
               : AppTheme.success;
           
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(message),
+              content: Text(statusMsg),
               backgroundColor: backgroundColor,
               duration: result.twilioStatus == 'queued' 
                   ? const Duration(seconds: 8) 
@@ -1315,6 +2480,15 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
           Navigator.of(context).pop();
         }
       } else {
+        // #region agent log
+        DebugLogger.log(
+          hypothesisId: 'H5',
+          location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+          message: 'SMS send failed',
+          data: {'error': result.error},
+        );
+        // #endregion
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1325,6 +2499,15 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
         }
       }
     } catch (e) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H5',
+        location: 'messaging_screen.dart:_SendSMSDialog:_sendSMS',
+        message: 'Exception during SMS send',
+        data: {'error': e.toString()},
+      );
+      // #endregion
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

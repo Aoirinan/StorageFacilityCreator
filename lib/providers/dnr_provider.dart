@@ -1,7 +1,44 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../models/dnr_model.dart';
+import '../models/global_dnr_model.dart';
 import '../services/dnr_service.dart';
+import '../services/global_dnr_service.dart';
+
+// ----- Global DNR (global_dnr_entries collection) - shared across facilities -----
+
+/// Global DNR list from the dedicated global collection (fixes permission-denied).
+/// Use this when "All Facilities" is selected in the DNR screen.
+final globalDnrEntriesFromGlobalCollectionProvider = StreamProvider.family<List<GlobalDNREntryModel>, GlobalDnrStatus?>((ref, status) {
+  return GlobalDNRService.getGlobalDNREntriesStream(status: status, limit: 200);
+});
+
+/// Single global DNR entry by id.
+final globalDnrEntryDetailProvider = FutureProvider.family<GlobalDNREntryModel?, String>((ref, entryId) async {
+  return GlobalDNRService.getGlobalDNREntry(entryId);
+});
+
+/// Evidence list for a global DNR entry.
+final globalDnrEvidenceProvider = StreamProvider.family<List<GlobalDNREvidenceModel>, String>((ref, entryId) {
+  return GlobalDNRService.getEvidenceStream(entryId);
+});
+
+/// Search global DNR entries (client-side filter).
+final globalDnrSearchProvider = FutureProvider.family<List<GlobalDNREntryModel>, Map<String, dynamic>>((ref, params) async {
+  final query = params['query'] as String? ?? '';
+  final statusStr = params['status'] as String?;
+  GlobalDnrStatus? status;
+  if (statusStr == 'active') status = GlobalDnrStatus.active;
+  if (statusStr == 'inactive') status = GlobalDnrStatus.inactive;
+  if (statusStr == 'appealed') status = GlobalDnrStatus.appealed;
+  if (query.trim().isEmpty) {
+    return GlobalDNRService.getGlobalDNREntries(limit: 200, status: status);
+  }
+  return GlobalDNRService.searchGlobalDNREntries(query: query, status: status, maxResults: 200);
+});
+
+// ----- Facility-scoped DNR (facilities/{id}/dnr) - unchanged -----
 
 // DNR entries for facility provider (real-time stream)
 final dnrEntriesForFacilityProvider = StreamProvider.family<List<DNRModel>, String>((ref, facilityId) {

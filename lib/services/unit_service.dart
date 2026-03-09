@@ -2,7 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/unit_model.dart';
+import 'audit_service.dart';
 import 'facility_limits_service.dart';
+import 'facility_stats_service.dart';
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -75,6 +77,7 @@ class UnitService {
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
         'isActive': true,
+        'archived': false, // Default to not archived
       };
 
       await ref.set(unitData);
@@ -123,15 +126,23 @@ class UnitService {
         final units = snapshot.docs.map((doc) {
           return UnitModel.fromFirestore(doc);
         }).toList();
+        
+        // Filter out archived units (treat missing archived field as false/not archived)
+        final activeUnits = units.where((unit) {
+          // Check if unit has archived field and filter accordingly
+          final data = snapshot.docs.firstWhere((doc) => doc.id == unit.id).data() as Map<String, dynamic>?;
+          final archived = data?['archived'] ?? false;
+          return archived == false;
+        }).toList();
 
         // Sort in memory if we used fallback query
-        units.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
+        activeUnits.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
 
         if (kDebugMode) {
-          print('📡 Stream update: ${units.length} units for facility: $facilityId');
+          print('📡 Stream update: ${activeUnits.length} active units (${units.length - activeUnits.length} archived) for facility: $facilityId');
         }
 
-        return units;
+        return activeUnits;
       });
     } catch (e) {
       if (kDebugMode) {
@@ -179,12 +190,20 @@ class UnitService {
           rethrow;
         }
       }
+      
+      // Filter out archived units in memory (treat missing archived field as false/not archived)
+      final allDocs = snapshot.docs;
+      final activeDocs = allDocs.where((doc) {
+        final data = doc.data() as Map<String, dynamic>?;
+        final archived = data?['archived'] ?? false;
+        return archived == false;
+      }).toList();
 
       if (kDebugMode) {
-        print('✅ Successfully retrieved ${snapshot.docs.length} units');
+        print('✅ Successfully retrieved ${activeDocs.length} active units (${allDocs.length - activeDocs.length} archived)');
       }
 
-      final units = snapshot.docs
+      final units = activeDocs
           .map((doc) => UnitModel.fromFirestore(doc))
           .toList();
           
@@ -319,12 +338,50 @@ class UnitService {
         };
       }
 
+      // Get before snapshot for audit log (especially for status changes)
+      final beforeDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('units')
+          .doc(unitId)
+          .get();
+      final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
+      final beforeStatus = beforeData?['status'] as String?;
+
       await _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('units')
           .doc(unitId)
           .update(updateData);
+
+      // Get after snapshot for audit log
+      final afterDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('units')
+          .doc(unitId)
+          .get();
+      final afterData = afterDoc.exists ? afterDoc.data() : null;
+      final afterStatus = afterData?['status'] as String?;
+
+      // Log audit event if status changed
+      if (status != null && beforeStatus != afterStatus) {
+        await AuditService.logEvent(
+          facilityId: facilityId,
+          eventType: 'unit.statusChanged',
+          targetType: 'unit',
+          targetId: unitId,
+          tenantId: tenantId,
+          before: beforeData != null ? {'status': beforeStatus} : null,
+          after: afterData != null ? {'status': afterStatus} : null,
+          metadata: {
+            'unitNumber': afterData?['unitNumber'],
+            'oldStatus': beforeStatus,
+            'newStatus': afterStatus,
+          },
+        );
+      }
 
       if (kDebugMode) {
         print('✅ Unit updated successfully: $unitId');
@@ -367,6 +424,7 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Tenant assigned to unit successfully');
       }
+      await FacilityStatsService.updateFacilityStats(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error assigning tenant to unit: $e');
@@ -414,11 +472,44 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Tenant removed from unit successfully');
       }
+      await FacilityStatsService.updateFacilityStats(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error removing tenant from unit: $e');
       }
       rethrow;
+    }
+  }
+
+  /// Batch-clear tenant link and set status to available for multiple units.
+  /// Used by occupancy healing; does NOT call FacilityStatsService (caller must recompute).
+  /// Firestore batch limit 500; chunks if needed.
+  static Future<void> clearTenantFromUnitsBatch({
+    required String facilityId,
+    required List<String> unitIds,
+  }) async {
+    if (unitIds.isEmpty) return;
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('Not signed in');
+
+    const batchLimit = 500;
+    final ref = _firestore.collection('facilities').doc(facilityId).collection('units');
+    for (var i = 0; i < unitIds.length; i += batchLimit) {
+      final chunk = unitIds.sublist(i, (i + batchLimit).clamp(0, unitIds.length));
+      final batch = _firestore.batch();
+      for (final unitId in chunk) {
+        batch.update(ref.doc(unitId), {
+          'status': UnitStatus.available.name,
+          'tenantId': FieldValue.delete(),
+          'tenantName': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'updatedBy': user.uid,
+        });
+      }
+      await batch.commit();
+    }
+    if (kDebugMode) {
+      print('✅ [UnitService] Cleared tenant from ${unitIds.length} unit(s) (heal batch)');
     }
   }
 
@@ -441,6 +532,7 @@ class UnitService {
           .doc(unitId)
           .update({
         'isActive': false,
+        'archived': true, // Add archived flag for filtering
         'archivedAt': FieldValue.serverTimestamp(),
         'archivedByUid': user.uid,
         'updatedAt': FieldValue.serverTimestamp(),

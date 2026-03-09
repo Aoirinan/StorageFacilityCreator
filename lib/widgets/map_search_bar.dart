@@ -73,6 +73,7 @@ class _MapSearchBarState extends State<MapSearchBar> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.all(16.0),
       child: Column(
@@ -93,7 +94,7 @@ class _MapSearchBarState extends State<MapSearchBar> {
                 borderRadius: BorderRadius.circular(8),
               ),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: colorScheme.surface,
             ),
           ),
           if (_showResults && _filteredUnits.isNotEmpty)
@@ -101,11 +102,12 @@ class _MapSearchBarState extends State<MapSearchBar> {
               constraints: const BoxConstraints(maxHeight: 200),
               margin: const EdgeInsets.only(top: 4),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: colorScheme.surface,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: colorScheme.outline),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
+                    color: colorScheme.shadow.withOpacity(0.15),
                     blurRadius: 4,
                     spreadRadius: 1,
                   ),

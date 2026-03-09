@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/gate_access_model.dart';
+import 'audit_service.dart';
 
 class GateAccessService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -226,20 +227,30 @@ class GateAccessService {
     required String tenantId,
   }) async {
     try {
+      // Query without orderBy to avoid requiring a composite index.
+      // Sort client-side so the most recent record is returned.
       final snapshot = await _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('gateAccess')
           .where('tenantId', isEqualTo: tenantId)
-          .orderBy('createdAt', descending: true)
-          .limit(1)
           .get();
 
       if (snapshot.docs.isEmpty) {
         return null;
       }
 
-      return GateAccessModel.fromFirestore(snapshot.docs.first);
+      final records = snapshot.docs
+          .map((doc) => GateAccessModel.fromFirestore(doc))
+          .toList();
+
+      // Prefer active records; within that, most recently created first.
+      records.sort((a, b) {
+        if (a.isActive != b.isActive) return a.isActive ? -1 : 1;
+        return b.createdAt.compareTo(a.createdAt);
+      });
+
+      return records.first;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting gate access for tenant: $e');

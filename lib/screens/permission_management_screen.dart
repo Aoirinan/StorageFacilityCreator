@@ -8,11 +8,11 @@ import '../models/facility_model.dart';
 import '../services/permission_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 
 // #region agent log
 void _debugLogPMS(String location, String message, Map<String, dynamic> data, String hypothesisId) {
+  if (!kDebugMode) return; // Only log in debug mode
   final logEntry = jsonEncode({
     'timestamp': DateTime.now().millisecondsSinceEpoch,
     'location': location,
@@ -22,7 +22,6 @@ void _debugLogPMS(String location, String message, Map<String, dynamic> data, St
     'runId': 'run1',
     'hypothesisId': hypothesisId,
   });
-  // Always print for immediate visibility (works on web and desktop)
   print('[DEBUG] $logEntry');
 }
 // #endregion
@@ -145,14 +144,9 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
     // #region agent log
     _debugLogPMS('permission_management_screen.dart:120', 'PermissionManagementScreen build called', {'mounted': mounted, 'hasFacilities': _facilities.isNotEmpty, 'selectedFacilityId': _selectedFacilityId}, 'D');
     // #endregion
-    return ModernPageWrapper(
-      title: 'Permission Management',
-      currentRoute: '/permissions',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Column(
-        children: [
+    // Note: No ModernPageWrapper needed - already inside AppShell which provides sidebar
+    return Column(
+      children: [
           // Facility selector
           Container(
             padding: const EdgeInsets.all(16),
@@ -223,7 +217,6 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
             ),
           ),
         ],
-      ),
     );
   }
 

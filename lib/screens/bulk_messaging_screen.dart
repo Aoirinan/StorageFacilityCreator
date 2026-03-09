@@ -1,25 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
+import '../utils/breakpoints.dart';
 import '../providers/tenant_provider.dart';
 import '../models/tenant_model.dart';
 import '../services/email_service.dart';
 import '../services/sms_service.dart';
+import '../services/debug_logger.dart';
 import 'package:flutter/foundation.dart';
 
-/// Screen for sending bulk messages to multiple tenants
+/// Screen for sending bulk messages to multiple tenants.
+/// [tenantsKey]: 'all' = all facilities, or comma-separated facility IDs. When empty, uses [facilityId] only.
 class BulkMessagingScreen extends ConsumerStatefulWidget {
   final String facilityId;
+  final String tenantsKey;
+  final bool allFacilities;
 
   const BulkMessagingScreen({
     super.key,
     required this.facilityId,
+    this.tenantsKey = '',
+    this.allFacilities = false,
   });
 
   @override
   ConsumerState<BulkMessagingScreen> createState() => _BulkMessagingScreenState();
+}
+
+// Result model for tracking failures
+class _MessageFailure {
+  final String to;
+  final String? code;
+  final String message;
+  final String type; // 'email' or 'sms'
+
+  _MessageFailure({
+    required this.to,
+    this.code,
+    required this.message,
+    required this.type,
+  });
 }
 
 class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
@@ -32,6 +52,15 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
   bool _isSending = false;
   String? _statusMessage;
   bool _statusIsError = false;
+  
+  // Progress tracking
+  int _currentProgress = 0;
+  int _totalProgress = 0;
+  
+  // Results tracking
+  List<String> _sentRecipients = [];
+  List<_MessageFailure> _failedRecipients = [];
+  bool _showFailureDetails = false;
 
   @override
   void dispose() {
@@ -41,7 +70,30 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
   }
 
   Future<void> _sendBulkMessages() async {
+    // #region agent log
+    DebugLogger.log(
+      hypothesisId: 'H8',
+      location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+      message: 'Bulk message send initiated',
+      data: {
+        'facilityId': widget.facilityId,
+        'selectedTenantCount': _selectedTenantIds.length,
+        'sendEmail': _sendEmail,
+        'sendSMS': _sendSMS,
+        'messageLength': _messageController.text.trim().length,
+        'subjectLength': _subjectController.text.trim().length,
+      },
+    );
+    // #endregion
+
     if (_messageController.text.trim().isEmpty) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Validation failed - empty message',
+      );
+      // #endregion
       setState(() {
         _statusMessage = 'Please enter a message';
         _statusIsError = true;
@@ -50,6 +102,13 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     }
 
     if (_selectedTenantIds.isEmpty) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Validation failed - no tenants selected',
+      );
+      // #endregion
       setState(() {
         _statusMessage = 'Please select at least one tenant';
         _statusIsError = true;
@@ -58,6 +117,13 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     }
 
     if (!_sendEmail && !_sendSMS) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Validation failed - no delivery method selected',
+      );
+      // #endregion
       setState(() {
         _statusMessage = 'Please select at least one delivery method';
         _statusIsError = true;
@@ -66,6 +132,13 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     }
 
     if (_sendEmail && _subjectController.text.trim().isEmpty) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Validation failed - empty email subject',
+      );
+      // #endregion
       setState(() {
         _statusMessage = 'Please enter an email subject';
         _statusIsError = true;
@@ -76,23 +149,48 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     setState(() {
       _isSending = true;
       _statusMessage = null;
+      _currentProgress = 0;
+      _sentRecipients.clear();
+      _failedRecipients.clear();
+      _showFailureDetails = false;
     });
 
     try {
-      // Get selected tenants
-      final tenantsAsync = ref.read(facilityTenantsProvider(widget.facilityId));
-      final tenants = await tenantsAsync.when(
-        data: (list) => list,
-        loading: () => <TenantModel>[],
-        error: (_, __) => <TenantModel>[],
-      );
+      // Get selected tenants (from multi-facility or single facility)
+      List<TenantModel> tenants;
+      if (widget.tenantsKey.isNotEmpty) {
+        final async = ref.read(multiFacilityTenantsProvider(widget.tenantsKey));
+        tenants = async.whenOrNull(data: (d) => d) ?? [];
+      } else {
+        final async = ref.read(facilityTenantsProvider(widget.facilityId));
+        tenants = async.whenOrNull(data: (d) => d) ?? [];
+      }
 
       final selectedTenants = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
 
-      int emailSuccessCount = 0;
-      int emailFailureCount = 0;
-      int smsSuccessCount = 0;
-      int smsFailureCount = 0;
+      // Calculate total messages to send
+      int totalMessages = 0;
+      for (final tenant in selectedTenants) {
+        if (_sendEmail && tenant.email.isNotEmpty) totalMessages++;
+        if (_sendSMS && tenant.phone.isNotEmpty) totalMessages++;
+      }
+      
+      setState(() {
+        _totalProgress = totalMessages;
+      });
+
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Tenants loaded',
+        data: {
+          'totalTenants': tenants.length,
+          'selectedTenants': selectedTenants.length,
+          'totalMessages': totalMessages,
+        },
+      );
+      // #endregion
 
       final message = _messageController.text.trim();
       final subject = _subjectController.text.trim();
@@ -101,75 +199,170 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
         // Send email if enabled and tenant has email
         if (_sendEmail && tenant.email.isNotEmpty) {
           try {
+            // #region agent log
+            DebugLogger.log(
+              hypothesisId: 'H8',
+              location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+              message: 'Calling EmailService.sendEmail',
+              data: {
+                'tenantId': tenant.id,
+                'hasEmail': tenant.email.isNotEmpty,
+                'subject': subject,
+                'facilityId': widget.facilityId,
+              },
+            );
+            // #endregion
+
+            final facilityId = tenant.facilityId.isNotEmpty ? tenant.facilityId : widget.facilityId;
             final result = await EmailService.sendEmail(
               to: tenant.email,
               subject: subject,
               html: _formatMessageAsHTML(message, tenant),
               text: message,
-              facilityId: widget.facilityId,
+              facilityId: facilityId,
               tenantId: tenant.id,
               relatedEntityType: 'bulk_message',
             );
+
+            setState(() {
+              _currentProgress++;
+            });
+
             if (result.success) {
-              emailSuccessCount++;
+              setState(() {
+                _sentRecipients.add('${tenant.name} (${tenant.email})');
+              });
             } else {
-              emailFailureCount++;
-              if (kDebugMode) {
-                print('Failed to send email to ${tenant.email}: ${result.error}');
-              }
+              setState(() {
+                _failedRecipients.add(_MessageFailure(
+                  to: '${tenant.name} (${tenant.email})',
+                  code: result.errorCode,
+                  message: result.error ?? 'Unknown error',
+                  type: 'email',
+                ));
+              });
+              // #region agent log
+              DebugLogger.log(
+                hypothesisId: 'H8',
+                location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+                message: 'Email send failed',
+                data: {
+                  'tenantId': tenant.id,
+                  'error': result.error,
+                  'errorCode': result.errorCode,
+                },
+              );
+              // #endregion
             }
           } catch (e) {
-            emailFailureCount++;
-            if (kDebugMode) {
-              print('Error sending email to ${tenant.email}: $e');
-            }
+            setState(() {
+              _currentProgress++;
+              _failedRecipients.add(_MessageFailure(
+                to: '${tenant.name} (${tenant.email})',
+                code: null,
+                message: e.toString(),
+                type: 'email',
+              ));
+            });
+            // #region agent log
+            DebugLogger.log(
+              hypothesisId: 'H8',
+              location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+              message: 'Exception during email send',
+              data: {
+                'tenantId': tenant.id,
+                'exception': e.toString(),
+              },
+            );
+            // #endregion
           }
         }
 
         // Send SMS if enabled and tenant has phone
         if (_sendSMS && tenant.phone.isNotEmpty) {
           try {
+            final facilityId = tenant.facilityId.isNotEmpty ? tenant.facilityId : widget.facilityId;
             final result = await SMSService.sendSMS(
               to: tenant.phone,
               message: message,
-              facilityId: widget.facilityId,
+              facilityId: facilityId,
               tenantId: tenant.id,
               relatedEntityType: 'bulk_message',
             );
+            
+            setState(() {
+              _currentProgress++;
+            });
+            
             if (result.success) {
-              smsSuccessCount++;
+              setState(() {
+                _sentRecipients.add('${tenant.name} (${tenant.phone})');
+              });
             } else {
-              smsFailureCount++;
-              if (kDebugMode) {
-                print('Failed to send SMS to ${tenant.phone}: ${result.error}');
-              }
+              setState(() {
+                _failedRecipients.add(_MessageFailure(
+                  to: '${tenant.name} (${tenant.phone})',
+                  code: result.errorCode,
+                  message: result.error ?? 'Unknown error',
+                  type: 'sms',
+                ));
+              });
             }
           } catch (e) {
-            smsFailureCount++;
-            if (kDebugMode) {
-              print('Error sending SMS to ${tenant.phone}: $e');
-            }
+            setState(() {
+              _currentProgress++;
+              _failedRecipients.add(_MessageFailure(
+                to: '${tenant.name} (${tenant.phone})',
+                code: null,
+                message: e.toString(),
+                type: 'sms',
+              ));
+            });
           }
         }
       }
 
+      // Calculate counts by type
+      final emailSent = _sentRecipients.where((r) => r.contains('@')).length;
+      final emailFailed = _failedRecipients.where((f) => f.type == 'email').length;
+      final smsSent = _sentRecipients.where((r) => !r.contains('@')).length;
+      final smsFailed = _failedRecipients.where((f) => f.type == 'sms').length;
+
       // Show results
       final List<String> resultParts = [];
       if (_sendEmail) {
-        resultParts.add('Email: $emailSuccessCount sent${emailFailureCount > 0 ? ', $emailFailureCount failed' : ''}');
+        resultParts.add('Email: $emailSent sent${emailFailed > 0 ? ', $emailFailed failed' : ''}');
       }
       if (_sendSMS) {
-        resultParts.add('SMS: $smsSuccessCount sent${smsFailureCount > 0 ? ', $smsFailureCount failed' : ''}');
+        resultParts.add('SMS: $smsSent sent${smsFailed > 0 ? ', $smsFailed failed' : ''}');
       }
+
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Bulk message send completed',
+        data: {
+          'emailSent': emailSent,
+          'emailFailed': emailFailed,
+          'smsSent': smsSent,
+          'smsFailed': smsFailed,
+          'hasErrors': _failedRecipients.isNotEmpty,
+        },
+      );
+      // #endregion
 
       setState(() {
         _isSending = false;
         _statusMessage = resultParts.join(' | ');
-        _statusIsError = emailFailureCount > 0 || smsFailureCount > 0;
+        _statusIsError = _failedRecipients.isNotEmpty;
+        if (_failedRecipients.isNotEmpty) {
+          _showFailureDetails = true;
+        }
       });
 
       // Clear form on success
-      if (emailFailureCount == 0 && smsFailureCount == 0) {
+      if (_failedRecipients.isEmpty) {
         Future.delayed(const Duration(seconds: 2), () {
           if (mounted) {
             setState(() {
@@ -177,11 +370,20 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
               _messageController.clear();
               _subjectController.clear();
               _statusMessage = null;
+              _showFailureDetails = false;
             });
           }
         });
       }
     } catch (e) {
+      // #region agent log
+      DebugLogger.log(
+        hypothesisId: 'H8',
+        location: 'bulk_messaging_screen.dart:_sendBulkMessages',
+        message: 'Exception during bulk message send',
+        data: {'exception': e.toString(), 'errorType': e.runtimeType.toString()},
+      );
+      // #endregion
       setState(() {
         _isSending = false;
         _statusMessage = 'Error sending messages: $e';
@@ -234,16 +436,23 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
   }
 
   void _selectAll() {
-    final tenantsAsync = ref.read(facilityTenantsProvider(widget.facilityId));
-    tenantsAsync.when(
-      data: (tenants) {
-        setState(() {
-          _selectedTenantIds = tenants.where((t) => t.isActive).map((t) => t.id).toSet();
-        });
-      },
-      loading: () {},
-      error: (_, __) {},
-    );
+    if (widget.tenantsKey.isNotEmpty) {
+      final async = ref.read(multiFacilityTenantsProvider(widget.tenantsKey));
+      final tenants = async.whenOrNull(data: (d) => d) ?? [];
+      setState(() {
+        _selectedTenantIds = tenants.where((t) => t.isActive).map((t) => t.id).toSet();
+      });
+    } else {
+      ref.read(facilityTenantsProvider(widget.facilityId)).when(
+        data: (tenants) {
+          setState(() {
+            _selectedTenantIds = tenants.where((t) => t.isActive).map((t) => t.id).toSet();
+          });
+        },
+        loading: () {},
+        error: (_, __) {},
+      );
+    }
   }
 
   void _deselectAll() {
@@ -254,15 +463,13 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final tenantsAsync = ref.watch(facilityTenantsProvider(widget.facilityId));
+    final tenantsAsync = widget.tenantsKey.isNotEmpty
+        ? ref.watch(multiFacilityTenantsProvider(widget.tenantsKey))
+        : ref.watch(facilityTenantsProvider(widget.facilityId));
 
-    final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/messaging/bulk';
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
-      title: 'Bulk Messaging',
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Delivery Method Selection
@@ -322,6 +529,7 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                     if (_sendEmail) ...[
                       TextField(
                         controller: _subjectController,
+                        enabled: !_isSending,
                         decoration: const InputDecoration(
                           labelText: 'Subject',
                           hintText: 'Enter email subject',
@@ -332,6 +540,7 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                     ],
                     TextField(
                       controller: _messageController,
+                      enabled: !_isSending,
                       decoration: const InputDecoration(
                         labelText: 'Message',
                         hintText: 'Enter your message here',
@@ -361,26 +570,68 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Select Tenants (${_selectedTenantIds.length} selected)',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: _selectAll,
-                          child: const Text('Select All'),
-                        ),
-                        TextButton(
-                          onPressed: _deselectAll,
-                          child: const Text('Deselect All'),
-                        ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isPhone = constraints.maxWidth < Breakpoints.xs;
+                        return isPhone
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Select Tenants (${_selectedTenantIds.length} selected)',
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      TextButton(
+                                        onPressed: _selectAll,
+                                        child: const Text('Select All'),
+                                      ),
+                                      TextButton(
+                                        onPressed: _deselectAll,
+                                        child: const Text('Deselect All'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              )
+                            : Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Select Tenants (${_selectedTenantIds.length} selected)',
+                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: _selectAll,
+                                    child: const Text('Select All'),
+                                  ),
+                                  TextButton(
+                                    onPressed: _deselectAll,
+                                    child: const Text('Deselect All'),
+                                  ),
+                                ],
+                              );
+                      },
                     ),
+                    if (widget.allFacilities || (widget.tenantsKey.isNotEmpty && widget.tenantsKey != widget.facilityId))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          widget.allFacilities
+                              ? 'Showing tenants from all facilities'
+                              : 'Showing tenants from selected facilities',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppTheme.textSecondary,
+                              ),
+                        ),
+                      ),
                     const SizedBox(height: 16),
                     SizedBox(
                       height: 300,
@@ -408,7 +659,7 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                                   '${tenant.email.isNotEmpty ? tenant.email : "No email"}${tenant.phone.isNotEmpty ? " • ${tenant.phone}" : " • No phone"}',
                                 ),
                                 value: isSelected,
-                                onChanged: (value) => _toggleTenantSelection(tenant.id),
+                                onChanged: _isSending ? null : (value) => _toggleTenantSelection(tenant.id),
                               );
                             },
                           );
@@ -460,11 +711,12 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _isSending ? null : _sendBulkMessages,
+                onPressed: (_isSending || _selectedTenantIds.isEmpty) ? null : _sendBulkMessages,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryBlue,
                   foregroundColor: AppTheme.textOnDark,
                   padding: const EdgeInsets.symmetric(vertical: 16),
+                  disabledBackgroundColor: AppTheme.textSecondary.withOpacity(0.3),
                 ),
                 child: _isSending
                     ? const SizedBox(
@@ -476,7 +728,9 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                         ),
                       )
                     : Text(
-                        'Send to ${_selectedTenantIds.length} Tenant${_selectedTenantIds.length != 1 ? 's' : ''}',
+                        _selectedTenantIds.isEmpty
+                            ? 'Select Tenants to Send'
+                            : 'Send to ${_selectedTenantIds.length} Tenant${_selectedTenantIds.length != 1 ? 's' : ''}',
                         style: const TextStyle(fontSize: 16),
                       ),
               ),
@@ -484,7 +738,6 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
             const SizedBox(height: 16),
           ],
         ),
-      ),
     );
   }
 }

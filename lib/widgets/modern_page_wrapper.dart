@@ -95,18 +95,21 @@ class ModernPageWrapper extends StatelessWidget {
   }
 
   Widget _buildTopBar(BuildContext context, bool isMobile) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       height: 64,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colorScheme.surface,
         border: Border(
           bottom: BorderSide(
-            color: AppTheme.borderLight,
+            color: colorScheme.outline,
             width: 1,
           ),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 16 : 24,
+      ),
       child: Row(
         children: [
           if (isMobile && showSidebar)
@@ -117,18 +120,26 @@ class ModernPageWrapper extends StatelessWidget {
               ),
             ),
           if (title != null) ...[
-            Text(
-              title!,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+            Expanded(
+              child: Text(
+                title!,
+                style: TextStyle(
+                  fontSize: isMobile ? 18 : 20,
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
               ),
             ),
-            const SizedBox(width: 24),
+            SizedBox(width: isMobile ? 12 : 24),
           ],
           const Spacer(),
-          if (actions != null) ...actions!,
+          if (actions != null)
+            IconTheme(
+              data: IconThemeData(color: colorScheme.onSurface),
+              child: Row(mainAxisSize: MainAxisSize.min, children: actions!),
+            ),
         ],
       ),
     );

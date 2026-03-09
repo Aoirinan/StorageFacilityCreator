@@ -65,13 +65,13 @@ class _SecurityDashboardScreenState extends ConsumerState<SecurityDashboardScree
         return;
       }
 
-      final accountId = account.id;
+      final accountId = account.accountId;
 
       final futures = await Future.wait([
         SecurityService.getSecurityEvents(accountId: accountId, limit: 50),
         SecurityService.getSecurityAlerts(accountId: accountId, limit: 20),
         SecurityService.getSecurityStatistics(accountId: accountId),
-        SecurityService.getSecuritySettings(accountId: accountId),
+        SecurityService.getSecuritySettings(accountId),
       ]);
 
       if (mounted) {
@@ -645,7 +645,9 @@ class _SecurityDashboardScreenState extends ConsumerState<SecurityDashboardScree
     );
 
     if (result != null) {
+      final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
       final success = await SecurityService.acknowledgeAlert(
+        accountId: account.accountId,
         alertId: alert.id,
         acknowledgmentNote: result,
       );
@@ -692,7 +694,11 @@ class _SecurityDashboardScreenState extends ConsumerState<SecurityDashboardScree
         break;
     }
     
-    final success = await SecurityService.updateSecuritySettings(updatedSettings);
+    final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+    final success = await SecurityService.updateSecuritySettings(
+      accountId: account.accountId,
+      settings: updatedSettings,
+    );
     if (success && mounted) {
       setState(() {
         _settings = updatedSettings;

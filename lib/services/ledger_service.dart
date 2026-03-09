@@ -193,6 +193,33 @@ class LedgerService {
     }
   }
 
+  /// Get balances for all tenants in a facility (for overlock/delinquency screens).
+  /// Returns map of tenantId -> balance (sum of posted entries).
+  static Future<Map<String, double>> getBalancesForFacility(String facilityId) async {
+    try {
+      final snapshot = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('ledgers')
+          .where('status', isEqualTo: 'posted')
+          .get();
+      final map = <String, double>{};
+      for (final doc in snapshot.docs) {
+        final d = doc.data();
+        final tenantId = d['tenantId'] as String?;
+        if (tenantId == null) continue;
+        final amount = (d['amount'] as num?)?.toDouble() ?? 0.0;
+        map[tenantId] = (map[tenantId] ?? 0) + amount;
+      }
+      return map;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [Ledger] Error getBalancesForFacility: $e');
+      }
+      rethrow;
+    }
+  }
+
   /// Calculate current balance for a tenant
   /// Balance = Sum of all posted entries (charges are positive, payments are negative)
   static Future<double> getLedgerBalance({

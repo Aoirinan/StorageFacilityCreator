@@ -18,7 +18,8 @@ class DonutChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final chartColor = color ?? AppTheme.primaryBlue;
+    final colorScheme = Theme.of(context).colorScheme;
+    final chartColor = color ?? colorScheme.primary;
     final clampedValue = value.clamp(0.0, 1.0);
     final percentage = (clampedValue * 100).round();
 
@@ -35,7 +36,7 @@ class DonutChart extends StatelessWidget {
             child: CircularProgressIndicator(
               value: clampedValue,
               strokeWidth: 12,
-              backgroundColor: AppTheme.borderLight,
+              backgroundColor: colorScheme.outline,
               valueColor: AlwaysStoppedAnimation<Color>(chartColor),
             ),
           ),
@@ -48,14 +49,14 @@ class DonutChart extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
-                  color: AppTheme.textPrimary,
+                  color: colorScheme.onSurface,
                 ),
               ),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 10,
-                  color: AppTheme.textSecondary,
+                  color: colorScheme.onSurfaceVariant,
                 ),
                 textAlign: TextAlign.center,
               ),

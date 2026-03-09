@@ -175,12 +175,9 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
   @override
   Widget build(BuildContext context) {
     final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/settings/notifications';
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
-      title: 'Notification Settings',
-      child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
+    return _isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : Form(
               key: _formKey,
               child: KeyboardScrollable(
                 child: SingleChildScrollView(
@@ -487,7 +484,6 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
                 ),
               ),
             ),
-          ),
     );
   }
 

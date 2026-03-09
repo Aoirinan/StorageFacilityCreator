@@ -1,6 +1,25 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'tenant_model.dart';
+import 'tenant_autopay_model.dart';
+import 'tenant_stripe_model.dart';
 import 'payment_model.dart';
+
+/// Cloud Functions return Firestore Timestamps as plain Maps with _seconds/_nanoseconds.
+/// This helper handles both native Timestamp objects and the serialized Map form.
+DateTime? _parseTimestamp(dynamic value) {
+  if (value == null) return null;
+  if (value is Timestamp) return value.toDate();
+  if (value is Map) {
+    final seconds = (value['_seconds'] ?? value['seconds']) as int?;
+    final nanoseconds = (value['_nanoseconds'] ?? value['nanoseconds']) as int? ?? 0;
+    if (seconds != null) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        seconds * 1000 + nanoseconds ~/ 1000000,
+      );
+    }
+  }
+  return null;
+}
 
 class PortalFacilitySummary {
   final String id;
@@ -9,6 +28,7 @@ class PortalFacilitySummary {
   final String? email;
   final String? address;
   final String? logoUrl;
+  final Map<String, dynamic>? stripeStatus;
 
   const PortalFacilitySummary({
     required this.id,
@@ -17,7 +37,11 @@ class PortalFacilitySummary {
     this.email,
     this.address,
     this.logoUrl,
+    this.stripeStatus,
   });
+
+  String? get stripeState => stripeStatus?['state'] as String?;
+  bool get paymentsEnabled => stripeState == 'ENABLED';
 
   factory PortalFacilitySummary.fromMap(Map<String, dynamic> data) {
     return PortalFacilitySummary(
@@ -27,6 +51,7 @@ class PortalFacilitySummary {
       email: data['email'] as String?,
       address: data['address'] as String?,
       logoUrl: data['logoUrl'] as String?,
+      stripeStatus: data['stripeStatus'] != null ? Map<String, dynamic>.from(data['stripeStatus'] as Map) : null,
     );
   }
 }
@@ -54,12 +79,12 @@ class PortalPaymentSummary {
     return PortalPaymentSummary(
       id: data['id'] as String,
       amount: amountValue,
-      dueDate: (data['dueDate'] as Timestamp).toDate(),
+      dueDate: _parseTimestamp(data['dueDate']) ?? DateTime.now(),
       status: PaymentStatus.values.firstWhere(
         (status) => status.name == statusName,
         orElse: () => PaymentStatus.pending,
       ),
-      paidAt: (data['paidAt'] as Timestamp?)?.toDate(),
+      paidAt: _parseTimestamp(data['paidAt']),
       method: data['method'] as String?,
     );
   }
@@ -68,6 +93,8 @@ class PortalPaymentSummary {
 class PortalTenantSummary {
   final String id;
   final String name;
+  final String? email;
+  final String? phone;
   final String unitNumber;
   final double monthlyRate;
   final DateTime? paidThrough;
@@ -75,10 +102,24 @@ class PortalTenantSummary {
   final String? welcomeMessage;
   final List<TenantContact> contacts;
   final List<TenantVehicle> vehicles;
+  final TenantAutopayModel autopay;
+  final TenantStripeModel stripe;
+  final bool overlockIsActive;
+
+  /// Expiration date of the tenant's active lease/contract, if set.
+  final DateTime? contractExpiresAt;
+
+  /// Expiration date of the tenant's insurance coverage (TPP or external proof).
+  final DateTime? insuranceExpiresAt;
+
+  /// Scheduled move-out date, if the tenant has initiated a move-out.
+  final DateTime? scheduledMoveOutDate;
 
   const PortalTenantSummary({
     required this.id,
     required this.name,
+    this.email,
+    this.phone,
     required this.unitNumber,
     required this.monthlyRate,
     this.paidThrough,
@@ -86,6 +127,12 @@ class PortalTenantSummary {
     this.welcomeMessage,
     this.contacts = const [],
     this.vehicles = const [],
+    this.autopay = const TenantAutopayModel(),
+    this.stripe = const TenantStripeModel(),
+    this.overlockIsActive = false,
+    this.contractExpiresAt,
+    this.insuranceExpiresAt,
+    this.scheduledMoveOutDate,
   });
 
   factory PortalTenantSummary.fromMap(Map<String, dynamic> data) {
@@ -94,11 +141,11 @@ class PortalTenantSummary {
     return PortalTenantSummary(
       id: data['id'] as String,
       name: data['name'] as String? ?? 'Tenant',
+      email: data['email'] as String?,
+      phone: data['phone'] as String?,
       unitNumber: data['unitNumber'] as String? ?? '',
       monthlyRate: (data['monthlyRate'] ?? 0).toDouble(),
-      paidThrough: data['paidThrough'] != null
-          ? (data['paidThrough'] as Timestamp).toDate()
-          : null,
+      paidThrough: _parseTimestamp(data['paidThrough']),
       isDelinquent: data['isDelinquent'] as bool? ?? false,
       welcomeMessage: data['welcomeMessage'] as String?,
       contacts: contactsRaw
@@ -107,6 +154,12 @@ class PortalTenantSummary {
       vehicles: vehiclesRaw
           .map((item) => TenantVehicle.fromMap(Map<String, dynamic>.from(item as Map)))
           .toList(),
+      autopay: data['autopay'] != null ? TenantAutopayModel.fromMap(Map<String, dynamic>.from(data['autopay'] as Map)) : const TenantAutopayModel(),
+      stripe: data['stripe'] != null ? TenantStripeModel.fromMap(Map<String, dynamic>.from(data['stripe'] as Map)) : const TenantStripeModel(),
+      overlockIsActive: data['overlockIsActive'] == true,
+      contractExpiresAt: _parseTimestamp(data['contractExpiresAt']),
+      insuranceExpiresAt: _parseTimestamp(data['insuranceExpiresAt']),
+      scheduledMoveOutDate: _parseTimestamp(data['scheduledMoveOutDate']),
     );
   }
 }
@@ -128,8 +181,7 @@ class TenantPortalStats {
       nextAmountDue: data['nextAmountDue'] != null
           ? (data['nextAmountDue'] as num).toDouble()
           : null,
-      nextDueDate:
-          data['nextDueDate'] != null ? (data['nextDueDate'] as Timestamp).toDate() : null,
+      nextDueDate: _parseTimestamp(data['nextDueDate']),
     );
   }
 }

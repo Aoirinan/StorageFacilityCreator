@@ -11,10 +11,12 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/lead_source_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/services/autopay_service.dart';
 import 'package:sfcapp/services/dnr_service.dart';
 import 'package:sfcapp/services/email_service.dart';
 import 'package:sfcapp/services/email_template_service.dart';
@@ -66,8 +68,10 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   bool _isLoading = false;
   String? _errorMessage;
   bool _portalEnabled = false;
+  bool _enableAutopayRequested = false;
   bool _dnrOverride = false;
   List<DNRModel>? _dnrMatches;
+  bool _smsConsent = false; // SMS consent checkbox state
 
   final Random _random = Random.secure();
 
@@ -830,6 +834,38 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
       ),
     );
   }
+
+  Widget _buildAutopaySection() {
+    return Card(
+      margin: const EdgeInsets.only(top: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Checkbox(
+              value: _enableAutopayRequested,
+              onChanged: _isLoading ? null : (v) => setState(() => _enableAutopayRequested = v ?? false),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Enable autopay (recommended)', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tenant will be set to request autopay. They can add a card in the portal or you can add one in Payment methods once the facility has Stripe enabled.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -947,10 +983,26 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         portalAccessCode: portalAccessCode,
         portalWelcomeMessage: portalWelcomeMessage,
         leadSource: _selectedLeadSource,
+        smsOptInDate: _smsConsent ? DateTime.now() : null,
       );
       
       if (kDebugMode) {
         print('✅ Tenant creation completed: $result');
+      }
+
+      // If "Enable autopay (recommended)" was checked, request autopay for the new tenant
+      if (_enableAutopayRequested) {
+        try {
+          await AutopayService.requestTenantAutopay(
+            facilityId: _selectedFacilityId,
+            tenantId: result,
+            source: 'FACILITY',
+          );
+        } catch (e) {
+          if (kDebugMode) {
+            print('⚠️ Error requesting autopay: $e');
+          }
+        }
       }
 
       // Send welcome email with access codes if portal access is enabled or gate access exists
@@ -1171,13 +1223,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   Widget build(BuildContext context) {
     final tenantOperationState = ref.watch(tenantOperationsProvider);
     
-    return ModernPageWrapper(
-      currentRoute: '/tenants',
-      title: 'Add New Tenant',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Form(
+    return Form(
         key: _formKey,
         child: KeyboardScrollable(
           child: SingleChildScrollView(
@@ -1284,6 +1330,88 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 },
               ),
               const SizedBox(height: 16),
+              
+              // SMS Consent Checkbox
+              if (_selectedFacilityId.isNotEmpty) ...[
+                Consumer(
+                  builder: (context, ref, child) {
+                    final facilityAsync = ref.watch(facilityProvider(_selectedFacilityId));
+                    final facilityName = facilityAsync.value?.name ?? 'this facility';
+                    
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.backgroundSecondary,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderLight),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Checkbox(
+                                value: _smsConsent,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _smsConsent = value ?? false;
+                                  });
+                                },
+                              ),
+                              Expanded(
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setState(() {
+                                      _smsConsent = !_smsConsent;
+                                    });
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: RichText(
+                                      text: TextSpan(
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: AppTheme.textPrimary,
+                                          height: 1.4,
+                                        ),
+                                        children: [
+                                          const TextSpan(
+                                            text: 'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Reply STOP to opt out. ',
+                                            style: TextStyle(fontWeight: FontWeight.w500),
+                                          ),
+                                          const TextSpan(
+                                            text: 'Msg & data rates may apply. ',
+                                          ),
+                                          WidgetSpan(
+                                            child: GestureDetector(
+                                              onTap: () {
+                                                context.go('/sms-policy');
+                                              },
+                                              child: const Text(
+                                                'See SMS Terms',
+                                                style: TextStyle(
+                                                  color: AppTheme.primaryBlue,
+                                                  decoration: TextDecoration.underline,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 16),
+              ],
               
               // Unit Number
               TextFormField(
@@ -1442,6 +1570,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
           _buildContactsSection(),
           _buildVehiclesSection(),
           _buildPortalAccessSection(),
+          _buildAutopaySection(),
 
           const SizedBox(height: 16),
 
@@ -1594,8 +1723,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
           ),
         ),
       ),
-      ),
-    );
+      );
   }
 
 }

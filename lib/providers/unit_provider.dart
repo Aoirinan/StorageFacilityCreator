@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:state_notifier/state_notifier.dart';
 import '../models/unit_model.dart';
 import '../services/unit_service.dart';
+import '../services/ledger_service.dart';
 
 // Unit layout provider
 final unitLayoutProvider = StateNotifierProvider<UnitLayoutNotifier, UnitLayoutState>((ref) {
@@ -116,6 +118,12 @@ final unitProvider = FutureProvider.family<UnitModel?, Map<String, String>>((ref
 // Available Units Provider
 final availableUnitsProvider = FutureProvider.family<List<UnitModel>, String>((ref, facilityId) async {
   return await UnitService.getAvailableUnits(facilityId);
+});
+
+/// Facility tenant balances (tenantId -> balance) for overlock/delinquency UI.
+final facilityBalancesProvider = FutureProvider.family<Map<String, double>, String>((ref, facilityId) async {
+  if (facilityId.isEmpty) return {};
+  return LedgerService.getBalancesForFacility(facilityId);
 });
 
 // Unit Search and Filter Providers

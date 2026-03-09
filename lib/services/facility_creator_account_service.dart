@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_creator_account_model.dart';
+import '../models/facility_model.dart';
 
 /// Service for managing Facility Creator Accounts
 class FacilityCreatorAccountService {
@@ -42,7 +43,7 @@ class FacilityCreatorAccountService {
         'ownerUid': ownerUid,
         'ownerEmail': ownerEmail.toLowerCase(),
         'ownerName': ownerName,
-        'subscriptionStatus': SubscriptionStatus.unpaid.name, // Start as unpaid - user must choose trial or subscribe
+        'subscriptionStatus': SubscriptionStatus.pendingApproval.name, // Awaiting admin approval before trial starts
         'stripeSubscriptionId': null,
         'stripeCustomerId': null,
         'subscriptionCurrentPeriodStart': null,
@@ -304,14 +305,71 @@ class FacilityCreatorAccountService {
     }
   }
 
-  /// Check if user has active subscription
-  static Future<bool> hasActiveSubscription(String ownerUid) async {
+  /// Reconcile account.facilityIds with actual active facilities only.
+  /// Removes orphaned IDs from deleted/archived facilities and syncs Stripe quantity.
+  static Future<bool> reconcileFacilityIds({
+    required String accountId,
+    required List<String> actualFacilityIds,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final account = await getAccount(accountId);
+      if (account == null || account.ownerUid != user.uid) {
+        throw Exception('Account not found or access denied');
+      }
+
+      final current = account.facilityIds.toSet();
+      final actual = actualFacilityIds.toSet();
+      if (current.length == actual.length && current.containsAll(actual)) {
+        if (kDebugMode) {
+          print('✅ Facility IDs already in sync, skip reconcile');
+        }
+        return false;
+      }
+
+      await _firestore
+          .collection('facilityCreatorAccounts')
+          .doc(accountId)
+          .update({
+        'facilityIds': actualFacilityIds,
+        'updatedAt': Timestamp.fromDate(DateTime.now()),
+      });
+
+      await _syncSubscriptionQuantity(accountId);
+
+      if (kDebugMode) {
+        print('✅ Reconciled facilityIds: ${current.length} → ${actualFacilityIds.length}');
+      }
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error reconciling facility IDs: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Check if user has active subscription (account-level OR any per-facility platform sub)
+  /// Pass [facilities] to avoid circular import with FacilityService; if null, only checks account.
+  static Future<bool> hasActiveSubscription(
+    String ownerUid, {
+    List<FacilityModel>? facilities,
+  }) async {
     try {
       final account = await getAccountByOwnerUid(ownerUid);
       if (account == null) {
         return false;
       }
-      return account.canAccessPlatform;
+      if (account.canAccessPlatform) {
+        return true;
+      }
+      if (facilities == null) return false;
+      final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
+      return linked.any((f) => f.hasActivePlatformSubscription);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error checking subscription: $e');
@@ -344,6 +402,24 @@ class FacilityCreatorAccountService {
     }
 
     return account;
+  }
+
+  /// Server-side reconcile: fix facilityIds from actual active facilities + sync Stripe.
+  /// Call when loading subscription or after delete/archive. Source of truth.
+  static Future<Map<String, dynamic>?> callReconcileAccountFacilityIds() async {
+    try {
+      final functions = FirebaseFunctions.instance;
+      final callable = functions.httpsCallable('reconcileAccountFacilityIds');
+      final result = await callable.call<Map<String, dynamic>>(<String, dynamic>{});
+      final data = result.data;
+      if (data == null) return null;
+      return Map<String, dynamic>.from(data);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ callReconcileAccountFacilityIds failed: $e');
+      }
+      rethrow;
+    }
   }
 
   /// Sync subscription quantity with current facility count

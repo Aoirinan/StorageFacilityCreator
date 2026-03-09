@@ -26,7 +26,7 @@ class PrivacyScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              'Last updated: September 16, 2025',
+              'Last updated: January 28, 2026',
               style: TextStyle(
                 fontSize: 14,
                 color: AppTheme.textSecondary,
@@ -125,7 +125,7 @@ class PrivacyScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '8. Third-Party Services',
+              '8. SMS Messaging Data',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -133,12 +133,25 @@ class PrivacyScreen extends StatelessWidget {
             ),
             SizedBox(height: 8),
             Text(
-              'Our service may integrate with third-party services (Firebase, payment processors). These services have their own privacy policies, and we are not responsible for their practices.',
+              'When you opt in to receive SMS messages, we collect and store your mobile phone number. This information is used solely for sending SMS notifications, reminders, and account-related communications.\n\n• Phone numbers are shared with Twilio, our SMS service provider, solely for the purpose of sending and receiving SMS messages\n• We store your SMS opt-in status and opt-in date to track consent\n• If you opt out (by replying STOP), we retain your opt-out status to prevent future messages\n• SMS message content and delivery status may be logged for account and support purposes\n• For more details about SMS messaging, including how to opt out, see our SMS Messaging Policy at /sms-policy',
               style: TextStyle(fontSize: 16),
             ),
             SizedBox(height: 16),
             Text(
-              '9. Children\'s Privacy',
+              '9. Third-Party Services',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Our service may integrate with third-party services (Firebase, payment processors, Twilio for SMS, SendGrid for email). These services have their own privacy policies, and we are not responsible for their practices.',
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '10. Children\'s Privacy',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -151,7 +164,7 @@ class PrivacyScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '10. Changes to Privacy Policy',
+              '11. Changes to Privacy Policy',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -164,7 +177,7 @@ class PrivacyScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '11. Contact Us',
+              '12. Contact Us',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,

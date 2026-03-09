@@ -33,29 +33,22 @@ class _SMSConversationsScreenState extends ConsumerState<SMSConversationsScreen>
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/messaging/sms',
-      title: 'SMS Conversations',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      child: Row(
-        children: [
-          // Conversations list
-          Expanded(
-            flex: 1,
-            child: _buildConversationsList(),
-          ),
-          
-          // Conversation view
-          Expanded(
-            flex: 2,
-            child: _selectedConversation != null
-                ? _buildConversationView()
-                : _buildNoConversationSelected(),
-          ),
-        ],
-      ),
+    return Row(
+      children: [
+        // Conversations list
+        Expanded(
+          flex: 1,
+          child: _buildConversationsList(),
+        ),
+        
+        // Conversation view
+        Expanded(
+          flex: 2,
+          child: _selectedConversation != null
+              ? _buildConversationView()
+              : _buildNoConversationSelected(),
+        ),
+      ],
     );
   }
 
