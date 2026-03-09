@@ -13,12 +13,22 @@ Flutter web app for Storage Facility Creator.
 - Analyze: `flutter analyze`
 - Tests (with Firebase mocks): `flutter test`
 
-## Web Build & Deploy
+## Hosting Source Of Truth
+- Public website (`storagefacilitycreator.com`, `www.storagefacilitycreator.com`): **Vercel** using the Next.js app in `marketing`.
+- Flutter web app in this repo is still built to `build/web` and can be served from Firebase Hosting `web.app`/`firebaseapp.com` URLs for app/internal use.
+
+## Flutter Web Build (App)
 - Build with cache busting: `./build_web_with_cache_bust.ps1`
 - Outputs to `build/web` with hashed assets.
 - Serve locally: `flutter run -d chrome --release`.
 - Release build (skip WASM dry run): `flutter build web --release --no-wasm-dry-run`.
-- Deploy: upload `build/web` to hosting of choice (Firebase Hosting/CDN) and ensure cache headers respect hashes.
+- Optional deploy target: Firebase Hosting app endpoints (`*.web.app`, `*.firebaseapp.com`), not the primary marketing domain.
+
+## Website Deploy (Next.js on Vercel)
+- Website source is `marketing`.
+- Local run: `cd marketing && npm run dev` (http://localhost:3000).
+- Production build check: `cd marketing && npm run build`.
+- Deploy via Vercel with root directory set to `marketing`.
 
 ## Common Web Tips
 - Startup: on Firebase init failure, use the Retry button; check console for details.

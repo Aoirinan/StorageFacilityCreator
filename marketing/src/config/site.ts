@@ -5,8 +5,8 @@
 /** Marketing site version. Bump when you ship changes (e.g. 1.2.0, 1.3.0). */
 export const SITE_VERSION = '1.2.1';
 
-/** Replace with your production app login URL. Used for the Login button in header/footer. */
-export const APP_LOGIN_URL = 'REPLACE_ME';
+/** Production app login URL. Used for the Login button in header/footer. */
+export const APP_LOGIN_URL = 'https://storage-facility-creator.web.app/login';
 
 /** Paths for logo and demo image. Copy logo.png and demo.png into marketing/public/ */
 export const LOGO_PATH = '/logo.png';
