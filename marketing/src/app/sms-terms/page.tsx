@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -21,7 +22,7 @@ export default function SmsTermsPage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">Who Sends Messages</h2>
           <p className="text-slate-600 mt-2">
@@ -81,7 +82,8 @@ export default function SmsTermsPage() {
             End Users may opt out of SMS messages at any time by replying <strong>STOP</strong> to any message. After sending STOP, a confirmation message will be sent and no further SMS messages will be sent unless the End User opts back in. Opt-outs are processed promptly.
           </p>
           <p className="text-slate-600 mt-2">
-            To opt back in, the End User should contact the facility directly or update preferences through the facility's tenant portal.
+            To opt back in, the End User should contact the facility directly and provide a new consent action before
+            messaging resumes.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">How to Get Help</h2>
@@ -122,6 +124,7 @@ export default function SmsTermsPage() {
             Questions about SMS:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

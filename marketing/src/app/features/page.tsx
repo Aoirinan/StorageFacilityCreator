@@ -1,63 +1,92 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
-import { CtaButton } from '@/components/CtaButton';
+import { PageCtaBand } from '@/components/PageCtaBand';
+import { DemoFrame } from '@/components/DemoFrame';
+import { HERO_IMAGE_PATH, PAGE_OG_IMAGES } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Features',
   description:
-    'Tenant and unit management, billing and payments, automated SMS/email reminders, reporting and delinquency tools for self-storage.',
+    'Explore SFC features for self-storage operations: tenant and unit workflows, billing, payments, delinquency management, messaging, reporting, security, and integrations.',
+  openGraph: { images: [PAGE_OG_IMAGES.features] },
+  twitter: { images: [PAGE_OG_IMAGES.features] },
 };
 
-const FEATURES = [
+const FEATURE_GROUPS = [
   {
-    title: 'Tenant & Unit Management',
+    title: 'Operations',
+    summary: 'Run day-to-day facility workflows with clear visibility and fewer manual handoffs.',
     bullets: [
-      'Add tenants and assign units per facility.',
-      'Quick add or bulk import from CSV/Excel.',
-      'Track move-in, move-out, and unit status.',
-      'Unit list and map editor for visual layout.',
+      'Tenant profiles with account history and core contact context.',
+      'Unit tracking with status visibility and occupancy awareness.',
+      'Move-in/move-out workflows and day-to-day account operations.',
+      'Facility map and visual unit management for easier oversight.',
     ],
   },
   {
-    title: 'Billing & Payment Tracking',
+    title: 'Billing and payments',
+    summary: 'Maintain predictable billing operations and cleaner ledgers across facilities.',
     bullets: [
-      'Recurring charges and one-time fees.',
-      'Payment history and ledger per tenant.',
-      'Track deposits and refunds.',
-      'Billing history and payment reports.',
+      'Recurring charges and one-time fees with ledger tracking.',
+      'Stripe-powered payment workflows and payment history.',
+      'Autopay support where enabled.',
+      'Deposit and transaction records tied to tenant accounts.',
     ],
   },
   {
-    title: 'Automated Reminders (SMS/Email)',
+    title: 'Delinquency management',
+    summary: 'Handle past-due accounts with practical, operator-friendly workflows.',
     bullets: [
-      'Opt-in required for SMS. Message frequency varies.',
-      'Payment reminders and notices via SMS and email.',
-      'Reply STOP to opt out, HELP for help. Message & data rates may apply.',
-      'Configurable templates and timing.',
+      'Past-due dashboards and delinquency tracking.',
+      'Late notices and collections-oriented account visibility.',
+      'Lien and overlock workflow support where applicable.',
     ],
   },
   {
-    title: 'Late Fees & Notices',
+    title: 'Messaging and notifications',
+    summary: 'Reach tenants through account-related communications with consent-aware messaging.',
     bullets: [
-      'Late fees and delinquency automation.',
-      'Notices and reminders for past-due accounts.',
-      'Lien and lock-out workflow support.',
+      'SMS and email reminders for billing and account updates.',
+      'Opt-in required for SMS; STOP/HELP workflows supported.',
+      'Message frequency varies and message/data rates may apply.',
+      'Template-friendly communication workflows for teams.',
     ],
   },
   {
-    title: 'Reporting & Delinquency',
+    title: 'Contracts and documents',
+    summary: 'Support digital records and disclosures as part of your operating process.',
     bullets: [
-      'Past-due dashboard and occupancy rates.',
-      'Revenue and tenant counts by facility.',
-      'Activity logs and audit trails.',
+      'Contract and disclosure workflows with e-sign support surfaces.',
+      'Document access tied to account operations.',
+      'Policy-linked legal disclosure pages for transparency.',
     ],
   },
   {
-    title: 'Security & Activity Logs',
+    title: 'Reporting and visibility',
+    summary: 'Keep operators aligned with actionable reporting and operational signals.',
     bullets: [
-      'Role-based access and least-privilege controls.',
-      'Activity logs for accountability.',
-      'Secure authentication.',
+      'Activity logs and operational accountability.',
+      'Occupancy and revenue visibility by facility.',
+      'Workflow-oriented operational reporting.',
+    ],
+  },
+  {
+    title: 'Security and permissions',
+    summary: 'Use practical controls designed for SaaS operations, teams, and data stewardship.',
+    bullets: [
+      'Role-based access controls and secure authentication.',
+      'Cloud-hosted infrastructure with transport security.',
+      'Published security/privacy/legal pages for buyer trust.',
+    ],
+  },
+  {
+    title: 'Integrations',
+    summary: 'Connect core financial and communications workflows to proven provider ecosystems.',
+    bullets: [
+      'Stripe for payment processing.',
+      'Twilio for SMS delivery.',
+      'SendGrid for email workflows.',
+      'QuickBooks integration for accounting sync paths.',
     ],
   },
 ];
@@ -65,31 +94,41 @@ const FEATURES = [
 export default function FeaturesPage() {
   return (
     <>
-      <Section className="pt-12 pb-8">
+      <Section className="pt-10 pb-6">
+        <span className="eyebrow">Feature Coverage</span>
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Features</h1>
         <p className="mt-2 text-lg text-slate-600 max-w-2xl">
-          Everything you need to run your self-storage facility—tenant and unit management, billing, payments, and opt-in messaging.
+          A complete operations platform for self-storage teams: facility workflows, billing, messaging, delinquency,
+          reporting, and integrations.
         </p>
+        <div className="mt-8">
+          <DemoFrame src={HERO_IMAGE_PATH} alt="Storage Facility Creator operations dashboard screenshot" />
+        </div>
       </Section>
 
-      {FEATURES.map((f, i) => (
+      {FEATURE_GROUPS.map((f, i) => (
         <Section key={f.title} tint={i % 2 === 1}>
-          <h2 className="text-xl font-bold text-slate-900">{f.title}</h2>
-          <ul className="mt-4 space-y-2 text-slate-600" role="list">
+          <div className="max-w-4xl">
+            <h2 className="text-xl font-bold text-slate-900">{f.title}</h2>
+            <p className="mt-2 text-slate-600 leading-relaxed">{f.summary}</p>
+            <ul className="mt-4 grid sm:grid-cols-2 gap-2.5 text-slate-600 leading-relaxed" role="list">
             {f.bullets.map((b) => (
-              <li key={b} className="flex gap-2">
+              <li key={b} className="card-surface flex gap-2 p-3">
                 <span className="text-primary shrink-0" aria-hidden>•</span>
                 {b}
               </li>
             ))}
-          </ul>
+            </ul>
+          </div>
         </Section>
       ))}
 
       <Section>
-        <div className="text-center">
-          <CtaButton>Schedule a Demo</CtaButton>
+        <div className="mb-8 rounded-xl border border-slate-200 p-4 sm:p-5 text-sm text-slate-700 leading-relaxed">
+          Compare feature depth and positioning on the <a href="/compare" className="text-primary hover:underline">Compare Options</a>{' '}
+          page, or review pricing on <a href="/pricing" className="text-primary hover:underline">Pricing</a>.
         </div>
+        <PageCtaBand title="See these workflows in your context" subtitle="Book a demo and we will map features to your operating process." />
       </Section>
     </>
   );

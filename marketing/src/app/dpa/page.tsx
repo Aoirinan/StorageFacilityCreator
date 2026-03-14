@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -18,7 +19,7 @@ export default function DpaPage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">DPA Available Upon Request</h2>
           <p className="text-slate-600 mt-2">
@@ -43,7 +44,8 @@ export default function DpaPage() {
           <p className="text-slate-600 mt-2">
             To request a DPA, email us at{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>{' '}
-            with the subject line "DPA Request" and include your account email and business name. We will respond within 14 business days.
+            with the subject line "DPA Request" and include your account email and business name. We aim to respond
+            promptly based on request volume and review requirements.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Related Documents</h2>
@@ -59,6 +61,7 @@ export default function DpaPage() {
             Data processing questions:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

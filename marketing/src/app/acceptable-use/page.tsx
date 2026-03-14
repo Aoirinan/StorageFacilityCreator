@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -22,7 +23,7 @@ export default function AcceptableUsePage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">Permitted Use</h2>
           <p className="text-slate-600 mt-2">
@@ -91,6 +92,7 @@ export default function AcceptableUsePage() {
           <p className="text-slate-600 mt-2">
             We may update this policy from time to time. Material changes will be communicated via email or in-app notice. Continued use of the Service after changes constitutes acceptance.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

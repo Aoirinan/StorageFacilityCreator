@@ -1,12 +1,27 @@
 import Link from 'next/link';
 import Image from 'next/image';
-import { LOGO_PATH, SITE_NAME, SITE_VERSION, SUPPORT_EMAIL, SUPPORT_PHONE } from '@/config/site';
+import {
+  LOGO_PATH,
+  PRIMARY_CTA_HREF,
+  PRIMARY_CTA_LABEL,
+  SECONDARY_CTA_HREF,
+  SECONDARY_CTA_LABEL,
+  SITE_NAME,
+  SITE_VERSION,
+  SUPPORT_EMAIL,
+  SUPPORT_PHONE,
+} from '@/config/site';
 
 const PRODUCT_LINKS = [
+  { href: '/product-tour', label: 'Product Tour' },
+  { href: '/integrations', label: 'Integrations' },
+  { href: '/compare', label: 'Compare Options' },
+  { href: '/why-sfc', label: 'Why SFC' },
   { href: '/features', label: 'Features' },
   { href: '/pricing', label: 'Pricing' },
   { href: '/faq', label: 'FAQ' },
-  { href: '/contact', label: 'Schedule a Demo' },
+  { href: '/migration', label: 'Migration' },
+  { href: '/contact', label: 'Contact' },
 ];
 
 const LEGAL_LINKS = [
@@ -48,8 +63,20 @@ export function Footer() {
               <span className="font-bold text-white text-base leading-tight">{SITE_NAME}</span>
             </Link>
             <p className="text-slate-400 text-sm leading-relaxed max-w-xs">
-              Flat-rate management software built for independent storage facility operators. Tenants, billing, SMS reminders — one place.
+              Modern self-storage software for independent and multi-facility operators. Operations, billing,
+              messaging, and compliance transparency in one platform.
             </p>
+            <div className="flex flex-wrap gap-2">
+              <Link href={PRIMARY_CTA_HREF} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white">
+                {PRIMARY_CTA_LABEL}
+              </Link>
+              <Link
+                href={SECONDARY_CTA_HREF}
+                className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200"
+              >
+                {SECONDARY_CTA_LABEL}
+              </Link>
+            </div>
             {SUPPORT_EMAIL && (
               <a
                 href={`mailto:${SUPPORT_EMAIL}`}
@@ -76,7 +103,7 @@ export function Footer() {
                 <Link
                   key={href}
                   href={href}
-                  className="text-slate-400 hover:text-white text-sm transition-colors"
+                  className="text-slate-400 hover:text-white text-sm transition-colors tap-target"
                 >
                   {label}
                 </Link>
@@ -92,7 +119,7 @@ export function Footer() {
                 <Link
                   key={href}
                   href={href}
-                  className="text-slate-400 hover:text-white text-sm transition-colors"
+                  className="text-slate-400 hover:text-white text-sm transition-colors tap-target"
                 >
                   {label}
                 </Link>
@@ -108,7 +135,7 @@ export function Footer() {
                 <Link
                   key={href}
                   href={href}
-                  className="text-slate-400 hover:text-white text-sm transition-colors"
+                  className="text-slate-400 hover:text-white text-sm transition-colors tap-target"
                 >
                   {label}
                 </Link>

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -52,12 +53,12 @@ export default function SubprocessorsPage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">Current Subprocessors</h2>
 
-          <div className="mt-6 overflow-x-auto">
-            <table className="w-full text-sm text-slate-600 border-collapse">
+          <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full min-w-[760px] text-sm text-slate-600 border-collapse">
               <thead>
                 <tr className="bg-slate-100">
                   <th className="text-left p-3 border border-slate-200 font-semibold">Vendor</th>
@@ -95,6 +96,7 @@ export default function SubprocessorsPage() {
             <li><a href="/security" className="text-primary hover:underline">Security Overview</a> — our security controls</li>
             <li><a href="/dpa" className="text-primary hover:underline">Data Processing Agreement</a> — DPA information</li>
           </ul>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

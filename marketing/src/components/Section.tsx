@@ -11,7 +11,7 @@ export function Section({ children, className = '', tint, id }: Props) {
   return (
     <section
       id={id}
-      className={`py-16 sm:py-20 ${tint ? 'bg-surface' : ''} ${className}`}
+      className={`py-12 sm:py-16 lg:py-20 ${tint ? 'bg-surface' : ''} ${className}`}
     >
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         {children}

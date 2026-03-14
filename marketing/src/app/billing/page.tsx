@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -18,7 +19,7 @@ export default function BillingPage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">Subscription Pricing</h2>
           <p className="text-slate-600 mt-2">
@@ -85,6 +86,7 @@ export default function BillingPage() {
             Billing questions or disputes:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

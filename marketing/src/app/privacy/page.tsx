@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -19,10 +20,14 @@ export default function PrivacyPage() {
           Last updated: {LAST_UPDATED}.{' '}
           This document does not constitute legal advice.
         </p>
+        <p className="mt-3 text-sm text-slate-600 max-w-3xl">
+          This policy covers what data is collected, how it is used, where subprocessors are involved, and how to
+          request privacy support.
+        </p>
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">1. Overview</h2>
           <p className="text-slate-600 mt-2">
@@ -126,6 +131,7 @@ export default function PrivacyPage() {
             For privacy questions or requests:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

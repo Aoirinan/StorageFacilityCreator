@@ -1,0 +1,7 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Storage Facility Creator logo mark">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1D4ED8"/>
+  <path d="M16 36.5V20.5C16 19.67 16.67 19 17.5 19H46.5C47.33 19 48 19.67 48 20.5V36.5C48 37.33 47.33 38 46.5 38H17.5C16.67 38 16 37.33 16 36.5Z" fill="#DBEAFE"/>
+  <path d="M22 28H42" stroke="#1D4ED8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 33H36" stroke="#1D4ED8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24 45L30 51L42 39" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

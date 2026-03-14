@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { SUPPORT_EMAIL, SUPPORT_PHONE } from '@/config/site';
@@ -17,6 +17,15 @@ const UNIT_RANGES = [
 export default function ContactPage() {
   const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [intent, setIntent] = useState<'trial' | 'demo'>('demo');
+  const heading = intent === 'trial' ? 'Start your free trial' : 'Book a demo';
+  const submitLabel = intent === 'trial' ? 'Start Free Trial' : 'Book a Demo';
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    setIntent(params.get('intent') === 'trial' ? 'trial' : 'demo');
+  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -51,15 +60,17 @@ export default function ContactPage() {
   return (
     <>
       <Section className="pt-12 pb-8">
+        <span className="eyebrow">Sales & Support</span>
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Contact</h1>
         <p className="mt-2 text-lg text-slate-600 max-w-2xl">
-          Schedule a demo or get in touch. We’ll respond as soon as we can.
+          Book a demo, start a trial conversation, or ask implementation questions.
         </p>
       </Section>
 
       <Section tint>
         <div className="max-w-xl mx-auto">
-          <h2 className="text-2xl font-bold text-slate-900 mb-6">Schedule a Demo</h2>
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">{heading}</h2>
+          <p className="mb-6 text-sm text-slate-600">No onboarding fee. Flat monthly pricing.</p>
 
           {status === 'success' && (
             <div className="mb-6 p-4 rounded-lg bg-green-50 text-green-800 border border-green-200" role="status">
@@ -74,6 +85,7 @@ export default function ContactPage() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-5">
+            <input type="hidden" name="intent" value={intent} />
             <div>
               <label htmlFor="name" className="block text-sm font-medium text-slate-700">
                 Name <span className="text-red-600">*</span>
@@ -137,6 +149,15 @@ export default function ContactPage() {
                 className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 shadow-xs focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <label htmlFor="smsConsent" className="flex items-start gap-2 text-sm text-slate-700">
+                <input id="smsConsent" name="smsConsent" type="checkbox" className="mt-0.5 h-4 w-4 rounded border-slate-300" />
+                <span>
+                  I consent to receive account-related SMS messages if I provide a mobile number. Message frequency varies.
+                  Reply STOP to opt out and HELP for help. Message and data rates may apply. Consent is not a condition of purchase.
+                </span>
+              </label>
+            </div>
             <div>
               <label htmlFor="unitCount" className="block text-sm font-medium text-slate-700">
                 Number of units (optional)
@@ -169,8 +190,14 @@ export default function ContactPage() {
               disabled={status === 'sending'}
               className="w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-white hover:bg-primary-dark disabled:opacity-60 transition-colors"
             >
-              {status === 'sending' ? 'Sending…' : 'Submit'}
+              {status === 'sending' ? 'Sending…' : submitLabel}
             </button>
+            <p className="text-xs text-slate-500">
+              By submitting this form, you agree to our <a href="/terms" className="text-primary hover:underline">Terms</a> and{' '}
+              <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a>. For SMS-related communications,
+              review our <a href="/sms-terms" className="text-primary hover:underline">SMS Terms</a>. You can book a demo
+              without SMS consent.
+            </p>
           </form>
         </div>
       </Section>

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -23,7 +24,7 @@ export default function EsignDisclosurePage() {
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">Overview</h2>
           <p className="text-slate-600 mt-2">
@@ -206,6 +207,7 @@ export default function EsignDisclosurePage() {
               {SUPPORT_EMAIL}
             </a>.
           </p>
+          <LegalLinksPanel />
 
         </div>
       </Section>

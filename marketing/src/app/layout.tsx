@@ -3,25 +3,35 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
-import { SITE_NAME } from '@/config/site';
+import { DEFAULT_OG_IMAGE, LOGO_PATH, SITE_DOMAIN, SITE_NAME } from '@/config/site';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_DOMAIN),
   title: {
     default: `${SITE_NAME} | Self-Storage Management Software`,
     template: `%s | ${SITE_NAME}`,
   },
   description:
-    'Flat-rate self-storage management: tenants, units, billing, payments, and opt-in SMS reminders. $75/month, no onboarding fee, 30-day trial.',
+    'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
   openGraph: {
     title: `${SITE_NAME} | Self-Storage Management Software`,
     description:
-      'Flat-rate self-storage management: tenants, units, billing, payments, and opt-in SMS reminders. $75/month, no onboarding fee, 30-day trial.',
+      'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
     type: 'website',
+    url: SITE_DOMAIN,
+    images: [{ url: DEFAULT_OG_IMAGE, width: 1200, height: 630, alt: `${SITE_NAME} dashboard` }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: `${SITE_NAME} | Self-Storage Management Software`,
+    description:
+      'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
+    images: [DEFAULT_OG_IMAGE],
   },
   robots: { index: true, follow: true },
-  icons: { icon: '/logo.png' },
+  icons: { icon: LOGO_PATH },
 };
 
 export default function RootLayout({
@@ -32,8 +42,13 @@ export default function RootLayout({
   return (
     <html lang="en" className={inter.variable}>
       <body className="min-h-screen flex flex-col antialiased font-sans">
+        <a href="#main-content" className="skip-link">
+          Skip to content
+        </a>
         <Header />
-        <main className="flex-1">{children}</main>
+        <main id="main-content" className="flex-1">
+          {children}
+        </main>
         <Footer />
       </body>
     </html>

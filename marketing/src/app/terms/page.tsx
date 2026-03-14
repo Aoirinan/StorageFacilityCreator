@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -19,10 +20,14 @@ export default function TermsPage() {
           Last updated: {LAST_UPDATED}.{' '}
           This document does not constitute legal advice.
         </p>
+        <p className="mt-3 text-sm text-slate-600 max-w-3xl">
+          These terms explain how SFC is licensed, billed, and used, including messaging responsibilities and customer
+          data handling expectations.
+        </p>
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">1. Definitions</h2>
           <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
@@ -152,6 +157,7 @@ export default function TermsPage() {
             Questions about these Terms:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>

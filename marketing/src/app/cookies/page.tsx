@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Section } from '@/components/Section';
+import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
@@ -15,10 +16,14 @@ export default function CookiesPage() {
       <Section className="pt-12 pb-8">
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Cookie Policy</h1>
         <p className="mt-2 text-slate-600">Last updated: {LAST_UPDATED}.</p>
+        <p className="mt-3 text-sm text-slate-600 max-w-3xl">
+          This page describes the essential and preference-level cookie/storage behaviors used by SFC and how browser
+          controls can be applied.
+        </p>
       </Section>
 
       <Section tint>
-        <div className="prose prose-slate max-w-none">
+        <div className="prose prose-slate max-w-4xl legal-prose leading-relaxed">
 
           <h2 className="text-xl font-bold text-slate-900">What Are Cookies?</h2>
           <p className="text-slate-600 mt-2">
@@ -31,8 +36,8 @@ export default function CookiesPage() {
           <p className="text-slate-600 mt-2">
             These cookies are required for the Service to function. They include session management, authentication tokens, and security tokens. Without these cookies, you cannot log in or use the application. You cannot opt out of essential cookies while using the Service.
           </p>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm text-slate-600 border-collapse">
+          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full min-w-[680px] text-sm text-slate-600 border-collapse">
               <thead>
                 <tr className="bg-slate-100">
                   <th className="text-left p-3 border border-slate-200 font-semibold">Cookie / Storage Key</th>
@@ -80,6 +85,7 @@ export default function CookiesPage() {
             Questions about cookies:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
+          <LegalLinksPanel />
         </div>
       </Section>
     </>
