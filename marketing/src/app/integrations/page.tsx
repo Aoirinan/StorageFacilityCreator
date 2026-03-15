@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
 import { PAGE_OG_IMAGES } from '@/config/site';
@@ -68,8 +69,8 @@ export default function IntegrationsPage() {
           communications. If you need a specific integration, discuss requirements during demo and onboarding planning.
         </p>
         <p className="mt-3 text-sm text-slate-600">
-          Need a side-by-side fit check? See <a href="/compare" className="text-primary hover:underline">Compare Options</a>{' '}
-          or review workflow coverage on <a href="/product-tour" className="text-primary hover:underline">Product Tour</a>.
+          Need a side-by-side fit check? See <Link href="/compare" className="text-primary hover:underline">Compare Options</Link>{' '}
+          or review workflow coverage on <Link href="/product-tour" className="text-primary hover:underline">Product Tour</Link>.
         </p>
       </Section>
 

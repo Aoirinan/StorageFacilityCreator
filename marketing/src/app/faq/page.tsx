@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import Script from 'next/script';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
@@ -114,8 +115,8 @@ export default function FaqPage() {
           <A2pSnippet />
         </div>
         <p className="mt-3 text-sm text-slate-600">
-          Review full details in <a className="text-primary hover:underline" href="/sms-terms">SMS Terms</a> and{' '}
-          <a className="text-primary hover:underline" href="/privacy">Privacy Policy</a>.
+          Review full details in <Link className="text-primary hover:underline" href="/sms-terms">SMS Terms</Link> and{' '}
+          <Link className="text-primary hover:underline" href="/privacy">Privacy Policy</Link>.
         </p>
       </Section>
 
@@ -125,7 +126,7 @@ export default function FaqPage() {
           <CtaButton href={SECONDARY_CTA_HREF} variant="secondary" />
         </div>
         <p className="mt-4 text-center text-sm text-slate-600">
-          For implementation planning details, see <a href="/migration" className="text-primary hover:underline">Migration</a>.
+          For implementation planning details, see <Link href="/migration" className="text-primary hover:underline">Migration</Link>.
         </p>
       </Section>
     </>

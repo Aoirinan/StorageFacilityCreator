@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
 import { PAGE_OG_IMAGES, PRICE_MONTHLY, PRIMARY_CTA_HREF, SECONDARY_CTA_HREF, TRIAL_LINE } from '@/config/site';
@@ -91,8 +92,8 @@ export default function PricingPage() {
           ))}
         </div>
         <p className="mt-6 text-sm text-slate-600">
-          For security details, see <a href="/security" className="text-primary hover:underline">Security</a>. For full feature
-          coverage, see <a href="/features" className="text-primary hover:underline">Features</a>.
+          For security details, see <Link href="/security" className="text-primary hover:underline">Security</Link>. For full feature
+          coverage, see <Link href="/features" className="text-primary hover:underline">Features</Link>.
         </p>
       </Section>
     </>

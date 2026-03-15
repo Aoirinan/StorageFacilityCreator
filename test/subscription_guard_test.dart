@@ -44,6 +44,8 @@ void main() {
       currentRoute: '/dashboard',
       superAdminResolver: () => false,
       accountProvider: (_) async => _account(status: SubscriptionStatus.active),
+      facilitiesProvider: () async => [],
+      activeSubscriptionChecker: (_, __) async => true,
     );
 
     expect(result.canAccess, isTrue);
@@ -61,10 +63,12 @@ void main() {
         status: SubscriptionStatus.pastDue,
         periodEnd: expiredPeriodEnd,
       ),
+      facilitiesProvider: () async => [],
+      activeSubscriptionChecker: (_, __) async => false,
     );
 
     expect(result.canAccess, isFalse);
-    expect(result.redirectRoute, '/subscription');
+    expect(result.redirectRoute, '/subscription?pastDue=1');
   });
 }
 

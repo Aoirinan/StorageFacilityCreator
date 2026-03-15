@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
@@ -190,11 +191,11 @@ export default function EsignDisclosurePage() {
           </h2>
           <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
             <li>
-              <a href="/terms" className="text-primary hover:underline">Terms of Service</a> —
+              <Link href="/terms" className="text-primary hover:underline">Terms of Service</Link> —
               governs your use of the {SITE_NAME} platform
             </li>
             <li>
-              <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a> —
+              <Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link> —
               how we collect, use, and protect your data
             </li>
           </ul>

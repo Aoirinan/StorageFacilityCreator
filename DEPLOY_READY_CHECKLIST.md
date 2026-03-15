@@ -7,11 +7,13 @@ Date: 2026-03-14
 - [x] `marketing/` production build succeeds (`npm run build`).
 - [x] All intended public routes generate successfully.
 - [x] SEO routes generate successfully (`/robots.txt`, `/sitemap.xml`).
+- [x] Local production-server smoke test confirms expected routes return HTTP 200.
 - [x] Marketing lint passes with aligned ESLint config (`npm run lint`).
 - [x] Release readiness automation passes (`npm run check:release`).
 - [x] Functions QuickBooks preflight passes (`npm --prefix functions run check:quickbooks`).
 - [x] Functions test suite passes (`npm --prefix functions test`).
 - [x] Optional app-wide static analysis executed (`flutter analyze`) with existing non-release-blocking backlog documented in go/no-go and regression reports.
+- [x] Optional app-wide Flutter tests pass (`flutter test`).
 
 ## 2) Conversion Flow Validation
 
@@ -66,6 +68,7 @@ Date: 2026-03-14
 ## 8) Go-Live Safeguards
 
 - [x] Generated release automation and CI workflow for repeatable checks (`.github/workflows/release-readiness.yml`).
+- [x] CI workflow configured so Flutter analyze is non-blocking while legacy analyzer backlog is remediated; Flutter tests remain blocking.
 - [x] Confirmed no unintended runtime changes in app/payment/storage workflows from marketing updates.
 - [x] Defined low-risk deployment sequence and monitoring requirements in go/no-go report.
 - [x] Contact-form monitoring now has production signal (email delivery) instead of development-only logs.

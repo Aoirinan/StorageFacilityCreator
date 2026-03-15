@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/site';
@@ -24,7 +25,7 @@ export default function BillingPage() {
           <h2 className="text-xl font-bold text-slate-900">Subscription Pricing</h2>
           <p className="text-slate-600 mt-2">
             {SITE_NAME} is billed at a flat rate of <strong>${PRICE_MONTHLY}/month</strong> per account. There are no per-unit fees, onboarding fees, or hidden charges. Pricing is displayed on our{' '}
-            <a href="/pricing" className="text-primary hover:underline">Pricing page</a> and confirmed at signup.
+            <Link href="/pricing" className="text-primary hover:underline">Pricing page</Link> and confirmed at signup.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Trial Period</h2>
@@ -46,7 +47,7 @@ export default function BillingPage() {
           </p>
           <p className="text-slate-600 mt-2">
             After cancellation, your account data will be retained for a reasonable period before deletion, as described in our{' '}
-            <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a>.
+            <Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link>.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Refund Policy</h2>

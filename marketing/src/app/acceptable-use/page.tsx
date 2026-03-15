@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
@@ -18,7 +19,7 @@ export default function AcceptableUsePage() {
         <p className="mt-2 text-slate-600">Last updated: {LAST_UPDATED}.</p>
         <p className="mt-1 text-slate-600">
           This policy applies to all Customers and users of the {SITE_NAME} Service. It supplements our{' '}
-          <a href="/terms" className="text-primary hover:underline">Terms of Service</a>.
+          <Link href="/terms" className="text-primary hover:underline">Terms of Service</Link>.
         </p>
       </Section>
 

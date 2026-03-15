@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
@@ -193,9 +194,9 @@ export default function ContactPage() {
               {status === 'sending' ? 'Sending…' : submitLabel}
             </button>
             <p className="text-xs text-slate-500">
-              By submitting this form, you agree to our <a href="/terms" className="text-primary hover:underline">Terms</a> and{' '}
-              <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a>. For SMS-related communications,
-              review our <a href="/sms-terms" className="text-primary hover:underline">SMS Terms</a>. You can book a demo
+              By submitting this form, you agree to our <Link href="/terms" className="text-primary hover:underline">Terms</Link> and{' '}
+              <Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link>. For SMS-related communications,
+              review our <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link>. You can book a demo
               without SMS consent.
             </p>
           </form>

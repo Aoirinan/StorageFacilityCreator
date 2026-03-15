@@ -1,11 +1,12 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/facility_creator_account_model.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/facility_service.dart';
-import '../services/superadmin_service.dart';
-import 'error_reporter.dart';
-import 'debug_logger.dart';
+import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
+import 'package:sfcapp/services/error_reporter.dart';
+import 'package:sfcapp/services/debug_logger.dart';
 
 /// Result of subscription access check
 class SubscriptionAccessResult {
@@ -32,6 +33,8 @@ class SubscriptionGuardService {
     bool allowSubscriptionRoutes = true,
     User? userOverride,
     Future<FacilityCreatorAccountModel?> Function(String uid)? accountProvider,
+    Future<List<FacilityModel>> Function()? facilitiesProvider,
+    Future<bool> Function(String uid, List<FacilityModel> facilities)? activeSubscriptionChecker,
     bool Function()? superAdminResolver,
     FirebaseAuth? authOverride,
   }) async {
@@ -99,8 +102,15 @@ class SubscriptionGuardService {
       }
 
       // Check if user can access platform (account-level OR per-facility subs)
-      final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
+      final facilitiesFetcher =
+          facilitiesProvider ??
+          () => FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
+      final facilities = await facilitiesFetcher();
+      final accessChecker =
+          activeSubscriptionChecker ??
+          (String uid, List<FacilityModel> f) =>
+              FacilityCreatorAccountService.hasActiveSubscription(uid, facilities: f);
+      final hasAccess = await accessChecker(user.uid, facilities);
       if (!hasAccess) {
         if (kDebugMode) {
           print('❌ [SubscriptionGuard] Access denied - subscription status: ${status.name}');

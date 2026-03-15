@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
@@ -76,7 +77,7 @@ export default function PrivacyPage() {
             <A2pSnippet />
           </div>
           <p className="text-slate-600 mt-4">
-            See our <a href="/sms-terms" className="text-primary hover:underline">SMS Terms</a> for full details on consent, opt-out, and message frequency.
+            See our <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link> for full details on consent, opt-out, and message frequency.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">5. Sharing and Subprocessors</h2>
@@ -84,7 +85,7 @@ export default function PrivacyPage() {
             We share data with third-party vendors and processors that help us operate the Service. We require them to protect your data and use it only for the purposes we specify. We do not sell your personal information or Customer Data to third parties.
           </p>
           <p className="text-slate-600 mt-2">
-            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), and Twilio/SendGrid (messaging). See our full <a href="/subprocessors" className="text-primary hover:underline">Subprocessor List</a> for details.
+            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), and Twilio/SendGrid (messaging). See our full <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
           </p>
           <p className="text-slate-600 mt-2">
             We may also disclose information if required by law, court order, or to protect the rights, property, or safety of {SITE_NAME}, our Customers, or others.
@@ -118,7 +119,7 @@ export default function PrivacyPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">9. Security</h2>
           <p className="text-slate-600 mt-2">
-            We use reasonable technical and organizational measures to protect your data, including encryption in transit and access controls. See our <a href="/security" className="text-primary hover:underline">Security Overview</a> for more detail.
+            We use reasonable technical and organizational measures to protect your data, including encryption in transit and access controls. See our <Link href="/security" className="text-primary hover:underline">Security Overview</Link> for more detail.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">10. Changes to This Policy</h2>

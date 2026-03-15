@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
 import { PAGE_OG_IMAGES } from '@/config/site';
@@ -40,8 +41,8 @@ export default function WhySfcPage() {
           <li>• Practical integrations for billing and communications</li>
         </ul>
         <p className="mt-4 text-sm text-slate-600">
-          For implementation depth, review <a href="/product-tour" className="text-primary hover:underline">Product Tour</a>{' '}
-          and <a href="/integrations" className="text-primary hover:underline">Integrations</a>.
+          For implementation depth, review <Link href="/product-tour" className="text-primary hover:underline">Product Tour</Link>{' '}
+          and <Link href="/integrations" className="text-primary hover:underline">Integrations</Link>.
         </p>
       </Section>
 

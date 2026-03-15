@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
@@ -50,10 +51,10 @@ export default function DpaPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Related Documents</h2>
           <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
-            <li><a href="/privacy" className="text-primary hover:underline">Privacy Policy</a> — how we collect and use data</li>
-            <li><a href="/subprocessors" className="text-primary hover:underline">Subprocessor List</a> — third-party processors we use</li>
-            <li><a href="/security" className="text-primary hover:underline">Security Overview</a> — our security controls and practices</li>
-            <li><a href="/terms" className="text-primary hover:underline">Terms of Service</a> — Customer Data ownership and processing terms</li>
+            <li><Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link> — how we collect and use data</li>
+            <li><Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> — third-party processors we use</li>
+            <li><Link href="/security" className="text-primary hover:underline">Security Overview</Link> — our security controls and practices</li>
+            <li><Link href="/terms" className="text-primary hover:underline">Terms of Service</Link> — Customer Data ownership and processing terms</li>
           </ul>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Contact</h2>

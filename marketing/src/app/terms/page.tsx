@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
@@ -64,7 +65,7 @@ export default function TermsPage() {
             <li><strong>Trial:</strong> We may offer a trial period (e.g. {TRIAL_LINE}). Trial terms will be stated at signup.</li>
             <li><strong>Payment:</strong> You agree to pay fees when due. Failure to pay may result in suspension or termination of access.</li>
             <li><strong>Renewal:</strong> Subscriptions renew automatically on a monthly basis unless cancelled before the renewal date.</li>
-            <li><strong>Cancellation and Refunds:</strong> You may cancel at any time. Cancellation takes effect at the end of the current billing period. We do not provide refunds for partial periods unless required by applicable law or agreed to in writing. See our <a href="/billing" className="text-primary hover:underline">Billing &amp; Refund Policy</a> for details.</li>
+            <li><strong>Cancellation and Refunds:</strong> You may cancel at any time. Cancellation takes effect at the end of the current billing period. We do not provide refunds for partial periods unless required by applicable law or agreed to in writing. See our <Link href="/billing" className="text-primary hover:underline">Billing &amp; Refund Policy</Link> for details.</li>
           </ul>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">5. Customer Responsibilities</h2>
@@ -74,12 +75,12 @@ export default function TermsPage() {
             <li><strong>Tenant consent for messaging:</strong> Obtaining all legally required consents from your Tenants before sending them SMS or email communications through the Service. You must not send messages to Tenants who have not opted in or who have opted out.</li>
             <li><strong>Accuracy of data:</strong> Ensuring that Customer Data you enter is accurate, lawfully obtained, and does not infringe any third-party rights.</li>
             <li><strong>Account security:</strong> Maintaining the confidentiality of your account credentials and notifying us promptly of any unauthorized access.</li>
-            <li><strong>Compliance:</strong> Complying with our <a href="/acceptable-use" className="text-primary hover:underline">Acceptable Use Policy</a> and all applicable carrier requirements for messaging.</li>
+            <li><strong>Compliance:</strong> Complying with our <Link href="/acceptable-use" className="text-primary hover:underline">Acceptable Use Policy</Link> and all applicable carrier requirements for messaging.</li>
           </ul>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">6. Customer Data</h2>
           <p className="text-slate-600 mt-2">
-            You retain ownership of your Customer Data. By using the Service, you grant {SITE_NAME} a limited license to store, process, and use Customer Data solely to provide and improve the Service, as described in our <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a>. We do not sell Customer Data to third parties.
+            You retain ownership of your Customer Data. By using the Service, you grant {SITE_NAME} a limited license to store, process, and use Customer Data solely to provide and improve the Service, as described in our <Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link>. We do not sell Customer Data to third parties.
           </p>
           <p className="text-slate-600 mt-2">
             You are responsible for ensuring that your collection and use of Tenant data complies with applicable privacy laws. {SITE_NAME} processes Tenant data on your behalf as a data processor.
@@ -96,7 +97,7 @@ export default function TermsPage() {
             <li><strong>SendGrid (Twilio)</strong> — email delivery (where used).</li>
           </ul>
           <p className="text-slate-600 mt-2">
-            Your use of the Service is subject to these providers' terms and policies. See our <a href="/subprocessors" className="text-primary hover:underline">Subprocessor List</a> for more detail.
+            Your use of the Service is subject to these providers' terms and policies. See our <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for more detail.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">8. Messaging Terms (SMS / Email)</h2>
@@ -114,7 +115,7 @@ export default function TermsPage() {
             <A2pSnippet />
           </div>
           <p className="text-slate-600 mt-4">
-            See our <a href="/sms-terms" className="text-primary hover:underline">SMS Terms</a> for the full SMS consent and opt-out policy.
+            See our <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link> for the full SMS consent and opt-out policy.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">9. Availability and Maintenance</h2>

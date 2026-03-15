@@ -806,3 +806,11 @@ export async function autoSyncPaymentIfEligible(
     });
   }
 }
+
+export const quickBooksTestUtils = {
+  formatDate,
+  asNumber,
+  getApiBase,
+  getAuthorizeBase,
+  tokenEndpoint,
+};

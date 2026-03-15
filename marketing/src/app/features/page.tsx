@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
 import { DemoFrame } from '@/components/DemoFrame';
@@ -125,8 +126,8 @@ export default function FeaturesPage() {
 
       <Section>
         <div className="mb-8 rounded-xl border border-slate-200 p-4 sm:p-5 text-sm text-slate-700 leading-relaxed">
-          Compare feature depth and positioning on the <a href="/compare" className="text-primary hover:underline">Compare Options</a>{' '}
-          page, or review pricing on <a href="/pricing" className="text-primary hover:underline">Pricing</a>.
+          Compare feature depth and positioning on the <Link href="/compare" className="text-primary hover:underline">Compare Options</Link>{' '}
+          page, or review pricing on <Link href="/pricing" className="text-primary hover:underline">Pricing</Link>.
         </div>
         <PageCtaBand title="See these workflows in your context" subtitle="Book a demo and we will map features to your operating process." />
       </Section>

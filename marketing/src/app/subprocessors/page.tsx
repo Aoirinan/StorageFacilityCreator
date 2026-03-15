@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
 import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
@@ -92,9 +93,9 @@ export default function SubprocessorsPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Related Policies</h2>
           <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
-            <li><a href="/privacy" className="text-primary hover:underline">Privacy Policy</a> — how we collect and use data</li>
-            <li><a href="/security" className="text-primary hover:underline">Security Overview</a> — our security controls</li>
-            <li><a href="/dpa" className="text-primary hover:underline">Data Processing Agreement</a> — DPA information</li>
+            <li><Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link> — how we collect and use data</li>
+            <li><Link href="/security" className="text-primary hover:underline">Security Overview</Link> — our security controls</li>
+            <li><Link href="/dpa" className="text-primary hover:underline">Data Processing Agreement</Link> — DPA information</li>
           </ul>
           <LegalLinksPanel />
         </div>

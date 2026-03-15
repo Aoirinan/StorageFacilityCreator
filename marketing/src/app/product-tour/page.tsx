@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { DemoFrame } from '@/components/DemoFrame';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
@@ -68,8 +69,8 @@ export default function ProductTourPage() {
 
       <Section>
         <p className="mb-6 text-sm text-slate-600">
-          Compare platform fit on <a href="/compare" className="text-primary hover:underline">Compare Options</a>{' '}
-          or review provider details on <a href="/integrations" className="text-primary hover:underline">Integrations</a>.
+          Compare platform fit on <Link href="/compare" className="text-primary hover:underline">Compare Options</Link>{' '}
+          or review provider details on <Link href="/integrations" className="text-primary hover:underline">Integrations</Link>.
         </p>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
           {EXTRA_DEMO_IMAGES.map((image) => (

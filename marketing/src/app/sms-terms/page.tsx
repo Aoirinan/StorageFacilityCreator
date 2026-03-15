@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
@@ -104,7 +105,7 @@ export default function SmsTermsPage() {
           </ul>
           <p className="text-slate-600 mt-2">
             {SITE_NAME} provides the technical infrastructure for messaging but does not independently verify that each Customer has obtained proper consent. Customers indemnify {SITE_NAME} for any claims arising from their messaging activities. See our{' '}
-            <a href="/terms" className="text-primary hover:underline">Terms of Service</a> for the full indemnification clause.
+            <Link href="/terms" className="text-primary hover:underline">Terms of Service</Link> for the full indemnification clause.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">A2P 10DLC Compliance</h2>
@@ -115,8 +116,8 @@ export default function SmsTermsPage() {
           <h2 className="text-xl font-bold text-slate-900 mt-8">Privacy</h2>
           <p className="text-slate-600 mt-2">
             Phone numbers and SMS consent records are handled in accordance with our{' '}
-            <a href="/privacy" className="text-primary hover:underline">Privacy Policy</a>. Phone numbers are shared with Twilio solely for the purpose of SMS delivery. See our{' '}
-            <a href="/subprocessors" className="text-primary hover:underline">Subprocessor List</a> for details.
+            <Link href="/privacy" className="text-primary hover:underline">Privacy Policy</Link>. Phone numbers are shared with Twilio solely for the purpose of SMS delivery. See our{' '}
+            <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Contact</h2>
