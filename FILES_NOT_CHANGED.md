@@ -17,7 +17,6 @@ Reason: avoids auth, redirect, and route regression risk.
 
 - `functions/src/index.ts` - central callable/onRequest runtime for Stripe, Twilio, SendGrid, QuickBooks.
 - `functions/src/stripe/tenant_billing.ts` - payment setup, payment intents, autopay behaviors.
-- `functions/src/accounting/quickbooks.ts` - QuickBooks OAuth and accounting sync logic.
 - `lib/services/stripe_service.dart`
 - `lib/services/stripe_connect_service.dart`
 - `lib/services/sms_service.dart`
@@ -42,10 +41,6 @@ Reason: security/runtime-sensitive config and hosted payment shell behavior.
 
 ## Marketing Files Reviewed But Left As-Is
 
-- `marketing/src/app/acceptable-use/page.tsx` - content already structured and cross-linked.
-- `marketing/src/app/billing/page.tsx` - pricing/billing legal intent preserved.
-- `marketing/src/app/esign-disclosure/page.tsx` - detailed structure already present; no high-confidence legal rewrite needed.
-- `marketing/src/app/subprocessors/page.tsx` - table structure already clear and accurate.
 - `marketing/src/components/CtaButton.tsx` - variant hierarchy already stable.
 - `marketing/src/app/robots.ts` - already correct and stable.
 

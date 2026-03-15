@@ -18,10 +18,11 @@ Reason: changing these can break auth redirects, dashboard access, and productio
 
 - `functions/src/index.ts` - central callable/onRequest exports for Stripe/Twilio/SendGrid/QuickBooks and many operational flows.
 - `functions/src/stripe/tenant_billing.ts` - payment method setup, one-time payment intents, autopay.
-- `functions/src/accounting/quickbooks.ts` - QuickBooks OAuth, status, invoice/payment sync, autosync logic.
 - `functions/src/migrations/**` - migration scripts not related to marketing changes.
 
 Reason: mission explicitly requires preserving billing/messaging/accounting integrations and env-var behavior.
+
+Exception applied in this execution: `functions/src/accounting/quickbooks.ts` received a minimal non-runtime testability export (`quickBooksTestUtils`) to support deterministic Node tests, with no behavioral path changes to OAuth/sync flows.
 
 ## App integration services and screens
 
