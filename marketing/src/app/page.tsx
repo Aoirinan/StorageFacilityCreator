@@ -6,7 +6,6 @@ import {
   HERO_SUBHEADLINE,
   MICROCOPY_POINTS,
   TRUST_STRIP_ITEMS,
-  EXTRA_DEMO_IMAGES,
   PRIMARY_CTA_HREF,
   PRIMARY_CTA_LABEL,
   SECONDARY_CTA_HREF,
@@ -278,23 +277,6 @@ export default function HomePage() {
           ))}
         </div>
       </Section>
-
-      {/* Screenshots */}
-      {EXTRA_DEMO_IMAGES.length > 0 && (
-        <Section>
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">See the app in action</h2>
-          <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-            Real screenshots from the product.
-          </p>
-          <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-8" role="list">
-            {EXTRA_DEMO_IMAGES.map(({ src, alt }) => (
-              <li key={src}>
-                <DemoFrame src={src} alt={alt} />
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
 
       {/* Why choose SFC */}
       <Section tint>
