@@ -6,9 +6,15 @@ type DemoFrameProps = {
   src?: string;
   alt?: string;
   priority?: boolean;
+  sizes?: string;
 };
 
-export function DemoFrame({ src = DEMO_IMAGE_PATH, alt = 'Storage Facility Creator dashboard', priority = false }: DemoFrameProps) {
+export function DemoFrame({
+  src = DEMO_IMAGE_PATH,
+  alt = 'Storage Facility Creator dashboard',
+  priority = false,
+  sizes = '(max-width: 768px) 100vw, 50vw',
+}: DemoFrameProps) {
   return (
     <div className="relative rounded-xl overflow-hidden shadow-xl border border-slate-200/80 bg-white">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-slate-50/80">
@@ -22,7 +28,7 @@ export function DemoFrame({ src = DEMO_IMAGE_PATH, alt = 'Storage Facility Creat
           alt={alt}
           fill
           className="object-contain"
-          sizes="(max-width: 768px) 100vw, 50vw"
+          sizes={sizes}
           priority={priority}
         />
       </div>

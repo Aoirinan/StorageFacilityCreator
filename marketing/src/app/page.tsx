@@ -256,6 +256,9 @@ export default function HomePage() {
       {/* How it works */}
       <Section tint>
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">How it works</h2>
+        <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
+          A straightforward workflow from setup to daily operations, shown with real in-app screens.
+        </p>
         <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
           {HOW_IT_WORKS.map(({ step, title, description }) => (
             <div key={step} className="rounded-xl bg-white border border-slate-200 p-5">
@@ -270,7 +273,7 @@ export default function HomePage() {
         <div className="mt-10 grid sm:grid-cols-2 gap-6">
           {HOW_IT_WORKS_SCREENSHOTS.map(({ src, title, description, alt }) => (
             <article key={src} className="card-surface p-3 sm:p-4">
-              <DemoFrame src={src} alt={alt} />
+              <DemoFrame src={src} alt={alt} sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 540px" />
               <h3 className="mt-4 font-semibold text-slate-900">{title}</h3>
               <p className="mt-1 text-sm text-slate-600">{description}</p>
             </article>
