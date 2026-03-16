@@ -78,6 +78,33 @@ const HOW_IT_WORKS = [
   },
 ];
 
+const HOW_IT_WORKS_SCREENSHOTS = [
+  {
+    src: '/how-it-works-facility-setup.png',
+    title: 'Facility setup',
+    description: 'Configure facility details and operating basics in one guided form.',
+    alt: 'Storage Facility Creator facility setup screen',
+  },
+  {
+    src: '/how-it-works-tenants.png',
+    title: 'Tenant and unit visibility',
+    description: 'Track tenant records, unit assignments, rates, and balances from one list.',
+    alt: 'Storage Facility Creator tenants list screen',
+  },
+  {
+    src: '/how-it-works-autopay.png',
+    title: 'Autopay controls',
+    description: 'Manage payment methods and autopay status with full activity history.',
+    alt: 'Storage Facility Creator autopay management screen',
+  },
+  {
+    src: '/how-it-works-delinquency.png',
+    title: 'Delinquency workflows',
+    description: 'Review overdue balances and drive next-step collection actions.',
+    alt: 'Storage Facility Creator delinquency overview screen',
+  },
+];
+
 const TOUR_CARDS = [
   { title: 'Dashboard overview', description: 'Monitor occupancy, balances, and action items quickly.' },
   { title: 'Tenant records', description: 'View account, payment, and communication history in context.' },
@@ -239,6 +266,15 @@ export default function HomePage() {
               <h3 className="mt-3 font-semibold text-slate-900">{title}</h3>
               <p className="mt-1 text-sm text-slate-600">{description}</p>
             </div>
+          ))}
+        </div>
+        <div className="mt-10 grid sm:grid-cols-2 gap-6">
+          {HOW_IT_WORKS_SCREENSHOTS.map(({ src, title, description, alt }) => (
+            <article key={src} className="card-surface p-3 sm:p-4">
+              <DemoFrame src={src} alt={alt} />
+              <h3 className="mt-4 font-semibold text-slate-900">{title}</h3>
+              <p className="mt-1 text-sm text-slate-600">{description}</p>
+            </article>
           ))}
         </div>
       </Section>
