@@ -129,6 +129,12 @@ const COMPLIANCE_LINKS = [
   { href: '/dpa', label: 'DPA Availability' },
 ];
 
+const DNR_USE_CASES = [
+  'Abandoned units, damage, or serious rule violations documented by your team',
+  'Operational risk visibility across participating facilities',
+  'Built-in accountability with facility identity and submitting employee details',
+];
+
 export default function HomePage() {
   const orgSchema = {
     '@context': 'https://schema.org',
@@ -298,6 +304,55 @@ export default function HomePage() {
           <Link href="/compare" className="text-primary font-medium hover:underline">
             Compare options →
           </Link>
+        </div>
+      </Section>
+
+      {/* Global DNR */}
+      <Section>
+        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Global Do Not Rent List</h2>
+        <p className="mt-2 text-slate-600 text-center max-w-3xl mx-auto">
+          SFC includes a Global Do Not Rent workflow that helps operators share documented, operationally relevant risk
+          signals with other participating facilities before approving a new renter.
+        </p>
+        <div className="mt-8 grid lg:grid-cols-2 gap-6">
+          <article className="card-surface p-5 sm:p-6">
+            <h3 className="font-semibold text-slate-900">What operators can record</h3>
+            <ul className="mt-3 space-y-2 text-sm text-slate-700" role="list">
+              {DNR_USE_CASES.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <span className="text-primary" aria-hidden>
+                    •
+                  </span>
+                  {item}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-4 text-sm text-slate-600">
+              Submissions can include incident context and supporting unit photos, and are tied to the submitting
+              facility, contact information, and employee identity for traceability.
+            </p>
+          </article>
+
+          <article className="card-surface p-5 sm:p-6">
+            <h3 className="font-semibold text-slate-900">Compliance and responsible use</h3>
+            <p className="mt-3 text-sm text-slate-700 leading-relaxed">
+              This workflow is intended for legitimate business-risk documentation. Customers are responsible for using
+              it lawfully, including compliance with applicable privacy, housing, consumer reporting, and defamation
+              laws, and for ensuring entries are factual, accurate, and supported by internal records.
+            </p>
+            <p className="mt-3 text-sm text-slate-700 leading-relaxed">
+              Use only information you are authorized to share, and do not submit protected-class or discriminatory
+              content. Review{' '}
+              <Link href="/acceptable-use" className="text-primary hover:underline">
+                Acceptable Use
+              </Link>{' '}
+              and{' '}
+              <Link href="/terms" className="text-primary hover:underline">
+                Terms
+              </Link>{' '}
+              for baseline requirements.
+            </p>
+          </article>
         </div>
       </Section>
 
