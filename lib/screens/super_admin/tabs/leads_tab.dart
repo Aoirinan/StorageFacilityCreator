@@ -136,6 +136,15 @@ class _LeadRowState extends State<_LeadRow> {
     }
   }
 
+  String _sourceLabel(String source) {
+    switch (source) {
+      case 'website_contact':
+        return 'Website';
+      default:
+        return source.replaceAll('_', ' ');
+    }
+  }
+
   Future<void> _recordNote({required bool isCall}) async {
     final workedByController = TextEditingController(text: _actorName);
     final noteController = TextEditingController();
@@ -351,6 +360,7 @@ class _LeadRowState extends State<_LeadRow> {
     final fmt = DateFormat('MMM d, yyyy h:mm a');
     final statusColor = _statusColor(lead.status);
     final createdAt = lead.createdAt != null ? fmt.format(lead.createdAt!) : '—';
+    final shortLeadId = lead.id.length > 8 ? lead.id.substring(0, 8) : lead.id;
 
     return Container(
       decoration: BoxDecoration(
@@ -368,12 +378,26 @@ class _LeadRowState extends State<_LeadRow> {
               .titleSmall
               ?.copyWith(fontWeight: FontWeight.w600),
         ),
-        subtitle: Text(
-          '${lead.email}${lead.phone == null || lead.phone!.isEmpty ? '' : ' • ${lead.phone}'}',
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: AppTheme.textSecondary),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${lead.email}${lead.phone == null || lead.phone!.isEmpty ? '' : ' • ${lead.phone}'}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                _metaPill(_sourceLabel(lead.source)),
+                _metaPill('Lead #$shortLeadId'),
+              ],
+            ),
+          ],
         ),
         trailing: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -519,6 +543,25 @@ class _LeadRowState extends State<_LeadRow> {
           ),
           Text(value, style: Theme.of(context).textTheme.bodySmall),
         ],
+      ),
+    );
+  }
+
+  Widget _metaPill(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderLight),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: AppTheme.textSecondary,
+        ),
       ),
     );
   }
