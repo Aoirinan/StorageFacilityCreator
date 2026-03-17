@@ -16,6 +16,8 @@ class LeadsTab extends ConsumerStatefulWidget {
 class _LeadsTabState extends ConsumerState<LeadsTab> {
   String _search = '';
   String _statusFilter = 'all';
+  bool _staleOnly = false;
+  int _staleHours = 24;
 
   @override
   Widget build(BuildContext context) {
@@ -34,12 +36,15 @@ class _LeadsTabState extends ConsumerState<LeadsTab> {
               (lead.phone ?? '').toLowerCase().contains(q);
           final matchesStatus =
               _statusFilter == 'all' || lead.status.value == _statusFilter;
-          return matchesSearch && matchesStatus;
+          final stale = _isStaleLead(lead, _staleHours);
+          final matchesStale = !_staleOnly || stale;
+          return matchesSearch && matchesStatus && matchesStale;
         }).toList();
+        final staleCount = leads.where((lead) => _isStaleLead(lead, _staleHours)).length;
 
         return Column(
           children: [
-            _buildToolbar(filtered.length, leads.length),
+            _buildToolbar(filtered.length, leads.length, staleCount),
             Expanded(
               child: filtered.isEmpty
                   ? const Center(child: Text('No leads match your filters.'))
@@ -47,7 +52,8 @@ class _LeadsTabState extends ConsumerState<LeadsTab> {
                       padding: const EdgeInsets.all(16),
                       itemCount: filtered.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, i) => _LeadRow(lead: filtered[i]),
+                      itemBuilder: (context, i) =>
+                          _LeadRow(lead: filtered[i], staleHours: _staleHours),
                     ),
             ),
           ],
@@ -56,7 +62,16 @@ class _LeadsTabState extends ConsumerState<LeadsTab> {
     );
   }
 
-  Widget _buildToolbar(int shown, int total) {
+  bool _isStaleLead(MarketingLead lead, int thresholdHours) {
+    final createdAt = lead.createdAt;
+    if (createdAt == null) return false;
+    if (lead.status != MarketingLeadStatus.newLead) return false;
+    if (lead.firstContactedAt != null) return false;
+    final diff = DateTime.now().difference(createdAt);
+    return diff.inHours >= thresholdHours;
+  }
+
+  Widget _buildToolbar(int shown, int total, int staleCount) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       child: Row(
@@ -89,6 +104,23 @@ class _LeadsTabState extends ConsumerState<LeadsTab> {
             onChanged: (v) => setState(() => _statusFilter = v ?? 'all'),
           ),
           const SizedBox(width: 12),
+          FilterChip(
+            label: Text('Stale ($_staleHours+h): $staleCount'),
+            selected: _staleOnly,
+            onSelected: (value) => setState(() => _staleOnly = value),
+          ),
+          const SizedBox(width: 8),
+          DropdownButton<int>(
+            value: _staleHours,
+            items: const [
+              DropdownMenuItem(value: 6, child: Text('6h')),
+              DropdownMenuItem(value: 12, child: Text('12h')),
+              DropdownMenuItem(value: 24, child: Text('24h')),
+              DropdownMenuItem(value: 48, child: Text('48h')),
+            ],
+            onChanged: (v) => setState(() => _staleHours = v ?? 24),
+          ),
+          const SizedBox(width: 12),
           Text(
             '$shown / $total',
             style: Theme.of(context)
@@ -103,9 +135,10 @@ class _LeadsTabState extends ConsumerState<LeadsTab> {
 }
 
 class _LeadRow extends StatefulWidget {
-  const _LeadRow({required this.lead});
+  const _LeadRow({required this.lead, required this.staleHours});
 
   final MarketingLead lead;
+  final int staleHours;
 
   @override
   State<_LeadRow> createState() => _LeadRowState();
@@ -144,6 +177,14 @@ class _LeadRowState extends State<_LeadRow> {
       default:
         return source.replaceAll('_', ' ');
     }
+  }
+
+  bool _isStaleLead() {
+    final createdAt = widget.lead.createdAt;
+    if (createdAt == null) return false;
+    if (widget.lead.status != MarketingLeadStatus.newLead) return false;
+    if (widget.lead.firstContactedAt != null) return false;
+    return DateTime.now().difference(createdAt).inHours >= widget.staleHours;
   }
 
   String _displayNameFromEmail(String email) {
@@ -465,6 +506,12 @@ class _LeadRowState extends State<_LeadRow> {
     if (ok != true || !mounted) return;
     final amount = num.tryParse(amountController.text.trim());
     final note = noteController.text.trim();
+    if (won && (amount == null || amount <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sale amount is required and must be greater than 0 for won leads.')),
+      );
+      return;
+    }
 
     setState(() => _saving = true);
     try {
@@ -493,6 +540,10 @@ class _LeadRowState extends State<_LeadRow> {
     final statusColor = _statusColor(lead.status);
     final createdAt = lead.createdAt != null ? fmt.format(lead.createdAt!) : '—';
     final shortLeadId = lead.id.length > 8 ? lead.id.substring(0, 8) : lead.id;
+    final sourceDisplay = (lead.utmSource ?? '').trim().isNotEmpty
+        ? (lead.utmSource ?? '').trim()
+        : _sourceLabel(lead.source);
+    final stale = _isStaleLead();
 
     return Container(
       decoration: BoxDecoration(
@@ -525,8 +576,11 @@ class _LeadRowState extends State<_LeadRow> {
               spacing: 6,
               runSpacing: 4,
               children: [
-                _metaPill(_sourceLabel(lead.source)),
+                _metaPill(sourceDisplay),
+                if ((lead.utmCampaign ?? '').trim().isNotEmpty)
+                  _metaPill('Campaign: ${lead.utmCampaign}'),
                 _metaPill('Lead #$shortLeadId'),
+                if (stale) _metaPill('STALE ${widget.staleHours}h+', warning: true),
               ],
             ),
           ],
@@ -557,6 +611,8 @@ class _LeadRowState extends State<_LeadRow> {
               _kv(context, 'Assigned', lead.assignedToName ?? lead.assignedToEmail ?? 'Unassigned'),
               _kv(context, 'Worked by', lead.workedByName ?? lead.workedByEmail ?? '—'),
               _kv(context, 'Call outcome', lead.lastCallOutcome?.replaceAll('_', ' ') ?? '—'),
+              _kv(context, 'Source', sourceDisplay),
+              _kv(context, 'Campaign', lead.utmCampaign ?? '—'),
               _kv(context, 'Sale status', lead.saleStatus),
               _kv(context, 'Sale amount', lead.saleAmount?.toString() ?? '—'),
               _kv(context, 'SMS consent', lead.smsConsent ? 'Yes' : 'No'),
@@ -681,20 +737,23 @@ class _LeadRowState extends State<_LeadRow> {
     );
   }
 
-  Widget _metaPill(String text) {
+  Widget _metaPill(String text, {bool warning = false}) {
+    final bg = warning ? AppTheme.warning.withValues(alpha: 0.12) : AppTheme.backgroundLight;
+    final border = warning ? AppTheme.warning.withValues(alpha: 0.35) : AppTheme.borderLight;
+    final color = warning ? AppTheme.warning : AppTheme.textSecondary;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: AppTheme.backgroundLight,
+        color: bg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.borderLight),
+        border: Border.all(color: border),
       ),
       child: Text(
         text,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 10,
           fontWeight: FontWeight.w600,
-          color: AppTheme.textSecondary,
+          color: color,
         ),
       ),
     );

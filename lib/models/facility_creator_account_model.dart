@@ -30,6 +30,10 @@ class FacilityCreatorAccountModel {
   final bool subscriptionCancelAtPeriodEnd;
   final DateTime? subscriptionCanceledAt;
   final DateTime? subscriptionTrialEnd;
+  final bool suspended;
+  final String? suspensionReason;
+  final DateTime? suspendedAt;
+  final String? suspendedByEmail;
   
   // Account metadata
   final DateTime createdAt;
@@ -50,6 +54,10 @@ class FacilityCreatorAccountModel {
     this.subscriptionCancelAtPeriodEnd = false,
     this.subscriptionCanceledAt,
     this.subscriptionTrialEnd,
+    this.suspended = false,
+    this.suspensionReason,
+    this.suspendedAt,
+    this.suspendedByEmail,
     required this.createdAt,
     required this.updatedAt,
     this.facilityIds = const [],
@@ -83,6 +91,10 @@ class FacilityCreatorAccountModel {
       subscriptionCancelAtPeriodEnd: data?['subscriptionCancelAtPeriodEnd'] ?? false,
       subscriptionCanceledAt: (data?['subscriptionCanceledAt'] as Timestamp?)?.toDate(),
       subscriptionTrialEnd: (data?['subscriptionTrialEnd'] as Timestamp?)?.toDate(),
+      suspended: data?['suspended'] == true,
+      suspensionReason: data?['suspensionReason'] as String?,
+      suspendedAt: (data?['suspendedAt'] as Timestamp?)?.toDate(),
+      suspendedByEmail: data?['suspendedByEmail'] as String?,
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       facilityIds: (data?['facilityIds'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
@@ -112,6 +124,10 @@ class FacilityCreatorAccountModel {
       'subscriptionTrialEnd': subscriptionTrialEnd != null
           ? Timestamp.fromDate(subscriptionTrialEnd!)
           : null,
+      'suspended': suspended,
+      'suspensionReason': suspensionReason,
+      'suspendedAt': suspendedAt != null ? Timestamp.fromDate(suspendedAt!) : null,
+      'suspendedByEmail': suspendedByEmail,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
       'facilityIds': facilityIds,
@@ -133,6 +149,10 @@ class FacilityCreatorAccountModel {
     bool? subscriptionCancelAtPeriodEnd,
     DateTime? subscriptionCanceledAt,
     DateTime? subscriptionTrialEnd,
+    bool? suspended,
+    String? suspensionReason,
+    DateTime? suspendedAt,
+    String? suspendedByEmail,
     DateTime? createdAt,
     DateTime? updatedAt,
     List<String>? facilityIds,
@@ -151,6 +171,10 @@ class FacilityCreatorAccountModel {
       subscriptionCancelAtPeriodEnd: subscriptionCancelAtPeriodEnd ?? this.subscriptionCancelAtPeriodEnd,
       subscriptionCanceledAt: subscriptionCanceledAt ?? this.subscriptionCanceledAt,
       subscriptionTrialEnd: subscriptionTrialEnd ?? this.subscriptionTrialEnd,
+      suspended: suspended ?? this.suspended,
+      suspensionReason: suspensionReason ?? this.suspensionReason,
+      suspendedAt: suspendedAt ?? this.suspendedAt,
+      suspendedByEmail: suspendedByEmail ?? this.suspendedByEmail,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       facilityIds: facilityIds ?? this.facilityIds,
@@ -171,6 +195,7 @@ class FacilityCreatorAccountModel {
   /// Check if subscription is valid for accessing the platform
   /// Note: Superadmins bypass this check (handled in UI layer)
   bool get canAccessPlatform {
+    if (suspended) return false;
     // Pending approval accounts cannot access until admin approves
     if (isPendingApproval) return false;
 

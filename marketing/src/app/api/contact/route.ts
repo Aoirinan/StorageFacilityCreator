@@ -63,6 +63,13 @@ export async function POST(request: NextRequest) {
     const message = String(body.message ?? '').trim();
     const smsConsent = String(body.smsConsent ?? '').trim().toLowerCase() === 'on';
     const intent = String(body.intent ?? 'demo').trim().toLowerCase() === 'trial' ? 'trial' : 'demo';
+    const utmSource = String(body.utmSource ?? '').trim();
+    const utmMedium = String(body.utmMedium ?? '').trim();
+    const utmCampaign = String(body.utmCampaign ?? '').trim();
+    const utmTerm = String(body.utmTerm ?? '').trim();
+    const utmContent = String(body.utmContent ?? '').trim();
+    const landingPath = String(body.landingPath ?? '').trim();
+    const referrer = String(body.referrer ?? '').trim();
 
     if (!name || !email || !facilityName) {
       return NextResponse.json(
@@ -96,6 +103,13 @@ export async function POST(request: NextRequest) {
         phone ? `Phone: ${phone}` : null,
         unitCount ? `Units: ${unitCount}` : null,
         phone ? `SMS consent checkbox: ${smsConsent ? 'checked' : 'not checked'}` : null,
+        utmSource ? `UTM Source: ${utmSource}` : null,
+        utmMedium ? `UTM Medium: ${utmMedium}` : null,
+        utmCampaign ? `UTM Campaign: ${utmCampaign}` : null,
+        utmTerm ? `UTM Term: ${utmTerm}` : null,
+        utmContent ? `UTM Content: ${utmContent}` : null,
+        landingPath ? `Landing Path: ${landingPath}` : null,
+        referrer ? `Referrer: ${referrer}` : null,
         message ? `Message:\n${message}` : null,
       ]
         .filter(Boolean)
@@ -120,6 +134,13 @@ export async function POST(request: NextRequest) {
         message,
         smsConsent,
         intent,
+        utmSource,
+        utmMedium,
+        utmCampaign,
+        utmTerm,
+        utmContent,
+        landingPath,
+        referrer,
       });
     } catch (leadCaptureError) {
       console.error('Superadmin lead capture failed:', leadCaptureError);

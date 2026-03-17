@@ -2,7 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/sms_usage_model.dart';
 import 'package:sfcapp/models/user_model.dart';
+import 'package:sfcapp/services/email_usage_service.dart';
+import 'package:sfcapp/services/sms_usage_service.dart';
 
 // ---------------------------------------------------------------------------
 // Data transfer objects for super admin views
@@ -116,6 +119,13 @@ class MarketingLead {
   final String? phone;
   final String? unitCount;
   final String? message;
+  final String? utmSource;
+  final String? utmMedium;
+  final String? utmCampaign;
+  final String? utmTerm;
+  final String? utmContent;
+  final String? landingPath;
+  final String? referrer;
   final bool smsConsent;
   final MarketingLeadStatus status;
   final String? assignedToUid;
@@ -142,6 +152,13 @@ class MarketingLead {
     this.phone,
     this.unitCount,
     this.message,
+    this.utmSource,
+    this.utmMedium,
+    this.utmCampaign,
+    this.utmTerm,
+    this.utmContent,
+    this.landingPath,
+    this.referrer,
     required this.smsConsent,
     required this.status,
     this.assignedToUid,
@@ -171,6 +188,13 @@ class MarketingLead {
       phone: d['phone'] as String?,
       unitCount: d['unitCount'] as String?,
       message: d['message'] as String?,
+      utmSource: d['utmSource'] as String?,
+      utmMedium: d['utmMedium'] as String?,
+      utmCampaign: d['utmCampaign'] as String?,
+      utmTerm: d['utmTerm'] as String?,
+      utmContent: d['utmContent'] as String?,
+      landingPath: d['landingPath'] as String?,
+      referrer: d['referrer'] as String?,
       smsConsent: d['smsConsent'] == true,
       status: MarketingLeadStatusDisplay.fromValue((d['status'] ?? 'new').toString()),
       assignedToUid: d['assignedToUid'] as String?,
@@ -223,6 +247,113 @@ class MarketingLeadActivity {
   }
 }
 
+class FacilityCommunicationUsage {
+  final EmailUsage emailUsage;
+  final SMSUsage smsUsage;
+
+  const FacilityCommunicationUsage({
+    required this.emailUsage,
+    required this.smsUsage,
+  });
+}
+
+class CommissionPayoutPeriod {
+  final String id;
+  final DateTime periodStart;
+  final DateTime periodEnd;
+  final String status;
+  final bool commissionableOnly;
+  final double minimumSaleAmount;
+  final String rateType;
+  final double rateValue;
+  final DateTime? createdAt;
+  final String createdByEmail;
+  final double totalSales;
+  final double totalCommission;
+  final int totalWon;
+
+  const CommissionPayoutPeriod({
+    required this.id,
+    required this.periodStart,
+    required this.periodEnd,
+    required this.status,
+    required this.commissionableOnly,
+    required this.minimumSaleAmount,
+    required this.rateType,
+    required this.rateValue,
+    required this.createdAt,
+    required this.createdByEmail,
+    required this.totalSales,
+    required this.totalCommission,
+    required this.totalWon,
+  });
+
+  factory CommissionPayoutPeriod.fromFirestore(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>? ?? {};
+    return CommissionPayoutPeriod(
+      id: doc.id,
+      periodStart: (d['periodStart'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      periodEnd: (d['periodEnd'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      status: (d['status'] ?? 'open').toString(),
+      commissionableOnly: d['commissionableOnly'] == true,
+      minimumSaleAmount: (d['minimumSaleAmount'] as num?)?.toDouble() ?? 0,
+      rateType: (d['rateType'] ?? 'percent_of_sales').toString(),
+      rateValue: (d['rateValue'] as num?)?.toDouble() ?? 0,
+      createdAt: (d['createdAt'] as Timestamp?)?.toDate(),
+      createdByEmail: (d['createdByEmail'] ?? '').toString(),
+      totalSales: (d['totalSales'] as num?)?.toDouble() ?? 0,
+      totalCommission: (d['totalCommission'] as num?)?.toDouble() ?? 0,
+      totalWon: (d['totalWon'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class CommissionPayoutRepRow {
+  final String id;
+  final String rep;
+  final int totalLeads;
+  final int wonCount;
+  final int commissionableWonCount;
+  final double saleTotal;
+  final double commissionableSaleTotal;
+  final double commissionAmount;
+  final bool paid;
+  final DateTime? paidAt;
+  final String? paidByEmail;
+
+  const CommissionPayoutRepRow({
+    required this.id,
+    required this.rep,
+    required this.totalLeads,
+    required this.wonCount,
+    required this.commissionableWonCount,
+    required this.saleTotal,
+    required this.commissionableSaleTotal,
+    required this.commissionAmount,
+    required this.paid,
+    this.paidAt,
+    this.paidByEmail,
+  });
+
+  factory CommissionPayoutRepRow.fromFirestore(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>? ?? {};
+    return CommissionPayoutRepRow(
+      id: doc.id,
+      rep: (d['rep'] ?? '').toString(),
+      totalLeads: (d['totalLeads'] as num?)?.toInt() ?? 0,
+      wonCount: (d['wonCount'] as num?)?.toInt() ?? 0,
+      commissionableWonCount: (d['commissionableWonCount'] as num?)?.toInt() ?? 0,
+      saleTotal: (d['saleTotal'] as num?)?.toDouble() ?? 0,
+      commissionableSaleTotal:
+          (d['commissionableSaleTotal'] as num?)?.toDouble() ?? 0,
+      commissionAmount: (d['commissionAmount'] as num?)?.toDouble() ?? 0,
+      paid: d['paid'] == true,
+      paidAt: (d['paidAt'] as Timestamp?)?.toDate(),
+      paidByEmail: d['paidByEmail'] as String?,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
@@ -266,6 +397,16 @@ final marketingLeadsProvider = StreamProvider<List<MarketingLead>>((ref) {
       .orderBy('createdAt', descending: true)
       .snapshots()
       .map((snap) => snap.docs.map(MarketingLead.fromFirestore).toList());
+});
+
+final commissionPayoutPeriodsProvider =
+    StreamProvider<List<CommissionPayoutPeriod>>((ref) {
+  return FirebaseFirestore.instance
+      .collection('commission_payout_periods')
+      .orderBy('createdAt', descending: true)
+      .limit(50)
+      .snapshots()
+      .map((snap) => snap.docs.map(CommissionPayoutPeriod.fromFirestore).toList());
 });
 
 /// Derived: facilities enriched with owner email and subscription status.
@@ -615,5 +756,134 @@ class SuperAdminDataService {
       'createdAt': FieldValue.serverTimestamp(),
     });
     await leadRef.update({'updatedAt': FieldValue.serverTimestamp()});
+  }
+
+  static Future<FacilityCommunicationUsage> getFacilityCommunicationUsage(
+      String facilityId) async {
+    final results = await Future.wait([
+      EmailUsageService.getEmailUsage(facilityId),
+      SMSUsageService.getSMSUsage(facilityId),
+    ]);
+    return FacilityCommunicationUsage(
+      emailUsage: results[0] as EmailUsage,
+      smsUsage: results[1] as SMSUsage,
+    );
+  }
+
+  static Stream<List<CommissionPayoutRepRow>> commissionPayoutPeriodReps(
+      String periodId) {
+    return _db
+        .collection('commission_payout_periods')
+        .doc(periodId)
+        .collection('reps')
+        .orderBy('commissionAmount', descending: true)
+        .snapshots()
+        .map((s) => s.docs.map(CommissionPayoutRepRow.fromFirestore).toList());
+  }
+
+  static Future<String> createCommissionPayoutPeriod({
+    required DateTime periodStart,
+    required DateTime periodEnd,
+    required bool commissionableOnly,
+    required double minimumSaleAmount,
+    required String rateType,
+    required double rateValue,
+    required String createdByUid,
+    required String createdByEmail,
+    required List<Map<String, dynamic>> repRows,
+    required double totalSales,
+    required double totalCommission,
+    required int totalWon,
+  }) async {
+    final periodRef = _db.collection('commission_payout_periods').doc();
+    final batch = _db.batch();
+    batch.set(periodRef, {
+      'periodStart': Timestamp.fromDate(periodStart),
+      'periodEnd': Timestamp.fromDate(periodEnd),
+      'status': 'open',
+      'commissionableOnly': commissionableOnly,
+      'minimumSaleAmount': minimumSaleAmount,
+      'rateType': rateType,
+      'rateValue': rateValue,
+      'createdByUid': createdByUid,
+      'createdByEmail': createdByEmail,
+      'totalSales': totalSales,
+      'totalCommission': totalCommission,
+      'totalWon': totalWon,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    for (final row in repRows) {
+      final repRef = periodRef.collection('reps').doc();
+      batch.set(repRef, {
+        ...row,
+        'paid': false,
+        'paidAt': null,
+        'paidByEmail': null,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    return periodRef.id;
+  }
+
+  static Future<void> closeCommissionPayoutPeriod(String periodId) async {
+    await _db.collection('commission_payout_periods').doc(periodId).update({
+      'status': 'closed',
+      'updatedAt': FieldValue.serverTimestamp(),
+      'closedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> reopenCommissionPayoutPeriod(String periodId) async {
+    await _db.collection('commission_payout_periods').doc(periodId).update({
+      'status': 'open',
+      'updatedAt': FieldValue.serverTimestamp(),
+      'closedAt': null,
+    });
+  }
+
+  static Future<void> setCommissionRepPaid({
+    required String periodId,
+    required String repDocId,
+    required bool paid,
+    required String actorEmail,
+  }) async {
+    await _db
+        .collection('commission_payout_periods')
+        .doc(periodId)
+        .collection('reps')
+        .doc(repDocId)
+        .update({
+      'paid': paid,
+      'paidAt': paid ? FieldValue.serverTimestamp() : null,
+      'paidByEmail': paid ? actorEmail : null,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> setAccountSuspended({
+    required String accountId,
+    required bool suspended,
+    String? reason,
+    required String actorUid,
+    required String actorEmail,
+  }) async {
+    final update = <String, dynamic>{
+      'suspended': suspended,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'suspendedByUid': suspended ? actorUid : null,
+      'suspendedByEmail': suspended ? actorEmail : null,
+      'suspendedAt': suspended ? FieldValue.serverTimestamp() : null,
+      'suspensionReason': suspended ? reason : null,
+    };
+    if (suspended) {
+      update['subscriptionStatus'] = 'cancelled';
+      update['subscriptionCurrentPeriodEnd'] = FieldValue.delete();
+      update['subscriptionTrialEnd'] = FieldValue.delete();
+    }
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update(update);
   }
 }

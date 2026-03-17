@@ -1,9 +1,11 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
+import 'package:sfcapp/services/super_admin_user_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class AccountsTab extends ConsumerStatefulWidget {
@@ -20,11 +22,16 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   @override
   Widget build(BuildContext context) {
     final accountsAsync = ref.watch(allAccountsProvider);
+    final usersAsync = ref.watch(allUsersProvider);
 
-    return accountsAsync.when(
+    return usersAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => Center(child: Text('Error: $e')),
-      data: (accounts) {
+      data: (users) => accountsAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('Error: $e')),
+        data: (accounts) {
+        final userByUid = {for (final u in users) u.uid: u};
         final pendingCount = accounts
             .where((a) =>
                 a.subscriptionStatus == SubscriptionStatus.pendingApproval)
@@ -59,12 +66,16 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
                       itemCount: filtered.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (context, i) =>
-                          _AccountRow(account: filtered[i]),
+                          _AccountRow(
+                            account: filtered[i],
+                            ownerAuthDisabled:
+                                userByUid[filtered[i].ownerUid]?.authDisabled == true,
+                          ),
                     ),
             ),
           ],
         );
-      },
+      }),
     );
   }
 
@@ -150,7 +161,8 @@ class _PendingBanner extends StatelessWidget {
 
 class _AccountRow extends ConsumerStatefulWidget {
   final FacilityCreatorAccountModel account;
-  const _AccountRow({required this.account});
+  final bool ownerAuthDisabled;
+  const _AccountRow({required this.account, required this.ownerAuthDisabled});
 
   @override
   ConsumerState<_AccountRow> createState() => _AccountRowState();
@@ -162,6 +174,9 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
   bool _revoking = false;
   bool _approving = false;
   bool _rejecting = false;
+  bool _suspending = false;
+  bool _reenablingOwner = false;
+  bool _disablingOwner = false;
 
   Color _statusColor(SubscriptionStatus s) {
     switch (s) {
@@ -181,7 +196,15 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     }
   }
 
-  bool get _isBusy => _extending || _granting || _revoking || _approving || _rejecting;
+  bool get _isBusy =>
+      _extending ||
+      _granting ||
+      _revoking ||
+      _approving ||
+      _rejecting ||
+      _suspending ||
+      _reenablingOwner ||
+      _disablingOwner;
 
   Future<void> _extendTrial(int days) async {
     setState(() => _extending = true);
@@ -335,6 +358,125 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     }
   }
 
+  Future<void> _suspendForAbuse() async {
+    final reasonController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Suspend Account'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'This immediately blocks account access. Add a short reason for audit history.',
+              style: Theme.of(ctx).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: reasonController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Reason',
+                hintText: 'Abusive usage of messaging functions',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            child: const Text('Suspend'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final reason = reasonController.text.trim();
+    if (reason.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Suspension reason is required.')),
+      );
+      return;
+    }
+    final actor = FirebaseAuth.instance.currentUser;
+    setState(() => _suspending = true);
+    try {
+      await SuperAdminDataService.setAccountSuspended(
+        accountId: widget.account.accountId,
+        suspended: true,
+        reason: reason,
+        actorUid: actor?.uid ?? 'unknown',
+        actorEmail: actor?.email ?? 'unknown',
+      );
+      await SuperAdminUserService.disableUser(widget.account.ownerUid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Account suspended and owner login disabled.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _suspending = false);
+    }
+  }
+
+  Future<void> _enableOwnerLogin() async {
+    final actor = FirebaseAuth.instance.currentUser;
+    setState(() => _reenablingOwner = true);
+    try {
+      await SuperAdminUserService.enableUser(widget.account.ownerUid);
+      await SuperAdminDataService.setAccountSuspended(
+        accountId: widget.account.accountId,
+        suspended: false,
+        actorUid: actor?.uid ?? 'unknown',
+        actorEmail: actor?.email ?? 'unknown',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Owner login enabled and account unsuspended.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _reenablingOwner = false);
+    }
+  }
+
+  Future<void> _disableOwnerLoginOnly() async {
+    setState(() => _disablingOwner = true);
+    try {
+      await SuperAdminUserService.disableUser(widget.account.ownerUid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Owner login disabled.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _disablingOwner = false);
+    }
+  }
+
   Future<bool> _confirm({
     required String title,
     required String message,
@@ -368,6 +510,7 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     final fmt = DateFormat('MMM d, yyyy');
     final isTrialing = a.subscriptionStatus == SubscriptionStatus.trialing;
     final isPending = a.subscriptionStatus == SubscriptionStatus.pendingApproval;
+    final isSuspended = a.suspended;
 
     return Container(
       decoration: BoxDecoration(
@@ -425,6 +568,10 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
               _kv(context, 'Stripe Customer', a.stripeCustomerId ?? '—'),
               _kv(context, 'Stripe Sub', a.stripeSubscriptionId ?? '—'),
               _kv(context, 'Created', fmt.format(a.createdAt)),
+              _kv(context, 'Owner login', widget.ownerAuthDisabled ? 'Disabled' : 'Enabled'),
+              _kv(context, 'Suspended', isSuspended ? 'Yes' : 'No'),
+              if ((a.suspensionReason ?? '').trim().isNotEmpty)
+                _kv(context, 'Suspension reason', a.suspensionReason!.trim()),
               if (a.subscriptionCurrentPeriodEnd != null)
                 _kv(context, 'Period End',
                     fmt.format(a.subscriptionCurrentPeriodEnd!)),
@@ -528,6 +675,33 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     label: Text('Revoke Trial',
                         style: TextStyle(color: AppTheme.error)),
                     onPressed: _revokeTrial,
+                  ),
+                const SizedBox(width: 8),
+                if (!isSuspended)
+                  TextButton.icon(
+                    icon: const Icon(Icons.gpp_bad, size: 14, color: AppTheme.error),
+                    label: const Text('Suspend Abuse',
+                        style: TextStyle(color: AppTheme.error)),
+                    onPressed: _suspendForAbuse,
+                  )
+                else
+                  TextButton.icon(
+                    icon: const Icon(Icons.gpp_good, size: 14, color: AppTheme.success),
+                    label: const Text('Unsuspend',
+                        style: TextStyle(color: AppTheme.success)),
+                    onPressed: _enableOwnerLogin,
+                  ),
+                if (!widget.ownerAuthDisabled)
+                  TextButton.icon(
+                    icon: const Icon(Icons.person_off, size: 14),
+                    label: const Text('Disable Owner Login'),
+                    onPressed: _disableOwnerLoginOnly,
+                  )
+                else
+                  TextButton.icon(
+                    icon: const Icon(Icons.person, size: 14),
+                    label: const Text('Enable Owner Login'),
+                    onPressed: _enableOwnerLogin,
                   ),
               ],
             ),

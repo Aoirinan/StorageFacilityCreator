@@ -19,6 +19,15 @@ export default function ContactPage() {
   const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [intent, setIntent] = useState<'trial' | 'demo'>('demo');
+  const [trackingFields, setTrackingFields] = useState<Record<string, string>>({
+    utmSource: '',
+    utmMedium: '',
+    utmCampaign: '',
+    utmTerm: '',
+    utmContent: '',
+    landingPath: '',
+    referrer: '',
+  });
   const heading = intent === 'trial' ? 'Start your free trial' : 'Book a demo';
   const submitLabel = intent === 'trial' ? 'Start Free Trial' : 'Book a Demo';
 
@@ -26,6 +35,15 @@ export default function ContactPage() {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     setIntent(params.get('intent') === 'trial' ? 'trial' : 'demo');
+    setTrackingFields({
+      utmSource: params.get('utm_source') ?? '',
+      utmMedium: params.get('utm_medium') ?? '',
+      utmCampaign: params.get('utm_campaign') ?? '',
+      utmTerm: params.get('utm_term') ?? '',
+      utmContent: params.get('utm_content') ?? '',
+      landingPath: window.location.pathname,
+      referrer: document.referrer || '',
+    });
   }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -48,6 +66,11 @@ export default function ContactPage() {
       if (res.ok) {
         setStatus('success');
         form.reset();
+        const thanksParams = new URLSearchParams();
+        thanksParams.set('intent', intent);
+        if (trackingFields.utmSource) thanksParams.set('utm_source', trackingFields.utmSource);
+        if (trackingFields.utmCampaign) thanksParams.set('utm_campaign', trackingFields.utmCampaign);
+        window.location.href = `/contact/thanks?${thanksParams.toString()}`;
       } else {
         setStatus('error');
         setErrorMessage(json.message || 'Something went wrong. Please try again or email us.');
@@ -87,6 +110,13 @@ export default function ContactPage() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <input type="hidden" name="intent" value={intent} />
+            <input type="hidden" name="utmSource" value={trackingFields.utmSource} />
+            <input type="hidden" name="utmMedium" value={trackingFields.utmMedium} />
+            <input type="hidden" name="utmCampaign" value={trackingFields.utmCampaign} />
+            <input type="hidden" name="utmTerm" value={trackingFields.utmTerm} />
+            <input type="hidden" name="utmContent" value={trackingFields.utmContent} />
+            <input type="hidden" name="landingPath" value={trackingFields.landingPath} />
+            <input type="hidden" name="referrer" value={trackingFields.referrer} />
             <div>
               <label htmlFor="name" className="block text-sm font-medium text-slate-700">
                 Name <span className="text-red-600">*</span>

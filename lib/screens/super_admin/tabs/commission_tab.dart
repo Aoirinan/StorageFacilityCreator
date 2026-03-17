@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +25,7 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
   double _minimumSaleAmount = 0;
   double _commissionRate = 10;
   _CommissionRateType _rateType = _CommissionRateType.percentOfSale;
+  bool _savingSnapshot = false;
 
   @override
   void initState() {
@@ -216,6 +218,43 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
 
   String _csvCell(String value) => '"${value.replaceAll('"', '""')}"';
 
+  String get _rateTypeValue => _rateType == _CommissionRateType.percentOfSale
+      ? 'percent_of_sales'
+      : 'fixed_per_won';
+
+  List<_SourceConversionRow> _buildSourceRows(List<MarketingLead> leads) {
+    final inRange = leads.where((lead) {
+      final created = lead.createdAt;
+      if (created == null) return false;
+      return !created.isBefore(_startDate) && !created.isAfter(_endDate);
+    });
+    final bySource = <String, _SourceAccumulator>{};
+    for (final lead in inRange) {
+      final source = (lead.utmSource ?? lead.source).trim().isEmpty
+          ? 'unknown'
+          : (lead.utmSource ?? lead.source).trim().toLowerCase();
+      final acc = bySource.putIfAbsent(source, () => _SourceAccumulator());
+      acc.total++;
+      if (lead.status != MarketingLeadStatus.newLead || lead.firstContactedAt != null) {
+        acc.contacted++;
+      }
+      if (lead.status == MarketingLeadStatus.won ||
+          lead.saleStatus.toLowerCase() == 'won') {
+        acc.won++;
+      }
+    }
+    final rows = bySource.entries
+        .map((e) => _SourceConversionRow(
+              source: e.key,
+              leads: e.value.total,
+              contacted: e.value.contacted,
+              won: e.value.won,
+            ))
+        .toList();
+    rows.sort((a, b) => b.leads.compareTo(a.leads));
+    return rows;
+  }
+
   String _toCsv(List<_CommissionRow> rows) {
     final b = StringBuffer();
     b.writeln(
@@ -257,6 +296,60 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
     );
   }
 
+  Future<void> _savePayoutSnapshot(List<_CommissionRow> rows) async {
+    if (rows.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No commission rows to snapshot.')),
+      );
+      return;
+    }
+    final actor = FirebaseAuth.instance.currentUser;
+    if (actor == null) return;
+    setState(() => _savingSnapshot = true);
+    try {
+      final repRows = rows
+          .map((row) => {
+                'rep': row.rep,
+                'totalLeads': row.totalLeads,
+                'wonCount': row.wonCount,
+                'commissionableWonCount': row.commissionableWonCount,
+                'saleTotal': row.saleTotal,
+                'commissionableSaleTotal': row.commissionableSaleTotal,
+                'commissionAmount': row.commissionAmount,
+              })
+          .toList();
+      final totalSales = rows.fold<double>(0, (sum, row) => sum + row.saleTotal);
+      final totalCommission =
+          rows.fold<double>(0, (sum, row) => sum + row.commissionAmount);
+      final totalWon = rows.fold<int>(0, (sum, row) => sum + row.wonCount);
+      await SuperAdminDataService.createCommissionPayoutPeriod(
+        periodStart: _startDate,
+        periodEnd: _endDate,
+        commissionableOnly: _commissionableOnly,
+        minimumSaleAmount: _minimumSaleAmount,
+        rateType: _rateTypeValue,
+        rateValue: _commissionRate,
+        createdByUid: actor.uid,
+        createdByEmail: actor.email ?? 'unknown',
+        repRows: repRows,
+        totalSales: totalSales,
+        totalCommission: totalCommission,
+        totalWon: totalWon,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Payout snapshot saved.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save snapshot: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingSnapshot = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final leadsAsync = ref.watch(marketingLeadsProvider);
@@ -268,6 +361,7 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
       error: (e, _) => Center(child: Text('Error: $e')),
       data: (leads) {
         final rows = _buildRows(leads);
+        final sourceRows = _buildSourceRows(leads);
         final funnel = _buildFunnelMetrics(leads);
         final totalWon = rows.fold<int>(0, (s, r) => s + r.wonCount);
         final totalLeads = rows.fold<int>(0, (s, r) => s + r.totalLeads);
@@ -390,6 +484,17 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
                     icon: const Icon(Icons.download, size: 16),
                     label: const Text('Export CSV'),
                   ),
+                  FilledButton.icon(
+                    onPressed: _savingSnapshot ? null : () => _savePayoutSnapshot(rows),
+                    icon: _savingSnapshot
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.lock_clock, size: 16),
+                    label: const Text('Lock Payout Period'),
+                  ),
                 ],
               ),
             ),
@@ -434,43 +539,95 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
               ),
             ),
             const SizedBox(height: 8),
+            if (sourceRows.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.borderLight),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Conversion by source',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      ...sourceRows.take(6).map((row) => Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '${row.source}: ${row.leads} leads • '
+                              'contact ${(row.contactRate * 100).toStringAsFixed(1)}% • '
+                              'won ${(row.wonRate * 100).toStringAsFixed(1)}%',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: AppTheme.textSecondary),
+                            ),
+                          )),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 8),
             Expanded(
-              child: rows.isEmpty
-                  ? const Center(
-                      child: Text('No commission activity in selected range.'),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  if (rows.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 18),
+                      child: Center(
+                        child: Text('No commission activity in selected range.'),
+                      ),
                     )
-                  : ListView.separated(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: rows.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, i) {
-                        final row = rows[i];
-                        return Container(
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).cardColor,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: AppTheme.borderLight),
-                          ),
-                          child: ListTile(
-                            title: Text(
-                              row.rep,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600),
+                  else
+                    ...rows.map((row) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).cardColor,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: AppTheme.borderLight),
                             ),
-                            subtitle: Text(
-                                'Leads: ${row.totalLeads} • Won: ${row.wonCount} • Comm. Won: ${row.commissionableWonCount}'
-                                '${row.avgFirstContactHours == null ? '' : ' • Avg first call: ${row.avgFirstContactHours!.toStringAsFixed(1)}h'}'
-                                '${row.avgCloseDays == null ? '' : ' • Avg close: ${row.avgCloseDays!.toStringAsFixed(1)}d'}'),
-                            trailing: Text(
-                              currencyFmt.format(row.commissionAmount),
-                              style: const TextStyle(
-                                  color: AppTheme.success,
-                                  fontWeight: FontWeight.w700),
+                            child: ListTile(
+                              title: Text(
+                                row.rep,
+                                style: const TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                              subtitle: Text(
+                                  'Leads: ${row.totalLeads} • Won: ${row.wonCount} • Comm. Won: ${row.commissionableWonCount}'
+                                  '${row.avgFirstContactHours == null ? '' : ' • Avg first call: ${row.avgFirstContactHours!.toStringAsFixed(1)}h'}'
+                                  '${row.avgCloseDays == null ? '' : ' • Avg close: ${row.avgCloseDays!.toStringAsFixed(1)}d'}'),
+                              trailing: Text(
+                                currencyFmt.format(row.commissionAmount),
+                                style: const TextStyle(
+                                    color: AppTheme.success,
+                                    fontWeight: FontWeight.w700),
+                              ),
                             ),
                           ),
-                        );
-                      },
-                    ),
+                        )),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Locked payout periods',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  _PayoutPeriodsSection(currencyFmt: currencyFmt),
+                ],
+              ),
             ),
           ],
         );
@@ -522,6 +679,29 @@ class _CommissionAccumulator {
   int closeSamples = 0;
 }
 
+class _SourceAccumulator {
+  int total = 0;
+  int contacted = 0;
+  int won = 0;
+}
+
+class _SourceConversionRow {
+  final String source;
+  final int leads;
+  final int contacted;
+  final int won;
+
+  const _SourceConversionRow({
+    required this.source,
+    required this.leads,
+    required this.contacted,
+    required this.won,
+  });
+
+  double get contactRate => leads == 0 ? 0 : contacted / leads;
+  double get wonRate => leads == 0 ? 0 : won / leads;
+}
+
 class _CommissionRow {
   final String rep;
   final int totalLeads;
@@ -571,4 +751,167 @@ class _CommissionFunnelMetrics {
       avgFirstContactHours == null ? '—' : '${avgFirstContactHours!.toStringAsFixed(1)}h';
   String get avgCloseDaysLabel =>
       avgCloseDays == null ? '—' : '${avgCloseDays!.toStringAsFixed(1)}d';
+}
+
+class _PayoutPeriodsSection extends ConsumerWidget {
+  const _PayoutPeriodsSection({required this.currencyFmt});
+
+  final NumberFormat currencyFmt;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final periodsAsync = ref.watch(commissionPayoutPeriodsProvider);
+    return periodsAsync.when(
+      loading: () => const Padding(
+        padding: EdgeInsets.all(12),
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      ),
+      error: (e, _) => Text('Error loading payout periods: $e'),
+      data: (periods) {
+        if (periods.isEmpty) {
+          return const Text(
+            'No locked payout periods yet. Use "Lock Payout Period" to create one.',
+            style: TextStyle(color: AppTheme.textSecondary),
+          );
+        }
+        return Column(
+          children: periods.take(8).map((period) {
+            final dateFmt = DateFormat('MMM d, yyyy');
+            final statusColor =
+                period.status == 'closed' ? AppTheme.error : AppTheme.success;
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderLight),
+              ),
+              child: ExpansionTile(
+                title: Text(
+                  '${dateFmt.format(period.periodStart)} - ${dateFmt.format(period.periodEnd)}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Won: ${period.totalWon} • Sales: ${currencyFmt.format(period.totalSales)} • '
+                  'Commission: ${currencyFmt.format(period.totalCommission)}',
+                ),
+                trailing: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    period.status.toUpperCase(),
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Row(
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            if (period.status == 'closed') {
+                              await SuperAdminDataService.reopenCommissionPayoutPeriod(
+                                  period.id);
+                            } else {
+                              await SuperAdminDataService.closeCommissionPayoutPeriod(
+                                  period.id);
+                            }
+                          },
+                          icon: Icon(period.status == 'closed'
+                              ? Icons.lock_open
+                              : Icons.lock),
+                          label: Text(period.status == 'closed'
+                              ? 'Reopen period'
+                              : 'Close period'),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Created by ${period.createdByEmail}',
+                            style: const TextStyle(color: AppTheme.textSecondary),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _PayoutPeriodRepRows(
+                    periodId: period.id,
+                    isClosed: period.status == 'closed',
+                    currencyFmt: currencyFmt,
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+}
+
+class _PayoutPeriodRepRows extends ConsumerWidget {
+  const _PayoutPeriodRepRows({
+    required this.periodId,
+    required this.isClosed,
+    required this.currencyFmt,
+  });
+
+  final String periodId;
+  final bool isClosed;
+  final NumberFormat currencyFmt;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final repsAsync = SuperAdminDataService.commissionPayoutPeriodReps(periodId);
+    final actorEmail = FirebaseAuth.instance.currentUser?.email ?? 'unknown';
+    return StreamBuilder<List<CommissionPayoutRepRow>>(
+      stream: repsAsync,
+      builder: (context, snapshot) {
+        final reps = snapshot.data ?? const <CommissionPayoutRepRow>[];
+        if (reps.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Text('No rep payout rows found.'),
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: Column(
+            children: reps.map((rep) {
+              return CheckboxListTile(
+                dense: true,
+                value: rep.paid,
+                onChanged: isClosed
+                    ? null
+                    : (value) async {
+                        await SuperAdminDataService.setCommissionRepPaid(
+                          periodId: periodId,
+                          repDocId: rep.id,
+                          paid: value == true,
+                          actorEmail: actorEmail,
+                        );
+                      },
+                title: Text(rep.rep),
+                subtitle: Text(
+                  'Won: ${rep.wonCount} • Comm. Won: ${rep.commissionableWonCount} • '
+                  'Commission: ${currencyFmt.format(rep.commissionAmount)}',
+                ),
+                secondary: rep.paid
+                    ? const Icon(Icons.check_circle, color: AppTheme.success, size: 18)
+                    : const Icon(Icons.pending, color: AppTheme.warning, size: 18),
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
+  }
 }

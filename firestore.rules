@@ -161,8 +161,9 @@ service cloud.firestore {
         request.resource.data.ownerUid == request.auth.uid &&
         request.resource.data.keys().hasAll(['ownerUid', 'ownerEmail', 'ownerName', 'subscriptionStatus', 'createdAt', 'updatedAt']);
       
-      // Allow update only by owner
-      allow update: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      // Allow update by owner or superadmin (for account interventions/suspension).
+      allow update: if request.auth != null &&
+        (isSuperAdmin() || resource.data.ownerUid == request.auth.uid);
       
       // Allow delete only by owner
       allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
@@ -1011,6 +1012,14 @@ service cloud.firestore {
           (isSuperAdmin() ||
            get(/databases/$(database)/documents/marketing_leads/$(leadId)).data.assignedToUid == request.auth.uid);
         allow update, delete: if request.auth != null && isSuperAdmin();
+      }
+    }
+
+    // Locked commission payout periods and rep payout statuses.
+    match /commission_payout_periods/{periodId} {
+      allow read, write: if request.auth != null && isSuperAdmin();
+      match /reps/{repId} {
+        allow read, write: if request.auth != null && isSuperAdmin();
       }
     }
 

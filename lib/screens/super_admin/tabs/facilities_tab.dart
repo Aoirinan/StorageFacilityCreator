@@ -172,6 +172,8 @@ class _FacilityRow extends StatelessWidget {
               _Detail('Period End',
                   DateFormat('MMM d, yyyy').format(row.subscriptionPeriodEnd!)),
           ]),
+          const SizedBox(height: 10),
+          _FacilityCommunicationUsageCard(facilityId: f.id),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -280,4 +282,61 @@ class _Detail {
   final String label;
   final String value;
   const _Detail(this.label, this.value);
+}
+
+class _FacilityCommunicationUsageCard extends StatelessWidget {
+  const _FacilityCommunicationUsageCard({required this.facilityId});
+
+  final String facilityId;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<FacilityCommunicationUsage>(
+      future: SuperAdminDataService.getFacilityCommunicationUsage(facilityId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox(
+            height: 40,
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          );
+        }
+        final usage = snapshot.data;
+        if (usage == null) {
+          return const SizedBox.shrink();
+        }
+        final emailPct = usage.emailUsage.percentage;
+        final smsPct = usage.smsUsage.percentage;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: AppTheme.backgroundLight,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderLight),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Messaging usage (this month)',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelLarge
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Emails: ${usage.emailUsage.currentCount}/${usage.emailUsage.monthlyLimit} (${emailPct.toStringAsFixed(1)}%)',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              Text(
+                'Texts: ${usage.smsUsage.currentCount}/${usage.smsUsage.monthlyLimit} (${smsPct.toStringAsFixed(1)}%)',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }

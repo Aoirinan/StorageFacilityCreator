@@ -157,9 +157,20 @@ export const captureMarketingLead = functions.runWith({ secrets: [MARKETING_LEAD
     const intentRaw = String(payload.intent || 'demo').trim().toLowerCase();
     const intent = intentRaw === 'trial' ? 'trial' : 'demo';
     const smsConsent = Boolean(payload.smsConsent);
+    const utmSource = String(payload.utmSource || '').trim();
+    const utmMedium = String(payload.utmMedium || '').trim();
+    const utmCampaign = String(payload.utmCampaign || '').trim();
+    const utmTerm = String(payload.utmTerm || '').trim();
+    const utmContent = String(payload.utmContent || '').trim();
+    const landingPath = String(payload.landingPath || '').trim();
+    const referrer = String(payload.referrer || '').trim();
 
     if (!name || !email || !facilityName) {
       res.status(400).json({ error: 'name, email, and facilityName are required' });
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: 'Invalid email format' });
       return;
     }
 
@@ -174,6 +185,13 @@ export const captureMarketingLead = functions.runWith({ secrets: [MARKETING_LEAD
       phone: phone || null,
       unitCount: unitCount || null,
       message: message || null,
+      utmSource: utmSource || null,
+      utmMedium: utmMedium || null,
+      utmCampaign: utmCampaign || null,
+      utmTerm: utmTerm || null,
+      utmContent: utmContent || null,
+      landingPath: landingPath || null,
+      referrer: referrer || null,
       smsConsent,
       assignedToUid: null,
       assignedToEmail: null,
