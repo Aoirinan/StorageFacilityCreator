@@ -11,11 +11,11 @@ import 'package:flutter/foundation.dart';
 /// To add/remove super admins, update all three locations.
 class SuperAdminService {
   // List of superadmin email addresses (case-insensitive)
-  // ONLY russell_forsyth_1992@outlook.com – no one else can be superadmin.
   //
   // IMPORTANT: Keep in sync with functions/src/index.ts and firestore.rules
   static const List<String> superAdminEmails = [
     'russell_forsyth_1992@outlook.com',
+    'kennethgriggs03@gmail.com',
   ];
 
   // Optional UIDs – kept empty; superadmin is email-only.

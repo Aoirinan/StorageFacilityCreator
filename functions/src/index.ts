@@ -71,6 +71,7 @@ const QUICKBOOKS_CLIENT_ID = defineSecret('QUICKBOOKS_CLIENT_ID');
 const QUICKBOOKS_CLIENT_SECRET = defineSecret('QUICKBOOKS_CLIENT_SECRET');
 const QUICKBOOKS_REDIRECT_URI = defineString('QUICKBOOKS_REDIRECT_URI');
 const QUICKBOOKS_ENV = defineString('QUICKBOOKS_ENV', { default: 'sandbox' });
+const MARKETING_LEAD_CAPTURE_KEY = defineSecret('MARKETING_LEAD_CAPTURE_KEY');
 
 const SENDGRID_SECRETS = [SENDGRID_API_KEY];
 const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
@@ -90,11 +91,12 @@ function getTwilioClient(): any {
   return twilioClient;
 }
 
-// Super admin email list – ONLY russell_forsyth_1992@outlook.com; no one else.
+// Super admin email list (case-insensitive checks via helper).
 // Can be overridden via SUPER_ADMIN_EMAILS env var (comma-separated).
 // Must match lib/services/superadmin_service.dart and firestore.rules
 const SUPER_ADMIN_EMAILS_HARDCODED = [
   'russell_forsyth_1992@outlook.com',
+  'kennethgriggs03@gmail.com',
 ];
 
 // Parse environment variable or use hardcoded list
@@ -117,6 +119,87 @@ function isSuperAdmin(userEmail: string | undefined): boolean {
     adminEmail.toLowerCase() === lowerEmail,
   );
 }
+
+/**
+ * Public marketing lead capture endpoint.
+ * Called by marketing site's /api/contact route using a shared API key.
+ */
+export const captureMarketingLead = functions.runWith({ secrets: [MARKETING_LEAD_CAPTURE_KEY] }).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const expectedKey = MARKETING_LEAD_CAPTURE_KEY.value().trim();
+    const providedKey = String(req.headers['x-api-key'] || '').trim();
+    if (!expectedKey || providedKey !== expectedKey) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const payload = (req.body || {}) as Record<string, unknown>;
+    const name = String(payload.name || '').trim();
+    const email = String(payload.email || '').trim();
+    const facilityName = String(payload.facilityName || '').trim();
+    const phone = String(payload.phone || '').trim();
+    const unitCount = String(payload.unitCount || '').trim();
+    const message = String(payload.message || '').trim();
+    const intentRaw = String(payload.intent || 'demo').trim().toLowerCase();
+    const intent = intentRaw === 'trial' ? 'trial' : 'demo';
+    const smsConsent = Boolean(payload.smsConsent);
+
+    if (!name || !email || !facilityName) {
+      res.status(400).json({ error: 'name, email, and facilityName are required' });
+      return;
+    }
+
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const docRef = await admin.firestore().collection('marketing_leads').add({
+      source: 'website_contact',
+      status: 'new',
+      intent,
+      name,
+      email,
+      facilityName,
+      phone: phone || null,
+      unitCount: unitCount || null,
+      message: message || null,
+      smsConsent,
+      assignedToUid: null,
+      assignedToEmail: null,
+      assignedToName: null,
+      lastCalledAt: null,
+      saleStatus: 'pending',
+      saleAmount: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await docRef.collection('activities').add({
+      type: 'lead_created',
+      summary: `Lead created from website contact form (${intent}).`,
+      actorUid: 'system',
+      actorEmail: 'system',
+      actorName: 'System',
+      createdAt: now,
+    });
+
+    res.status(200).json({ success: true, id: docRef.id });
+  } catch (error) {
+    functions.logger.error('captureMarketingLead failed', { error });
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
 
 /**
  * Super admin only: delete a user from Firebase Auth and Firestore users collection.

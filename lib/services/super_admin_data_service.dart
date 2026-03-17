@@ -51,6 +51,163 @@ class PlatformMetrics {
       totalUnits == 0 ? 0 : (occupiedUnits / totalUnits * 100);
 }
 
+enum MarketingLeadStatus {
+  newLead,
+  contacted,
+  qualified,
+  won,
+  lost,
+}
+
+extension MarketingLeadStatusDisplay on MarketingLeadStatus {
+  String get value {
+    switch (this) {
+      case MarketingLeadStatus.newLead:
+        return 'new';
+      case MarketingLeadStatus.contacted:
+        return 'contacted';
+      case MarketingLeadStatus.qualified:
+        return 'qualified';
+      case MarketingLeadStatus.won:
+        return 'won';
+      case MarketingLeadStatus.lost:
+        return 'lost';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case MarketingLeadStatus.newLead:
+        return 'New';
+      case MarketingLeadStatus.contacted:
+        return 'Contacted';
+      case MarketingLeadStatus.qualified:
+        return 'Qualified';
+      case MarketingLeadStatus.won:
+        return 'Won';
+      case MarketingLeadStatus.lost:
+        return 'Lost';
+    }
+  }
+
+  static MarketingLeadStatus fromValue(String value) {
+    switch (value) {
+      case 'contacted':
+        return MarketingLeadStatus.contacted;
+      case 'qualified':
+        return MarketingLeadStatus.qualified;
+      case 'won':
+        return MarketingLeadStatus.won;
+      case 'lost':
+        return MarketingLeadStatus.lost;
+      default:
+        return MarketingLeadStatus.newLead;
+    }
+  }
+}
+
+class MarketingLead {
+  final String id;
+  final String source;
+  final String intent;
+  final String name;
+  final String email;
+  final String facilityName;
+  final String? phone;
+  final String? unitCount;
+  final String? message;
+  final bool smsConsent;
+  final MarketingLeadStatus status;
+  final String? assignedToUid;
+  final String? assignedToEmail;
+  final String? assignedToName;
+  final DateTime? lastCalledAt;
+  final String saleStatus;
+  final num? saleAmount;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const MarketingLead({
+    required this.id,
+    required this.source,
+    required this.intent,
+    required this.name,
+    required this.email,
+    required this.facilityName,
+    this.phone,
+    this.unitCount,
+    this.message,
+    required this.smsConsent,
+    required this.status,
+    this.assignedToUid,
+    this.assignedToEmail,
+    this.assignedToName,
+    this.lastCalledAt,
+    required this.saleStatus,
+    this.saleAmount,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  factory MarketingLead.fromFirestore(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>? ?? {};
+    return MarketingLead(
+      id: doc.id,
+      source: (d['source'] ?? 'website_contact').toString(),
+      intent: (d['intent'] ?? 'demo').toString(),
+      name: (d['name'] ?? '').toString(),
+      email: (d['email'] ?? '').toString(),
+      facilityName: (d['facilityName'] ?? '').toString(),
+      phone: d['phone'] as String?,
+      unitCount: d['unitCount'] as String?,
+      message: d['message'] as String?,
+      smsConsent: d['smsConsent'] == true,
+      status: MarketingLeadStatusDisplay.fromValue((d['status'] ?? 'new').toString()),
+      assignedToUid: d['assignedToUid'] as String?,
+      assignedToEmail: d['assignedToEmail'] as String?,
+      assignedToName: d['assignedToName'] as String?,
+      lastCalledAt: (d['lastCalledAt'] as Timestamp?)?.toDate(),
+      saleStatus: (d['saleStatus'] ?? 'pending').toString(),
+      saleAmount: d['saleAmount'] as num?,
+      createdAt: (d['createdAt'] as Timestamp?)?.toDate(),
+      updatedAt: (d['updatedAt'] as Timestamp?)?.toDate(),
+    );
+  }
+}
+
+class MarketingLeadActivity {
+  final String id;
+  final String type;
+  final String summary;
+  final String actorUid;
+  final String actorEmail;
+  final String actorName;
+  final DateTime? createdAt;
+
+  const MarketingLeadActivity({
+    required this.id,
+    required this.type,
+    required this.summary,
+    required this.actorUid,
+    required this.actorEmail,
+    required this.actorName,
+    this.createdAt,
+  });
+
+  factory MarketingLeadActivity.fromFirestore(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>? ?? {};
+    return MarketingLeadActivity(
+      id: doc.id,
+      type: (d['type'] ?? 'note').toString(),
+      summary: (d['summary'] ?? '').toString(),
+      actorUid: (d['actorUid'] ?? '').toString(),
+      actorEmail: (d['actorEmail'] ?? '').toString(),
+      actorName: (d['actorName'] ?? '').toString(),
+      createdAt: (d['createdAt'] as Timestamp?)?.toDate(),
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
@@ -85,6 +242,15 @@ final allUsersProvider = StreamProvider<List<UserModel>>((ref) {
       .snapshots()
       .map((snap) =>
           snap.docs.map((d) => UserModel.fromFirestore(d)).toList());
+});
+
+/// Marketing leads captured from website demo/trial forms.
+final marketingLeadsProvider = StreamProvider<List<MarketingLead>>((ref) {
+  return FirebaseFirestore.instance
+      .collection('marketing_leads')
+      .orderBy('createdAt', descending: true)
+      .snapshots()
+      .map((snap) => snap.docs.map(MarketingLead.fromFirestore).toList());
 });
 
 /// Derived: facilities enriched with owner email and subscription status.
@@ -332,5 +498,92 @@ class SuperAdminDataService {
       'rejectedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  static Stream<List<MarketingLeadActivity>> marketingLeadActivities(String leadId) {
+    return _db
+        .collection('marketing_leads')
+        .doc(leadId)
+        .collection('activities')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((s) => s.docs.map(MarketingLeadActivity.fromFirestore).toList());
+  }
+
+  static Future<void> assignMarketingLead({
+    required String leadId,
+    String? assignedToUid,
+    String? assignedToEmail,
+    String? assignedToName,
+    required String actorUid,
+    required String actorEmail,
+    required String actorName,
+  }) async {
+    final leadRef = _db.collection('marketing_leads').doc(leadId);
+    await leadRef.update({
+      'assignedToUid': assignedToUid,
+      'assignedToEmail': assignedToEmail,
+      'assignedToName': assignedToName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    await leadRef.collection('activities').add({
+      'type': 'assignment',
+      'summary': 'Assigned to ${assignedToName ?? assignedToEmail ?? 'unassigned'}.',
+      'actorUid': actorUid,
+      'actorEmail': actorEmail,
+      'actorName': actorName,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> updateMarketingLeadStatus({
+    required String leadId,
+    required MarketingLeadStatus status,
+    String? saleStatus,
+    num? saleAmount,
+    bool markCalled = false,
+    required String actorUid,
+    required String actorEmail,
+    required String actorName,
+    String? summary,
+  }) async {
+    final leadRef = _db.collection('marketing_leads').doc(leadId);
+    final update = <String, dynamic>{
+      'status': status.value,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (saleStatus != null) update['saleStatus'] = saleStatus;
+    if (saleAmount != null) update['saleAmount'] = saleAmount;
+    if (markCalled) update['lastCalledAt'] = FieldValue.serverTimestamp();
+
+    await leadRef.update(update);
+    await leadRef.collection('activities').add({
+      'type': 'status_update',
+      'summary': summary ?? 'Lead updated to ${status.label}.',
+      'actorUid': actorUid,
+      'actorEmail': actorEmail,
+      'actorName': actorName,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> addMarketingLeadActivity({
+    required String leadId,
+    required String type,
+    required String summary,
+    required String actorUid,
+    required String actorEmail,
+    required String actorName,
+  }) async {
+    final leadRef = _db.collection('marketing_leads').doc(leadId);
+    await leadRef.collection('activities').add({
+      'type': type,
+      'summary': summary,
+      'actorUid': actorUid,
+      'actorEmail': actorEmail,
+      'actorName': actorName,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    await leadRef.update({'updatedAt': FieldValue.serverTimestamp()});
   }
 }

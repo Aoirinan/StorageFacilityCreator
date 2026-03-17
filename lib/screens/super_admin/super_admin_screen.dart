@@ -12,6 +12,7 @@ import 'package:sfcapp/screens/super_admin/tabs/facilities_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/feature_flags_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/metrics_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/users_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/leads_tab.dart';
 
 class SuperAdminScreen extends ConsumerStatefulWidget {
   const SuperAdminScreen({super.key});
@@ -30,13 +31,14 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.credit_card, label: 'Accounts'),
     _TabDef(icon: Icons.people, label: 'Users'),
     _TabDef(icon: Icons.toggle_on, label: 'Feature Flags'),
+    _TabDef(icon: Icons.support_agent, label: 'Leads'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
   ];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     // Seed feature flags on first load (no-op if already seeded)
     FeatureFlagService.seedDefaults();
   }
@@ -141,6 +143,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           AccountsTab(),
           UsersTab(),
           FeatureFlagsTab(),
+          LeadsTab(),
           BugReportsTab(),
         ],
       ),

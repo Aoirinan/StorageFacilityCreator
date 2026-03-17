@@ -32,6 +32,26 @@ async function sendContactLeadEmail(payload: ContactLeadPayload, apiKey: string)
   }
 }
 
+async function captureLeadForSuperAdmin(payload: Record<string, unknown>): Promise<void> {
+  const endpoint = (process.env.MARKETING_LEAD_CAPTURE_URL ?? '').trim();
+  const apiKey = (process.env.MARKETING_LEAD_CAPTURE_KEY ?? '').trim();
+  if (!endpoint || !apiKey) return;
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Lead capture endpoint rejected payload (${response.status}): ${errText}`);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -88,6 +108,21 @@ export async function POST(request: NextRequest) {
       console.log('Contact lead email skipped (missing SENDGRID_API_KEY). Payload:', payload);
     } else {
       throw new Error('SENDGRID_API_KEY is required in production for contact form delivery.');
+    }
+
+    try {
+      await captureLeadForSuperAdmin({
+        name,
+        email,
+        facilityName,
+        phone,
+        unitCount,
+        message,
+        smsConsent,
+        intent,
+      });
+    } catch (leadCaptureError) {
+      console.error('Superadmin lead capture failed:', leadCaptureError);
     }
 
     return NextResponse.json({ success: true });

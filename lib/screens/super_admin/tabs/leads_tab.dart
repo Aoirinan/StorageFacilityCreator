@@ -1,0 +1,525 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
+import 'package:sfcapp/services/super_admin_data_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+
+class LeadsTab extends ConsumerStatefulWidget {
+  const LeadsTab({super.key});
+
+  @override
+  ConsumerState<LeadsTab> createState() => _LeadsTabState();
+}
+
+class _LeadsTabState extends ConsumerState<LeadsTab> {
+  String _search = '';
+  String _statusFilter = 'all';
+
+  @override
+  Widget build(BuildContext context) {
+    final leadsAsync = ref.watch(marketingLeadsProvider);
+
+    return leadsAsync.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Center(child: Text('Error: $e')),
+      data: (leads) {
+        final filtered = leads.where((lead) {
+          final q = _search.toLowerCase();
+          final matchesSearch = q.isEmpty ||
+              lead.name.toLowerCase().contains(q) ||
+              lead.email.toLowerCase().contains(q) ||
+              lead.facilityName.toLowerCase().contains(q) ||
+              (lead.phone ?? '').toLowerCase().contains(q);
+          final matchesStatus =
+              _statusFilter == 'all' || lead.status.value == _statusFilter;
+          return matchesSearch && matchesStatus;
+        }).toList();
+
+        return Column(
+          children: [
+            _buildToolbar(filtered.length, leads.length),
+            Expanded(
+              child: filtered.isEmpty
+                  ? const Center(child: Text('No leads match your filters.'))
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) => _LeadRow(lead: filtered[i]),
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildToolbar(int shown, int total) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              decoration: InputDecoration(
+                hintText: 'Search by name, email, phone, facility...',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                isDense: true,
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              onChanged: (v) => setState(() => _search = v),
+            ),
+          ),
+          const SizedBox(width: 12),
+          DropdownButton<String>(
+            value: _statusFilter,
+            items: const [
+              DropdownMenuItem(value: 'all', child: Text('All')),
+              DropdownMenuItem(value: 'new', child: Text('New')),
+              DropdownMenuItem(value: 'contacted', child: Text('Contacted')),
+              DropdownMenuItem(value: 'qualified', child: Text('Qualified')),
+              DropdownMenuItem(value: 'won', child: Text('Won')),
+              DropdownMenuItem(value: 'lost', child: Text('Lost')),
+            ],
+            onChanged: (v) => setState(() => _statusFilter = v ?? 'all'),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            '$shown / $total',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: AppTheme.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LeadRow extends StatefulWidget {
+  const _LeadRow({required this.lead});
+
+  final MarketingLead lead;
+
+  @override
+  State<_LeadRow> createState() => _LeadRowState();
+}
+
+class _LeadRowState extends State<_LeadRow> {
+  bool _saving = false;
+
+  String get _actorUid => FirebaseAuth.instance.currentUser?.uid ?? 'unknown';
+  String get _actorEmail => FirebaseAuth.instance.currentUser?.email ?? 'unknown';
+  String get _actorName {
+    final email = _actorEmail;
+    if (email == 'unknown' || !email.contains('@')) return 'Unknown User';
+    return email.split('@').first;
+  }
+
+  Color _statusColor(MarketingLeadStatus status) {
+    switch (status) {
+      case MarketingLeadStatus.newLead:
+        return AppTheme.info;
+      case MarketingLeadStatus.contacted:
+        return Colors.indigo;
+      case MarketingLeadStatus.qualified:
+        return AppTheme.warning;
+      case MarketingLeadStatus.won:
+        return AppTheme.success;
+      case MarketingLeadStatus.lost:
+        return AppTheme.error;
+    }
+  }
+
+  Future<void> _recordNote({required bool isCall}) async {
+    final workedByController = TextEditingController(text: _actorName);
+    final noteController = TextEditingController();
+    final title = isCall ? 'Log Call' : 'Add Note';
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: workedByController,
+              decoration: const InputDecoration(labelText: 'Worked by'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: noteController,
+              maxLines: 4,
+              decoration: InputDecoration(
+                labelText: isCall ? 'Call notes' : 'Notes',
+                hintText: isCall
+                    ? 'What was discussed? Next step?'
+                    : 'What happened on this lead?',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+    final workedBy = workedByController.text.trim();
+    final note = noteController.text.trim();
+    if (note.isEmpty) return;
+
+    setState(() => _saving = true);
+    try {
+      if (isCall) {
+        await SuperAdminDataService.updateMarketingLeadStatus(
+          leadId: widget.lead.id,
+          status: MarketingLeadStatus.contacted,
+          markCalled: true,
+          actorUid: _actorUid,
+          actorEmail: _actorEmail,
+          actorName: _actorName,
+          summary:
+              'Call logged by ${workedBy.isEmpty ? _actorName : workedBy}: $note',
+        );
+      }
+
+      await SuperAdminDataService.addMarketingLeadActivity(
+        leadId: widget.lead.id,
+        type: isCall ? 'call_note' : 'note',
+        summary:
+            '${isCall ? 'Call' : 'Note'} by ${workedBy.isEmpty ? _actorName : workedBy}: $note',
+        actorUid: _actorUid,
+        actorEmail: _actorEmail,
+        actorName: workedBy.isEmpty ? _actorName : workedBy,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _assignLead() async {
+    final nameController =
+        TextEditingController(text: widget.lead.assignedToName ?? '');
+    final emailController =
+        TextEditingController(text: widget.lead.assignedToEmail ?? '');
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Assign Lead'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration:
+                  const InputDecoration(labelText: 'Rep name (e.g. Kenny)'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: emailController,
+              decoration: const InputDecoration(labelText: 'Rep email'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Assign'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+    setState(() => _saving = true);
+    try {
+      await SuperAdminDataService.assignMarketingLead(
+        leadId: widget.lead.id,
+        assignedToName: nameController.text.trim().isEmpty
+            ? null
+            : nameController.text.trim(),
+        assignedToEmail: emailController.text.trim().isEmpty
+            ? null
+            : emailController.text.trim(),
+        assignedToUid: null,
+        actorUid: _actorUid,
+        actorEmail: _actorEmail,
+        actorName: _actorName,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _markOutcome({required bool won}) async {
+    final amountController = TextEditingController();
+    final workedByController = TextEditingController(text: _actorName);
+    final noteController = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(won ? 'Mark Sale Won' : 'Mark Lead Lost'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: workedByController,
+              decoration: const InputDecoration(labelText: 'Worked by'),
+            ),
+            if (won) ...[
+              const SizedBox(height: 8),
+              TextField(
+                controller: amountController,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'Sale amount (optional)'),
+              ),
+            ],
+            const SizedBox(height: 8),
+            TextField(
+              controller: noteController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                  labelText: 'Outcome notes',
+                  hintText: 'What happened? What was sold/lost?'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(won ? 'Mark Won' : 'Mark Lost'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+    final amount = num.tryParse(amountController.text.trim());
+    final workedBy = workedByController.text.trim().isEmpty
+        ? _actorName
+        : workedByController.text.trim();
+    final note = noteController.text.trim();
+
+    setState(() => _saving = true);
+    try {
+      await SuperAdminDataService.updateMarketingLeadStatus(
+        leadId: widget.lead.id,
+        status: won ? MarketingLeadStatus.won : MarketingLeadStatus.lost,
+        saleStatus: won ? 'won' : 'lost',
+        saleAmount: won ? amount : null,
+        actorUid: _actorUid,
+        actorEmail: _actorEmail,
+        actorName: _actorName,
+        summary: '${won ? 'Sale won' : 'Lead lost'} by $workedBy'
+            '${note.isEmpty ? '' : ': $note'}',
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lead = widget.lead;
+    final fmt = DateFormat('MMM d, yyyy h:mm a');
+    final statusColor = _statusColor(lead.status);
+    final createdAt = lead.createdAt != null ? fmt.format(lead.createdAt!) : '—';
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderLight),
+      ),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        title: Text(
+          '${lead.name} • ${lead.facilityName}',
+          style: Theme.of(context)
+              .textTheme
+              .titleSmall
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        subtitle: Text(
+          '${lead.email}${lead.phone == null || lead.phone!.isEmpty ? '' : ' • ${lead.phone}'}',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: AppTheme.textSecondary),
+        ),
+        trailing: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
+            color: statusColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+          ),
+          child: Text(
+            lead.status.label,
+            style: TextStyle(
+                fontSize: 11, color: statusColor, fontWeight: FontWeight.w600),
+          ),
+        ),
+        children: [
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 24,
+            runSpacing: 8,
+            children: [
+              _kv(context, 'Created', createdAt),
+              _kv(context, 'Intent', lead.intent.toUpperCase()),
+              _kv(context, 'Units', lead.unitCount?.isNotEmpty == true ? lead.unitCount! : '—'),
+              _kv(context, 'Assigned', lead.assignedToName ?? lead.assignedToEmail ?? 'Unassigned'),
+              _kv(context, 'Sale status', lead.saleStatus),
+              _kv(context, 'Sale amount', lead.saleAmount?.toString() ?? '—'),
+              _kv(context, 'SMS consent', lead.smsConsent ? 'Yes' : 'No'),
+            ],
+          ),
+          if (lead.message != null && lead.message!.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: AppTheme.backgroundLight,
+                border: Border.all(color: AppTheme.borderLight),
+              ),
+              child: Text(
+                lead.message!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          if (_saving)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                TextButton.icon(
+                  icon: const Icon(Icons.assignment_ind, size: 14),
+                  label: const Text('Assign'),
+                  onPressed: _assignLead,
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.call, size: 14),
+                  label: const Text('Log Call'),
+                  onPressed: () => _recordNote(isCall: true),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.note_add, size: 14),
+                  label: const Text('Add Note'),
+                  onPressed: () => _recordNote(isCall: false),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.check_circle, size: 14),
+                  label: const Text('Mark Won'),
+                  onPressed: () => _markOutcome(won: true),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.cancel, size: 14),
+                  label: const Text('Mark Lost'),
+                  onPressed: () => _markOutcome(won: false),
+                ),
+              ],
+            ),
+          const SizedBox(height: 8),
+          StreamBuilder<List<MarketingLeadActivity>>(
+            stream: SuperAdminDataService.marketingLeadActivities(lead.id),
+            builder: (context, snapshot) {
+              final activities = snapshot.data ?? const <MarketingLeadActivity>[];
+              if (activities.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Activity',
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelLarge
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  ...activities.take(8).map((a) {
+                    final when =
+                        a.createdAt != null ? fmt.format(a.createdAt!) : '';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '• $when — ${a.actorName}: ${a.summary}',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: AppTheme.textSecondary),
+                      ),
+                    );
+                  }),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(BuildContext context, String label, String value) {
+    return SizedBox(
+      width: 210,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: AppTheme.textTertiary),
+          ),
+          Text(value, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+}
