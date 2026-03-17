@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class LeadsTab extends ConsumerStatefulWidget {
@@ -145,50 +146,140 @@ class _LeadRowState extends State<_LeadRow> {
     }
   }
 
+  String _displayNameFromEmail(String email) {
+    final local = email.split('@').first.replaceAll('.', ' ').replaceAll('_', ' ');
+    return local
+        .split(' ')
+        .where((part) => part.trim().isNotEmpty)
+        .map((part) =>
+            '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}')
+        .join(' ');
+  }
+
+  List<_RepOption> _repOptions() {
+    final emails = <String>{
+      ...SuperAdminService.superAdminEmails,
+      _actorEmail,
+      if ((widget.lead.assignedToEmail ?? '').trim().isNotEmpty)
+        widget.lead.assignedToEmail!.trim(),
+      if ((widget.lead.workedByEmail ?? '').trim().isNotEmpty)
+        widget.lead.workedByEmail!.trim(),
+    };
+    final sorted = emails.where((e) => e.contains('@')).toList()..sort();
+    final reps = sorted
+        .map((email) => _RepOption(
+              email: email,
+              name: _displayNameFromEmail(email),
+            ))
+        .toList();
+    if (reps.isEmpty) {
+      reps.add(const _RepOption(name: 'Unknown User', email: 'unknown@example.com'));
+    }
+    return reps;
+  }
+
+  _RepOption _selectedOrActorRep(List<_RepOption> options) {
+    final assignedEmail = (widget.lead.assignedToEmail ?? '').trim();
+    if (assignedEmail.isNotEmpty) {
+      for (final rep in options) {
+        if (rep.email.toLowerCase() == assignedEmail.toLowerCase()) return rep;
+      }
+    }
+    for (final rep in options) {
+      if (rep.email.toLowerCase() == _actorEmail.toLowerCase()) return rep;
+    }
+    return options.first;
+  }
+
   Future<void> _recordNote({required bool isCall}) async {
-    final workedByController = TextEditingController(text: _actorName);
     final noteController = TextEditingController();
     final title = isCall ? 'Log Call' : 'Add Note';
+    final reps = _repOptions();
+    _RepOption selectedRep = _selectedOrActorRep(reps);
+    String callOutcome = 'follow_up_needed';
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: workedByController,
-              decoration: const InputDecoration(labelText: 'Worked by'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: noteController,
-              maxLines: 4,
-              decoration: InputDecoration(
-                labelText: isCall ? 'Call notes' : 'Notes',
-                hintText: isCall
-                    ? 'What was discussed? Next step?'
-                    : 'What happened on this lead?',
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: selectedRep.email,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Worked by'),
+                items: reps
+                    .map(
+                      (rep) => DropdownMenuItem(
+                        value: rep.email,
+                        child: Text(rep.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value == null) return;
+                  setDialogState(() {
+                    selectedRep =
+                        reps.firstWhere((rep) => rep.email == value);
+                  });
+                },
               ),
+              if (isCall) ...[
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: callOutcome,
+                  decoration: const InputDecoration(labelText: 'Call outcome'),
+                  items: const [
+                    DropdownMenuItem(
+                        value: 'no_answer', child: Text('No answer')),
+                    DropdownMenuItem(
+                        value: 'follow_up_needed',
+                        child: Text('Follow-up needed')),
+                    DropdownMenuItem(
+                        value: 'interested', child: Text('Interested')),
+                    DropdownMenuItem(
+                        value: 'not_interested', child: Text('Not interested')),
+                    DropdownMenuItem(
+                        value: 'closed_won', child: Text('Closed won')),
+                    DropdownMenuItem(
+                        value: 'closed_lost', child: Text('Closed lost')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setDialogState(() => callOutcome = value);
+                  },
+                ),
+              ],
+              const SizedBox(height: 8),
+              TextField(
+                controller: noteController,
+                maxLines: 4,
+                decoration: InputDecoration(
+                  labelText: isCall ? 'Call notes' : 'Notes',
+                  hintText: isCall
+                      ? 'What was discussed? Next step?'
+                      : 'What happened on this lead?',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
 
     if (ok != true || !mounted) return;
-    final workedBy = workedByController.text.trim();
     final note = noteController.text.trim();
     if (note.isEmpty) return;
 
@@ -199,22 +290,25 @@ class _LeadRowState extends State<_LeadRow> {
           leadId: widget.lead.id,
           status: MarketingLeadStatus.contacted,
           markCalled: true,
+          callOutcome: callOutcome,
+          workedByName: selectedRep.name,
+          workedByEmail: selectedRep.email,
           actorUid: _actorUid,
           actorEmail: _actorEmail,
           actorName: _actorName,
-          summary:
-              'Call logged by ${workedBy.isEmpty ? _actorName : workedBy}: $note',
+          summary: 'Call (${callOutcome.replaceAll('_', ' ')}) logged by '
+              '${selectedRep.name}: $note',
         );
       }
 
       await SuperAdminDataService.addMarketingLeadActivity(
         leadId: widget.lead.id,
         type: isCall ? 'call_note' : 'note',
-        summary:
-            '${isCall ? 'Call' : 'Note'} by ${workedBy.isEmpty ? _actorName : workedBy}: $note',
+        summary: '${isCall ? 'Call' : 'Note'} by ${selectedRep.name}'
+            '${isCall ? ' [${callOutcome.replaceAll('_', ' ')}]' : ''}: $note',
         actorUid: _actorUid,
-        actorEmail: _actorEmail,
-        actorName: workedBy.isEmpty ? _actorName : workedBy,
+        actorEmail: selectedRep.email,
+        actorName: selectedRep.name,
       );
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -222,54 +316,74 @@ class _LeadRowState extends State<_LeadRow> {
   }
 
   Future<void> _assignLead() async {
-    final nameController =
-        TextEditingController(text: widget.lead.assignedToName ?? '');
-    final emailController =
-        TextEditingController(text: widget.lead.assignedToEmail ?? '');
+    final reps = _repOptions();
+    String selectedEmail = (widget.lead.assignedToEmail ?? '').trim();
+    if (selectedEmail.isEmpty && reps.isNotEmpty) {
+      selectedEmail = _selectedOrActorRep(reps).email;
+    }
+    bool clearAssignment = false;
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Assign Lead'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration:
-                  const InputDecoration(labelText: 'Rep name (e.g. Kenny)'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Assign Lead'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: selectedEmail.isEmpty ? null : selectedEmail,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Assign to rep'),
+                items: reps
+                    .map(
+                      (rep) => DropdownMenuItem(
+                        value: rep.email,
+                        child: Text(rep.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  setDialogState(() {
+                    selectedEmail = value ?? '';
+                    clearAssignment = false;
+                  });
+                },
+              ),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                value: clearAssignment,
+                onChanged: (v) => setDialogState(() => clearAssignment = v == true),
+                title: const Text('Unassign lead'),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: emailController,
-              decoration: const InputDecoration(labelText: 'Rep email'),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Assign'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Assign'),
-          ),
-        ],
       ),
     );
 
     if (ok != true || !mounted) return;
     setState(() => _saving = true);
     try {
+      final selectedRep = reps.where((r) => r.email == selectedEmail).toList();
       await SuperAdminDataService.assignMarketingLead(
         leadId: widget.lead.id,
-        assignedToName: nameController.text.trim().isEmpty
-            ? null
-            : nameController.text.trim(),
-        assignedToEmail: emailController.text.trim().isEmpty
-            ? null
-            : emailController.text.trim(),
+        assignedToName:
+            clearAssignment ? null : (selectedRep.isEmpty ? null : selectedRep.first.name),
+        assignedToEmail:
+            clearAssignment ? null : (selectedRep.isEmpty ? null : selectedRep.first.email),
         assignedToUid: null,
         actorUid: _actorUid,
         actorEmail: _actorEmail,
@@ -282,58 +396,74 @@ class _LeadRowState extends State<_LeadRow> {
 
   Future<void> _markOutcome({required bool won}) async {
     final amountController = TextEditingController();
-    final workedByController = TextEditingController(text: _actorName);
     final noteController = TextEditingController();
+    final reps = _repOptions();
+    _RepOption selectedRep = _selectedOrActorRep(reps);
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(won ? 'Mark Sale Won' : 'Mark Lead Lost'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: workedByController,
-              decoration: const InputDecoration(labelText: 'Worked by'),
-            ),
-            if (won) ...[
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(won ? 'Mark Sale Won' : 'Mark Lead Lost'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: selectedRep.email,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Worked by'),
+                items: reps
+                    .map(
+                      (rep) => DropdownMenuItem(
+                        value: rep.email,
+                        child: Text(rep.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value == null) return;
+                  setDialogState(() {
+                    selectedRep =
+                        reps.firstWhere((rep) => rep.email == value);
+                  });
+                },
+              ),
+              if (won) ...[
+                const SizedBox(height: 8),
+                TextField(
+                  controller: amountController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration:
+                      const InputDecoration(labelText: 'Sale amount (optional)'),
+                ),
+              ],
               const SizedBox(height: 8),
               TextField(
-                controller: amountController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
+                controller: noteController,
+                maxLines: 3,
                 decoration: const InputDecoration(
-                    labelText: 'Sale amount (optional)'),
+                    labelText: 'Outcome notes',
+                    hintText: 'What happened? What was sold/lost?'),
               ),
             ],
-            const SizedBox(height: 8),
-            TextField(
-              controller: noteController,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                  labelText: 'Outcome notes',
-                  hintText: 'What happened? What was sold/lost?'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(won ? 'Mark Won' : 'Mark Lost'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(won ? 'Mark Won' : 'Mark Lost'),
-          ),
-        ],
       ),
     );
 
     if (ok != true || !mounted) return;
     final amount = num.tryParse(amountController.text.trim());
-    final workedBy = workedByController.text.trim().isEmpty
-        ? _actorName
-        : workedByController.text.trim();
     final note = noteController.text.trim();
 
     setState(() => _saving = true);
@@ -343,10 +473,12 @@ class _LeadRowState extends State<_LeadRow> {
         status: won ? MarketingLeadStatus.won : MarketingLeadStatus.lost,
         saleStatus: won ? 'won' : 'lost',
         saleAmount: won ? amount : null,
+        workedByName: selectedRep.name,
+        workedByEmail: selectedRep.email,
         actorUid: _actorUid,
         actorEmail: _actorEmail,
         actorName: _actorName,
-        summary: '${won ? 'Sale won' : 'Lead lost'} by $workedBy'
+        summary: '${won ? 'Sale won' : 'Lead lost'} by ${selectedRep.name}'
             '${note.isEmpty ? '' : ': $note'}',
       );
     } finally {
@@ -423,6 +555,8 @@ class _LeadRowState extends State<_LeadRow> {
               _kv(context, 'Intent', lead.intent.toUpperCase()),
               _kv(context, 'Units', lead.unitCount?.isNotEmpty == true ? lead.unitCount! : '—'),
               _kv(context, 'Assigned', lead.assignedToName ?? lead.assignedToEmail ?? 'Unassigned'),
+              _kv(context, 'Worked by', lead.workedByName ?? lead.workedByEmail ?? '—'),
+              _kv(context, 'Call outcome', lead.lastCallOutcome?.replaceAll('_', ' ') ?? '—'),
               _kv(context, 'Sale status', lead.saleStatus),
               _kv(context, 'Sale amount', lead.saleAmount?.toString() ?? '—'),
               _kv(context, 'SMS consent', lead.smsConsent ? 'Yes' : 'No'),
@@ -565,4 +699,16 @@ class _LeadRowState extends State<_LeadRow> {
       ),
     );
   }
+}
+
+class _RepOption {
+  final String name;
+  final String email;
+
+  const _RepOption({
+    required this.name,
+    required this.email,
+  });
+
+  String get label => '$name <$email>';
 }

@@ -122,6 +122,11 @@ class MarketingLead {
   final String? assignedToEmail;
   final String? assignedToName;
   final DateTime? lastCalledAt;
+  final String? lastCallOutcome;
+  final DateTime? firstContactedAt;
+  final DateTime? closedAt;
+  final String? workedByName;
+  final String? workedByEmail;
   final String saleStatus;
   final num? saleAmount;
   final DateTime? createdAt;
@@ -143,6 +148,11 @@ class MarketingLead {
     this.assignedToEmail,
     this.assignedToName,
     this.lastCalledAt,
+    this.lastCallOutcome,
+    this.firstContactedAt,
+    this.closedAt,
+    this.workedByName,
+    this.workedByEmail,
     required this.saleStatus,
     this.saleAmount,
     this.createdAt,
@@ -167,6 +177,11 @@ class MarketingLead {
       assignedToEmail: d['assignedToEmail'] as String?,
       assignedToName: d['assignedToName'] as String?,
       lastCalledAt: (d['lastCalledAt'] as Timestamp?)?.toDate(),
+      lastCallOutcome: d['lastCallOutcome'] as String?,
+      firstContactedAt: (d['firstContactedAt'] as Timestamp?)?.toDate(),
+      closedAt: (d['closedAt'] as Timestamp?)?.toDate(),
+      workedByName: d['workedByName'] as String?,
+      workedByEmail: d['workedByEmail'] as String?,
       saleStatus: (d['saleStatus'] ?? 'pending').toString(),
       saleAmount: d['saleAmount'] as num?,
       createdAt: (d['createdAt'] as Timestamp?)?.toDate(),
@@ -542,12 +557,17 @@ class SuperAdminDataService {
     String? saleStatus,
     num? saleAmount,
     bool markCalled = false,
+    String? callOutcome,
+    String? workedByName,
+    String? workedByEmail,
     required String actorUid,
     required String actorEmail,
     required String actorName,
     String? summary,
   }) async {
     final leadRef = _db.collection('marketing_leads').doc(leadId);
+    final leadSnap = await leadRef.get();
+    final leadData = leadSnap.data() ?? const <String, dynamic>{};
     final update = <String, dynamic>{
       'status': status.value,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -555,6 +575,16 @@ class SuperAdminDataService {
     if (saleStatus != null) update['saleStatus'] = saleStatus;
     if (saleAmount != null) update['saleAmount'] = saleAmount;
     if (markCalled) update['lastCalledAt'] = FieldValue.serverTimestamp();
+    if (callOutcome != null) update['lastCallOutcome'] = callOutcome;
+    if (workedByName != null) update['workedByName'] = workedByName;
+    if (workedByEmail != null) update['workedByEmail'] = workedByEmail;
+    if (markCalled && leadData['firstContactedAt'] == null) {
+      update['firstContactedAt'] = FieldValue.serverTimestamp();
+    }
+    if ((status == MarketingLeadStatus.won || status == MarketingLeadStatus.lost) &&
+        leadData['closedAt'] == null) {
+      update['closedAt'] = FieldValue.serverTimestamp();
+    }
 
     await leadRef.update(update);
     await leadRef.collection('activities').add({
