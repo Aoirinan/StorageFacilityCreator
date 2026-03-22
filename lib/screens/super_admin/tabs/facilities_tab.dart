@@ -150,11 +150,18 @@ class _FacilityRow extends StatelessWidget {
               ),
           ],
         ),
-        subtitle: Text(row.ownerEmail,
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: AppTheme.textSecondary)),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(row.ownerEmail,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: AppTheme.textSecondary)),
+            const SizedBox(height: 3),
+            _FacilityUsageInline(facilityId: f.id),
+          ],
+        ),
         trailing: _SubscriptionChip(status: row.subscriptionStatus),
         children: [
           const Divider(height: 1),
@@ -335,6 +342,48 @@ class _FacilityCommunicationUsageCard extends StatelessWidget {
               ),
             ],
           ),
+        );
+      },
+    );
+  }
+}
+
+class _FacilityUsageInline extends StatelessWidget {
+  const _FacilityUsageInline({required this.facilityId});
+
+  final String facilityId;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<FacilityCommunicationUsage>(
+      future: SuperAdminDataService.getFacilityCommunicationUsage(facilityId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Text(
+            'Usage: loading...',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: AppTheme.textTertiary),
+          );
+        }
+        if (snapshot.hasError || snapshot.data == null) {
+          return Text(
+            'Usage unavailable',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: AppTheme.warning),
+          );
+        }
+        final usage = snapshot.data!;
+        return Text(
+          'Emails ${usage.emailUsage.currentCount}/${usage.emailUsage.monthlyLimit} • '
+          'Texts ${usage.smsUsage.currentCount}/${usage.smsUsage.monthlyLimit}',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: AppTheme.textTertiary),
         );
       },
     );
