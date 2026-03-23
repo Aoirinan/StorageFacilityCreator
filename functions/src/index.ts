@@ -20,6 +20,7 @@ import {
   isStartKeyword,
   isStopKeyword,
 } from './texting_onboarding_helpers';
+import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
@@ -243,6 +244,114 @@ export const superAdminDeleteUser = functions.https.onCall(async (data: { uid: s
   functions.logger.info('superAdminDeleteUser', { uid, deletedBy: callerEmail });
   return { success: true };
 });
+
+interface SuperAdminDeleteFacilityCreatorAccountData {
+  accountId: string;
+  ownerEmailConfirmation: string;
+}
+
+/**
+ * Super admin only: permanently remove a facility-creator account, all facilities
+ * owned by that user (full document trees), the facilityCreatorAccounts doc (and
+ * its subcollections), and the owner's Firebase Auth + users/{uid} document.
+ *
+ * Caller must type the account owner's email exactly (case-insensitive) as confirmation.
+ */
+export const superAdminDeleteFacilityCreatorAccount = functions
+  .https.onCall(async (data: SuperAdminDeleteFacilityCreatorAccountData, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Only super admins can delete facility creator accounts',
+      );
+    }
+
+    const accountId = (data?.accountId || '').toString().trim();
+    const confirmation = (data?.ownerEmailConfirmation || '').toString().trim().toLowerCase();
+    if (!accountId) {
+      throw new functions.https.HttpsError('invalid-argument', 'accountId is required');
+    }
+    if (!confirmation) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'ownerEmailConfirmation is required',
+      );
+    }
+
+    const db = admin.firestore();
+    const accountRef = db.collection('facilityCreatorAccounts').doc(accountId);
+    const accountSnap = await accountRef.get();
+    if (!accountSnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Account not found');
+    }
+
+    const accountData = accountSnap.data() as Record<string, unknown>;
+    const ownerUid = (accountData.ownerUid || '').toString().trim();
+    const ownerEmail = (accountData.ownerEmail || '').toString().trim();
+    if (!ownerUid) {
+      throw new functions.https.HttpsError('failed-precondition', 'Account has no ownerUid');
+    }
+
+    if (ownerEmail.toLowerCase() !== confirmation) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Email confirmation does not match this account owner',
+      );
+    }
+
+    let ownerAuthEmail: string | undefined;
+    try {
+      const ownerUser = await admin.auth().getUser(ownerUid);
+      ownerAuthEmail = ownerUser.email;
+    } catch (e: unknown) {
+      const code = (e as { code?: string })?.code;
+      if (code !== 'auth/user-not-found') {
+        throw e;
+      }
+    }
+
+    if (isSuperAdmin(ownerAuthEmail ?? ownerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Cannot delete an account owned by a super admin',
+      );
+    }
+
+    const facilitiesSnap = await db
+      .collection('facilities')
+      .where('ownerUid', '==', ownerUid)
+      .get();
+
+    for (const f of facilitiesSnap.docs) {
+      await adminDeleteDocumentTree(f.ref);
+    }
+
+    await adminDeleteDocumentTree(accountRef);
+
+    try {
+      await admin.auth().deleteUser(ownerUid);
+    } catch (e: unknown) {
+      const code = (e as { code?: string })?.code;
+      if (code !== 'auth/user-not-found') {
+        throw e;
+      }
+    }
+
+    await db.collection('users').doc(ownerUid).delete();
+
+    functions.logger.info('superAdminDeleteFacilityCreatorAccount', {
+      accountId,
+      ownerUid,
+      deletedBy: callerEmail,
+      facilitiesDeleted: facilitiesSnap.size,
+    });
+
+    return { success: true, facilitiesDeleted: facilitiesSnap.size };
+  });
 
 /**
  * Super admin only: disable a user in Firebase Auth (they cannot sign in).

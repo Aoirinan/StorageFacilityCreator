@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/services/super_admin_user_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class AccountsTab extends ConsumerStatefulWidget {
@@ -177,6 +178,7 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
   bool _suspending = false;
   bool _reenablingOwner = false;
   bool _disablingOwner = false;
+  bool _deletingAccount = false;
 
   Color _statusColor(SubscriptionStatus s) {
     switch (s) {
@@ -204,7 +206,49 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
       _rejecting ||
       _suspending ||
       _reenablingOwner ||
-      _disablingOwner;
+      _disablingOwner ||
+      _deletingAccount;
+
+  Future<void> _deleteFacilityCreatorAccountPermanently() async {
+    final a = widget.account;
+    if (SuperAdminService.isEmailSuperAdmin(a.ownerEmail)) return;
+
+    final confirmationEmail = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _DeleteFacilityCreatorAccountDialog(account: a),
+    );
+    if (confirmationEmail == null || confirmationEmail.isEmpty || !mounted) {
+      return;
+    }
+
+    setState(() => _deletingAccount = true);
+    try {
+      await SuperAdminDataService.deleteFacilityCreatorAccount(
+        accountId: a.accountId,
+        ownerEmailConfirmation: confirmationEmail,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted account and data for ${a.ownerEmail}.'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Delete failed: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _deletingAccount = false);
+    }
+  }
 
   Future<void> _extendTrial(int days) async {
     setState(() => _extending = true);
@@ -511,6 +555,7 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     final isTrialing = a.subscriptionStatus == SubscriptionStatus.trialing;
     final isPending = a.subscriptionStatus == SubscriptionStatus.pendingApproval;
     final isSuspended = a.suspended;
+    final ownerIsSuperAdmin = SuperAdminService.isEmailSuperAdmin(a.ownerEmail);
 
     return Container(
       decoration: BoxDecoration(
@@ -541,19 +586,32 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: AppTheme.textSecondary)),
-        trailing: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: color.withValues(alpha: 0.3)),
-          ),
-          child: Text(a.subscriptionStatus.displayName,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: color,
-                  fontWeight: FontWeight.w600)),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!ownerIsSuperAdmin)
+              IconButton(
+                icon: Icon(Icons.delete_forever_outlined,
+                    color: AppTheme.error, size: 22),
+                tooltip:
+                    'Delete facility creator account (Firestore + facilities + owner login)',
+                onPressed: _isBusy ? null : _deleteFacilityCreatorAccountPermanently,
+              ),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: color.withValues(alpha: 0.3)),
+              ),
+              child: Text(a.subscriptionStatus.displayName,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: color,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ],
         ),
         children: [
           const Divider(height: 1),
@@ -703,6 +761,17 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     label: const Text('Enable Owner Login'),
                     onPressed: _enableOwnerLogin,
                   ),
+                if (!ownerIsSuperAdmin) ...[
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    icon: Icon(Icons.delete_forever, size: 14, color: AppTheme.error),
+                    label: Text(
+                      'Delete account & data',
+                      style: TextStyle(color: AppTheme.error),
+                    ),
+                    onPressed: _deleteFacilityCreatorAccountPermanently,
+                  ),
+                ],
               ],
             ),
         ],
@@ -725,6 +794,111 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
               style: Theme.of(context).textTheme.bodySmall),
         ],
       ),
+    );
+  }
+}
+
+/// Confirmation dialog: user must type the account owner email exactly.
+class _DeleteFacilityCreatorAccountDialog extends StatefulWidget {
+  const _DeleteFacilityCreatorAccountDialog({required this.account});
+
+  final FacilityCreatorAccountModel account;
+
+  @override
+  State<_DeleteFacilityCreatorAccountDialog> createState() =>
+      _DeleteFacilityCreatorAccountDialogState();
+}
+
+class _DeleteFacilityCreatorAccountDialogState
+    extends State<_DeleteFacilityCreatorAccountDialog> {
+  late final TextEditingController _controller;
+  late final bool _isPayingLike;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+    final s = widget.account.subscriptionStatus;
+    _isPayingLike = s == SubscriptionStatus.active ||
+        s == SubscriptionStatus.trialing ||
+        s == SubscriptionStatus.pastDue;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  bool get _emailsMatch {
+    final typed = _controller.text.trim().toLowerCase();
+    final expected = widget.account.ownerEmail.trim().toLowerCase();
+    return typed.isNotEmpty && typed == expected;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Delete account permanently?'),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_isPayingLike)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'This account is active, trialing, or past due. Deletion removes '
+                  'all facility data and the owner login. Cancel or resolve billing in Stripe if needed.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.warning,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+            Text(
+              'This will permanently delete every facility owned by '
+              '${widget.account.ownerEmail}, the facility creator account record '
+              '(and subcollections), and remove the owner from Firebase Auth and the '
+              'users list. This cannot be undone.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Stripe subscriptions are not automatically cancelled—handle those in the Stripe Dashboard if applicable.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: AppTheme.textTertiary),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                labelText: 'Type owner email to confirm',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _emailsMatch
+              ? () => Navigator.pop(context, _controller.text.trim())
+              : null,
+          style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+          child: const Text('Delete everything'),
+        ),
+      ],
     );
   }
 }

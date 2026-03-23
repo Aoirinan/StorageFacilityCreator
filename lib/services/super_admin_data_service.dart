@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
@@ -549,6 +550,22 @@ class SuperAdminNote {
 
 class SuperAdminDataService {
   static final _db = FirebaseFirestore.instance;
+  static final _functions = FirebaseFunctions.instance;
+
+  /// Super admin only: permanently delete facility creator account document,
+  /// all facilities owned by the account owner (full trees), and the owner's
+  /// Firebase Auth user + `users/{uid}`. Requires typing the owner email to confirm.
+  static Future<void> deleteFacilityCreatorAccount({
+    required String accountId,
+    required String ownerEmailConfirmation,
+  }) async {
+    final callable =
+        _functions.httpsCallable('superAdminDeleteFacilityCreatorAccount');
+    await callable.call<Map<String, dynamic>>({
+      'accountId': accountId,
+      'ownerEmailConfirmation': ownerEmailConfirmation.trim(),
+    });
+  }
 
   /// Add an internal note for a facility, account, or user.
   static Future<void> addNote({
