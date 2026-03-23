@@ -52,6 +52,18 @@ class FacilityMapV2Service {
     return meta;
   }
 
+  static Future<FacilityMapMeta?> getMeta(String facilityId) async {
+    final current = _auth.currentUser;
+    if (current == null) {
+      throw Exception('Not signed in');
+    }
+    final snap = await _metaRef(facilityId).get();
+    if (!snap.exists || snap.data() == null) {
+      return null;
+    }
+    return FacilityMapMeta.fromMap(snap.data()!, facilityId);
+  }
+
   static Stream<FacilityMapMeta> metaStream(String facilityId) {
     return _metaRef(facilityId).snapshots().asyncMap((snap) async {
       if (!snap.exists || snap.data() == null) {

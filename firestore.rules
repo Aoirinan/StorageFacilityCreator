@@ -447,10 +447,10 @@ service cloud.firestore {
 
       // Map Engine V2 (versioned map builder + publish metadata)
       match /mapEngine/{docId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
 
         match /{subPath=**} {
-          allow read, write: if isFacilityOwnerOrManager(facilityId);
+          allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         }
       }
 
