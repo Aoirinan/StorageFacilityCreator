@@ -29,6 +29,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String _searchQuery = '';
   UnitType? _selectedType;
   double? _maxPrice;
+  String? _preferredUnitId;
 
   @override
   void initState() {
@@ -38,6 +39,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
   Future<void> _loadData() async {
     final facilityId = widget.facilityId ?? _getFacilityIdFromUrl();
+    _preferredUnitId = Uri.base.queryParameters['unitId'];
     if (facilityId == null || facilityId.isEmpty) {
       setState(() {
         _error = 'Facility ID is required';
@@ -52,7 +54,12 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
       setState(() {
         _facility = facility;
-        _availableUnits = units;
+        _availableUnits = _preferredUnitId == null
+            ? units
+            : [
+                ...units.where((u) => u.id == _preferredUnitId),
+                ...units.where((u) => u.id != _preferredUnitId),
+              ];
         _isLoading = false;
       });
     } catch (e) {
@@ -113,6 +120,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           phone: result['phone'],
           name: result['name'],
           moveInDate: result['moveInDate'] != null ? DateTime.parse(result['moveInDate']!) : null,
+          expirationDuration: const Duration(minutes: 10),
+          metadata: {
+            'source': _preferredUnitId == unit.id ? 'publicMap' : 'publicRentalPortal',
+          },
         );
 
         // Navigate to move-in wizard
@@ -342,7 +353,9 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   Widget _buildUnitCard(UnitModel unit) {
+    final isPreferred = _preferredUnitId == unit.id;
     return Card(
+      color: isPreferred ? AppTheme.primaryBlueLight.withOpacity(0.08) : null,
       margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
         title: Text(
@@ -382,7 +395,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
             const SizedBox(height: 8),
             ElevatedButton(
               onPressed: () => _reserveUnit(unit),
-              child: const Text('Reserve'),
+              child: Text(isPreferred ? 'Rent Now' : 'Reserve'),
             ),
           ],
         ),

@@ -17,6 +17,7 @@ class AppRoute {
   static const publicRental = '/rental';
   static const publicMoveIn = '/public-move-in';
   static const publicFacility = '/facility';
+  static const publicMapBase = '/public';
 
   // Main application routes (authentication required)
   static const dashboard = '/dashboard';

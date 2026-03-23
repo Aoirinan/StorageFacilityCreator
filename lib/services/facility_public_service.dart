@@ -157,5 +157,11 @@ class FacilityPublicService {
     final base = baseUrl ?? 'https://storage-facility-creator.web.app';
     return '$base/facility/$facilityId';
   }
+
+  /// Get public map URL by slug.
+  static String getPublicMapUrl(String facilitySlug, {String? baseUrl}) {
+    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    return '$base/public/$facilitySlug/map';
+  }
 }
 

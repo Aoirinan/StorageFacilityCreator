@@ -22,7 +22,8 @@ import '../screens/contract_signing_screen.dart';
 import '../screens/accept_invite_screen.dart';
 import '../screens/facility_management_screen.dart';
 import '../screens/client_list_screen.dart';
-import '../screens/facility_map_editor_screen.dart';
+import '../screens/public_facility_map_screen.dart';
+import '../screens/units_map_entry_screen.dart';
 import '../screens/unit_list_screen.dart';
 import '../screens/manager_overlock_screen.dart';
 import '../screens/tenant_csv_import_wizard_screen.dart';
@@ -287,6 +288,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             return NotFoundPage(state: state);
           }
           return PublicFacilityPageScreen(facilityId: facilityId);
+        },
+      ),
+      GoRoute(
+        path: '${AppRoute.publicMapBase}/:facilitySlug/map',
+        name: 'public-facility-map',
+        builder: (context, state) {
+          final slug = state.pathParameters['facilitySlug'];
+          if (slug == null || slug.isEmpty) {
+            return NotFoundPage(state: state);
+          }
+          return PublicFacilityMapScreen(facilitySlug: slug);
         },
       ),
       // Report Scheduling Routes (inside ShellRoute)
@@ -559,7 +571,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               if (facilityId == null || facilityId.isEmpty) {
                 return const UnitsLandingScreen();
               }
-              return FacilityMapEditorScreen(facilityId: facilityId);
+              return UnitsMapEntryScreen(facilityId: facilityId);
             },
           ),
           GoRoute(

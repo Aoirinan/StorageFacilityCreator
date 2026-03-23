@@ -65,6 +65,48 @@ class PublicRentalService {
     Duration expirationDuration = const Duration(hours: 24), // Default 24 hour hold
   }) async {
     try {
+      if (unitId != null) {
+        try {
+          final callable = FirebaseFunctions.instance.httpsCallable('createPublicReservationHold');
+          final holdMinutes = expirationDuration.inMinutes <= 0 ? 10 : expirationDuration.inMinutes;
+          final response = await callable.call(<String, dynamic>{
+            'facilityId': facilityId,
+            'unitId': unitId,
+            'unitNumber': unitNumber,
+            'email': email,
+            'phone': phone,
+            'name': name,
+            'moveInDate': moveInDate?.toIso8601String(),
+            'metadata': metadata,
+            'holdMinutes': holdMinutes,
+          });
+          final payload = Map<String, dynamic>.from(response.data as Map);
+          if (payload['success'] == true) {
+            final holdToken = payload['moveInToken']?.toString() ?? _generateSecureToken();
+            final expiresIso = payload['expiresAt']?.toString();
+            return Reservation(
+              id: payload['reservationId']?.toString() ?? '',
+              facilityId: facilityId,
+              unitId: unitId,
+              unitNumber: unitNumber,
+              email: email.toLowerCase().trim(),
+              phone: phone?.trim(),
+              name: name?.trim(),
+              status: ReservationStatus.pending,
+              reservedAt: DateTime.now(),
+              expiresAt: expiresIso != null ? DateTime.tryParse(expiresIso) : DateTime.now().add(expirationDuration),
+              moveInDate: moveInDate,
+              moveInToken: holdToken,
+              metadata: metadata,
+            );
+          }
+        } catch (holdError) {
+          if (kDebugMode) {
+            print('⚠️ [PublicRental] Hold function unavailable, using legacy reservation path: $holdError');
+          }
+        }
+      }
+
       final expiresAt = DateTime.now().add(expirationDuration);
       final moveInToken = _generateSecureToken();
 

@@ -7,6 +7,7 @@ import '../models/facility_model.dart';
 import '../models/facility_public_settings_model.dart';
 import '../widgets/unit_availability_widget.dart';
 import '../theme/app_theme.dart';
+import '../services/facility_map_v2_service.dart';
 
 /// Public facility showcase page
 /// Accessible via /facility/:facilityId or custom domain
@@ -27,6 +28,7 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
   FacilityPublicSettings? _settings;
   bool _isLoading = true;
   String? _error;
+  String? _publicMapSlug;
 
   @override
   void initState() {
@@ -47,6 +49,7 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
     try {
       final facility = await PublicRentalService.getFacility(facilityId);
       final settings = await FacilityPublicService.getPublicSettings(facilityId);
+      final mapSlug = await FacilityMapV2Service.getPublicSlugForFacility(facilityId);
 
       if (facility == null) {
         setState(() {
@@ -68,6 +71,7 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
       setState(() {
         _facility = facility;
         _settings = settings;
+        _publicMapSlug = mapSlug;
         _isLoading = false;
       });
     } catch (e) {
@@ -249,6 +253,17 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
                 child: const Text('View All Units & Reserve'),
               ),
             ),
+            if (_publicMapSlug != null) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push('/public/${_publicMapSlug!}/map'),
+                  icon: const Icon(Icons.map_outlined),
+                  label: const Text('View Facility Map'),
+                ),
+              ),
+            ],
           ],
         ],
       ),

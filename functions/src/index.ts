@@ -6845,6 +6845,109 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 });
 
 /**
+ * Creates a short-lived public reservation hold for a unit.
+ * This reduces obvious double-booking races before move-in completion.
+ */
+export const createPublicReservationHold = functions.https.onCall(async (data: any, context) => {
+  const {
+    facilityId,
+    unitId,
+    unitNumber,
+    email,
+    phone,
+    name,
+    moveInDate,
+    metadata = {},
+    holdMinutes = 10,
+  } = data || {};
+
+  if (!facilityId || !unitId || !email) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId, unitId, and email are required');
+  }
+
+  const now = new Date();
+  const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 60));
+  const expiresAt = new Date(now.getTime() + boundedMinutes * 60 * 1000);
+  const moveInToken = crypto.randomBytes(24).toString('hex');
+
+  const unitRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units')
+    .doc(unitId);
+
+  const holdRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('mapEngine')
+    .doc('activeHolds')
+    .collection('items')
+    .doc(unitId);
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc();
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const unitSnap = await tx.get(unitRef);
+    if (!unitSnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Unit not found');
+    }
+    const unitData = unitSnap.data() as Record<string, any>;
+    const unitStatus = String(unitData.status || '').toLowerCase();
+    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+
+    const holdSnap = await tx.get(holdRef);
+    if (holdSnap.exists) {
+      const holdData = holdSnap.data() as Record<string, any>;
+      const holdExpiresAt = holdData.expiresAt as admin.firestore.Timestamp | undefined;
+      if (holdExpiresAt && holdExpiresAt.toDate() > now) {
+        throw new functions.https.HttpsError('already-exists', 'Unit is currently in checkout');
+      }
+    }
+
+    tx.set(reservationRef, {
+      facilityId,
+      unitId,
+      unitNumber: unitNumber || unitData.unitNumber || '',
+      email: String(email).trim().toLowerCase(),
+      phone: phone ? String(phone).trim() : null,
+      name: name ? String(name).trim() : null,
+      status: 'pending',
+      reservedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      moveInDate: moveInDate ? admin.firestore.Timestamp.fromDate(new Date(moveInDate)) : null,
+      moveInToken,
+      metadata: {
+        ...(metadata || {}),
+        holdType: 'checkout',
+        holdMinutes: boundedMinutes,
+        source: (metadata && metadata.source) || 'publicMap',
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    tx.set(holdRef, {
+      facilityId,
+      unitId,
+      reservationId: reservationRef.id,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return {
+    success: true,
+    reservationId: reservationRef.id,
+    moveInToken,
+    expiresAt: expiresAt.toISOString(),
+  };
+});
+
+/**
  * Complete public move-in flow (no auth)
  * - Validates reservation token
  * - Creates tenant and contract
@@ -7136,6 +7239,22 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
   });
 
   const { tenantId, contractId } = transactionResult;
+
+  // Best-effort cleanup of active checkout hold.
+  if (unitId) {
+    const holdRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('mapEngine')
+      .doc('activeHolds')
+      .collection('items')
+      .doc(unitId);
+    try {
+      await holdRef.delete();
+    } catch (e) {
+      functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
+    }
+  }
 
   // Create payment ledger entry (outside transaction to avoid blocking)
   if (!skipPayment && paymentIntentId && totalAmount && totalAmount > 0) {

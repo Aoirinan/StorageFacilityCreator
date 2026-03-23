@@ -73,6 +73,7 @@ Future<String?> routeGuard(
     AppRoute.publicRental,
     AppRoute.publicMoveIn,
     AppRoute.publicFacility,
+    AppRoute.publicMapBase,
     AppRoute.legacyScreen,
     AppRoute.pendingApproval,
   };
@@ -83,6 +84,7 @@ Future<String?> routeGuard(
       path.startsWith(AppRoute.acceptInvite + '/') ||
       path.startsWith(AppRoute.acceptInvite + '?') ||
       path.startsWith('${AppRoute.publicFacility}/') ||
+      path.startsWith('${AppRoute.publicMapBase}/') ||
       path.startsWith(AppRoute.publicPayment) ||
       path.startsWith(AppRoute.publicRental);
 
