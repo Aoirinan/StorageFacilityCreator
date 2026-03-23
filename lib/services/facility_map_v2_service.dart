@@ -247,7 +247,7 @@ class FacilityMapV2Service {
   }
 
   static String buildPublicMapUrl(String slug, {String baseUrl = 'https://storage-facility-creator.web.app'}) {
-    return '$baseUrl/public/$slug/map';
+    return '$baseUrl/#/public/$slug/map';
   }
 
   static Future<PublicFacilityMapSnapshot?> getPublicSnapshotBySlug(String slug) async {
