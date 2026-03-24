@@ -70,9 +70,9 @@
 }
 
 .card-surface {
-  border: 1px solid #e2e8f0;
+  border: 1px solid #dbeafe;
   border-radius: 0.75rem;
-  background: #ffffff;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
 .legal-prose {

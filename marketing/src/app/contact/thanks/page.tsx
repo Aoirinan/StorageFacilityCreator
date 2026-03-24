@@ -12,7 +12,7 @@ export default async function ContactThanksPage({ searchParams }: ThanksPageProp
   const campaign = typeof params.utm_campaign === 'string' ? params.utm_campaign : '';
 
   return (
-    <Section className="py-14">
+    <Section className="py-14 bg-gradient-to-b from-blue-50 via-white to-indigo-50/40">
       <div className="max-w-2xl mx-auto card-surface p-8 sm:p-10 text-center">
         <span className="eyebrow">Request Received</span>
         <h1 className="mt-2 text-3xl sm:text-4xl font-bold text-slate-900">

@@ -163,7 +163,7 @@ export default function HomePage() {
       <Script id="org-jsonld" type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }} />
       <Script id="software-jsonld" type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(appSchema) }} />
       {/* Hero */}
-      <Section className="pt-8 sm:pt-12 pb-12 sm:pb-16">
+      <Section className="pt-8 sm:pt-12 pb-12 sm:pb-16 bg-gradient-to-b from-blue-50 via-white to-indigo-50/50">
         <div className="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center">
           <div>
             <span className="eyebrow">Self-Storage SaaS</span>
@@ -198,7 +198,7 @@ export default function HomePage() {
       </Section>
 
       {/* Trust strip */}
-      <div className="border-y border-slate-200 bg-slate-50/50">
+      <div className="border-y border-blue-100 bg-blue-50/70">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4">
           <ul className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-sm text-slate-700" role="list">
             {TRUST_STRIP_ITEMS.map((item) => (
@@ -212,16 +212,16 @@ export default function HomePage() {
       </div>
 
       {/* Key Features */}
-      <Section tint id="features">
+      <Section tint id="features" className="bg-gradient-to-b from-sky-50 to-blue-50/60">
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Everything you need to run your facility</h2>
         <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
           Tenant and unit management, billing, late notices, autopay, and reporting—built for independent and multi-site operators.
         </p>
         <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-6" role="list">
           {KEY_FEATURES.map((f) => (
-            <li key={f.title} className="rounded-xl bg-white p-6 shadow-xs border border-slate-100">
+            <li key={f.title} className="rounded-xl bg-white p-6 shadow-sm border border-blue-100">
               <span
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-xs font-semibold text-primary"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-xs font-semibold text-primary"
                 aria-hidden
               >
                 {f.icon}
@@ -239,14 +239,14 @@ export default function HomePage() {
       </Section>
 
       {/* Product tour */}
-      <Section>
+      <Section className="bg-white">
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Product tour highlights</h2>
         <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
           A guided look at the workflows operators use most.
         </p>
         <div className="mt-10 grid md:grid-cols-2 lg:grid-cols-3 gap-6">
           {TOUR_CARDS.map(({ title, description }) => (
-            <article key={title} className="rounded-xl border border-slate-200 bg-white p-5">
+            <article key={title} className="rounded-xl border border-indigo-100 bg-gradient-to-br from-white to-indigo-50/40 p-5 shadow-xs">
               <h3 className="font-semibold text-slate-900">{title}</h3>
               <p className="mt-2 text-sm text-slate-600">{description}</p>
             </article>
@@ -260,14 +260,14 @@ export default function HomePage() {
       </Section>
 
       {/* How it works */}
-      <Section tint>
+      <Section tint className="bg-gradient-to-b from-indigo-50/80 to-blue-50/60">
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">How it works</h2>
         <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
           A straightforward workflow from setup to daily operations, shown with real in-app screens.
         </p>
         <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
           {HOW_IT_WORKS.map(({ step, title, description }) => (
-            <div key={step} className="rounded-xl bg-white border border-slate-200 p-5">
+            <div key={step} className="rounded-xl bg-white border border-indigo-100 p-5 shadow-xs">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-primary text-white text-sm font-semibold">
                 {step}
               </span>
@@ -288,9 +288,9 @@ export default function HomePage() {
       </Section>
 
       {/* Why choose SFC */}
-      <Section tint>
+      <Section className="bg-gradient-to-b from-white to-sky-50/70">
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Why operators choose SFC</h2>
-        <ul className="mt-8 max-w-3xl mx-auto space-y-3 text-slate-700">
+        <ul className="mt-8 max-w-3xl mx-auto space-y-3 text-slate-700 rounded-2xl border border-blue-100 bg-white/90 p-6 shadow-sm">
           {DIFFERENTIATORS.map((item) => (
             <li key={item} className="flex gap-2">
               <span className="text-primary" aria-hidden>
@@ -308,7 +308,7 @@ export default function HomePage() {
       </Section>
 
       {/* Global DNR */}
-      <Section>
+      <Section className="bg-gradient-to-b from-white to-emerald-50/50">
         <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Global Do Not Rent List</h2>
         <p className="mt-2 text-slate-600 text-center max-w-3xl mx-auto">
           SFC includes a Global Do Not Rent workflow that helps operators share documented, operationally relevant risk
@@ -364,7 +364,7 @@ export default function HomePage() {
         </p>
         <ul className="mt-8 max-w-4xl mx-auto grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {COMPLIANCE_LINKS.map(({ href, label }) => (
-            <li key={href} className="rounded-lg border border-slate-200 p-4 text-center">
+            <li key={href} className="rounded-lg border border-emerald-100 bg-white p-4 text-center">
               <Link href={href} className="text-sm font-medium text-slate-700 hover:text-primary">
                 {label}
               </Link>
