@@ -369,6 +369,15 @@ class FacilityMapV2Service {
       };
     }).toList();
 
+    final publicDescription = publicSettingsModel?.marketingContent?.trim().isNotEmpty == true
+        ? publicSettingsModel!.marketingContent!.trim()
+        : (publicSettingsModel?.pageDescription?.trim().isNotEmpty == true
+            ? publicSettingsModel!.pageDescription!.trim()
+            : facilityDescription);
+    final publicLogoUrl = publicSettingsModel?.publicLogoUrl?.trim().isNotEmpty == true
+        ? publicSettingsModel!.publicLogoUrl!.trim()
+        : facilityLogoUrl;
+
     return PublicFacilityMapSnapshot(
       facilityId: facilityId,
       facilitySlug: slug,
@@ -376,9 +385,10 @@ class FacilityMapV2Service {
       publishedAt: DateTime.now(),
       publicSettings: <String, dynamic>{
         'facilityName': facilityName,
-        'facilityDescription': facilityDescription,
+        'facilityDescription': publicDescription,
         'facilityPhone': facilityPhone,
-        'facilityLogoUrl': facilityLogoUrl,
+        'facilityLogoUrl': publicLogoUrl,
+        'customDomain': publicSettingsModel?.customDomain,
         'showPublicPricing': showPublicPricing,
         'allowReservation': allowReservation,
         'publicRentalsEnabled': allowReservation,

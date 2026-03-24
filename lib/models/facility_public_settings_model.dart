@@ -15,6 +15,8 @@ class FacilityPublicSettings {
   final List<String> enabledPublicUnitTypes; // Publicly rentable unit types
   final String? publicRentalSlug; // Public rental slug used in /f/:slug/*
   final String? customDomain; // Custom domain for facility page
+  final String? publicLogoUrl; // Public-facing logo override
+  final String? marketingContent; // Free-form public marketing content
   final String? pageTitle; // Custom page title
   final String? pageDescription; // Page meta description
   final List<String>? featuredImages; // URLs to featured images
@@ -39,6 +41,8 @@ class FacilityPublicSettings {
     this.enabledPublicUnitTypes = const <String>[],
     this.publicRentalSlug,
     this.customDomain,
+    this.publicLogoUrl,
+    this.marketingContent,
     this.pageTitle,
     this.pageDescription,
     this.featuredImages,
@@ -65,6 +69,8 @@ class FacilityPublicSettings {
       'enabledPublicUnitTypes': enabledPublicUnitTypes,
       'publicRentalSlug': publicRentalSlug,
       'customDomain': customDomain,
+      'publicLogoUrl': publicLogoUrl,
+      'marketingContent': marketingContent,
       'pageTitle': pageTitle,
       'pageDescription': pageDescription,
       'featuredImages': featuredImages,
@@ -95,6 +101,8 @@ class FacilityPublicSettings {
           : const <String>[],
       publicRentalSlug: map['publicRentalSlug'] as String?,
       customDomain: map['customDomain'] as String?,
+      publicLogoUrl: map['publicLogoUrl'] as String?,
+      marketingContent: map['marketingContent'] as String?,
       pageTitle: map['pageTitle'] as String?,
       pageDescription: map['pageDescription'] as String?,
       featuredImages: map['featuredImages'] != null

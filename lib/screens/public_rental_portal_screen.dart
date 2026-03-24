@@ -36,6 +36,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String? _facilityDescription;
   String? _facilityPhone;
   String? _facilityLogoUrl;
+  String? _customDomain;
 
   bool _publicRentalsEnabled = false;
   bool _publicPricingEnabled = true;
@@ -113,6 +114,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _facilityDescription = settings['facilityDescription']?.toString();
         _facilityPhone = settings['facilityPhone']?.toString();
         _facilityLogoUrl = settings['facilityLogoUrl']?.toString();
+        _customDomain = settings['customDomain']?.toString();
         _publicRentalsEnabled = settings['publicRentalsEnabled'] == true;
         _publicPricingEnabled = settings['showPublicPricing'] != false;
         _publicUnitNumbersEnabled =
@@ -244,11 +246,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
     final groups = _groups;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_facilityName),
-        backgroundColor: AppTheme.primaryBlueDark,
-        foregroundColor: AppTheme.textOnDark,
-      ),
+      backgroundColor: const Color(0xFFF4F7FC),
       body: Column(
         children: [
           _buildFacilityHeader(),
@@ -257,10 +255,14 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
             child: groups.isEmpty
                 ? _buildEmptyState()
                 : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: groups.length,
-                    itemBuilder: (context, index) =>
-                        _buildGroupCard(groups[index]),
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                    itemCount: groups.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == groups.length) {
+                        return _buildWhyRentSection();
+                      }
+                      return _buildGroupCard(groups[index]);
+                    },
                   ),
           ),
         ],
@@ -271,8 +273,17 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   Widget _buildFacilityHeader() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      color: AppTheme.primaryBlueLight,
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            Color(0xFF103A86),
+            Color(0xFF1658BF),
+          ],
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -280,7 +291,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               _facilityLogoUrl!.trim().isNotEmpty) ...[
             Image.network(
               _facilityLogoUrl!,
-              height: 52,
+              height: 46,
               errorBuilder: (_, __, ___) => const SizedBox.shrink(),
             ),
             const SizedBox(height: 8),
@@ -288,30 +299,61 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           Text(
             _facilityName,
             style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+              fontSize: 30,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.4,
               color: Colors.white,
             ),
           ),
-          if (_facilityDescription != null &&
-              _facilityDescription!.trim().isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              _facilityDescription!,
-              style: const TextStyle(color: Colors.white70),
+          const SizedBox(height: 4),
+          Text(
+            'Rent storage units in minutes',
+            style: TextStyle(
+              fontSize: 15,
+              color: Colors.white.withOpacity(0.92),
             ),
-          ],
+          ),
           if (_facilityPhone != null && _facilityPhone!.trim().isNotEmpty) ...[
             const SizedBox(height: 8),
             Row(
               children: [
-                const Icon(Icons.phone, size: 16, color: Colors.white70),
+                Icon(Icons.phone, size: 16, color: Colors.white.withOpacity(0.9)),
                 const SizedBox(width: 6),
-                Text(_facilityPhone!,
-                    style: const TextStyle(color: Colors.white70)),
+                Text(
+                  _facilityPhone!,
+                  style: TextStyle(color: Colors.white.withOpacity(0.9)),
+                ),
               ],
             ),
           ],
+          if (_facilityDescription != null &&
+              _facilityDescription!.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              _facilityDescription!,
+              style: TextStyle(color: Colors.white.withOpacity(0.86)),
+            ),
+          ],
+          if (_customDomain != null && _customDomain!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              _customDomain!,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.95),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: const [
+              _StepChip(index: 1, label: 'Choose unit'),
+              _StepChip(index: 2, label: 'Enter details'),
+              _StepChip(index: 3, label: 'Reserve online'),
+            ],
+          ),
         ],
       ),
     );
@@ -321,7 +363,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     final slugs = _categorySlugs;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
       child: Wrap(
         spacing: 8,
         runSpacing: 6,
@@ -351,58 +393,130 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         !unavailable &&
         (_allowAutoAssign || _allowUnitSelection);
 
-    return Card(
+    return Container(
       margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F5)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F1C3D),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          )
+        ],
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              group.title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            if (group.description != null &&
-                group.description!.trim().isNotEmpty)
-              Text(group.description!,
-                  style: TextStyle(color: AppTheme.textSecondary)),
-            if (_publicPricingEnabled && monthlyRate != null) ...[
-              const SizedBox(height: 10),
-              Text(
-                '\$${monthlyRate.toStringAsFixed(2)}/month',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.primaryBlueDark,
-                  fontSize: 18,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    group.title,
+                    style: const TextStyle(
+                      fontSize: 27,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF111827),
+                    ),
+                  ),
                 ),
+                if (_publicPricingEnabled && monthlyRate != null)
+                  Text(
+                    '\$${monthlyRate.toStringAsFixed(0)}/month',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF103A86),
+                      fontSize: 27,
+                    ),
+                  ),
+              ],
+            ),
+            if (group.description != null &&
+                group.description!.trim().isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                group.description!,
+                style: const TextStyle(color: AppTheme.textSecondary),
               ),
             ],
             if (_showAvailabilityCount) ...[
-              const SizedBox(height: 10),
-              Text(
-                availableCount == 0
-                    ? 'Currently unavailable'
-                    : availableCount == 1
-                        ? 'Only 1 left'
-                        : '$availableCount available',
-                style: TextStyle(
-                  color:
-                      availableCount == 0 ? AppTheme.error : AppTheme.success,
-                  fontWeight: FontWeight.w600,
+              const SizedBox(height: 12),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  color: availableCount == 0
+                      ? const Color(0xFFFFE9E9)
+                      : const Color(0xFFE7F7EE),
+                ),
+                child: Text(
+                  availableCount == 0
+                      ? 'Currently unavailable'
+                      : availableCount == 1
+                          ? 'Only 1 left'
+                          : '$availableCount available',
+                  style: TextStyle(
+                    color:
+                        availableCount == 0 ? AppTheme.error : AppTheme.success,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF103A86),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
                 onPressed: canRent ? () => _handleRentNow(group) : null,
                 child: Text(unavailable ? 'Unavailable' : 'Rent Now'),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildWhyRentSection() {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F5)),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Why Rent Here?',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          SizedBox(height: 10),
+          Text('- Quick online reservation flow'),
+          SizedBox(height: 4),
+          Text('- Transparent pricing and availability'),
+          SizedBox(height: 4),
+          Text('- Friendly support when you need help'),
+        ],
       ),
     );
   }
@@ -568,6 +682,53 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               .toList(),
         );
       },
+    );
+  }
+}
+
+class _StepChip extends StatelessWidget {
+  final int index;
+  final String label;
+
+  const _StepChip({
+    required this.index,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white.withOpacity(0.24)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            radius: 10,
+            backgroundColor: Colors.white,
+            child: Text(
+              '$index',
+              style: const TextStyle(
+                color: Color(0xFF103A86),
+                fontWeight: FontWeight.w700,
+                fontSize: 11,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

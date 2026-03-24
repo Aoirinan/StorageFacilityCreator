@@ -3,18 +3,32 @@
     "origin": [
       "https://storagefacilitycreator.com",
       "https://www.storagefacilitycreator.com",
+      "https://app.storagefacilitycreator.com",
       "https://storage-facility-creator.web.app",
       "https://storage-facility-creator.firebaseapp.com",
       "http://localhost:8080",
       "http://localhost:3000",
       "http://127.0.0.1:8080",
-      "http://127.0.0.1:3000"
+      "http://127.0.0.1:3000",
+      "http://localhost:5000"
     ],
-    "method": ["GET", "PUT", "POST", "DELETE", "HEAD", "OPTIONS"],
+    "method": [
+      "GET",
+      "PUT",
+      "POST",
+      "DELETE",
+      "HEAD",
+      "OPTIONS"
+    ],
     "responseHeader": [
       "Content-Type",
-      "x-goog-resumable",
       "Authorization",
+      "x-goog-resumable",
+      "x-firebase-gmpid",
+      "x-goog-upload-command",
+      "x-goog-upload-offset",
+      "x-goog-upload-protocol",
+      "x-goog-upload-content-type",
       "Content-Length",
       "User-Agent",
       "X-Requested-With",

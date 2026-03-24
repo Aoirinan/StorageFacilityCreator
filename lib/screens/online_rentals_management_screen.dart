@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -33,6 +35,10 @@ class _OnlineRentalsManagementScreenState
   FacilityModel? _facility;
 
   final TextEditingController _slugController = TextEditingController();
+  final TextEditingController _customDomainController = TextEditingController();
+  final TextEditingController _marketingContentController =
+      TextEditingController();
+  final TextEditingController _logoUrlController = TextEditingController();
   bool _publicRentalsEnabled = false;
   bool _publicPricingEnabled = true;
   bool _publicUnitNumbersEnabled = true;
@@ -42,6 +48,11 @@ class _OnlineRentalsManagementScreenState
   bool _hideUnavailableTypes = true;
   Set<String> _enabledPublicUnitTypes = <String>{};
   Set<String> _availableUnitTypes = <String>{};
+  bool _isUploadingLogo = false;
+  bool _isCheckingDomain = false;
+  bool? _domainConnected;
+  String? _domainCheckMessage;
+  List<String> _domainRecords = const <String>[];
 
   @override
   void initState() {
@@ -52,6 +63,9 @@ class _OnlineRentalsManagementScreenState
   @override
   void dispose() {
     _slugController.dispose();
+    _customDomainController.dispose();
+    _marketingContentController.dispose();
+    _logoUrlController.dispose();
     super.dispose();
   }
 
@@ -82,12 +96,20 @@ class _OnlineRentalsManagementScreenState
         _enabledPublicUnitTypes =
             settings?.enabledPublicUnitTypes.toSet() ?? <String>{};
         _availableUnitTypes = types;
+        _customDomainController.text = settings?.customDomain ?? '';
+        _marketingContentController.text = settings?.marketingContent ??
+            settings?.pageDescription ??
+            '';
+        _logoUrlController.text = settings?.publicLogoUrl ?? '';
         _slugController.text =
             (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
                 ? settings!.publicRentalSlug!
                 : (publicSlug ?? widget.facilityId.toLowerCase());
         _isLoading = false;
       });
+      if (_customDomainController.text.trim().isNotEmpty) {
+        unawaited(_checkDomainStatus());
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -99,6 +121,9 @@ class _OnlineRentalsManagementScreenState
 
   Future<void> _save() async {
     final slug = _normalizedSlug(_slugController.text);
+    final customDomain = _normalizedDomain(_customDomainController.text);
+    final marketingContent = _marketingContentController.text.trim();
+    final logoUrl = _logoUrlController.text.trim();
     if (slug.isEmpty) {
       setState(() {
         _error = 'Please enter a valid public rental slug.';
@@ -130,6 +155,9 @@ class _OnlineRentalsManagementScreenState
         hideUnavailableTypes: _hideUnavailableTypes,
         enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
         publicRentalSlug: slug,
+        customDomain: customDomain.isEmpty ? null : customDomain,
+        marketingContent: marketingContent.isEmpty ? null : marketingContent,
+        publicLogoUrl: logoUrl.isEmpty ? null : logoUrl,
       );
       await FacilityMapV2Service.setPublicSlug(
         facilityId: widget.facilityId,
@@ -165,6 +193,103 @@ class _OnlineRentalsManagementScreenState
         .replaceAll(RegExp(r'[^a-z0-9-]'), '-')
         .replaceAll(RegExp(r'-{2,}'), '-')
         .replaceAll(RegExp(r'^-|-$'), '');
+  }
+
+  String _normalizedDomain(String value) {
+    var cleaned = value.trim().toLowerCase();
+    cleaned = cleaned.replaceFirst(RegExp(r'^https?://'), '');
+    cleaned = cleaned.replaceFirst(RegExp(r'^www\.'), '');
+    cleaned = cleaned.split('/').first;
+    return cleaned;
+  }
+
+  String get _linkBaseUrl {
+    final domain = _normalizedDomain(_customDomainController.text);
+    if (domain.isNotEmpty) {
+      return 'https://$domain';
+    }
+    return 'https://app.storagefacilitycreator.com';
+  }
+
+  Future<void> _checkDomainStatus({bool showSnackBar = false}) async {
+    final domain = _normalizedDomain(_customDomainController.text);
+    if (domain.isEmpty) {
+      setState(() {
+        _domainConnected = null;
+        _domainCheckMessage = null;
+        _domainRecords = const <String>[];
+      });
+      return;
+    }
+    setState(() {
+      _isCheckingDomain = true;
+      _domainCheckMessage = null;
+      _domainRecords = const <String>[];
+    });
+    final result = await FacilityPublicService.verifyCustomDomain(domain);
+    if (!mounted) return;
+    setState(() {
+      _isCheckingDomain = false;
+      _domainConnected = result.isConnected;
+      _domainCheckMessage = result.message;
+      _domainRecords = result.records;
+    });
+    if (showSnackBar) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor:
+              result.isConnected ? AppTheme.success : AppTheme.warning,
+        ),
+      );
+    }
+  }
+
+  Future<void> _uploadLogo() async {
+    setState(() {
+      _isUploadingLogo = true;
+      _error = null;
+    });
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp', 'svg'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) {
+        setState(() => _isUploadingLogo = false);
+        return;
+      }
+      final file = result.files.first;
+      if (file.bytes == null) {
+        throw Exception('Unable to read selected image data.');
+      }
+      final ext = (file.extension ?? 'png').toLowerCase();
+      final contentType = switch (ext) {
+        'jpg' || 'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        'svg' => 'image/svg+xml',
+        _ => 'image/png',
+      };
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final safeName = file.name.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+      final path =
+          'facilities/${widget.facilityId}/public-branding/logo-$stamp-$safeName';
+      final ref = FirebaseStorage.instance.ref(path);
+      await ref.putData(file.bytes!, SettableMetadata(contentType: contentType));
+      final url = await ref.getDownloadURL();
+      if (!mounted) return;
+      setState(() {
+        _logoUrlController.text = url;
+        _isUploadingLogo = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUploadingLogo = false;
+        _error = 'Logo upload failed: $e';
+      });
+    }
   }
 
   String get _slugPreview {
@@ -232,6 +357,121 @@ class _OnlineRentalsManagementScreenState
                       style: TextStyle(color: AppTheme.textSecondary),
                     ),
                     const SizedBox(height: 16),
+                    TextField(
+                      controller: _customDomainController,
+                      onChanged: (_) {
+                        setState(() {
+                          _domainConnected = null;
+                          _domainCheckMessage = null;
+                          _domainRecords = const <String>[];
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Custom Domain (optional)',
+                        hintText: 'rent.yourfacility.com',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.language),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed:
+                              _isCheckingDomain ? null : () => _checkDomainStatus(showSnackBar: true),
+                          icon: _isCheckingDomain
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                )
+                              : const Icon(Icons.wifi_tethering),
+                          label: Text(_isCheckingDomain
+                              ? 'Checking...'
+                              : 'Check Domain Connection'),
+                        ),
+                        const SizedBox(width: 10),
+                        if (_domainConnected != null)
+                          _DomainStatusChip(connected: _domainConnected!),
+                      ],
+                    ),
+                    if (_domainCheckMessage != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        _domainCheckMessage!,
+                        style: TextStyle(
+                          color: _domainConnected == true
+                              ? AppTheme.success
+                              : AppTheme.warning,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                    if (_domainRecords.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'DNS records: ${_domainRecords.join(', ')}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _marketingContentController,
+                      maxLines: 4,
+                      minLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Public Marketing Text',
+                        hintText:
+                            'Write anything you want renters to see on your rental page.',
+                        border: OutlineInputBorder(),
+                        alignLabelWithHint: true,
+                        prefixIcon: Icon(Icons.edit_note),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _logoUrlController,
+                      decoration: InputDecoration(
+                        labelText: 'Public Logo URL',
+                        hintText: 'https://...',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.image),
+                        suffixIcon: _isUploadingLogo
+                            ? const Padding(
+                                padding: EdgeInsets.all(10),
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                ),
+                              )
+                            : IconButton(
+                                tooltip: 'Upload Logo',
+                                onPressed: _uploadLogo,
+                                icon: const Icon(Icons.upload),
+                              ),
+                      ),
+                    ),
+                    if (_logoUrlController.text.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 64),
+                          child: Image.network(
+                            _logoUrlController.text.trim(),
+                            errorBuilder: (_, __, ___) =>
+                                const SizedBox.shrink(),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
                     TextField(
                       controller: _slugController,
                       decoration: const InputDecoration(
@@ -326,14 +566,19 @@ class _OnlineRentalsManagementScreenState
                             _LinkRow(
                               label: 'Main Rent Link',
                               value: FacilityPublicService.getPublicRentUrl(
-                                  _slugPreview),
+                                _slugPreview,
+                                baseUrl: _linkBaseUrl,
+                              ),
                               onCopy: _copy,
                             ),
                             const Divider(),
                             _LinkRow(
                               label: 'All Available Units Link',
                               value: FacilityPublicService
-                                  .getPublicAvailableUnitsUrl(_slugPreview),
+                                  .getPublicAvailableUnitsUrl(
+                                _slugPreview,
+                                baseUrl: _linkBaseUrl,
+                              ),
                               onCopy: _copy,
                             ),
                           ],
@@ -415,6 +660,28 @@ class _LinkRow extends StatelessWidget {
           tooltip: 'Copy Link',
         ),
       ],
+    );
+  }
+}
+
+class _DomainStatusChip extends StatelessWidget {
+  final bool connected;
+
+  const _DomainStatusChip({required this.connected});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = connected ? AppTheme.success : AppTheme.warning;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        connected ? 'Connected' : 'Needs Setup',
+        style: TextStyle(color: color, fontWeight: FontWeight.w700),
+      ),
     );
   }
 }

@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import '../models/facility_public_settings_model.dart';
 import '../models/facility_model.dart';
 
@@ -48,6 +50,8 @@ class FacilityPublicService {
     List<String>? enabledPublicUnitTypes,
     String? publicRentalSlug,
     String? customDomain,
+    String? publicLogoUrl,
+    String? marketingContent,
     String? pageTitle,
     String? pageDescription,
     List<String>? featuredImages,
@@ -89,6 +93,8 @@ class FacilityPublicService {
             const <String>[],
         publicRentalSlug: publicRentalSlug ?? currentSettings?.publicRentalSlug,
         customDomain: customDomain ?? currentSettings?.customDomain,
+        publicLogoUrl: publicLogoUrl ?? currentSettings?.publicLogoUrl,
+        marketingContent: marketingContent ?? currentSettings?.marketingContent,
         pageTitle: pageTitle ?? currentSettings?.pageTitle,
         pageDescription: pageDescription ?? currentSettings?.pageDescription,
         featuredImages: featuredImages ?? currentSettings?.featuredImages,
@@ -226,4 +232,121 @@ class FacilityPublicService {
     final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/#/f/$facilitySlug/$categorySlug';
   }
+
+  /// Verifies if a custom domain appears configured for Firebase Hosting.
+  static Future<DomainCheckResult> verifyCustomDomain(String domain) async {
+    final normalized = _normalizeDomain(domain);
+    if (normalized.isEmpty) {
+      return const DomainCheckResult(
+        isConnected: false,
+        message: 'Enter a valid domain to check.',
+      );
+    }
+
+    try {
+      final cnameUri = Uri.https(
+        'www.google.com',
+        '/resolve',
+        <String, String>{'name': normalized, 'type': 'CNAME'},
+      );
+      final cnameResp = await http.get(cnameUri);
+      if (cnameResp.statusCode == 200) {
+        final json = jsonDecode(cnameResp.body) as Map<String, dynamic>;
+        final answers = (json['Answer'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final cnameTargets = answers
+            .where((a) => a['type'] == 5)
+            .map((a) => (a['data']?.toString() ?? '').toLowerCase())
+            .toList();
+        if (cnameTargets.any((t) =>
+            t.contains('ghs.googlehosted.com') ||
+            t.contains('web.app') ||
+            t.contains('firebaseapp.com'))) {
+          return DomainCheckResult(
+            isConnected: true,
+            message: 'Domain appears connected to Firebase Hosting.',
+            records: cnameTargets,
+          );
+        }
+        if (cnameTargets.isNotEmpty) {
+          return DomainCheckResult(
+            isConnected: false,
+            message:
+                'Domain has a CNAME, but it does not point to Firebase Hosting.',
+            records: cnameTargets,
+          );
+        }
+      }
+
+      final aUri = Uri.https(
+        'www.google.com',
+        '/resolve',
+        <String, String>{'name': normalized, 'type': 'A'},
+      );
+      final aResp = await http.get(aUri);
+      if (aResp.statusCode == 200) {
+        final json = jsonDecode(aResp.body) as Map<String, dynamic>;
+        final answers = (json['Answer'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final aRecords = answers
+            .where((a) => a['type'] == 1)
+            .map((a) => a['data']?.toString() ?? '')
+            .where((x) => x.isNotEmpty)
+            .toList();
+        const firebaseARecords = <String>{
+          '199.36.158.100',
+          '199.36.158.101',
+          '199.36.158.102',
+          '199.36.158.103',
+        };
+        if (aRecords.any(firebaseARecords.contains)) {
+          return DomainCheckResult(
+            isConnected: true,
+            message: 'Domain A records appear connected to Firebase Hosting.',
+            records: aRecords,
+          );
+        }
+        if (aRecords.isNotEmpty) {
+          return DomainCheckResult(
+            isConnected: false,
+            message:
+                'Domain resolves, but A records do not match Firebase Hosting.',
+            records: aRecords,
+          );
+        }
+      }
+
+      return const DomainCheckResult(
+        isConnected: false,
+        message: 'No DNS records found yet. DNS may still be propagating.',
+      );
+    } catch (e) {
+      return DomainCheckResult(
+        isConnected: false,
+        message: 'Unable to verify domain right now: $e',
+      );
+    }
+  }
+
+  static String _normalizeDomain(String value) {
+    var cleaned = value.trim().toLowerCase();
+    cleaned = cleaned.replaceFirst(RegExp(r'^https?://'), '');
+    cleaned = cleaned.replaceFirst(RegExp(r'^www\.'), '');
+    cleaned = cleaned.split('/').first;
+    return cleaned;
+  }
+}
+
+class DomainCheckResult {
+  final bool isConnected;
+  final String message;
+  final List<String> records;
+
+  const DomainCheckResult({
+    required this.isConnected,
+    required this.message,
+    this.records = const <String>[],
+  });
 }
