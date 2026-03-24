@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'package:go_router/go_router.dart';
 import 'modern_sidebar.dart';
+import '../services/modern_navigation_service.dart';
 
 /// Modern page wrapper that provides consistent layout for all screens
 /// Includes sidebar, top bar, and modern styling
@@ -63,7 +64,11 @@ class ModernPageWrapper extends StatelessWidget {
             ModernSidebar(
               currentRoute: activeRoute,
               isCollapsed: false,
-              onNavigate: onNavigate ?? (route) => context.go(route),
+              onNavigate: onNavigate ??
+                  (route) => ModernNavigationService.navigateToRoute(
+                        context,
+                        route,
+                      ),
             ),
           
           // Main content
@@ -87,7 +92,8 @@ class ModernPageWrapper extends StatelessWidget {
           isCollapsed: false,
           onNavigate: (route) {
             Navigator.of(context).pop();
-            (onNavigate ?? (r) => context.go(r))(route);
+            (onNavigate ??
+                (r) => ModernNavigationService.navigateToRoute(context, r))(route);
           },
         ),
       ) : null,
