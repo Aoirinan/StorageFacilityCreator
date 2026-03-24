@@ -87,6 +87,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   double? _lastCanvasMinX;
   double? _lastCanvasMinY;
   bool _shapePointerActive = false;
+  String? _pendingFocusShapeId;
 
   @override
   bool get wantKeepAlive => true;
@@ -184,6 +185,26 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     });
   }
 
+  void _resetView() {
+    _transformationController.value = Matrix4.identity();
+    setState(() {});
+  }
+
+  void _focusShapeOnCanvas(MapShapeModel shape) {
+    final centerX = shape.x + shape.width / 2;
+    final centerY = shape.y + shape.height / 2;
+    const scale = 1.4;
+    final vw = MediaQuery.of(context).size.width;
+    final vh = MediaQuery.of(context).size.height;
+    _transformationController.value = Matrix4.identity()
+      ..translate(-(centerX * scale) + (vw / 2), -(centerY * scale) + (vh / 2))
+      ..scale(scale);
+    setState(() {
+      _selectedShapeId = shape.id;
+      _pendingFocusShapeId = null;
+    });
+  }
+
   void _selectShape(String? shapeId) {
     setState(() {
       _selectedShapeId = shapeId;
@@ -212,7 +233,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       final w = _snapToGridValue(100.0).clamp(_gridSize, 2000.0);
       final h = _snapToGridValue(80.0).clamp(_gridSize, 1500.0);
 
-      await MapLayoutService.createMapShape(
+      final createdId = await MapLayoutService.createMapShape(
         facilityId: widget.facilityId,
         type: 'rect',
         x: defaultX,
@@ -220,6 +241,13 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         width: w,
         height: h,
       );
+
+      if (mounted) {
+        setState(() {
+          _pendingFocusShapeId = createdId;
+          _selectedShapeId = createdId;
+        });
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -296,7 +324,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     if (shape == null) return;
 
     try {
-      await MapLayoutService.createMapShape(
+      final createdId = await MapLayoutService.createMapShape(
         facilityId: widget.facilityId,
         type: shape.type,
         x: shape.x + _gridSize,
@@ -307,6 +335,12 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         zIndex: shape.zIndex + 1,
         metadata: shape.metadata,
       );
+      if (mounted) {
+        setState(() {
+          _pendingFocusShapeId = createdId;
+          _selectedShapeId = createdId;
+        });
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -532,6 +566,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             tooltip: 'Export Map',
             onPressed: _exportMap,
           ),
+          IconButton(
+            icon: const Icon(Icons.center_focus_strong),
+            tooltip: 'Reset View',
+            onPressed: _resetView,
+          ),
+          IconButton(
+            icon: const Icon(Icons.list_alt),
+            tooltip: 'Shape Manager',
+            onPressed: _openShapeManager,
+          ),
           const Spacer(),
           if (_selectedShapeId != null)
             IconButton(
@@ -561,27 +605,24 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   void _zoomToShape(MapShapeModel shape) {
-    // Calculate center of shape
-    final centerX = shape.x + shape.width / 2;
-    final centerY = shape.y + shape.height / 2;
-    
-    // Get current transformation
-    final matrix = _transformationController.value;
-    final scale = 2.0; // Zoom level
-    
-    // Calculate new position
-    final newMatrix = Matrix4.identity()
-      ..translate(-centerX * scale + MediaQuery.of(context).size.width / 2,
-                  -centerY * scale + MediaQuery.of(context).size.height / 2)
-      ..scale(scale);
-    
-    _transformationController.value = newMatrix;
+    _focusShapeOnCanvas(shape);
   }
 
   Widget _buildCanvas(List<MapShapeModel> shapes, List<UnitModel> units) {
     try {
       print('[MapEditor] _buildCanvas called with ${shapes.length} shapes, ${units.length} units');
       final unitsMap = {for (var unit in units) unit.id: unit};
+
+      if (_pendingFocusShapeId != null) {
+        final pending = shapes.where((s) => s.id == _pendingFocusShapeId).firstOrNull;
+        if (pending != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _focusShapeOnCanvas(pending);
+            }
+          });
+        }
+      }
       
       // Filter shapes based on status filters
       final filteredShapes = shapes.where((shape) {
@@ -1399,6 +1440,100 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _openShapeManager() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => Consumer(
+        builder: (context, ref, _) {
+          final shapesAsync = ref.watch(facilityMapShapesProvider(widget.facilityId));
+          final unitsAsync = ref.watch(facilityUnitsProvider(widget.facilityId));
+          return SizedBox(
+            height: MediaQuery.of(context).size.height * 0.72,
+            child: shapesAsync.when(
+              data: (shapes) => unitsAsync.when(
+                data: (units) {
+                  final unitMap = {for (final u in units) u.id: u};
+                  final sorted = [...shapes]..sort((a, b) => a.id.compareTo(b.id));
+                  if (sorted.isEmpty) {
+                    return const Center(child: Text('No shapes found'));
+                  }
+                  return Column(
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Text(
+                          'Shape Manager',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      Expanded(
+                        child: ListView.separated(
+                          itemCount: sorted.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (context, i) {
+                            final shape = sorted[i];
+                            final unit = shape.unitId == null ? null : unitMap[shape.unitId];
+                            return ListTile(
+                              dense: true,
+                              title: Text(
+                                unit != null
+                                    ? 'Unit ${unit.unitNumber}'
+                                    : 'Unassigned (${shape.id.substring(0, 6)})',
+                              ),
+                              subtitle: Text(
+                                'x:${shape.x.toStringAsFixed(0)} y:${shape.y.toStringAsFixed(0)} '
+                                'w:${shape.width.toStringAsFixed(0)} h:${shape.height.toStringAsFixed(0)}',
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.center_focus_strong),
+                                    tooltip: 'Focus',
+                                    onPressed: () {
+                                      Navigator.of(context).pop();
+                                      _zoomToShape(shape);
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: AppTheme.error),
+                                    tooltip: 'Delete',
+                                    onPressed: () async {
+                                      await MapLayoutService.deleteMapShape(
+                                        facilityId: widget.facilityId,
+                                        shapeId: shape.id,
+                                      );
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Shape deleted'),
+                                          duration: Duration(seconds: 1),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  );
+                },
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, _) => Center(child: Text('Error loading units: $e')),
+              ),
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (e, _) => Center(child: Text('Error loading shapes: $e')),
+            ),
+          );
+        },
       ),
     );
   }
