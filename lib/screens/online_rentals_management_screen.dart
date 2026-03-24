@@ -679,7 +679,7 @@ class _DomainStatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
-        connected ? 'Connected' : 'Needs Setup',
+        connected ? 'Looks Valid' : 'Needs Setup',
         style: TextStyle(color: color, fontWeight: FontWeight.w700),
       ),
     );

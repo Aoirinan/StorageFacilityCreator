@@ -42,7 +42,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '255655613485',
     projectId: 'storage-facility-creator',
     authDomain: 'storage-facility-creator.firebaseapp.com',
-    storageBucket: 'storage-facility-creator.appspot.com',
+    storageBucket: 'storage-facility-creator.firebasestorage.app',
   );
 
   // Android, iOS, macOS, and Windows configurations will be added later

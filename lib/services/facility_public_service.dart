@@ -1,8 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import '../models/facility_public_settings_model.dart';
 import '../models/facility_model.dart';
 
@@ -243,91 +241,24 @@ class FacilityPublicService {
       );
     }
 
-    try {
-      final cnameUri = Uri.https(
-        'www.google.com',
-        '/resolve',
-        <String, String>{'name': normalized, 'type': 'CNAME'},
-      );
-      final cnameResp = await http.get(cnameUri);
-      if (cnameResp.statusCode == 200) {
-        final json = jsonDecode(cnameResp.body) as Map<String, dynamic>;
-        final answers = (json['Answer'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-        final cnameTargets = answers
-            .where((a) => a['type'] == 5)
-            .map((a) => (a['data']?.toString() ?? '').toLowerCase())
-            .toList();
-        if (cnameTargets.any((t) =>
-            t.contains('ghs.googlehosted.com') ||
-            t.contains('web.app') ||
-            t.contains('firebaseapp.com'))) {
-          return DomainCheckResult(
-            isConnected: true,
-            message: 'Domain appears connected to Firebase Hosting.',
-            records: cnameTargets,
-          );
-        }
-        if (cnameTargets.isNotEmpty) {
-          return DomainCheckResult(
-            isConnected: false,
-            message:
-                'Domain has a CNAME, but it does not point to Firebase Hosting.',
-            records: cnameTargets,
-          );
-        }
-      }
-
-      final aUri = Uri.https(
-        'www.google.com',
-        '/resolve',
-        <String, String>{'name': normalized, 'type': 'A'},
-      );
-      final aResp = await http.get(aUri);
-      if (aResp.statusCode == 200) {
-        final json = jsonDecode(aResp.body) as Map<String, dynamic>;
-        final answers = (json['Answer'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-        final aRecords = answers
-            .where((a) => a['type'] == 1)
-            .map((a) => a['data']?.toString() ?? '')
-            .where((x) => x.isNotEmpty)
-            .toList();
-        const firebaseARecords = <String>{
-          '199.36.158.100',
-          '199.36.158.101',
-          '199.36.158.102',
-          '199.36.158.103',
-        };
-        if (aRecords.any(firebaseARecords.contains)) {
-          return DomainCheckResult(
-            isConnected: true,
-            message: 'Domain A records appear connected to Firebase Hosting.',
-            records: aRecords,
-          );
-        }
-        if (aRecords.isNotEmpty) {
-          return DomainCheckResult(
-            isConnected: false,
-            message:
-                'Domain resolves, but A records do not match Firebase Hosting.',
-            records: aRecords,
-          );
-        }
-      }
-
+    // Browser-side DNS lookups are blocked by CORS/CSP in production.
+    // Keep this check local and deterministic so it never throws console errors.
+    final labels = normalized.split('.');
+    final looksValid = labels.length >= 2 &&
+        labels.every((part) => RegExp(r'^[a-z0-9-]+$').hasMatch(part)) &&
+        labels.every((part) => !part.startsWith('-') && !part.endsWith('-'));
+    if (!looksValid) {
       return const DomainCheckResult(
         isConnected: false,
-        message: 'No DNS records found yet. DNS may still be propagating.',
-      );
-    } catch (e) {
-      return DomainCheckResult(
-        isConnected: false,
-        message: 'Unable to verify domain right now: $e',
+        message: 'Domain format looks invalid. Example: rent.yourdomain.com',
       );
     }
+    return DomainCheckResult(
+      isConnected: true,
+      message:
+          'Domain format looks valid. Use your browser to verify it resolves to this app.',
+      records: <String>['https://$normalized'],
+    );
   }
 
   static String _normalizeDomain(String value) {
