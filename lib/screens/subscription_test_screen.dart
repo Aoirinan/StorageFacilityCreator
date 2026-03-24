@@ -261,8 +261,8 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       final checkoutResult = await StripeService.createSubscriptionCheckout(
         accountId: _account!.accountId,
         customerEmail: user!.email!,
-        successUrl: 'https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        cancelUrl: 'https://storage-facility-creator.web.app/subscription/cancel',
+        successUrl: 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+        cancelUrl: 'https://app.storagefacilitycreator.com/subscription/cancel',
       );
 
       if (!mounted) return;
@@ -464,7 +464,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     try {
       final portalUrl = await StripeService.createCustomerPortalSession(
         accountId: _account!.accountId,
-        returnUrl: 'https://storage-facility-creator.web.app/subscription/manage',
+        returnUrl: 'https://app.storagefacilitycreator.com/subscription/manage',
       );
 
       // Open portal in webview
@@ -492,8 +492,8 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
         accountId: _account!.accountId,
         facilityId: facility.id,
         customerEmail: user!.email!,
-        successUrl: 'https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facility.id}',
-        cancelUrl: 'https://storage-facility-creator.web.app/subscription/cancel?facility_id=${facility.id}',
+        successUrl: 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facility.id}',
+        cancelUrl: 'https://app.storagefacilitycreator.com/subscription/cancel?facility_id=${facility.id}',
       );
       if (!mounted) return;
       if (result.subscriptionUpdated) {

@@ -162,7 +162,7 @@ class FacilityPublicService {
     Map<String, dynamic>? widgetSettings,
     String? baseUrl,
   }) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     final widgetUrl = '$base/widget/$widgetType.name?facilityId=$facilityId';
 
     // Generate settings parameter if provided
@@ -194,26 +194,26 @@ class FacilityPublicService {
     if (customDomain != null && customDomain.isNotEmpty) {
       return 'https://$customDomain';
     }
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/facility/$facilityId';
   }
 
   /// Get public map URL by slug.
   static String getPublicMapUrl(String facilitySlug, {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/#/public/$facilitySlug/map';
   }
 
   /// Get public rent URL by slug.
   static String getPublicRentUrl(String facilitySlug, {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/#/f/$facilitySlug/rent';
   }
 
   /// Get public available units URL by slug.
   static String getPublicAvailableUnitsUrl(String facilitySlug,
       {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/#/f/$facilitySlug/available-units';
   }
 
@@ -223,7 +223,7 @@ class FacilityPublicService {
     String categorySlug, {
     String? baseUrl,
   }) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/#/f/$facilitySlug/$categorySlug';
   }
 }

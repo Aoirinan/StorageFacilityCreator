@@ -36,8 +36,8 @@ class StripeService {
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
         'customerEmail': customerEmail,
-        'successUrl': successUrl ?? 'https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        'cancelUrl': cancelUrl ?? 'https://storage-facility-creator.web.app/subscription/cancel',
+        'successUrl': successUrl ?? 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+        'cancelUrl': cancelUrl ?? 'https://app.storagefacilitycreator.com/subscription/cancel',
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () {
@@ -168,7 +168,7 @@ class StripeService {
       final callable = _functions.httpsCallable('createCustomerPortalSession');
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
-        'returnUrl': returnUrl ?? 'https://storage-facility-creator.web.app/subscription/manage',
+        'returnUrl': returnUrl ?? 'https://app.storagefacilitycreator.com/subscription/manage',
       });
 
       final portalUrl = result.data['portalUrl'] as String?;

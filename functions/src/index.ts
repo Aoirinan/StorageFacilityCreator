@@ -2832,8 +2832,8 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
         },
       ],
       customer_email: tenantEmail,
-      success_url: 'https://storage-facility-creator.web.app/portal/payment/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://storage-facility-creator.web.app/portal/payment/cancel',
+      success_url: 'https://app.storagefacilitycreator.com/portal/payment/success?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://app.storagefacilitycreator.com/portal/payment/cancel',
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,
@@ -8863,8 +8863,8 @@ export const createSubscriptionCheckout = functions.runWith({ timeoutSeconds: 60
         customer: customerId,
         mode: 'subscription',
         line_items: lineItems,
-        success_url: successUrl || 'https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        cancel_url: cancelUrl || 'https://storage-facility-creator.web.app/subscription/cancel',
+        success_url: successUrl || 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+        cancel_url: cancelUrl || 'https://app.storagefacilitycreator.com/subscription/cancel',
         metadata: {
           accountId: accountId,
           ownerUid: context.auth.uid,
@@ -9202,8 +9202,8 @@ export const createFacilitySubscriptionCheckout = functions.runWith({ timeoutSec
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: basePriceId, quantity: 1 }],
-      success_url: successUrl || `https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facilityId}`,
-      cancel_url: cancelUrl || `https://storage-facility-creator.web.app/subscription/cancel?facility_id=${facilityId}`,
+      success_url: successUrl || `https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facilityId}`,
+      cancel_url: cancelUrl || `https://app.storagefacilitycreator.com/subscription/cancel?facility_id=${facilityId}`,
       metadata: { accountId, facilityId, ownerUid: context.auth.uid },
       subscription_data: {
         trial_period_days: 30,
@@ -13631,8 +13631,8 @@ export const createPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_S
         },
       ],
       customer_email: tenantEmail,
-      success_url: 'https://storage-facility-creator.web.app/pay?token=' + token + '&status=success&session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://storage-facility-creator.web.app/pay?token=' + token + '&status=cancel',
+      success_url: 'https://app.storagefacilitycreator.com/pay?token=' + token + '&status=success&session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://app.storagefacilitycreator.com/pay?token=' + token + '&status=cancel',
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,

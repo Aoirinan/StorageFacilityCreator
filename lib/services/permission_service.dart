@@ -994,7 +994,7 @@ class PermissionService {
       final subject = 'You\'ve been invited to access $facilityName (Storage Facility Creator)';
       
       // Use hash-based URL directly - SendGrid Link Branding will handle tracking
-      final acceptUrl = 'https://storage-facility-creator.web.app/#/accept-invite?facilityId=$facilityId&inviteId=$inviteId';
+      final acceptUrl = 'https://app.storagefacilitycreator.com/#/accept-invite?facilityId=$facilityId&inviteId=$inviteId';
       
       // "Why you received this" explanation
       final whyReceivedExplanation = invitedByEmail != null

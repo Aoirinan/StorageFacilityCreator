@@ -8,7 +8,7 @@ export const SUPPORT_PHONE = '903-715-7504';
 /** Website-domain login entry used by header/CTA links. */
 export const APP_LOGIN_URL = '/login';
 /** Final app destination for login redirect page. */
-export const APP_LOGIN_REDIRECT_URL = 'https://storage-facility-creator.web.app/#/login';
+export const APP_LOGIN_REDIRECT_URL = 'https://app.storagefacilitycreator.com/#/login';
 
 /** CTA hierarchy */
 export const PRIMARY_CTA_LABEL = 'Start Free Trial';

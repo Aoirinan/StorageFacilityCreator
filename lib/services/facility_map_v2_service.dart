@@ -269,7 +269,7 @@ class FacilityMapV2Service {
   }
 
   static String buildPublicMapUrl(String slug,
-      {String baseUrl = 'https://storage-facility-creator.web.app'}) {
+      {String baseUrl = 'https://app.storagefacilitycreator.com'}) {
     return '$baseUrl/#/public/$slug/map';
   }
 

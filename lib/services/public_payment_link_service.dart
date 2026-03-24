@@ -168,7 +168,7 @@ class PublicPaymentLinkService {
 
   /// Build public payment URL
   static String buildPaymentUrl(String token, {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/pay?token=$token';
   }
 }

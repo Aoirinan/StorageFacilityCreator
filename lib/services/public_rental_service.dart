@@ -246,13 +246,13 @@ class PublicRentalService {
 
   /// Build public reservation URL
   static String buildReservationUrl(String token, {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/reserve?token=$token';
   }
 
   /// Build public move-in URL
   static String buildMoveInUrl(String token, {String? baseUrl}) {
-    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/move-in?token=$token';
   }
 

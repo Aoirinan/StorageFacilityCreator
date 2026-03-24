@@ -139,8 +139,8 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
       final checkoutResult = await StripeService.createSubscriptionCheckout(
         accountId: _account!.accountId,
         customerEmail: user!.email!,
-        successUrl: 'https://storage-facility-creator.web.app/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        cancelUrl: 'https://storage-facility-creator.web.app/subscription/cancel',
+        successUrl: 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+        cancelUrl: 'https://app.storagefacilitycreator.com/subscription/cancel',
       );
 
       if (!mounted) return;
