@@ -253,7 +253,11 @@ class AppShell extends ConsumerWidget {
                           width: 240,
                           child: _SubscriptionAwareSidebar(
                             currentRoute: currentRoute,
-                            onNavigate: (route) => context.go(route),
+                            onNavigate: (route) =>
+                                ModernNavigationService.navigateToRoute(
+                              context,
+                              route,
+                            ),
                           ),
                         );
                       },
@@ -281,7 +285,7 @@ class AppShell extends ConsumerWidget {
           currentRoute: currentRoute,
           onNavigate: (route) {
             Navigator.of(context).pop();
-            context.go(route);
+            ModernNavigationService.navigateToRoute(context, route);
           },
         ),
       ) : null,

@@ -11,7 +11,6 @@ import '../services/facility_public_service.dart';
 import '../services/facility_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
 
 class OnlineRentalsManagementScreen extends StatefulWidget {
   final String facilityId;
@@ -196,25 +195,30 @@ class _OnlineRentalsManagementScreenState
 
   @override
   Widget build(BuildContext context) {
-    final currentRoute =
-        GoRouter.of(context).routeInformationProvider.value.uri.toString();
-    return ModernPageWrapper(
-      currentRoute: currentRoute,
-      title: 'Online Rentals',
-      actions: [
-        IconButton(
-          onPressed: _isLoading ? null : _load,
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Refresh',
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null && _facility == null) {
+      return Center(child: Text(_error!));
+    }
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Online Rentals',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            IconButton(
+              onPressed: _load,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+            ),
+          ],
         ),
-      ],
-      child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null && _facility == null
-              ? Center(child: Text(_error!))
-              : ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
+        const SizedBox(height: 8),
                     Text(
                       _facility?.name ?? 'Facility',
                       style: const TextStyle(
@@ -369,8 +373,7 @@ class _OnlineRentalsManagementScreenState
                         ),
                       ],
                     ),
-                  ],
-                ),
+      ],
     );
   }
 }
