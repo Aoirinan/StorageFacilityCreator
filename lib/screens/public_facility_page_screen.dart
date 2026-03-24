@@ -20,7 +20,8 @@ class PublicFacilityPageScreen extends StatefulWidget {
   });
 
   @override
-  State<PublicFacilityPageScreen> createState() => _PublicFacilityPageScreenState();
+  State<PublicFacilityPageScreen> createState() =>
+      _PublicFacilityPageScreenState();
 }
 
 class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
@@ -48,8 +49,10 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
 
     try {
       final facility = await PublicRentalService.getFacility(facilityId);
-      final settings = await FacilityPublicService.getPublicSettings(facilityId);
-      final mapSlug = await FacilityMapV2Service.getPublicSlugForFacility(facilityId);
+      final settings =
+          await FacilityPublicService.getPublicSettings(facilityId);
+      final mapSlug =
+          await FacilityMapV2Service.getPublicSlugForFacility(facilityId);
 
       if (facility == null) {
         setState(() {
@@ -105,7 +108,8 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.error_outline, size: 64, color: AppTheme.error),
+                      Icon(Icons.error_outline,
+                          size: 64, color: AppTheme.error),
                       const SizedBox(height: 16),
                       Text(_error!, style: const TextStyle(fontSize: 16)),
                     ],
@@ -119,7 +123,8 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
                         children: [
                           _buildHeader(),
                           _buildFeaturedSection(),
-                          if (_settings?.showAvailableUnits ?? true) _buildUnitsSection(),
+                          if (_settings?.showAvailableUnits ?? true)
+                            _buildUnitsSection(),
                           _buildContactSection(),
                         ],
                       ),
@@ -243,7 +248,12 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: () {
-                  context.push('/rental?facilityId=${_facility!.id}');
+                  final slug = _publicMapSlug;
+                  if (slug != null && slug.isNotEmpty) {
+                    context.push('/f/$slug/rent');
+                  } else {
+                    context.push('/rental?facilityId=${_facility!.id}');
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -258,7 +268,8 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => context.push('/public/${_publicMapSlug!}/map'),
+                  onPressed: () =>
+                      context.push('/public/${_publicMapSlug!}/map'),
                   icon: const Icon(Icons.map_outlined),
                   label: const Text('View Facility Map'),
                 ),
@@ -315,4 +326,3 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
     );
   }
 }
-

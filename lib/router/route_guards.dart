@@ -26,7 +26,7 @@ class _SubscriptionCheckCache {
 final _subscriptionCheckCache = _SubscriptionCheckCache();
 
 /// Main redirect guard function for GoRouter
-/// 
+///
 /// Handles:
 /// - Authentication checks
 /// - Public route access
@@ -46,10 +46,12 @@ Future<String?> routeGuard(
   final loc = state.matchedLocation;
   final path = state.uri.path;
   // Legacy redirects: Autopay Activity and Notifications removed from sidebar; single source in Payments > Autopay and Settings > Notifications
-  if (path == AppRoute.autopayActivity || path.startsWith('${AppRoute.autopayActivity}?')) {
+  if (path == AppRoute.autopayActivity ||
+      path.startsWith('${AppRoute.autopayActivity}?')) {
     return '${AppRoute.payments}?tab=autopay';
   }
-  if (path == AppRoute.facilityNotifications || path.startsWith('${AppRoute.facilityNotifications}?')) {
+  if (path == AppRoute.facilityNotifications ||
+      path.startsWith('${AppRoute.facilityNotifications}?')) {
     return AppRoute.notificationSettings;
   }
   final isLanding = path == '/' || loc == AppRoute.landing || loc.isEmpty;
@@ -74,6 +76,7 @@ Future<String?> routeGuard(
     AppRoute.publicMoveIn,
     AppRoute.publicFacility,
     AppRoute.publicMapBase,
+    AppRoute.publicFacilityRentalBase,
     AppRoute.legacyScreen,
     AppRoute.pendingApproval,
   };
@@ -85,13 +88,22 @@ Future<String?> routeGuard(
       path.startsWith(AppRoute.acceptInvite + '?') ||
       path.startsWith('${AppRoute.publicFacility}/') ||
       path.startsWith('${AppRoute.publicMapBase}/') ||
+      path.startsWith('${AppRoute.publicFacilityRentalBase}/') ||
       path.startsWith(AppRoute.publicPayment) ||
       path.startsWith(AppRoute.publicRental);
 
   // Handle unauthenticated users
   if (!isAuthenticated) {
     // #region agent log
-    debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: 'Unauthenticated', data: {'loc': loc, 'isLanding': isLanding, 'isPublicRoute': isPublicRoute});
+    debugSessionLog(
+        hypothesisId: 'H3',
+        location: 'route_guards.dart:routeGuard',
+        message: 'Unauthenticated',
+        data: {
+          'loc': loc,
+          'isLanding': isLanding,
+          'isPublicRoute': isPublicRoute
+        });
     // #endregion
     // Reset 2FA verification state when logged out
     ref.read(twoFactorVerifiedProvider.notifier).state = false;
@@ -113,21 +125,34 @@ Future<String?> routeGuard(
           if (loggingIn) {
             // Stay on login so the OTP dialog can be shown; do not redirect to dashboard.
             // #region agent log
-            debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: '2FA enabled on login, stay for OTP', data: {'loc': loc});
+            debugSessionLog(
+                hypothesisId: 'H3',
+                location: 'route_guards.dart:routeGuard',
+                message: '2FA enabled on login, stay for OTP',
+                data: {'loc': loc});
             // #endregion
             return null;
           }
           // 2FA enabled but not on login - redirect to login to complete 2FA
           // #region agent log
-          debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: '2FA enabled, redirect to login', data: {'loc': loc});
+          debugSessionLog(
+              hypothesisId: 'H3',
+              location: 'route_guards.dart:routeGuard',
+              message: '2FA enabled, redirect to login',
+              data: {'loc': loc});
           // #endregion
           if (kDebugMode) {
-            print('🔐 2FA is enabled but not verified - redirecting to login for 2FA verification');
+            print(
+                '🔐 2FA is enabled but not verified - redirecting to login for 2FA verification');
           }
           return AppRoute.login;
         } else {
           // #region agent log
-          debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: '2FA not enabled, mark verified, return null', data: {'loc': loc});
+          debugSessionLog(
+              hypothesisId: 'H3',
+              location: 'route_guards.dart:routeGuard',
+              message: '2FA not enabled, mark verified, return null',
+              data: {'loc': loc});
           // #endregion
           ref.read(twoFactorVerifiedProvider.notifier).state = true;
           ref.invalidate(twoFactorEnabledProvider);
@@ -147,7 +172,11 @@ Future<String?> routeGuard(
   // Safety net: even if 2FA block fell through or login detection failed above.
   if (isAuthenticated && loggingIn && !ref.read(twoFactorVerifiedProvider)) {
     // #region agent log
-    debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: 'Block login->dashboard, stay for 2FA', data: {'loc': loc, 'path': path});
+    debugSessionLog(
+        hypothesisId: 'H3',
+        location: 'route_guards.dart:routeGuard',
+        message: 'Block login->dashboard, stay for 2FA',
+        data: {'loc': loc, 'path': path});
     // #endregion
     return null;
   }
@@ -170,7 +199,13 @@ Future<String?> routeGuard(
   if (isAuthenticated && (loc == AppRoute.landing || path == '/')) {
     final target = await redirectToDashboardOrLoginIf2FA();
     // #region agent log
-    debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: target == AppRoute.dashboard ? 'Redirect landing->dashboard' : 'Redirect landing->login (2FA)', data: {'loc': loc});
+    debugSessionLog(
+        hypothesisId: 'H3',
+        location: 'route_guards.dart:routeGuard',
+        message: target == AppRoute.dashboard
+            ? 'Redirect landing->dashboard'
+            : 'Redirect landing->login (2FA)',
+        data: {'loc': loc});
     // #endregion
     return target;
   }
@@ -186,17 +221,30 @@ Future<String?> routeGuard(
       loc != AppRoute.legacyScreen &&
       !loggingIn) {
     // Allow users to stay on signup/verify-email routes if email is not verified
-    final isSignupOrVerifyEmail = loc == AppRoute.signup || loc == AppRoute.verifyEmail;
-    if (isSignupOrVerifyEmail && firebaseUser != null && !firebaseUser.emailVerified) {
+    final isSignupOrVerifyEmail =
+        loc == AppRoute.signup || loc == AppRoute.verifyEmail;
+    if (isSignupOrVerifyEmail &&
+        firebaseUser != null &&
+        !firebaseUser.emailVerified) {
       // #region agent log
-      debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: 'Allow unverified user on signup/verify-email', data: {'loc': loc, 'emailVerified': firebaseUser.emailVerified});
+      debugSessionLog(
+          hypothesisId: 'H3',
+          location: 'route_guards.dart:routeGuard',
+          message: 'Allow unverified user on signup/verify-email',
+          data: {'loc': loc, 'emailVerified': firebaseUser.emailVerified});
       // #endregion
       return null; // Allow them to stay on these routes
     }
-    
+
     final target = await redirectToDashboardOrLoginIf2FA();
     // #region agent log
-    debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: target == AppRoute.dashboard ? 'Redirect public auth->dashboard' : 'Redirect public->login (2FA)', data: {'loc': loc});
+    debugSessionLog(
+        hypothesisId: 'H3',
+        location: 'route_guards.dart:routeGuard',
+        message: target == AppRoute.dashboard
+            ? 'Redirect public auth->dashboard'
+            : 'Redirect public->login (2FA)',
+        data: {'loc': loc});
     // #endregion
     return target;
   }
@@ -226,9 +274,7 @@ Future<String?> routeGuard(
   }
 
   // Check subscription status for authenticated users (skip for subscription routes)
-  if (isAuthenticated &&
-      !isPublicRoute &&
-      !path.startsWith('/subscription')) {
+  if (isAuthenticated && !isPublicRoute && !path.startsWith('/subscription')) {
     SubscriptionAccessResult? subscriptionCheck;
     final cacheIsFresh = _subscriptionCheckCache.isFresh;
 
@@ -241,8 +287,10 @@ Future<String?> routeGuard(
           allowSubscriptionRoutes: true,
         );
         // Don't cache when trialing or pending: status can change at any time
-        final isTrialing = subscriptionCheck.subscriptionStatus == SubscriptionStatus.trialing;
-        final isPending = subscriptionCheck.subscriptionStatus == SubscriptionStatus.pendingApproval;
+        final isTrialing =
+            subscriptionCheck.subscriptionStatus == SubscriptionStatus.trialing;
+        final isPending = subscriptionCheck.subscriptionStatus ==
+            SubscriptionStatus.pendingApproval;
         if (!(subscriptionCheck.canAccess && (isTrialing || isPending))) {
           _subscriptionCheckCache
             ..result = subscriptionCheck
@@ -269,8 +317,11 @@ Future<String?> routeGuard(
   }
 
   // #region agent log
-  debugSessionLog(hypothesisId: 'H3', location: 'route_guards.dart:routeGuard', message: 'No redirect, return null', data: {'loc': loc, 'path': path});
+  debugSessionLog(
+      hypothesisId: 'H3',
+      location: 'route_guards.dart:routeGuard',
+      message: 'No redirect, return null',
+      data: {'loc': loc, 'path': path});
   // #endregion
   return null;
 }
-

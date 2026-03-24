@@ -268,6 +268,51 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(
+        path: '${AppRoute.publicFacilityRentalBase}/:facilitySlug/rent',
+        name: 'public-rental-by-slug',
+        builder: (context, state) {
+          final slug = state.pathParameters['facilitySlug'];
+          if (slug == null || slug.isEmpty) {
+            return NotFoundPage(state: state);
+          }
+          return PublicRentalPortalScreen(facilitySlug: slug);
+        },
+      ),
+      GoRoute(
+        path:
+            '${AppRoute.publicFacilityRentalBase}/:facilitySlug/available-units',
+        name: 'public-available-units-by-slug',
+        builder: (context, state) {
+          final slug = state.pathParameters['facilitySlug'];
+          if (slug == null || slug.isEmpty) {
+            return NotFoundPage(state: state);
+          }
+          return PublicRentalPortalScreen(
+            facilitySlug: slug,
+            availableOnly: true,
+          );
+        },
+      ),
+      GoRoute(
+        path:
+            '${AppRoute.publicFacilityRentalBase}/:facilitySlug/:categorySlug',
+        name: 'public-rental-category-by-slug',
+        builder: (context, state) {
+          final slug = state.pathParameters['facilitySlug'];
+          final categorySlug = state.pathParameters['categorySlug'];
+          if (slug == null ||
+              slug.isEmpty ||
+              categorySlug == null ||
+              categorySlug.isEmpty) {
+            return NotFoundPage(state: state);
+          }
+          return PublicRentalPortalScreen(
+            facilitySlug: slug,
+            initialCategorySlug: categorySlug,
+          );
+        },
+      ),
+      GoRoute(
         path: AppRoute.publicMoveIn,
         name: 'public-move-in',
         builder: (context, state) {

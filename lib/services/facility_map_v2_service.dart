@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
@@ -20,7 +21,8 @@ class FacilityMapV2Service {
         .doc('meta');
   }
 
-  static CollectionReference<Map<String, dynamic>> _versionsRef(String facilityId) {
+  static CollectionReference<Map<String, dynamic>> _versionsRef(
+      String facilityId) {
     return _firestore
         .collection('facilities')
         .doc(facilityId)
@@ -110,6 +112,9 @@ class FacilityMapV2Service {
     }
 
     final meta = await getOrCreateMeta(facilityId);
+    final facilitySnap =
+        await _firestore.collection('facilities').doc(facilityId).get();
+    final facilityData = facilitySnap.data() ?? const <String, dynamic>{};
     final draftShapes = await MapLayoutService.getMapShapes(facilityId);
     final units = await UnitService.getUnitsForFacility(facilityId);
     final existingVersions = await _versionsRef(facilityId)
@@ -118,7 +123,9 @@ class FacilityMapV2Service {
         .get();
     final nextVersion = existingVersions.docs.isEmpty
         ? 1
-        : (existingVersions.docs.first.data()['versionNumber'] as num? ?? 0).toInt() + 1;
+        : (existingVersions.docs.first.data()['versionNumber'] as num? ?? 0)
+                .toInt() +
+            1;
 
     final versionDoc = _versionsRef(facilityId).doc();
     final now = DateTime.now();
@@ -141,34 +148,47 @@ class FacilityMapV2Service {
     final batch = _firestore.batch();
     batch.set(versionDoc, version.toMap(), SetOptions(merge: true));
 
-    if (meta.activePublishedVersionId != null && meta.activePublishedVersionId!.isNotEmpty) {
-      final oldRef = _versionsRef(facilityId).doc(meta.activePublishedVersionId);
-      batch.set(oldRef, {
-        'status': FacilityMapVersionStatus.archived.name,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+    if (meta.activePublishedVersionId != null &&
+        meta.activePublishedVersionId!.isNotEmpty) {
+      final oldRef =
+          _versionsRef(facilityId).doc(meta.activePublishedVersionId);
+      batch.set(
+          oldRef,
+          {
+            'status': FacilityMapVersionStatus.archived.name,
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true));
     }
 
-    batch.set(_metaRef(facilityId), {
-      'facilityId': facilityId,
-      'activePublishedVersionId': versionDoc.id,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'updatedBy': user.uid,
-      'publicSlug': meta.publicSlug,
-    }, SetOptions(merge: true));
+    batch.set(
+        _metaRef(facilityId),
+        {
+          'facilityId': facilityId,
+          'activePublishedVersionId': versionDoc.id,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'updatedBy': user.uid,
+          'publicSlug': meta.publicSlug,
+        },
+        SetOptions(merge: true));
 
-    final publicSettings = await FacilityPublicService.getPublicSettings(facilityId);
+    final publicSettings =
+        await FacilityPublicService.getPublicSettings(facilityId);
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
       slug: meta.publicSlug,
+      facilityName: facilityData['name']?.toString(),
+      facilityDescription: facilityData['description']?.toString(),
+      facilityPhone: facilityData['phone']?.toString(),
+      facilityLogoUrl: facilityData['logoUrl']?.toString(),
       publishedVersionId: versionDoc.id,
       elements: elements,
       units: units,
-      showPublicPricing: publicSettings?.showAvailableUnits ?? true,
-      allowReservation: publicSettings?.allowOnlineReservations ?? true,
+      publicSettingsModel: publicSettings,
       mapSettings: version.mapSettings,
     );
-    final publicRef = _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
+    final publicRef =
+        _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
     batch.set(publicRef, snapshot.toMap(), SetOptions(merge: true));
 
     await batch.commit();
@@ -188,7 +208,8 @@ class FacilityMapV2Service {
       throw Exception('Version not found');
     }
 
-    final version = FacilityMapVersion.fromMap(versionSnap.data()!, versionSnap.id);
+    final version =
+        FacilityMapVersion.fromMap(versionSnap.data()!, versionSnap.id);
     final shapesRef = _firestore
         .collection('facilities')
         .doc(facilityId)
@@ -201,7 +222,8 @@ class FacilityMapV2Service {
     await deleteBatch.commit();
 
     final createBatch = _firestore.batch();
-    for (final element in version.elements.where((e) => e.elementType == FacilityMapElementType.unit)) {
+    for (final element in version.elements
+        .where((e) => e.elementType == FacilityMapElementType.unit)) {
       final docRef = shapesRef.doc(element.id);
       createBatch.set(docRef, {
         'facilityId': facilityId,
@@ -246,12 +268,15 @@ class FacilityMapV2Service {
     return normalized;
   }
 
-  static String buildPublicMapUrl(String slug, {String baseUrl = 'https://storage-facility-creator.web.app'}) {
+  static String buildPublicMapUrl(String slug,
+      {String baseUrl = 'https://storage-facility-creator.web.app'}) {
     return '$baseUrl/#/public/$slug/map';
   }
 
-  static Future<PublicFacilityMapSnapshot?> getPublicSnapshotBySlug(String slug) async {
-    final doc = await _firestore.collection('publicFacilityMaps').doc(slug).get();
+  static Future<PublicFacilityMapSnapshot?> getPublicSnapshotBySlug(
+      String slug) async {
+    final doc =
+        await _firestore.collection('publicFacilityMaps').doc(slug).get();
     if (!doc.exists || doc.data() == null) {
       return null;
     }
@@ -270,24 +295,46 @@ class FacilityMapV2Service {
     return query.docs.first.id;
   }
 
-  static Future<void> migrateLegacyMapToInitialVersion(String facilityId) async {
+  static Future<void> migrateLegacyMapToInitialVersion(
+      String facilityId) async {
     final versions = await _versionsRef(facilityId).limit(1).get();
     if (versions.docs.isNotEmpty) {
       return;
     }
-    await publishCurrentDraft(facilityId: facilityId, mapSettings: const <String, dynamic>{'migratedFromLegacy': true});
+    await publishCurrentDraft(
+        facilityId: facilityId,
+        mapSettings: const <String, dynamic>{'migratedFromLegacy': true});
   }
 
   static PublicFacilityMapSnapshot _buildPublicSnapshot({
     required String facilityId,
     required String slug,
+    required String? facilityName,
+    required String? facilityDescription,
+    required String? facilityPhone,
+    required String? facilityLogoUrl,
     required String publishedVersionId,
     required List<FacilityMapElement> elements,
     required List<UnitModel> units,
-    required bool showPublicPricing,
-    required bool allowReservation,
+    required FacilityPublicSettings? publicSettingsModel,
     required Map<String, dynamic> mapSettings,
   }) {
+    final showPublicPricing = publicSettingsModel?.publicPricingEnabled ?? true;
+    final allowReservation = publicSettingsModel?.publicRentalsEnabled ?? false;
+    final showUnitNumbers =
+        publicSettingsModel?.publicUnitNumbersEnabled ?? true;
+    final allowAutoAssign = publicSettingsModel?.allowAutoAssign ?? true;
+    final allowUnitSelection = publicSettingsModel?.allowUnitSelection ?? true;
+    final showAvailabilityCount =
+        publicSettingsModel?.showAvailabilityCount ?? true;
+    final hideUnavailableTypes =
+        publicSettingsModel?.hideUnavailableTypes ?? true;
+    final enabledPublicUnitTypes =
+        (publicSettingsModel?.enabledPublicUnitTypes ?? const <String>[])
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+
     final visibleElements = elements.where((e) => e.visiblePublic).toList();
     final safeUnits = units.map((unit) {
       final dims = unit.dimensions ?? const <String, dynamic>{};
@@ -298,14 +345,27 @@ class FacilityMapV2Service {
         size = '${width.toStringAsFixed(0)}x${depth.toStringAsFixed(0)}';
       }
 
+      final unitType = unit.unitType;
+      final categorySlug = _slugify(unitType);
+      final isPubliclyEnabledType = enabledPublicUnitTypes.isEmpty ||
+          enabledPublicUnitTypes.contains(unitType);
+
       return <String, dynamic>{
         'unitId': unit.id,
-        'unitNumber': unit.unitNumber,
+        'unitNumber': showUnitNumbers ? unit.unitNumber : null,
+        'unitLabel': showUnitNumbers ? unit.unitNumber : null,
+        'displayName':
+            showUnitNumbers ? 'Unit ${unit.unitNumber}' : 'Available Unit',
         'status': statusToPublicStatus(unit.status),
         'internalStatus': unit.status.name,
+        'unitType': unitType,
+        'categorySlug': categorySlug,
         'size': size,
+        'description': unit.description,
         'monthlyRate': showPublicPricing ? unit.monthlyRate : null,
-        'isRentable': unit.status == UnitStatus.available || unit.status == UnitStatus.reserved,
+        'isRentable': (unit.status == UnitStatus.available ||
+                unit.status == UnitStatus.reserved) &&
+            isPubliclyEnabledType,
       };
     }).toList();
 
@@ -315,13 +375,24 @@ class FacilityMapV2Service {
       publishedVersionId: publishedVersionId,
       publishedAt: DateTime.now(),
       publicSettings: <String, dynamic>{
+        'facilityName': facilityName,
+        'facilityDescription': facilityDescription,
+        'facilityPhone': facilityPhone,
+        'facilityLogoUrl': facilityLogoUrl,
         'showPublicPricing': showPublicPricing,
         'allowReservation': allowReservation,
+        'publicRentalsEnabled': allowReservation,
+        'publicUnitNumbersEnabled': showUnitNumbers,
+        'allowAutoAssign': allowAutoAssign,
+        'allowUnitSelection': allowUnitSelection,
+        'showAvailabilityCount': showAvailabilityCount,
+        'hideUnavailableTypes': hideUnavailableTypes,
+        'enabledPublicUnitTypes': enabledPublicUnitTypes,
         'mapSettings': mapSettings,
       },
       elements: visibleElements,
       units: safeUnits,
-      rentalRouteTemplate: '/rental?facilityId=$facilityId&unitId={unitId}',
+      rentalRouteTemplate: '/f/$slug/rent?unitId={unitId}',
       moveInRouteTemplate: '/public-move-in?token={token}',
     );
   }
@@ -330,7 +401,9 @@ class FacilityMapV2Service {
     return FacilityMapElement(
       id: shape.id,
       facilityId: shape.facilityId,
-      elementType: shape.unitId != null ? FacilityMapElementType.unit : FacilityMapElementType.custom,
+      elementType: shape.unitId != null
+          ? FacilityMapElementType.unit
+          : FacilityMapElementType.custom,
       linkedUnitId: shape.unitId,
       x: shape.x,
       y: shape.y,
@@ -350,7 +423,9 @@ class FacilityMapV2Service {
   static String _slugify(String raw) {
     final lowered = raw.toLowerCase().trim();
     final cleaned = lowered.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
-    final normalized = cleaned.replaceAll(RegExp(r'-{2,}'), '-').replaceAll(RegExp(r'^-|-$'), '');
+    final normalized = cleaned
+        .replaceAll(RegExp(r'-{2,}'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
     return normalized.isEmpty ? 'facility-map' : normalized;
   }
 }

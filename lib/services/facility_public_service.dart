@@ -10,7 +10,8 @@ class FacilityPublicService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
   /// Get public settings for a facility
-  static Future<FacilityPublicSettings?> getPublicSettings(String facilityId) async {
+  static Future<FacilityPublicSettings?> getPublicSettings(
+      String facilityId) async {
     try {
       final doc = await _firestore
           .collection('facilities')
@@ -37,6 +38,15 @@ class FacilityPublicService {
   static Future<void> updatePublicSettings({
     required String facilityId,
     bool? enabled,
+    bool? publicRentalsEnabled,
+    bool? publicPricingEnabled,
+    bool? publicUnitNumbersEnabled,
+    bool? allowAutoAssign,
+    bool? allowUnitSelection,
+    bool? showAvailabilityCount,
+    bool? hideUnavailableTypes,
+    List<String>? enabledPublicUnitTypes,
+    String? publicRentalSlug,
     String? customDomain,
     String? pageTitle,
     String? pageDescription,
@@ -55,14 +65,40 @@ class FacilityPublicService {
       final updatedSettings = FacilityPublicSettings(
         facilityId: facilityId,
         enabled: enabled ?? currentSettings?.enabled ?? false,
+        publicRentalsEnabled: publicRentalsEnabled ??
+            currentSettings?.publicRentalsEnabled ??
+            false,
+        publicPricingEnabled: publicPricingEnabled ??
+            currentSettings?.publicPricingEnabled ??
+            true,
+        publicUnitNumbersEnabled: publicUnitNumbersEnabled ??
+            currentSettings?.publicUnitNumbersEnabled ??
+            true,
+        allowAutoAssign:
+            allowAutoAssign ?? currentSettings?.allowAutoAssign ?? true,
+        allowUnitSelection:
+            allowUnitSelection ?? currentSettings?.allowUnitSelection ?? true,
+        showAvailabilityCount: showAvailabilityCount ??
+            currentSettings?.showAvailabilityCount ??
+            true,
+        hideUnavailableTypes: hideUnavailableTypes ??
+            currentSettings?.hideUnavailableTypes ??
+            true,
+        enabledPublicUnitTypes: enabledPublicUnitTypes ??
+            currentSettings?.enabledPublicUnitTypes ??
+            const <String>[],
+        publicRentalSlug: publicRentalSlug ?? currentSettings?.publicRentalSlug,
         customDomain: customDomain ?? currentSettings?.customDomain,
         pageTitle: pageTitle ?? currentSettings?.pageTitle,
         pageDescription: pageDescription ?? currentSettings?.pageDescription,
         featuredImages: featuredImages ?? currentSettings?.featuredImages,
-        showAvailableUnits: showAvailableUnits ?? currentSettings?.showAvailableUnits ?? true,
-        allowOnlineReservations:
-            allowOnlineReservations ?? currentSettings?.allowOnlineReservations ?? true,
-        allowOnlineMoveIn: allowOnlineMoveIn ?? currentSettings?.allowOnlineMoveIn ?? false,
+        showAvailableUnits:
+            showAvailableUnits ?? currentSettings?.showAvailableUnits ?? true,
+        allowOnlineReservations: allowOnlineReservations ??
+            currentSettings?.allowOnlineReservations ??
+            true,
+        allowOnlineMoveIn:
+            allowOnlineMoveIn ?? currentSettings?.allowOnlineMoveIn ?? false,
         customStyles: customStyles ?? currentSettings?.customStyles,
         widgets: widgets ?? currentSettings?.widgets,
         updatedAt: DateTime.now(),
@@ -77,7 +113,8 @@ class FacilityPublicService {
           .set(updatedSettings.toMap(), SetOptions(merge: true));
 
       if (kDebugMode) {
-        print('✅ [FacilityPublic] Updated public settings for facility: $facilityId');
+        print(
+            '✅ [FacilityPublic] Updated public settings for facility: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
@@ -104,7 +141,8 @@ class FacilityPublicService {
 
       if (facilityId == null) return null;
 
-      final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
+      final facilityDoc =
+          await _firestore.collection('facilities').doc(facilityId).get();
 
       if (!facilityDoc.exists) return null;
 
@@ -126,11 +164,12 @@ class FacilityPublicService {
   }) {
     final base = baseUrl ?? 'https://storage-facility-creator.web.app';
     final widgetUrl = '$base/widget/$widgetType.name?facilityId=$facilityId';
-    
+
     // Generate settings parameter if provided
     String settingsParam = '';
     if (widgetSettings != null && widgetSettings.isNotEmpty) {
-      settingsParam = '&settings=${Uri.encodeComponent(widgetSettings.toString())}';
+      settingsParam =
+          '&settings=${Uri.encodeComponent(widgetSettings.toString())}';
     }
 
     return '''
@@ -150,7 +189,8 @@ class FacilityPublicService {
   }
 
   /// Get public facility page URL
-  static String getPublicPageUrl(String facilityId, {String? baseUrl, String? customDomain}) {
+  static String getPublicPageUrl(String facilityId,
+      {String? baseUrl, String? customDomain}) {
     if (customDomain != null && customDomain.isNotEmpty) {
       return 'https://$customDomain';
     }
@@ -163,5 +203,27 @@ class FacilityPublicService {
     final base = baseUrl ?? 'https://storage-facility-creator.web.app';
     return '$base/#/public/$facilitySlug/map';
   }
-}
 
+  /// Get public rent URL by slug.
+  static String getPublicRentUrl(String facilitySlug, {String? baseUrl}) {
+    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    return '$base/#/f/$facilitySlug/rent';
+  }
+
+  /// Get public available units URL by slug.
+  static String getPublicAvailableUnitsUrl(String facilitySlug,
+      {String? baseUrl}) {
+    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    return '$base/#/f/$facilitySlug/available-units';
+  }
+
+  /// Get public category URL by slug.
+  static String getPublicCategoryUrl(
+    String facilitySlug,
+    String categorySlug, {
+    String? baseUrl,
+  }) {
+    final base = baseUrl ?? 'https://storage-facility-creator.web.app';
+    return '$base/#/f/$facilitySlug/$categorySlug';
+  }
+}

@@ -4,6 +4,16 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class FacilityPublicSettings {
   final String facilityId;
   final bool enabled; // Whether public page is enabled
+  final bool publicRentalsEnabled; // Whether online public rentals are enabled
+  final bool publicPricingEnabled; // Show pricing on public rental pages
+  final bool publicUnitNumbersEnabled; // Show exact unit numbers publicly
+  final bool allowAutoAssign; // Allow automatic unit assignment
+  final bool allowUnitSelection; // Allow renter to choose specific unit
+  final bool showAvailabilityCount; // Show "X available" counts
+  final bool
+      hideUnavailableTypes; // Hide categories/types that have zero inventory
+  final List<String> enabledPublicUnitTypes; // Publicly rentable unit types
+  final String? publicRentalSlug; // Public rental slug used in /f/:slug/*
   final String? customDomain; // Custom domain for facility page
   final String? pageTitle; // Custom page title
   final String? pageDescription; // Page meta description
@@ -19,6 +29,15 @@ class FacilityPublicSettings {
   const FacilityPublicSettings({
     required this.facilityId,
     this.enabled = false,
+    this.publicRentalsEnabled = false,
+    this.publicPricingEnabled = true,
+    this.publicUnitNumbersEnabled = true,
+    this.allowAutoAssign = true,
+    this.allowUnitSelection = true,
+    this.showAvailabilityCount = true,
+    this.hideUnavailableTypes = true,
+    this.enabledPublicUnitTypes = const <String>[],
+    this.publicRentalSlug,
     this.customDomain,
     this.pageTitle,
     this.pageDescription,
@@ -36,6 +55,15 @@ class FacilityPublicSettings {
     return {
       'facilityId': facilityId,
       'enabled': enabled,
+      'publicRentalsEnabled': publicRentalsEnabled,
+      'publicPricingEnabled': publicPricingEnabled,
+      'publicUnitNumbersEnabled': publicUnitNumbersEnabled,
+      'allowAutoAssign': allowAutoAssign,
+      'allowUnitSelection': allowUnitSelection,
+      'showAvailabilityCount': showAvailabilityCount,
+      'hideUnavailableTypes': hideUnavailableTypes,
+      'enabledPublicUnitTypes': enabledPublicUnitTypes,
+      'publicRentalSlug': publicRentalSlug,
       'customDomain': customDomain,
       'pageTitle': pageTitle,
       'pageDescription': pageDescription,
@@ -54,6 +82,18 @@ class FacilityPublicSettings {
     return FacilityPublicSettings(
       facilityId: map['facilityId'] as String,
       enabled: map['enabled'] as bool? ?? false,
+      publicRentalsEnabled: map['publicRentalsEnabled'] as bool? ?? false,
+      publicPricingEnabled: map['publicPricingEnabled'] as bool? ?? true,
+      publicUnitNumbersEnabled:
+          map['publicUnitNumbersEnabled'] as bool? ?? true,
+      allowAutoAssign: map['allowAutoAssign'] as bool? ?? true,
+      allowUnitSelection: map['allowUnitSelection'] as bool? ?? true,
+      showAvailabilityCount: map['showAvailabilityCount'] as bool? ?? true,
+      hideUnavailableTypes: map['hideUnavailableTypes'] as bool? ?? true,
+      enabledPublicUnitTypes: map['enabledPublicUnitTypes'] != null
+          ? List<String>.from(map['enabledPublicUnitTypes'])
+          : const <String>[],
+      publicRentalSlug: map['publicRentalSlug'] as String?,
       customDomain: map['customDomain'] as String?,
       pageTitle: map['pageTitle'] as String?,
       pageDescription: map['pageDescription'] as String?,
@@ -113,4 +153,3 @@ class WidgetConfig {
     );
   }
 }
-
