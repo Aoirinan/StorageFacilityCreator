@@ -377,6 +377,7 @@ class FacilityMapV2Service {
     final publicLogoUrl = publicSettingsModel?.publicLogoUrl?.trim().isNotEmpty == true
         ? publicSettingsModel!.publicLogoUrl!.trim()
         : facilityLogoUrl;
+    final unitTypeImageUrls = publicSettingsModel?.unitTypeImageUrls ?? const <String, String>{};
 
     return PublicFacilityMapSnapshot(
       facilityId: facilityId,
@@ -389,6 +390,7 @@ class FacilityMapV2Service {
         'facilityPhone': facilityPhone,
         'facilityLogoUrl': publicLogoUrl,
         'customDomain': publicSettingsModel?.customDomain,
+        'unitTypeImageUrls': unitTypeImageUrls,
         'showPublicPricing': showPublicPricing,
         'allowReservation': allowReservation,
         'publicRentalsEnabled': allowReservation,

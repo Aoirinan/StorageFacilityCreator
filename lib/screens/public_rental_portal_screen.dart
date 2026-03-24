@@ -46,6 +46,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   bool _showAvailabilityCount = true;
   bool _hideUnavailableTypes = true;
   Set<String> _enabledPublicUnitTypes = <String>{};
+  Map<String, String> _unitTypeImageUrls = <String, String>{};
 
   List<_PublicUnitView> _units = <_PublicUnitView>[];
   String? _selectedCategorySlug;
@@ -103,6 +104,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               .map((e) => e.toString())
               .where((e) => e.trim().isNotEmpty)
               .toSet();
+      final unitTypeImageUrls =
+          (settings['unitTypeImageUrls'] as Map<String, dynamic>? ??
+                  const <String, dynamic>{})
+              .map((key, value) => MapEntry(key.toString(), value.toString()));
 
       setState(() {
         _facilitySlug = resolvedSlug;
@@ -124,6 +129,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _showAvailabilityCount = settings['showAvailabilityCount'] != false;
         _hideUnavailableTypes = settings['hideUnavailableTypes'] != false;
         _enabledPublicUnitTypes = enabledTypes;
+        _unitTypeImageUrls = unitTypeImageUrls;
         _units = publicUnits;
         _selectedCategorySlug = widget.initialCategorySlug;
         _isLoading = false;
@@ -256,10 +262,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                 ? _buildEmptyState()
                 : ListView.builder(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                    itemCount: groups.length + 1,
+                    itemCount: groups.length + 2,
                     itemBuilder: (context, index) {
                       if (index == groups.length) {
                         return _buildWhyRentSection();
+                      }
+                      if (index == groups.length + 1) {
+                        return _buildFaqSection();
                       }
                       return _buildGroupCard(groups[index]);
                     },
@@ -393,6 +402,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         !unavailable &&
         (_allowAutoAssign || _allowUnitSelection);
 
+    final imageUrl = _unitTypeImageUrls[_normalizeUnitTypeKey(group.unitType)];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -412,6 +423,21 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (imageUrl != null && imageUrl.trim().isNotEmpty) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  height: 180,
+                  width: double.infinity,
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+            ],
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -516,6 +542,68 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           Text('- Transparent pricing and availability'),
           SizedBox(height: 4),
           Text('- Friendly support when you need help'),
+        ],
+      ),
+    );
+  }
+
+  String _normalizeUnitTypeKey(String raw) {
+    return raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-{2,}'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+  }
+
+  Widget _buildFaqSection() {
+    const faqs = <Map<String, String>>[
+      {
+        'q': 'How do I rent a unit online?',
+        'a': 'Choose a unit, click Rent Now, and complete the short reservation form.'
+      },
+      {
+        'q': 'Can I choose a specific unit?',
+        'a': 'If unit selection is enabled by this facility, you can choose from available units.'
+      },
+      {
+        'q': 'How quickly will I hear back?',
+        'a': 'Most facilities follow up quickly after reservation to finalize move-in details.'
+      },
+    ];
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Frequently Asked Questions',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 10),
+          ...faqs.map((item) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item['q']!,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item['a']!,
+                      style: const TextStyle(color: AppTheme.textSecondary),
+                    ),
+                  ],
+                ),
+              )),
         ],
       ),
     );

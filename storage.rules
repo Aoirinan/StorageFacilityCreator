@@ -2,6 +2,41 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function signedIn() { return request.auth != null; }
+    function authEmail() {
+      return request.auth != null && request.auth.token.email != null
+        ? request.auth.token.email
+        : null;
+    }
+    function isSuperAdmin() {
+      let email = authEmail();
+      return email != null && (
+        email == 'russell_forsyth_1992@outlook.com' ||
+        email == 'russell_Forsyth_1992@outlook.com' ||
+        email == 'kennethgriggs03@gmail.com'
+      );
+    }
+    function facilityDoc(facilityId) {
+      return firestore.get(/databases/(default)/documents/facilities/$(facilityId)).data;
+    }
+    function facilityExists(facilityId) {
+      return firestore.exists(/databases/(default)/documents/facilities/$(facilityId));
+    }
+    function facilityRole(facilityId) {
+      return facilityExists(facilityId) &&
+        facilityDoc(facilityId).roles != null &&
+        facilityDoc(facilityId).roles[request.auth.uid] != null
+          ? facilityDoc(facilityId).roles[request.auth.uid]
+          : null;
+    }
+    function isFacilityOwnerOrManager(facilityId) {
+      return signedIn() && facilityExists(facilityId) && (
+        facilityDoc(facilityId).ownerUid == request.auth.uid ||
+        (facilityDoc(facilityId).managers != null &&
+          facilityDoc(facilityId).managers[request.auth.uid] == true) ||
+        facilityRole(facilityId) == 'owner' ||
+        facilityRole(facilityId) == 'manager'
+      );
+    }
     
     // Per-user uploads
     match /uploads/{uid}/{allPaths=**} {
@@ -15,13 +50,20 @@ service firebase.storage {
       allow write: if signedIn();
     }
 
+    // Public branding assets (online rentals logos, etc.).
+    // Allow management by facility owner/manager and super admins.
+    match /facilities/{facilityId}/public-branding/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+    }
+
     // Facility files - owner access only (covers contracts, DNR evidence, documents, invoices, etc.)
     // Path: facilities/{facilityId}/contracts/{contractId}/{fileName}
     // Path: facilities/{facilityId}/documents/{documentId}/{fileName}
     // Path: facilities/{facilityId}/invoices/{invoiceId}/invoice.pdf
     match /facilities/{facilityId}/{allPaths=**} {
       allow read, write: if signedIn() && 
-        get(/databases/(default)/documents/facilities/$(facilityId)).data.ownerUid == request.auth.uid;
+        firestore.get(/databases/(default)/documents/facilities/$(facilityId)).data.ownerUid == request.auth.uid;
     }
     
     // Storage templates - DEPRECATED/UNUSED

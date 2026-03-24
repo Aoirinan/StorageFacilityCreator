@@ -48,7 +48,9 @@ class _OnlineRentalsManagementScreenState
   bool _hideUnavailableTypes = true;
   Set<String> _enabledPublicUnitTypes = <String>{};
   Set<String> _availableUnitTypes = <String>{};
+  Map<String, String> _unitTypeImageUrls = <String, String>{};
   bool _isUploadingLogo = false;
+  String? _uploadingUnitType;
   bool _isCheckingDomain = false;
   bool? _domainConnected;
   String? _domainCheckMessage;
@@ -96,6 +98,7 @@ class _OnlineRentalsManagementScreenState
         _enabledPublicUnitTypes =
             settings?.enabledPublicUnitTypes.toSet() ?? <String>{};
         _availableUnitTypes = types;
+        _unitTypeImageUrls = settings?.unitTypeImageUrls ?? <String, String>{};
         _customDomainController.text = settings?.customDomain ?? '';
         _marketingContentController.text = settings?.marketingContent ??
             settings?.pageDescription ??
@@ -158,6 +161,8 @@ class _OnlineRentalsManagementScreenState
         customDomain: customDomain.isEmpty ? null : customDomain,
         marketingContent: marketingContent.isEmpty ? null : marketingContent,
         publicLogoUrl: logoUrl.isEmpty ? null : logoUrl,
+        unitTypeImageUrls:
+            _unitTypeImageUrls.isEmpty ? null : _unitTypeImageUrls,
       );
       await FacilityMapV2Service.setPublicSlug(
         facilityId: widget.facilityId,
@@ -318,6 +323,64 @@ class _OnlineRentalsManagementScreenState
         .join(' ');
   }
 
+  String _normalizeUnitTypeKey(String raw) {
+    return raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-{2,}'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+  }
+
+  Future<void> _uploadUnitTypeImage(String unitType) async {
+    setState(() {
+      _uploadingUnitType = unitType;
+      _error = null;
+    });
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) {
+        setState(() => _uploadingUnitType = null);
+        return;
+      }
+      final file = result.files.first;
+      if (file.bytes == null) {
+        throw Exception('Unable to read selected image data.');
+      }
+
+      final ext = (file.extension ?? 'png').toLowerCase();
+      final contentType = switch (ext) {
+        'jpg' || 'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        _ => 'image/png',
+      };
+      final safeType = _normalizeUnitTypeKey(unitType);
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final safeName = file.name.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+      final path =
+          'facilities/${widget.facilityId}/public-branding/unit-types/$safeType-$stamp-$safeName';
+      final ref = FirebaseStorage.instance.ref(path);
+      await ref.putData(file.bytes!, SettableMetadata(contentType: contentType));
+      final url = await ref.getDownloadURL();
+
+      if (!mounted) return;
+      setState(() {
+        _unitTypeImageUrls[safeType] = url;
+        _uploadingUnitType = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _uploadingUnitType = null;
+        _error = 'Unit type image upload failed: $e';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -430,6 +493,29 @@ class _OnlineRentalsManagementScreenState
                         border: OutlineInputBorder(),
                         alignLabelWithHint: true,
                         prefixIcon: Icon(Icons.edit_note),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFF),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFFE2E8F5)),
+                      ),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Page Suggestions',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          SizedBox(height: 6),
+                          Text('- Add one clear headline with city/location'),
+                          Text('- Use 1-2 short trust paragraphs'),
+                          Text('- Upload images for each unit type'),
+                          Text('- Keep FAQs practical and short'),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -556,6 +642,88 @@ class _OnlineRentalsManagementScreenState
                         }).toList();
                       }(),
                     ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Unit Type Photos',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    ...(() {
+                      final types = (_availableUnitTypes.isEmpty
+                              ? UnitType.values.map((e) => e.name).toSet()
+                              : _availableUnitTypes)
+                          .toList()
+                        ..sort();
+                      return types.map((type) {
+                        final key = _normalizeUnitTypeKey(type);
+                        final imageUrl = _unitTypeImageUrls[key];
+                        final uploading = _uploadingUnitType == type;
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 72,
+                                  height: 52,
+                                  child: imageUrl == null
+                                      ? Container(
+                                          color: const Color(0xFFF1F5F9),
+                                          child: const Icon(Icons.image_outlined),
+                                        )
+                                      : ClipRRect(
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                          child: Image.network(
+                                            imageUrl,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (_, __, ___) =>
+                                                const Icon(Icons.broken_image),
+                                          ),
+                                        ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _unitTypeLabel(type),
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                if (uploading)
+                                  const Padding(
+                                    padding: EdgeInsets.only(right: 8),
+                                    child: SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    ),
+                                  ),
+                                IconButton(
+                                  tooltip: 'Upload Photo',
+                                  onPressed: uploading
+                                      ? null
+                                      : () => _uploadUnitTypeImage(type),
+                                  icon: const Icon(Icons.upload),
+                                ),
+                                if (imageUrl != null)
+                                  IconButton(
+                                    tooltip: 'Remove Photo',
+                                    onPressed: () {
+                                      setState(() {
+                                        _unitTypeImageUrls.remove(key);
+                                      });
+                                    },
+                                    icon: const Icon(Icons.delete_outline),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }).toList();
+                    })(),
                     const SizedBox(height: 16),
                     Card(
                       child: Padding(

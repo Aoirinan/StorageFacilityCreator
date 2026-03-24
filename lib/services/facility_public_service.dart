@@ -50,6 +50,7 @@ class FacilityPublicService {
     String? customDomain,
     String? publicLogoUrl,
     String? marketingContent,
+    Map<String, String>? unitTypeImageUrls,
     String? pageTitle,
     String? pageDescription,
     List<String>? featuredImages,
@@ -93,6 +94,8 @@ class FacilityPublicService {
         customDomain: customDomain ?? currentSettings?.customDomain,
         publicLogoUrl: publicLogoUrl ?? currentSettings?.publicLogoUrl,
         marketingContent: marketingContent ?? currentSettings?.marketingContent,
+        unitTypeImageUrls:
+            unitTypeImageUrls ?? currentSettings?.unitTypeImageUrls,
         pageTitle: pageTitle ?? currentSettings?.pageTitle,
         pageDescription: pageDescription ?? currentSettings?.pageDescription,
         featuredImages: featuredImages ?? currentSettings?.featuredImages,

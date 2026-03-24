@@ -17,6 +17,7 @@ class FacilityPublicSettings {
   final String? customDomain; // Custom domain for facility page
   final String? publicLogoUrl; // Public-facing logo override
   final String? marketingContent; // Free-form public marketing content
+  final Map<String, String>? unitTypeImageUrls; // Image URL per unit type slug
   final String? pageTitle; // Custom page title
   final String? pageDescription; // Page meta description
   final List<String>? featuredImages; // URLs to featured images
@@ -43,6 +44,7 @@ class FacilityPublicSettings {
     this.customDomain,
     this.publicLogoUrl,
     this.marketingContent,
+    this.unitTypeImageUrls,
     this.pageTitle,
     this.pageDescription,
     this.featuredImages,
@@ -71,6 +73,7 @@ class FacilityPublicSettings {
       'customDomain': customDomain,
       'publicLogoUrl': publicLogoUrl,
       'marketingContent': marketingContent,
+      'unitTypeImageUrls': unitTypeImageUrls,
       'pageTitle': pageTitle,
       'pageDescription': pageDescription,
       'featuredImages': featuredImages,
@@ -103,6 +106,9 @@ class FacilityPublicSettings {
       customDomain: map['customDomain'] as String?,
       publicLogoUrl: map['publicLogoUrl'] as String?,
       marketingContent: map['marketingContent'] as String?,
+      unitTypeImageUrls: map['unitTypeImageUrls'] != null
+          ? Map<String, String>.from(map['unitTypeImageUrls'])
+          : null,
       pageTitle: map['pageTitle'] as String?,
       pageDescription: map['pageDescription'] as String?,
       featuredImages: map['featuredImages'] != null
