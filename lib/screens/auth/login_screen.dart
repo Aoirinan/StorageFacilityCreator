@@ -199,6 +199,25 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
       // Check if login was successful (don't require mounted—we navigate via router ref)
       if (result == true) {
+        // Enforce email verification before app access.
+        final signedInUser = FirebaseAuth.instance.currentUser;
+        if (signedInUser != null) {
+          try {
+            await signedInUser.reload();
+          } catch (_) {
+            // Ignore refresh failures and use current snapshot.
+          }
+          final refreshedUser = FirebaseAuth.instance.currentUser;
+          if (refreshedUser != null &&
+              !refreshedUser.emailVerified &&
+              !SuperAdminService.isSuperAdmin(refreshedUser)) {
+            ref.read(goRouterProvider).go(
+                  '${AppRoute.verifyEmail}?email=${Uri.encodeComponent(refreshedUser.email ?? _emailController.text.trim())}',
+                );
+            return;
+          }
+        }
+
         // Wait for auth stream to emit user so route guard sees authenticated when we go(dashboard).
         var user = ref.read(authStateProvider).whenOrNull(data: (d) => d);
         for (var i = 0; i < 40 && user == null; i++) {

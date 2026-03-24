@@ -302,7 +302,7 @@ class AuthService {
     
     // Reload user to get latest verification status
     await user.reload();
-    return user.emailVerified;
+    return _auth.currentUser?.emailVerified ?? false;
   }
 
   // Resend verification email

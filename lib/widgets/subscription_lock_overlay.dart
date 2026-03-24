@@ -88,7 +88,8 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
 
       if (mounted) {
         // hasAccess = account.canAccessPlatform (legacy) OR any facility has per-facility platform sub
-        bool isLocked = !hasAccess;
+        // Pending approval is handled by dedicated route guard/screen, not this overlay.
+        bool isLocked = (account?.isPendingApproval ?? false) ? false : !hasAccess;
         if (kDebugMode) {
           print(isLocked
               ? '🔒 [SubscriptionLock] LOCKED: no active subscription'
@@ -218,6 +219,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
     // Always allow access to subscription page
     final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '';
     final isSubscriptionRoute = currentRoute.startsWith('/subscription');
+    final isPendingApprovalRoute = currentRoute.startsWith(AppRoute.pendingApproval);
     
     // While loading, show content but check subscription immediately
     if (_isLoading) {
@@ -231,7 +233,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
     }
     
     // Always allow subscription page
-    if (isSubscriptionRoute) {
+    if (isSubscriptionRoute || isPendingApprovalRoute) {
       return widget.child;
     }
 

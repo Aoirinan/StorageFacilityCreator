@@ -42,6 +42,7 @@ Future<String?> routeGuard(
   // sign-in and leaving user on landing until refresh.
   final firebaseUser = FirebaseAuth.instance.currentUser;
   final isAuthenticated = firebaseUser != null;
+  User? effectiveUser = firebaseUser;
 
   final loc = state.matchedLocation;
   final path = state.uri.path;
@@ -110,6 +111,33 @@ Future<String?> routeGuard(
     // Always allow the root/login entry point for signed-out users
     if (isLanding) return null;
     return isPublicRoute ? null : AppRoute.login;
+  }
+
+  // Enforce email verification before allowing access to authenticated app routes.
+  // Keep users on login/signup/verify while they complete verification.
+  final isVerificationAllowedRoute = loggingIn ||
+      loc == AppRoute.signup ||
+      loc == AppRoute.verifyEmail ||
+      loc == AppRoute.forgotPassword;
+  if (!SuperAdminService.isSuperAdmin(firebaseUser)) {
+    final verifiedUser = firebaseUser;
+    if (verifiedUser == null) {
+      return AppRoute.login;
+    }
+    try {
+      await verifiedUser.reload();
+      effectiveUser = FirebaseAuth.instance.currentUser;
+    } catch (_) {
+      // If refresh fails, fall back to the current auth snapshot.
+      effectiveUser = verifiedUser;
+    }
+
+    if (effectiveUser != null &&
+        !effectiveUser.emailVerified &&
+        !isVerificationAllowedRoute) {
+      final email = Uri.encodeComponent(effectiveUser.email ?? '');
+      return '${AppRoute.verifyEmail}?email=$email';
+    }
   }
 
   // Check 2FA requirement for authenticated users (including when on /login)
@@ -224,14 +252,14 @@ Future<String?> routeGuard(
     final isSignupOrVerifyEmail =
         loc == AppRoute.signup || loc == AppRoute.verifyEmail;
     if (isSignupOrVerifyEmail &&
-        firebaseUser != null &&
-        !firebaseUser.emailVerified) {
+        effectiveUser != null &&
+        !effectiveUser.emailVerified) {
       // #region agent log
       debugSessionLog(
           hypothesisId: 'H3',
           location: 'route_guards.dart:routeGuard',
           message: 'Allow unverified user on signup/verify-email',
-          data: {'loc': loc, 'emailVerified': firebaseUser.emailVerified});
+          data: {'loc': loc, 'emailVerified': effectiveUser.emailVerified});
       // #endregion
       return null; // Allow them to stay on these routes
     }
@@ -286,12 +314,11 @@ Future<String?> routeGuard(
           currentRoute: path,
           allowSubscriptionRoutes: true,
         );
-        // Don't cache when trialing or pending: status can change at any time
-        final isTrialing =
-            subscriptionCheck.subscriptionStatus == SubscriptionStatus.trialing;
-        final isPending = subscriptionCheck.subscriptionStatus ==
-            SubscriptionStatus.pendingApproval;
-        if (!(subscriptionCheck.canAccess && (isTrialing || isPending))) {
+        // Don't cache trialing/pending results: status can change quickly.
+        final status = subscriptionCheck.subscriptionStatus;
+        final shouldBypassCache = status == SubscriptionStatus.trialing ||
+            status == SubscriptionStatus.pendingApproval;
+        if (!shouldBypassCache) {
           _subscriptionCheckCache
             ..result = subscriptionCheck
             ..fetchedAt = DateTime.now();

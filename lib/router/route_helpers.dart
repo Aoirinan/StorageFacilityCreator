@@ -158,7 +158,9 @@ class _SubscriptionAwareSidebarState extends State<_SubscriptionAwareSidebar> {
       final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
 
       if (mounted) {
-        bool isLocked = account == null ? true : !hasAccess;
+        // Pending approval gets its own screen/guard. Don't freeze sidebar interactions here.
+        bool isLocked =
+            account == null ? true : (account.isPendingApproval ? false : !hasAccess);
         
         setState(() {
           _isLocked = isLocked;

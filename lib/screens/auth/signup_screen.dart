@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/home_button_service.dart';
 import 'login_screen.dart';
-import 'email_verification_screen.dart';
 import 'terms_screen.dart';
 import 'privacy_screen.dart';
 import '../../theme/app_theme.dart';
@@ -62,7 +61,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         
         // Navigate to email verification screen
         if (mounted) {
-          context.go(AppRoute.verifyEmail, extra: EmailVerificationScreen(email: email));
+          context.go(AppRoute.verifyEmail, extra: email);
         }
       } catch (e) {
         // Error will be shown via signupState error handler
