@@ -29,7 +29,8 @@ class ModernSidebar extends StatelessWidget {
               routeWithoutQuery.startsWith('/reminders/'))) {
         return true;
       }
-      return routeWithoutQuery == route || routeWithoutQuery.startsWith('$route/');
+      return routeWithoutQuery == route ||
+          routeWithoutQuery.startsWith('$route/');
     };
 
     return Container(
@@ -129,6 +130,15 @@ class ModernSidebar extends StatelessWidget {
                   isActive: isActive('/payments'),
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/payments'),
+                ),
+                _SidebarItem(
+                  icon: Icons.storefront_outlined,
+                  activeIcon: Icons.storefront,
+                  label: 'Online Rentals',
+                  route: '/online-rentals',
+                  isActive: isActive('/online-rentals'),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate('/online-rentals'),
                 ),
                 _SidebarItem(
                   icon: Icons.warning_amber_outlined,
@@ -267,10 +277,10 @@ class ModernSidebar extends StatelessWidget {
                         vertical: 10,
                       ),
                       decoration: BoxDecoration(
-                color: AppTheme.error.withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: AppTheme.error.withValues(alpha: 0.2),
+                        color: AppTheme.error.withValues(alpha: 0.07),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppTheme.error.withValues(alpha: 0.2),
                           width: 1,
                         ),
                       ),
@@ -345,7 +355,8 @@ class _SidebarItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final showBadge = badgeCount != null && badgeCount! > 0;
-    final itemColor = isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
+    final itemColor =
+        isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -388,7 +399,8 @@ class _SidebarItem extends StatelessWidget {
                 ),
                 if (showBadge)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppTheme.error,
                       borderRadius: BorderRadius.circular(10),
@@ -466,7 +478,8 @@ class _UnitsSection extends StatelessWidget {
     final expanded = currentRoute.startsWith('/units');
 
     final colorScheme = Theme.of(context).colorScheme;
-    final itemColor = isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
+    final itemColor =
+        isActive ? colorScheme.primary : colorScheme.onSurfaceVariant;
     return ExpansionTile(
       initiallyExpanded: expanded,
       tilePadding: const EdgeInsets.symmetric(horizontal: 12),
@@ -506,4 +519,3 @@ class _UnitsSection extends StatelessWidget {
     );
   }
 }
-

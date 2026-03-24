@@ -17,27 +17,35 @@ class ModernNavigationService {
       data: {'route': route},
     );
     // #endregion
-    
+
     final currentLocation =
-        GoRouter.of(context).routeInformationProvider.value.location ?? '';
+        GoRouter.of(context).routeInformationProvider.value.uri.toString();
 
     // Normalize paths (ignore query) to avoid re-navigating to the same page
     final currentPath = Uri.tryParse(currentLocation)?.path ?? currentLocation;
     final targetPath = Uri.tryParse(route)?.path ?? route;
-    final isSameOrChild = currentPath == targetPath || currentPath.startsWith(targetPath);
-    
+    final isSameOrChild =
+        currentPath == targetPath || currentPath.startsWith(targetPath);
+
     // #region agent log
     DebugLogger.log(
       hypothesisId: 'H2',
       location: 'modern_navigation_service.dart:navigateToRoute',
       message: 'Path comparison',
-      data: {'currentPath': currentPath, 'targetPath': targetPath, 'isSameOrChild': isSameOrChild},
+      data: {
+        'currentPath': currentPath,
+        'targetPath': targetPath,
+        'isSameOrChild': isSameOrChild
+      },
     );
     // #endregion
-    
+
     // Special handling for messaging/access/units - these need facility selection even if already on the route
-    final needsFacilitySelection = route == '/messaging' || route == '/access' || route == '/units/map';
-    
+    final needsFacilitySelection = route == '/messaging' ||
+        route == '/access' ||
+        route == '/units/map' ||
+        route == '/online-rentals';
+
     if (isSameOrChild && !needsFacilitySelection) {
       // #region agent log
       DebugLogger.log(
@@ -59,7 +67,7 @@ class ModernNavigationService {
         data: {'route': route},
       );
       // #endregion
-      
+
       switch (route) {
         case '/dashboard':
           context.go('/dashboard');
@@ -85,6 +93,9 @@ class ModernNavigationService {
           break;
         case '/payments':
           context.go('/payments');
+          break;
+        case '/online-rentals':
+          _navigateToOnlineRentalsWithFacilitySelection(context);
           break;
         case '/contracts':
           context.go('/contracts');
@@ -133,7 +144,8 @@ class ModernNavigationService {
   }
 
   // Helper method to navigate to map with facility selection
-  static Future<void> _navigateToMapWithFacilitySelection(BuildContext context) async {
+  static Future<void> _navigateToMapWithFacilitySelection(
+      BuildContext context) async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
@@ -144,7 +156,7 @@ class ModernNavigationService {
       }
 
       final facilities = await FacilityService.getUserFacilities();
-      
+
       if (facilities.isEmpty) {
         _showNoFacilitiesDialog(context, featureName: 'unit map');
         return;
@@ -173,18 +185,20 @@ class ModernNavigationService {
   }
 
   // Helper method to navigate to access with facility selection
-  static Future<void> _navigateToAccessWithFacilitySelection(BuildContext context) async {
+  static Future<void> _navigateToAccessWithFacilitySelection(
+      BuildContext context) async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please sign in to access gate controls')),
+          const SnackBar(
+              content: Text('Please sign in to access gate controls')),
         );
         return;
       }
 
       final facilities = await FacilityService.getUserFacilities();
-      
+
       if (facilities.isEmpty) {
         _showNoFacilitiesDialog(context, featureName: 'gate access management');
         return;
@@ -193,7 +207,8 @@ class ModernNavigationService {
       // If only one facility, use it directly
       if (facilities.length == 1) {
         final facility = facilities.first;
-        context.go('/access?facilityId=${facility.id}&facilityName=${Uri.encodeComponent(facility.name)}');
+        context.go(
+            '/access?facilityId=${facility.id}&facilityName=${Uri.encodeComponent(facility.name)}');
         return;
       }
 
@@ -204,7 +219,8 @@ class ModernNavigationService {
       );
 
       if (selected != null) {
-        context.go('/access?facilityId=${selected.id}&facilityName=${Uri.encodeComponent(selected.name)}');
+        context.go(
+            '/access?facilityId=${selected.id}&facilityName=${Uri.encodeComponent(selected.name)}');
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -213,12 +229,54 @@ class ModernNavigationService {
     }
   }
 
+  // Helper method to navigate to online rentals with facility selection
+  static Future<void> _navigateToOnlineRentalsWithFacilitySelection(
+      BuildContext context) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Please sign in to access online rentals')),
+        );
+        return;
+      }
+
+      final facilities = await FacilityService.getUserFacilities();
+
+      if (facilities.isEmpty) {
+        _showNoFacilitiesDialog(context, featureName: 'online rentals');
+        return;
+      }
+
+      if (facilities.length == 1) {
+        context.go('/online-rentals?facilityId=${facilities.first.id}');
+        return;
+      }
+
+      final selected = await showModalBottomSheet<FacilitySelectResult>(
+        context: context,
+        builder: (context) => FacilityPickerSheet(facilities: facilities),
+      );
+
+      if (selected != null) {
+        context.go('/online-rentals?facilityId=${selected.id}');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error accessing online rentals: $e')),
+      );
+    }
+  }
+
   // Helper method to navigate to comms with facility selection
-  static Future<void> _navigateToCommsWithFacilitySelection(BuildContext context) async {
+  static Future<void> _navigateToCommsWithFacilitySelection(
+      BuildContext context) async {
     // #region agent log
     DebugLogger.log(
       hypothesisId: 'H1',
-      location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+      location:
+          'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
       message: 'Facility selection started',
       data: {},
     );
@@ -228,7 +286,8 @@ class ModernNavigationService {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'User check',
         data: {'hasUser': user != null, 'userId': user?.uid},
       );
@@ -243,27 +302,33 @@ class ModernNavigationService {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'Loading facilities',
         data: {},
       );
       // #endregion
       final facilities = await FacilityService.getUserFacilities();
-      
+
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'Facilities loaded',
-        data: {'facilityCount': facilities.length, 'facilityIds': facilities.map((f) => f.id).toList()},
+        data: {
+          'facilityCount': facilities.length,
+          'facilityIds': facilities.map((f) => f.id).toList()
+        },
       );
       // #endregion
-      
+
       if (facilities.isEmpty) {
         // #region agent log
         DebugLogger.log(
           hypothesisId: 'H1',
-          location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+          location:
+              'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
           message: 'No facilities found, showing dialog',
           data: {},
         );
@@ -277,7 +342,8 @@ class ModernNavigationService {
         // #region agent log
         DebugLogger.log(
           hypothesisId: 'H1',
-          location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+          location:
+              'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
           message: 'Single facility found, navigating directly',
           data: {'facilityId': facilities.first.id},
         );
@@ -290,7 +356,8 @@ class ModernNavigationService {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'Multiple facilities found, showing picker',
         data: {'facilityCount': facilities.length},
       );
@@ -303,7 +370,8 @@ class ModernNavigationService {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'Facility picker closed',
         data: {'selected': selected != null, 'selectedId': selected?.id},
       );
@@ -316,7 +384,8 @@ class ModernNavigationService {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
-        location: 'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
+        location:
+            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
         message: 'Error during facility selection',
         data: {'error': e.toString(), 'stackTrace': stackTrace.toString()},
       );
@@ -328,12 +397,14 @@ class ModernNavigationService {
   }
 
   // Helper to show no facilities dialog
-  static void _showNoFacilitiesDialog(BuildContext context, {required String featureName}) {
+  static void _showNoFacilitiesDialog(BuildContext context,
+      {required String featureName}) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('No Facilities'),
-        content: Text('You need to create a facility before using $featureName.'),
+        content:
+            Text('You need to create a facility before using $featureName.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -351,4 +422,3 @@ class ModernNavigationService {
     );
   }
 }
-

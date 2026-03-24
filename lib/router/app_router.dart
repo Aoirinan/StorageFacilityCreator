@@ -114,6 +114,7 @@ import '../screens/public_rental_portal_screen.dart';
 import '../screens/public_facility_page_screen.dart';
 import '../screens/public_move_in_screen.dart';
 import '../screens/payment_links_management_screen.dart';
+import '../screens/online_rentals_management_screen.dart';
 import '../screens/report_scheduling_management_screen.dart';
 import '../screens/report_scheduling_editor_screen.dart';
 import '../screens/email_sequence_management_screen.dart';
@@ -1116,6 +1117,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 return const SettingsScreen(); // Fallback
               }
               return PaymentLinksManagementScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
+            path: AppRoute.onlineRentals,
+            name: 'online-rentals',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return const SettingsScreen();
+              }
+              return OnlineRentalsManagementScreen(facilityId: facilityId);
             },
           ),
           GoRoute(

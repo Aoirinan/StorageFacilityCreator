@@ -99,6 +99,7 @@ class AppRoute {
   static const emailTemplates = '/templates/email';
   static const smsTemplates = '/templates/sms';
   static const paymentLinks = '/payment-links';
+  static const onlineRentals = '/online-rentals';
   static const communicationAnalytics = '/analytics/communication';
 
   // Automation routes
