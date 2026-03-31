@@ -71,6 +71,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'conversation.deleted',
     'contract.deleted',
     'communication.emailSuppressionRemoved',
+    'communication.smsStaffRestored',
   ];
 
   final List<String> _targetTypes = [
@@ -86,6 +87,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'conversation',
     'contract',
     'emailSuppression',
+    'smsOptOut',
   ];
 
   final List<String> _actorRoles = [
@@ -601,6 +603,8 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
       return Icon(Icons.forum, color: AppTheme.primaryBlue);
     } else if (eventType.contains('team_note') || eventType.contains('note')) {
       return Icon(Icons.sticky_note_2, color: AppTheme.warning);
+    } else if (eventType.contains('smsStaffRestored') || eventType.contains('smsOptOut')) {
+      return const Icon(Icons.sms_outlined, color: AppTheme.primaryBlue);
     } else if (eventType.contains('communication') || eventType.contains('emailSuppression')) {
       return const Icon(Icons.email_outlined, color: AppTheme.primaryBlue);
     } else if (eventType.contains('contract')) {

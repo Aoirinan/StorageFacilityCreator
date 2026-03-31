@@ -101,6 +101,7 @@ import '../screens/claim_detail_screen.dart';
 import '../screens/insurance_report_screen.dart';
 import '../screens/notification_settings_screen.dart';
 import '../screens/email_opt_outs_settings_screen.dart';
+import '../screens/sms_opt_outs_settings_screen.dart';
 import '../screens/profile_edit_screen.dart';
 import '../screens/appearance_settings_screen.dart';
 import '../screens/bulk_messaging_screen.dart';
@@ -1051,6 +1052,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 return const SettingsScreen();
               }
               return EmailOptOutsSettingsScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
+            path: AppRoute.smsOptOutsSettings,
+            name: 'sms-opt-outs-settings',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return const SettingsScreen();
+              }
+              return SmsOptOutsSettingsScreen(facilityId: facilityId);
             },
           ),
           GoRoute(

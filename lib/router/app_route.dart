@@ -69,6 +69,7 @@ class AppRoute {
   static const permissionManagement = '/permissions';
   static const notificationSettings = '/settings/notifications';
   static const emailOptOutsSettings = '/settings/email-opt-outs';
+  static const smsOptOutsSettings = '/settings/sms-opt-outs';
   static const profileEdit = '/settings/profile';
   static const appearanceSettings = '/settings/appearance';
   static const subscription = '/subscription';

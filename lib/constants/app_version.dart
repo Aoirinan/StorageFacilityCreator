@@ -2,7 +2,7 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.8';
+  static const String version = '2.10.9';
 
   // Build number (YYYYMMDD format for easy identification)
   static const String buildNumber = '20260330';
@@ -16,7 +16,7 @@ class AppVersion {
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Email opt-outs audit log; settings icon fix (web)';
+      'Settings: SMS opt-outs and block list (staff restore + audit)';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';
