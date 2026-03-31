@@ -12,6 +12,7 @@ import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/contract_template_model.dart';
 import 'package:sfcapp/services/facility_limits_service.dart';
 import 'package:sfcapp/services/compliance_service.dart';
+import 'package:sfcapp/services/audit_service.dart';
 
 class ContractService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -702,12 +703,30 @@ class ContractService {
         print('🔄 Deleting contract: $contractId');
       }
 
-      await _firestore
+      final ref = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('contracts')
-          .doc(contractId)
-          .delete();
+          .doc(contractId);
+      final snap = await ref.get();
+      final beforeData = snap.exists && snap.data() != null
+          ? Map<String, dynamic>.from(snap.data()!)
+          : null;
+
+      await ref.delete();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'contract.deleted',
+        targetType: 'contract',
+        targetId: contractId,
+        tenantId: beforeData?['tenantId'] as String?,
+        before: beforeData,
+        metadata: {
+          if (beforeData != null && beforeData['status'] != null)
+            'status': beforeData['status'],
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Contract deleted successfully: $contractId');

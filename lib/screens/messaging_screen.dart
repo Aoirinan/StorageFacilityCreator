@@ -29,6 +29,7 @@ import '../router/app_route.dart';
 import '../utils/breakpoints.dart';
 import 'bulk_messaging_screen.dart';
 import '../widgets/email_composition_widget.dart';
+import '../widgets/team_notes_panel.dart';
 
 // Provider for SMS conversations
 final smsConversationsProvider = FutureProvider.family<List<SMSConversationModel>, String>((ref, facilityId) async {
@@ -65,7 +66,9 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   bool _canManageConversations = false;
   String? _permissionReason;
   int _selectedTab = 0; // 0 = Employee Chat, 1 = Bulk Messaging, 2 = Email, 3 = SMS, 4 = Message History
-  
+  /// On phone, Employee Chat: 0 = conversation list, 1 = team notes.
+  int _phoneChatNotesSegment = 0;
+
   // Message history filters
   String? _selectedTenantId;
   TenantMessageType? _selectedMessageType; // null = all
@@ -74,10 +77,22 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   DateTime? _endDate;
   final TextEditingController _searchController = TextEditingController();
 
+  final ScrollController _employeeChatScrollController = ScrollController();
+  String? _lastChatScrollConversationId;
+  int _lastChatScrollMessageCount = 0;
+
   @override
   void initState() {
     super.initState();
     _checkPermissions();
+  }
+
+  @override
+  void didUpdateWidget(MessagingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.facilityId != widget.facilityId) {
+      _phoneChatNotesSegment = 0;
+    }
   }
 
   Future<void> _checkPermissions() async {
@@ -99,11 +114,49 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     _messageController.dispose();
     _conversationTitleController.dispose();
     _searchController.dispose();
+    _employeeChatScrollController.dispose();
     super.dispose();
+  }
+
+  void _scheduleEmployeeChatScrollToEnd(List<MessageModel> messages) {
+    final convId = _selectedConversationId;
+    if (convId == null || messages.isEmpty) return;
+
+    final convChanged = _lastChatScrollConversationId != convId;
+    if (convChanged) {
+      _lastChatScrollConversationId = convId;
+      _lastChatScrollMessageCount = 0;
+    }
+    final grew = messages.length > _lastChatScrollMessageCount;
+    _lastChatScrollMessageCount = messages.length;
+
+    final nearBottom = !_employeeChatScrollController.hasClients ||
+        (_employeeChatScrollController.position.maxScrollExtent -
+                _employeeChatScrollController.position.pixels) <
+            100;
+
+    if (convChanged || (grew && (nearBottom || messages.length <= 2))) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (!_employeeChatScrollController.hasClients) return;
+        _employeeChatScrollController.jumpTo(
+          _employeeChatScrollController.position.maxScrollExtent,
+        );
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<AsyncValue<String?>>(activeFacilityIdProvider, (prev, next) {
+      if (!mounted) return;
+      final activeId = next.whenOrNull(data: (d) => d);
+      final wantedFacilityId = activeId == null ? 'all' : activeId;
+      if (wantedFacilityId != widget.facilityId) {
+        context.go('/messaging?facilityId=$wantedFacilityId');
+      }
+    });
+
     if (_loadingPermissions) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -138,20 +191,11 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       builder: (context, ref, child) {
         // Pre-watch the message history provider to keep stream active
         ref.watch(tenantMessageHistoryProvider(widget.facilityId));
-        // Sync with header: when top facility dropdown changes, navigate to match
-        ref.listen(activeFacilityIdProvider, (prev, next) {
-          if (!context.mounted) return;
-          final activeId = next.whenOrNull(data: (d) => d);
-          final wantedFacilityId = activeId == null ? 'all' : activeId;
-          if (wantedFacilityId != widget.facilityId) {
-            context.go('/messaging?facilityId=$wantedFacilityId');
-          }
-        });
         return Column(
           children: [
             // Facility selector header
             _buildFacilitySelector(),
-            // Tabs — wrap on mobile so all visible; scroll on desktop if needed
+            // Tabs — single horizontal row; scroll on narrow screens so labels stay horizontal
             Builder(
               builder: (context) {
                 final cs = Theme.of(context).colorScheme;
@@ -171,20 +215,11 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                       bottom: BorderSide(color: cs.outline),
                     ),
                   ),
-                  child: isPhone
-                      ? Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                          child: Wrap(
-                            spacing: 4,
-                            runSpacing: 4,
-                            children: tabs,
-                          ),
-                        )
-                      : SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          child: Row(children: tabs),
-                        ),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: EdgeInsets.symmetric(horizontal: isPhone ? 4 : 8, vertical: isPhone ? 4 : 0),
+                    child: Row(children: tabs),
+                  ),
                 );
               },
             ),
@@ -214,28 +249,65 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                 builder: (context, constraints) {
                                   final isPhone = constraints.maxWidth < Breakpoints.xs;
                                   if (isPhone) {
-                                    // Mobile: stack — show list OR messages, not both side-by-side
+                                    // Mobile: stack — list OR messages; Employee Chat also has Team notes segment.
                                     final hasSelection = _selectedConversationId != null;
                                     return Column(
                                       children: [
+                                        if (_selectedTab == 0 && !hasSelection)
+                                          Padding(
+                                            padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+                                            child: SizedBox(
+                                              width: double.infinity,
+                                              child: SegmentedButton<int>(
+                                                segments: const [
+                                                  ButtonSegment<int>(
+                                                    value: 0,
+                                                    label: Text('Chats'),
+                                                    icon: Icon(Icons.chat_bubble_outline),
+                                                  ),
+                                                  ButtonSegment<int>(
+                                                    value: 1,
+                                                    label: Text('Team notes'),
+                                                    icon: Icon(Icons.note_alt_outlined),
+                                                  ),
+                                                ],
+                                                selected: {_phoneChatNotesSegment},
+                                                onSelectionChanged: (Set<int> selection) {
+                                                  setState(() => _phoneChatNotesSegment = selection.first);
+                                                },
+                                              ),
+                                            ),
+                                          ),
                                         if (hasSelection)
                                           _buildMobileBackBar()
                                         else
                                           const SizedBox.shrink(),
                                         Expanded(
-                                          child: hasSelection
-                                              ? (_selectedTab == 0
-                                                  ? _buildMessagesPane()
-                                                  : _buildSMSMessagesPane())
-                                              : (_selectedTab == 0
-                                                  ? _buildConversationsList()
-                                                  : _buildSMSConversationsList()),
+                                          child: _selectedTab == 0 &&
+                                                  !hasSelection &&
+                                                  _phoneChatNotesSegment == 1
+                                              ? TeamNotesPanel(
+                                                  facilityId: widget.facilityId,
+                                                  compact: true,
+                                                )
+                                              : hasSelection
+                                                  ? (_selectedTab == 0
+                                                      ? _buildMessagesPane()
+                                                      : _buildSMSMessagesPane())
+                                                  : (_selectedTab == 0
+                                                      ? _buildConversationsList()
+                                                      : _buildSMSConversationsList()),
                                         ),
                                       ],
                                     );
                                   }
                                   return Row(
                                     children: [
+                                      if (_selectedTab == 0)
+                                        Expanded(
+                                          flex: 1,
+                                          child: TeamNotesPanel(facilityId: widget.facilityId),
+                                        ),
                                       Expanded(
                                         flex: 1,
                                         child: _selectedTab == 0
@@ -330,53 +402,117 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
               children: [
                 const Icon(Icons.chat_bubble_outline),
                 const SizedBox(width: 8),
-                Text(
-                  'Conversations',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+                Expanded(
+                  child: Text(
+                    'Conversations',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
             ),
           ),
+          if (_canManageConversations)
+            Material(
+              color: cs.surfaceContainerLow,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _showNewPrivateMessageDialog,
+                      icon: const Icon(Icons.person_add_alt_1_outlined, size: 20),
+                      label: const Text('Private message to teammate'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.primaryBlue,
+                        foregroundColor: AppTheme.textOnDark,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _showCreateConversationDialog,
+                      icon: const Icon(Icons.group_add_outlined, size: 20),
+                      label: const Text('New group conversation'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Expanded(
             child: Consumer(
               builder: (context, ref, child) {
                 return ref.watch(conversationsProvider(widget.facilityId)).when(
                   data: (conversations) {
+                    // On phone, keep conversation list visible first (team notes + pick chat).
+                    // Desktop: auto-open first conversation.
                     if (_selectedConversationId == null && conversations.isNotEmpty) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (!mounted) return;
-                        if (_selectedConversationId == null) {
-                          setState(() {
-                            _selectedConversationId = conversations.first.id;
-                          });
-                        }
-                      });
+                      final isPhone = MediaQuery.sizeOf(context).width < Breakpoints.xs;
+                      if (!isPhone) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted) return;
+                          if (_selectedConversationId == null) {
+                            setState(() {
+                              _selectedConversationId = conversations.first.id;
+                            });
+                          }
+                        });
+                      }
                     }
 
                     if (conversations.isEmpty) {
                       return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.chat_bubble_outline,
-                              size: 64,
-                              color: AppTheme.textTertiary,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No conversations yet',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Create your first conversation to start messaging.',
-                              style: Theme.of(context).textTheme.bodyMedium,
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.chat_bubble_outline,
+                                size: 64,
+                                color: AppTheme.textTertiary,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No conversations yet',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _canManageConversations
+                                    ? 'Start a direct message with a teammate, or create a group channel.'
+                                    : 'You can view conversations when you are added to one.',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                                textAlign: TextAlign.center,
+                              ),
+                              if (_canManageConversations) ...[
+                                const SizedBox(height: 24),
+                                Wrap(
+                                  spacing: 12,
+                                  runSpacing: 12,
+                                  alignment: WrapAlignment.center,
+                                  children: [
+                                    ElevatedButton.icon(
+                                      onPressed: _showNewPrivateMessageDialog,
+                                      icon: const Icon(Icons.person_add_alt_1_outlined, size: 20),
+                                      label: const Text('Message a teammate'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppTheme.primaryBlue,
+                                        foregroundColor: AppTheme.textOnDark,
+                                      ),
+                                    ),
+                                    OutlinedButton.icon(
+                                      onPressed: _showCreateConversationDialog,
+                                      icon: const Icon(Icons.group_add_outlined, size: 20),
+                                      label: const Text('New group chat'),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       );
                     }
@@ -609,11 +745,14 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                     );
                   }
 
+                  _scheduleEmployeeChatScrollToEnd(messages);
+
                   return ListView.builder(
-                    reverse: true, // Show newest at bottom
+                    controller: _employeeChatScrollController,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
-                      final message = messages[messages.length - 1 - index];
+                      final message = messages[index];
                       return _buildMessageBubble(message);
                     },
                   );
@@ -1626,8 +1765,31 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   },
                 ),
                 
-                // Filters section
-                _buildMessageHistoryFilters(ref),
+                // Filters: collapsed by default on phone so the message list stays visible
+                Builder(
+                  builder: (context) {
+                    final isPhone = MediaQuery.sizeOf(context).width < Breakpoints.xs;
+                    if (isPhone) {
+                      return Material(
+                        color: AppTheme.backgroundLight,
+                        child: ExpansionTile(
+                          initiallyExpanded: false,
+                          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                          title: Text(
+                            'Search & filters',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          children: [
+                            _buildMessageHistoryFilters(ref, showFiltersHeading: false),
+                          ],
+                        ),
+                      );
+                    }
+                    return _buildMessageHistoryFilters(ref);
+                  },
+                ),
                 
                 // Messages list
                 Expanded(
@@ -1763,15 +1925,27 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     return filtered;
   }
 
-  Widget _buildMessageHistoryFilters(WidgetRef ref) {
+  Widget _buildMessageHistoryFilters(WidgetRef ref, {bool showFiltersHeading = true}) {
     final isAllFacilities = widget.facilityId == 'all' || widget.facilityId.isEmpty;
     final tenantsAsync = isAllFacilities
         ? ref.watch(multiFacilityTenantsProvider('all'))
         : ref.watch(facilityTenantsProvider(widget.facilityId));
-    final isMobile = MediaQuery.of(context).size.width < 900;
-    
+    final screenW = MediaQuery.sizeOf(context).width;
+    final isMobile = screenW < 900;
+    final isPhone = Breakpoints.isPhone(screenW);
+    final fieldComfort = isPhone; // roomier labels on small screens
+    final filterFieldPadding = fieldComfort
+        ? const EdgeInsets.fromLTRB(12, 20, 12, 14)
+        : const EdgeInsets.symmetric(horizontal: 12, vertical: 8);
+
     return Container(
-      padding: EdgeInsets.all(isMobile ? 12 : 16),
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 12 : 16,
+        showFiltersHeading ? (isMobile ? 12 : 16) : 8,
+        isMobile ? 12 : 16,
+        isMobile ? 12 : 16,
+      ),
       decoration: BoxDecoration(
         color: AppTheme.backgroundSecondary,
         border: Border(
@@ -1781,81 +1955,100 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final filtersRowNarrow = constraints.maxWidth < 400;
-              final hasFilters = _selectedTenantId != null ||
-                  _selectedMessageType != null ||
-                  _selectedStatus != null ||
-                  _startDate != null ||
-                  _endDate != null ||
-                  _searchController.text.isNotEmpty;
-              return filtersRowNarrow
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Filters',
-                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
+          if (showFiltersHeading)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final filtersRowNarrow = constraints.maxWidth < 400;
+                final hasFilters = _selectedTenantId != null ||
+                    _selectedMessageType != null ||
+                    _selectedStatus != null ||
+                    _startDate != null ||
+                    _endDate != null ||
+                    _searchController.text.isNotEmpty;
+                return filtersRowNarrow
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Filters',
+                                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
+                            ],
+                          ),
+                          if (hasFilters) ...[
+                            const SizedBox(height: 8),
+                            TextButton.icon(
+                              onPressed: () {
+                                setState(() {
+                                  _selectedTenantId = null;
+                                  _selectedMessageType = null;
+                                  _selectedStatus = null;
+                                  _startDate = null;
+                                  _endDate = null;
+                                  _searchController.clear();
+                                });
+                              },
+                              icon: const Icon(Icons.clear, size: 16),
+                              label: const Text('Clear'),
                             ),
                           ],
-                        ),
-                        if (hasFilters) ...[
-                          const SizedBox(height: 8),
-                          TextButton.icon(
-                            onPressed: () {
-                              setState(() {
-                                _selectedTenantId = null;
-                                _selectedMessageType = null;
-                                _selectedStatus = null;
-                                _startDate = null;
-                                _endDate = null;
-                                _searchController.clear();
-                              });
-                            },
-                            icon: const Icon(Icons.clear, size: 16),
-                            label: const Text('Clear'),
-                          ),
                         ],
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Filters',
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
+                      )
+                    : Row(
+                        children: [
+                          const Icon(Icons.filter_list, size: 20, color: AppTheme.primaryBlue),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Filters',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                        const Spacer(),
-                        if (hasFilters)
-                          TextButton.icon(
-                            onPressed: () {
-                              setState(() {
-                                _selectedTenantId = null;
-                                _selectedMessageType = null;
-                                _selectedStatus = null;
-                                _startDate = null;
-                                _endDate = null;
-                                _searchController.clear();
-                              });
-                            },
-                            icon: const Icon(Icons.clear, size: 16),
-                            label: const Text('Clear'),
-                          ),
-                      ],
-                    );
-            },
-          ),
-          const SizedBox(height: 12),
+                          const Spacer(),
+                          if (hasFilters)
+                            TextButton.icon(
+                              onPressed: () {
+                                setState(() {
+                                  _selectedTenantId = null;
+                                  _selectedMessageType = null;
+                                  _selectedStatus = null;
+                                  _startDate = null;
+                                  _endDate = null;
+                                  _searchController.clear();
+                                });
+                              },
+                              icon: const Icon(Icons.clear, size: 16),
+                              label: const Text('Clear'),
+                            ),
+                        ],
+                      );
+              },
+            ),
+          if (showFiltersHeading) const SizedBox(height: 12),
+          if (!showFiltersHeading)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _selectedTenantId = null;
+                    _selectedMessageType = null;
+                    _selectedStatus = null;
+                    _startDate = null;
+                    _endDate = null;
+                    _searchController.clear();
+                  });
+                },
+                icon: const Icon(Icons.clear, size: 16),
+                label: const Text('Clear filters'),
+              ),
+            ),
           Wrap(
             spacing: isMobile ? 8 : 12,
             runSpacing: isMobile ? 8 : 12,
@@ -1881,8 +2074,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    isDense: true,
+                    contentPadding: filterFieldPadding,
+                    isDense: !fieldComfort,
                   ),
                   onChanged: (value) => setState(() {}),
                 ),
@@ -1896,11 +2089,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                     value: _selectedTenantId,
                     decoration: InputDecoration(
                       labelText: 'Tenant',
+                      floatingLabelBehavior: FloatingLabelBehavior.always,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      isDense: true,
+                      contentPadding: filterFieldPadding,
+                      isDense: !fieldComfort,
                     ),
                     items: [
                       const DropdownMenuItem<String>(
@@ -1934,11 +2128,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   value: _selectedMessageType,
                   decoration: InputDecoration(
                     labelText: 'Type',
+                    floatingLabelBehavior: FloatingLabelBehavior.always,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    isDense: true,
+                    contentPadding: filterFieldPadding,
+                    isDense: !fieldComfort,
                   ),
                   items: const [
                     DropdownMenuItem<TenantMessageType?>(
@@ -1969,11 +2164,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   value: _selectedStatus,
                   decoration: InputDecoration(
                     labelText: 'Status',
+                    floatingLabelBehavior: FloatingLabelBehavior.always,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    isDense: true,
+                    contentPadding: filterFieldPadding,
+                    isDense: !fieldComfort,
                   ),
                   items: const [
                     DropdownMenuItem<TenantMessageStatus?>(
@@ -2252,6 +2448,55 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   }
 }
 
+class _QuickSmsTemplate {
+  final String label;
+  final String body;
+
+  const _QuickSmsTemplate({
+    required this.label,
+    required this.body,
+  });
+}
+
+/// Short SMS starters; placeholders: {{tenant_name}}, {{name}}, {{first_name}}, {{unit}}, {{email}}, {{phone}}.
+const List<_QuickSmsTemplate> _kQuickSmsTemplates = [
+  _QuickSmsTemplate(
+    label: 'Payment reminder',
+    body:
+        'Hi {{first_name}}, friendly reminder: your storage rent is due soon. Reply with any questions.',
+  ),
+  _QuickSmsTemplate(
+    label: 'Past due',
+    body:
+        '{{first_name}}, we show a past-due balance for unit {{unit}}. Please contact us to arrange payment. Thank you.',
+  ),
+  _QuickSmsTemplate(
+    label: 'Thank you',
+    body: 'Thanks {{first_name}}! We appreciate your business.',
+  ),
+  _QuickSmsTemplate(
+    label: 'Please call',
+    body:
+        'Hi {{first_name}}, please call us about your storage account when you can. Thank you.',
+  ),
+  _QuickSmsTemplate(
+    label: 'Quick hello',
+    body: 'Hi {{first_name}}, this is a message from the storage office.',
+  ),
+];
+
+String _interpolateSmsTemplate(String template, TenantModel t) {
+  final n = t.name.trim();
+  final first = n.isEmpty ? 'there' : n.split(RegExp(r'\s+')).first;
+  return template
+      .replaceAll('{{tenant_name}}', t.name)
+      .replaceAll('{{name}}', t.name)
+      .replaceAll('{{first_name}}', first)
+      .replaceAll('{{unit}}', t.unitNumber)
+      .replaceAll('{{email}}', t.email)
+      .replaceAll('{{phone}}', t.phone);
+}
+
 /// Dialog for sending SMS to a tenant
 class _SendSMSDialog extends ConsumerStatefulWidget {
   final String facilityId;
@@ -2347,6 +2592,41 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
               tenant.phone.contains(query);
         }).toList();
       }
+    });
+  }
+
+  void _applyQuickSmsTemplate(_QuickSmsTemplate template) {
+    if (_selectedTenantId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a tenant first'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    TenantModel? tenant;
+    for (final t in _allTenants) {
+      if (t.id == _selectedTenantId) {
+        tenant = t;
+        break;
+      }
+    }
+
+    if (tenant == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not load tenant'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    final resolved = tenant;
+    setState(() {
+      _messageController.text = _interpolateSmsTemplate(template.body, resolved);
     });
   }
 
@@ -2651,6 +2931,33 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
             
             const SizedBox(height: 16),
             
+            Text(
+              'Quick messages',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Tap to fill the box below. Name and unit come from the selected tenant.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _kQuickSmsTemplates.map((t) {
+                return ActionChip(
+                  label: Text(t.label),
+                  onPressed: _isSending ? null : () => _applyQuickSmsTemplate(t),
+                );
+              }).toList(),
+            ),
+            
+            const SizedBox(height: 16),
+            
             // Message input
             Text(
               'Message',
@@ -2730,6 +3037,7 @@ class _PrivateMessageUserPickerDialog extends ConsumerStatefulWidget {
 class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessageUserPickerDialog> {
   final TextEditingController _searchController = TextEditingController();
   List<UserRole> _allUsers = [];
+  List<_UserWithProfile> _allWithProfiles = [];
   List<_UserWithProfile> _filteredUsers = [];
   bool _isLoading = true;
   String? _selectedUserId;
@@ -2766,9 +3074,15 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
         if (userRole.userId == currentUser.uid) continue;
         
         final profile = await PermissionService.getUserProfile(userRole.userId);
-        final email = profile?['email'] ?? 'Unknown email';
-        final displayName = profile?['displayName'] ?? email.split('@').first;
-        
+        final email = (profile?['email'] as String?)?.trim().isNotEmpty == true
+            ? (profile!['email'] as String).trim()
+            : 'Unknown email';
+        var displayName = (profile?['displayName'] as String?)?.trim() ?? '';
+        if (displayName.isEmpty) {
+          final local = email.contains('@') ? email.split('@').first : email;
+          displayName = local.isNotEmpty ? local : 'User';
+        }
+
         usersWithProfiles.add(_UserWithProfile(
           userRole: userRole,
           email: email,
@@ -2781,7 +3095,8 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
 
       setState(() {
         _allUsers = userRoles;
-        _filteredUsers = usersWithProfiles;
+        _allWithProfiles = usersWithProfiles;
+        _filteredUsers = List<_UserWithProfile>.from(usersWithProfiles);
         _isLoading = false;
       });
     } catch (e) {
@@ -2798,19 +3113,19 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
   }
 
   void _filterUsers() {
-    final query = _searchController.text.toLowerCase();
+    final query = _searchController.text.toLowerCase().trim();
     setState(() {
       if (query.isEmpty) {
-        // Show all users (already filtered in _loadUsers)
+        _filteredUsers = List<_UserWithProfile>.from(_allWithProfiles);
         return;
-      } else {
-        // Filter existing list
-        _filteredUsers = _filteredUsers.where((user) {
-          return user.displayName.toLowerCase().contains(query) ||
-              user.email.toLowerCase().contains(query) ||
-              user.userRole.roleType.name.toLowerCase().contains(query);
-        }).toList();
       }
+      _filteredUsers = _allWithProfiles
+          .where((user) {
+            return user.displayName.toLowerCase().contains(query) ||
+                user.email.toLowerCase().contains(query) ||
+                user.userRole.roleType.name.toLowerCase().contains(query);
+          })
+          .toList();
     });
   }
 
@@ -2869,29 +3184,47 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
                             final user = userWithProfile.userRole;
                             final profile = userWithProfile;
                             final role = PermissionService.getRoleByType(user.roleType);
-                            
+                            final theme = Theme.of(context);
+                            final onSurface = theme.colorScheme.onSurface;
+                            final onVar = theme.colorScheme.onSurfaceVariant;
+                            final initial = profile.displayName.isNotEmpty
+                                ? profile.displayName[0].toUpperCase()
+                                : (profile.email.isNotEmpty &&
+                                        profile.email != 'Unknown email'
+                                    ? profile.email[0].toUpperCase()
+                                    : '?');
+
                             return ListTile(
                               selected: _selectedUserId == user.userId,
                               leading: CircleAvatar(
                                 backgroundColor: AppTheme.primaryBlue,
                                 child: Text(
-                                  profile.displayName.isNotEmpty
-                                      ? profile.displayName[0].toUpperCase()
-                                      : '?',
+                                  initial,
                                   style: const TextStyle(color: Colors.white),
                                 ),
                               ),
-                              title: Text(profile.displayName),
+                              title: Text(
+                                profile.displayName,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: onSurface,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(profile.email),
-                                  const SizedBox(height: 4),
+                                  if (profile.email != 'Unknown email')
+                                    Text(
+                                      profile.email,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: onVar,
+                                      ),
+                                    ),
+                                  const SizedBox(height: 2),
                                   Text(
                                     role?.name ?? user.roleType.name,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: AppTheme.textTertiary,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: onVar,
                                     ),
                                   ),
                                 ],

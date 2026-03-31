@@ -361,6 +361,18 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
         }
       });
 
+      if (mounted &&
+          _failedRecipients.any((f) => f.code == 'recipient-unsubscribed')) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Some tenants unsubscribed from facility email. See details below — try SMS or a call.',
+            ),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+      }
+
       // Clear form on success
       if (_failedRecipients.isEmpty) {
         Future.delayed(const Duration(seconds: 2), () {
@@ -390,6 +402,14 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
         _statusIsError = true;
       });
     }
+  }
+
+  /// Staff-facing explanation for a failed channel (e.g. email unsubscribe).
+  String _failureStaffMessage(_MessageFailure f) {
+    if (f.code == 'recipient-unsubscribed') {
+      return 'Unsubscribed from facility emails — try SMS or a phone call if available.';
+    }
+    return f.message;
   }
 
   String _formatMessageAsHTML(String message, TenantModel tenant) {
@@ -706,6 +726,50 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                 ),
               ),
             if (_statusMessage != null) const SizedBox(height: 16),
+
+            if (_showFailureDetails && _failedRecipients.isNotEmpty) ...[
+              Card(
+                child: Theme(
+                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    initiallyExpanded: true,
+                    title: Text(
+                      'Failed deliveries (${_failedRecipients.length})',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    subtitle: _failedRecipients.any((f) => f.code == 'recipient-unsubscribed')
+                        ? const Text(
+                            'Some tenants opted out of email. Use SMS or call for those contacts.',
+                            style: TextStyle(fontSize: 12),
+                          )
+                        : null,
+                    children: [
+                      for (final f in _failedRecipients)
+                        ListTile(
+                          dense: true,
+                          leading: Icon(
+                            f.type == 'email' ? Icons.email_outlined : Icons.sms_outlined,
+                            color: AppTheme.textSecondary,
+                          ),
+                          title: Text(f.to, style: const TextStyle(fontSize: 13)),
+                          subtitle: Text(
+                            _failureStaffMessage(f),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: f.code == 'recipient-unsubscribed'
+                                  ? AppTheme.warning
+                                  : AppTheme.error,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
 
             // Send Button
             SizedBox(

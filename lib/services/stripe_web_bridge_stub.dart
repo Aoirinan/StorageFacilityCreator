@@ -10,7 +10,7 @@ class StripeConfirmResult {
 }
 
 class StripeWebBridge {
-  static void initialize(String publishableKey) {
+  static Future<void> initialize(String publishableKey) async {
     if (kDebugMode) {
       print('StripeWebBridge: Not available on this platform');
     }

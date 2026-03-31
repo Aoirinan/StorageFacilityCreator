@@ -5,7 +5,7 @@
  */
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 
 const BILLING_DOC_ID = 'default';
 

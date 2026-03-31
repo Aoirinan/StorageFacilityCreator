@@ -2,14 +2,10 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { getDownloadURL } from 'firebase-admin/storage';
 import * as crypto from 'crypto';
-import { PDFDocument } from 'pdf-lib';
-import express from 'express';
-import * as sgMailModule from '@sendgrid/mail';
-import Stripe from 'stripe';
+import type { Application, Request as ExpressRequest, Response as ExpressResponse } from 'express';
+import type Stripe from 'stripe';
 import { defineString, defineSecret } from 'firebase-functions/params';
 import * as Sentry from '@sentry/node';
-import OpenAI from 'openai';
-import twilio from 'twilio';
 import * as stripeTenantBilling from './stripe/tenant_billing';
 import * as quickBooksAccounting from './accounting/quickbooks';
 import { diagnosticFixOwnership } from './diagnostic_fix_ownership';
@@ -35,8 +31,20 @@ function invoiceSubscriptionId(inv: Stripe.Invoice): string | null {
   return typeof sub === 'string' ? sub : (sub as Stripe.Subscription)?.id ?? null;
 }
 
-// Robust module-normalization wrapper for SendGrid to handle ESM/CommonJS interop
-const sgMail: any = (sgMailModule as any).default ?? sgMailModule;
+/** SendGrid client — loaded on first use to reduce cold-start cost for non-email functions. */
+let sgMailCached: any = null;
+function getSgMail(): any {
+  if (!sgMailCached) {
+    const sgMailModule = require('@sendgrid/mail') as typeof import('@sendgrid/mail');
+    sgMailCached = (sgMailModule as any).default ?? sgMailModule;
+  }
+  return sgMailCached;
+}
+
+/** Express — loaded only when HTTP rewrite handlers run. */
+function requireExpress(): any {
+  return require('express');
+}
 
 interface TenantPortalRequest {
   email: string;
@@ -49,20 +57,49 @@ const SENDGRID_SENDER_EMAIL = defineString('SENDGRID_SENDER_EMAIL');
 const SENDGRID_FROM_EMAIL = SENDGRID_SENDER_EMAIL;
 const SENDGRID_FROM_NAME = defineString('SENDGRID_FROM_NAME', { default: 'Storage Facility Creator' });
 
+/** Base URL for List-Unsubscribe links (set PUBLIC_APP_URL in functions env if not using default). */
+function getPublicAppUrl(): string {
+  const v = process.env.PUBLIC_APP_URL?.trim();
+  const base = v && v.length > 0 ? v : 'https://app.storagefacilitycreator.com';
+  return base.replace(/\/$/, '');
+}
+
+/** Optional SendGrid ASM group id (set SENDGRID_ASM_GROUP_ID in functions env). */
+function getSendgridAsmGroupId(): number | null {
+  const v = process.env.SENDGRID_ASM_GROUP_ID?.trim();
+  if (!v) return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Define environment parameters for Stripe (all from Firebase Secrets for tenant Add Card / Connect)
 const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
 const STRIPE_PUBLISHABLE_KEY = defineSecret('STRIPE_PUBLISHABLE_KEY');
-// Use process.env for STRIPE_CONNECT_CLIENT_ID to avoid deployment requirement
-// It's stored as a secret: ca_TWVomtZkyvI6Ie1ZLDJhjLiWHIwjtAwB
+/** Stripe Connect OAuth client id (`ca_…`); optional — set via `firebase functions:secrets:set STRIPE_CONNECT_CLIENT_ID`. */
+const STRIPE_CONNECT_CLIENT_ID = defineSecret('STRIPE_CONNECT_CLIENT_ID');
 
 const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY];
+
+/** Platform Stripe secrets + Connect client id (only for functions that need Connect logging / future OAuth). */
+const STRIPE_SECRETS_WITH_CONNECT = [
+  STRIPE_SECRET_KEY,
+  STRIPE_WEBHOOK_SECRET,
+  STRIPE_PUBLISHABLE_KEY,
+  STRIPE_CONNECT_CLIENT_ID,
+];
 
 // Define parameters for Twilio
 const TWILIO_ACCOUNT_SID = defineString('TWILIO_ACCOUNT_SID');
 const TWILIO_AUTH_TOKEN = defineSecret('TWILIO_AUTH_TOKEN');
 const TWILIO_PHONE_NUMBER = defineString('TWILIO_PHONE_NUMBER');
 const TWILIO_DRY_RUN = defineString('TWILIO_DRY_RUN', { default: 'false' });
+const SFC_LEAD_LINE_NUMBER = defineString('SFC_LEAD_LINE_NUMBER', { default: '' });
+const SFC_LEAD_FORWARD_TO_NUMBER = defineString('SFC_LEAD_FORWARD_TO_NUMBER', { default: '' });
+const SFC_LEAD_SMS_AUTO_REPLY = defineString(
+  'SFC_LEAD_SMS_AUTO_REPLY',
+  { default: 'Thanks for contacting Storage Facility Creator. We got your message and will follow up shortly.' },
+);
 
 // Define parameters for AI Assistant (LLM)
 const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
@@ -85,9 +122,10 @@ function isTwilioDryRunEnabled(): boolean {
 }
 function getTwilioClient(): any {
   if (!twilioClient) {
+    const twilioFactory = require('twilio');
     const accountSid = TWILIO_ACCOUNT_SID.value().trim();
     const authToken = TWILIO_AUTH_TOKEN.value().trim();
-    twilioClient = twilio(accountSid, authToken);
+    twilioClient = twilioFactory(accountSid, authToken);
   }
   return twilioClient;
 }
@@ -219,6 +257,133 @@ export const captureMarketingLead = functions.runWith({ secrets: [MARKETING_LEAD
     res.status(500).json({ error: 'Internal error' });
   }
 });
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function getConfiguredSfcLeadLine(): string | null {
+  const configured = SFC_LEAD_LINE_NUMBER.value().trim();
+  if (!configured) return null;
+  return formatPhoneNumber(configured) || configured;
+}
+
+function isSfcLeadLineMatch(toPhoneNumber: string): boolean {
+  const configured = getConfiguredSfcLeadLine();
+  if (!configured) return false;
+  const normalizedTo = formatPhoneNumber(toPhoneNumber) || toPhoneNumber;
+  return normalizedTo === configured;
+}
+
+async function upsertSfcLeadFromInboundContact(params: {
+  channel: 'sms' | 'call';
+  fromRaw: string;
+  toRaw: string;
+  messageBody?: string;
+  messageSid?: string;
+  callSid?: string;
+  callStatus?: string;
+}): Promise<{ leadId: string }> {
+  const {
+    channel,
+    fromRaw,
+    toRaw,
+    messageBody,
+    messageSid,
+    callSid,
+    callStatus,
+  } = params;
+  const db = admin.firestore();
+  const normalizedFrom = formatPhoneNumber(fromRaw) || fromRaw || 'unknown';
+  const normalizedTo = formatPhoneNumber(toRaw) || toRaw || null;
+  const leadsRef = db.collection('marketing_leads');
+
+  let leadSnap = await leadsRef.where('phone', '==', normalizedFrom).limit(1).get();
+  if (leadSnap.empty && normalizedFrom !== fromRaw && fromRaw) {
+    leadSnap = await leadsRef.where('phone', '==', fromRaw).limit(1).get();
+  }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  let leadRef: FirebaseFirestore.DocumentReference;
+  let created = false;
+
+  if (leadSnap.empty) {
+    created = true;
+    leadRef = leadsRef.doc();
+    const last4 = normalizedFrom.replace(/\D/g, '').slice(-4);
+    const displayLast4 = last4 ? `-${last4}` : '';
+    await leadRef.set({
+      source: channel === 'sms' ? 'twilio_inbound_sms' : 'twilio_inbound_call',
+      status: 'new',
+      intent: 'demo',
+      name: `Inbound Lead${displayLast4}`,
+      email: '',
+      facilityName: 'Storage Facility Creator',
+      phone: normalizedFrom,
+      unitCount: null,
+      message: channel === 'sms' ? (messageBody || null) : null,
+      smsConsent: false,
+      assignedToUid: null,
+      assignedToEmail: null,
+      assignedToName: null,
+      lastCalledAt: channel === 'call' ? now : null,
+      saleStatus: 'pending',
+      saleAmount: null,
+      leadPhoneNumber: normalizedFrom,
+      leadLineNumber: normalizedTo,
+      createdAt: now,
+      updatedAt: now,
+    });
+  } else {
+    leadRef = leadSnap.docs[0].ref;
+    const update: Record<string, unknown> = {
+      updatedAt: now,
+      leadPhoneNumber: normalizedFrom,
+      leadLineNumber: normalizedTo,
+    };
+    if (channel === 'sms' && messageBody && messageBody.trim()) {
+      update.message = messageBody.trim();
+    }
+    if (channel === 'call') {
+      update.lastCalledAt = now;
+    }
+    await leadRef.set(update, { merge: true });
+  }
+
+  const summary = channel === 'sms'
+    ? `Inbound SMS from ${normalizedFrom}${messageBody ? `: ${messageBody.substring(0, 500)}` : ''}`
+    : `Inbound call from ${normalizedFrom}${callStatus ? ` (${callStatus})` : ''}`;
+
+  await leadRef.collection('activities').add({
+    type: channel === 'sms' ? 'inbound_sms' : 'inbound_call',
+    summary,
+    actorUid: 'system',
+    actorEmail: 'system',
+    actorName: 'System',
+    messageSid: messageSid || null,
+    callSid: callSid || null,
+    callStatus: callStatus || null,
+    createdAt: now,
+  });
+
+  if (created) {
+    await leadRef.collection('activities').add({
+      type: 'lead_created',
+      summary: `Lead created from inbound ${channel}.`,
+      actorUid: 'system',
+      actorEmail: 'system',
+      actorName: 'System',
+      createdAt: now,
+    });
+  }
+
+  return { leadId: leadRef.id };
+}
 
 /**
  * Super admin only: delete a user from Firebase Auth and Firestore users collection.
@@ -429,16 +594,118 @@ export const superAdminSendPasswordReset = functions.runWith({ secrets: SENDGRID
     const resetLink = await admin.auth().generatePasswordResetLink(userEmail);
     const sendGridFromEmail = SENDGRID_FROM_EMAIL.value();
     const fromName = SENDGRID_FROM_NAME.value();
+    initializeSendGrid();
+    const htmlBody = `<p>You requested a password reset. Click the link below to set a new password:</p><p><a href="${resetLink}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`;
+    const textBody = `Reset your password: ${resetLink}\n\nIf you did not request this, you can ignore this email.`;
+    const { html, text } = appendPlatformSecurityEmailFooter(htmlBody, textBody);
     const msg = {
       to: userEmail,
       from: { email: sendGridFromEmail, name: fromName },
       subject: 'Reset your password - Storage Facility Creator',
-      html: `<p>You requested a password reset. Click the link below to set a new password:</p><p><a href="${resetLink}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
-      text: `Reset your password: ${resetLink}\n\nIf you did not request this, you can ignore this email.`,
+      html,
+      text,
     };
-    await sgMail.send(msg);
+    await getSgMail().send(msg);
     functions.logger.info('superAdminSendPasswordReset', { uid, to: userEmail, sentBy: callerEmail });
     return { success: true };
+  },
+);
+
+function serializeAuthUserForSuperAdmin(
+  user: admin.auth.UserRecord,
+  hasFirestoreProfile: boolean,
+): Record<string, unknown> {
+  return {
+    uid: user.uid,
+    email: user.email || '',
+    emailVerified: user.emailVerified,
+    disabled: user.disabled,
+    creationTime: user.metadata.creationTime || null,
+    lastSignInTime: user.metadata.lastSignInTime || null,
+    hasFirestoreProfile,
+  };
+}
+
+/**
+ * Super admin only: look up a Firebase Auth user by email (finds accounts with no Firestore profile).
+ */
+export const superAdminGetAuthUserByEmail = functions.https.onCall(
+  async (data: { email?: string }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Only super admins can look up auth users',
+      );
+    }
+    const raw = (data?.email || '').toString().trim().toLowerCase();
+    if (!raw || !raw.includes('@')) {
+      throw new functions.https.HttpsError('invalid-argument', 'Valid email is required');
+    }
+    try {
+      const user = await admin.auth().getUserByEmail(raw);
+      const profileSnap = await admin.firestore().collection('users').doc(user.uid).get();
+      return {
+        found: true,
+        user: serializeAuthUserForSuperAdmin(user, profileSnap.exists),
+      };
+    } catch (e: unknown) {
+      const code = (e as { code?: string })?.code;
+      if (code === 'auth/user-not-found') {
+        return { found: false };
+      }
+      throw e;
+    }
+  },
+);
+
+/**
+ * Super admin only: paginated list of Firebase Auth users (with Firestore profile flag).
+ */
+export const superAdminListAuthUsers = functions.https.onCall(
+  async (data: { pageToken?: string; maxResults?: number }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Only super admins can list auth users',
+      );
+    }
+    const requested = Number(data?.maxResults);
+    const maxResults = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.floor(requested), 1), 100)
+      : 50;
+    const pageToken =
+      data?.pageToken && String(data.pageToken).trim()
+        ? String(data.pageToken).trim()
+        : undefined;
+
+    const listResult = await admin.auth().listUsers(maxResults, pageToken);
+    const db = admin.firestore();
+    const uids = listResult.users.map((u) => u.uid);
+    const refs = uids.map((uid) => db.collection('users').doc(uid));
+    const profileSnaps = refs.length > 0 ? await db.getAll(...refs) : [];
+
+    const users = listResult.users.map((u, i) =>
+      serializeAuthUserForSuperAdmin(u, profileSnaps[i]?.exists === true),
+    );
+
+    functions.logger.info('superAdminListAuthUsers', {
+      count: users.length,
+      hasMore: Boolean(listResult.pageToken),
+      listedBy: callerEmail,
+    });
+
+    return {
+      users,
+      nextPageToken: listResult.pageToken || null,
+    };
   },
 );
 
@@ -519,7 +786,8 @@ function getStripeClient(): Stripe {
       // If publishable not set yet, still allow Stripe client for server-only flows
       functions.logger.warn('Stripe mode check skipped (publishable key not set)');
     }
-    stripeClient = new Stripe(secretKey, {
+    const StripeSdk = require('stripe').default as typeof import('stripe').default;
+    stripeClient = new StripeSdk(secretKey, {
       apiVersion: '2026-02-25.clover',
     });
   }
@@ -624,7 +892,7 @@ function initializeSendGrid(): void {
     functions.logger.info('🔍 [initializeSendGrid:H10] Setting API key on sgMail client');
     // #endregion
     
-    sgMail.setApiKey(apiKey);
+    getSgMail().setApiKey(apiKey);
     sendGridInitialized = true;
     
     // #region agent log
@@ -713,6 +981,50 @@ async function createOrUpdateMessageLog(
   }
 }
 
+/** Derives an HMAC key for unsubscribe tokens from the SendGrid API key (server-only). */
+function getEmailUnsubscribeSecretKey(sendGridApiKey: string): string {
+  return crypto.createHash('sha256').update(`sfc-email-unsub-v1|${sendGridApiKey}`).digest('hex');
+}
+
+function buildEmailUnsubscribeToken(
+  sendGridApiKey: string,
+  facilityId: string,
+  emailLower: string,
+  tenantId: string,
+): string {
+  const exp = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
+  const payload = `${facilityId}|${emailLower}|${tenantId}|${exp}`;
+  const key = getEmailUnsubscribeSecretKey(sendGridApiKey);
+  const sig = crypto.createHmac('sha256', key).update(payload).digest('hex');
+  return Buffer.from(`${payload}|${sig}`).toString('base64url');
+}
+
+function parseEmailUnsubscribeToken(
+  sendGridApiKey: string,
+  token: string,
+): { facilityId: string; emailLower: string; tenantId: string; exp: number } | null {
+  try {
+    const raw = Buffer.from(String(token).trim(), 'base64url').toString('utf8');
+    const idx = raw.lastIndexOf('|');
+    if (idx === -1) return null;
+    const sig = raw.slice(idx + 1);
+    const payload = raw.slice(0, idx);
+    const parts = payload.split('|');
+    if (parts.length !== 4) return null;
+    const [facilityId, emailLower, tenantId, expStr] = parts;
+    const exp = parseInt(expStr, 10);
+    if (!Number.isFinite(exp) || Date.now() / 1000 > exp) return null;
+    const key = getEmailUnsubscribeSecretKey(sendGridApiKey);
+    const expected = crypto.createHmac('sha256', key).update(payload).digest('hex');
+    const a = Buffer.from(sig, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return { facilityId, emailLower, tenantId, exp };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Helper function to build branded email footer for a facility
  */
@@ -720,6 +1032,7 @@ function buildFacilityFooter(
   facilityName: string,
   facilityAddress?: string | null,
   facilityPhone?: string | null,
+  compliance?: { unsubscribeUrl?: string } | null,
 ): { html: string; text: string } {
   const lines: string[] = [];
   if (facilityAddress) lines.push(facilityAddress);
@@ -735,14 +1048,149 @@ function buildFacilityFooter(
   }
   htmlFooter += '</div>';
 
+  if (compliance?.unsubscribeUrl) {
+    const u = compliance.unsubscribeUrl;
+    htmlFooter += '<p style="font-size:12px;color:#888;margin-top:14px;line-height:1.5;">';
+    htmlFooter +=
+      'You are receiving this email in connection with your business relationship with this facility. ';
+    htmlFooter += `<a href="${escapeHtml(u)}" style="color:#555;text-decoration:underline;">Unsubscribe</a> `;
+    htmlFooter +=
+      'from non-essential facility emails. Time-sensitive or legally required notices may still be sent.</p>';
+  }
+
   // Text footer
   let textFooter = '\n--\n';
   textFooter += facilityName;
   if (lines.length > 0) {
     textFooter += '\n' + lines.join('\n');
   }
+  if (compliance?.unsubscribeUrl) {
+    textFooter +=
+      '\n\nUnsubscribe from non-essential facility emails: ' +
+      compliance.unsubscribeUrl +
+      '\n(Time-sensitive or legally required notices may still be sent.)';
+  }
 
   return { html: htmlFooter, text: textFooter };
+}
+
+async function isFacilityEmailSuppressed(facilityId: string, toEmail: string): Promise<boolean> {
+  const toLower = String(toEmail).trim().toLowerCase();
+  if (!toLower.includes('@')) return false;
+  const suppressId = crypto.createHash('sha256').update(`${facilityId}|${toLower}`).digest('hex');
+  const snap = await admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('emailSuppressions')
+    .doc(suppressId)
+    .get();
+  return snap.exists;
+}
+
+function buildFacilityOutboundEmailPayload(
+  sendGridApiKey: string,
+  input: {
+    facilityId: string;
+    to: string;
+    tenantId?: string | null;
+    facilityName: string;
+    facilityAddress?: string | null;
+    facilityPhone?: string | null;
+    htmlBody: string;
+    textBody?: string | null;
+  },
+): { html: string; text: string; headers: Record<string, string>; asm?: { group_id: number } } {
+  const toLower = String(input.to).trim().toLowerCase();
+  const token = buildEmailUnsubscribeToken(
+    sendGridApiKey,
+    input.facilityId,
+    toLower,
+    String(input.tenantId ?? '').trim(),
+  );
+  const unsubscribeUrl = `${getPublicAppUrl()}/api/email-unsubscribe?token=${encodeURIComponent(token)}`;
+  const footer = buildFacilityFooter(
+    input.facilityName,
+    input.facilityAddress,
+    input.facilityPhone,
+    { unsubscribeUrl },
+  );
+  const html = input.htmlBody + footer.html;
+  const textBase =
+    input.textBody ??
+    input.htmlBody.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+  const text = `${textBase}${footer.text}`;
+  const headers: Record<string, string> = {
+    'List-Unsubscribe': `<${unsubscribeUrl}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+  const asmNum = getSendgridAsmGroupId();
+  const out: { html: string; text: string; headers: Record<string, string>; asm?: { group_id: number } } = {
+    html,
+    text,
+    headers,
+  };
+  if (asmNum != null) out.asm = { group_id: asmNum };
+  return out;
+}
+
+/**
+ * Facility → recipient email with footer, List-Unsubscribe, ASM, and suppression check.
+ * Returns { sent: false } if recipient unsubscribed. Does not throw on suppression.
+ */
+async function sendFacilityEmailWithCompliance(
+  msg: { to: string; from: { email: string; name: string }; subject: string },
+  htmlBody: string,
+  textBody: string | null | undefined,
+  ctx: {
+    facilityId: string;
+    tenantId?: string | null;
+    facilityName: string;
+    facilityAddress?: string | null;
+    facilityPhone?: string | null;
+  },
+): Promise<{ sent: boolean; messageId?: string }> {
+  if (await isFacilityEmailSuppressed(ctx.facilityId, msg.to)) {
+    functions.logger.info('Skipping facility email (recipient unsubscribed)', {
+      facilityId: ctx.facilityId,
+      to: msg.to,
+      subject: msg.subject,
+    });
+    return { sent: false };
+  }
+  initializeSendGrid();
+  const apiKey = SENDGRID_API_KEY.value();
+  const payload = buildFacilityOutboundEmailPayload(apiKey, {
+    facilityId: ctx.facilityId,
+    to: msg.to,
+    tenantId: ctx.tenantId,
+    facilityName: ctx.facilityName,
+    facilityAddress: ctx.facilityAddress,
+    facilityPhone: ctx.facilityPhone,
+    htmlBody,
+    textBody,
+  });
+  const [result] = await getSgMail().send({
+    ...msg,
+    html: payload.html,
+    text: payload.text,
+    headers: payload.headers,
+    ...(payload.asm ? { asm: payload.asm } : {}),
+  });
+  const messageId = (result.headers?.['x-message-id'] as string) || undefined;
+  return { sent: true, messageId };
+}
+
+/** Non-promotional platform mail (OTP, etc.) — no List-Unsubscribe. */
+function appendPlatformSecurityEmailFooter(html: string, text: string): { html: string; text: string } {
+  const htmlFooter =
+    '<hr style="margin:24px 0;border:none;border-top:1px solid #e0e0e0;"/>' +
+    '<p style="font-size:12px;color:#666;line-height:1.5;">This is an automated security message from Storage Facility Creator. ' +
+    'These messages are not promotional and are sent only to protect your account.</p>';
+  const textFooter =
+    '\n\n---\nThis is an automated security message from Storage Facility Creator. ' +
+    'These messages are not promotional and are sent only to protect your account.';
+  return { html: html + htmlFooter, text: text + textFooter };
 }
 
 /**
@@ -1083,7 +1531,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
     // Reset initialization flag to ensure we use the current validated key
     sendGridInitialized = false;
     try {
-      sgMail.setApiKey(sendGridApiKey);
+      getSgMail().setApiKey(sendGridApiKey);
       sendGridInitialized = true;
       functions.logger.info('✅ [sendEmail] SendGrid API key set successfully');
     } catch (e: any) {
@@ -1105,8 +1553,36 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
     const facilityPhone = facilityData.phone || null;
     const facilityEmail = facilityData.email || null;
 
-    // Build branded footer
-    const footer = buildFacilityFooter(facilityName, facilityAddress, facilityPhone);
+    const isInviteEmail = !!(html && html.includes('accept-invite'));
+    const toLower = String(to).trim().toLowerCase();
+
+    if (!isInviteEmail) {
+      const suppressId = crypto.createHash('sha256').update(`${facilityId}|${toLower}`).digest('hex');
+      const suppressSnap = await admin
+        .firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('emailSuppressions')
+        .doc(suppressId)
+        .get();
+      if (suppressSnap.exists) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'This recipient has unsubscribed from emails from this facility.',
+        );
+      }
+    }
+
+    const baseUrl = getPublicAppUrl();
+    const tidForToken = String(tenantId || variables?.tenantId || '').trim();
+    const unsubscribeUrl = isInviteEmail
+      ? undefined
+      : `${baseUrl}/api/email-unsubscribe?token=${encodeURIComponent(
+          buildEmailUnsubscribeToken(sendGridApiKey, facilityId, toLower, tidForToken),
+        )}`;
+
+    // Build branded footer (includes opt-out link for non-invite mail)
+    const footer = buildFacilityFooter(facilityName, facilityAddress, facilityPhone, unsubscribeUrl ? { unsubscribeUrl } : null);
 
     // Prepare email content for SendGrid with branded footer
     // Ensure html is always provided (SendGrid requires it)
@@ -1157,6 +1633,18 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       };
     }
 
+    if (unsubscribeUrl) {
+      msg.headers = {
+        'List-Unsubscribe': `<${unsubscribeUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      };
+    }
+
+    const asmNum = getSendgridAsmGroupId();
+    if (asmNum != null) {
+      msg.asm = { group_id: asmNum };
+    }
+
     // #region agent log
     functions.logger.info('🔍 [sendEmail:H7] Email message prepared', {
       to,
@@ -1200,7 +1688,7 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       });
       // #endregion
       
-      [result] = await sgMail.send(msg);
+      [result] = await getSgMail().send(msg);
       
       // Extract x-message-id from headers (if available)
       messageId = result.headers?.['x-message-id'] || null;
@@ -1607,54 +2095,60 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
       throw new functions.https.HttpsError('resource-exhausted', canSend.message || 'Email quota exceeded');
     }
 
-    // Initialize SendGrid
-    initializeSendGrid();
+    const fd = facilityDoc.data() || {};
+    const facilityName = (fd.name as string) || 'Storage Facility';
+    const tenantIdForDigest = String((variables as Record<string, unknown> | undefined)?.tenantId ?? '').trim();
 
-    // Prepare digest email for SendGrid
-    const msg = {
-      to: to,
-      from: {
-        email: SENDGRID_FROM_EMAIL.value(),
-        name: SENDGRID_FROM_NAME.value(),
+    const digestSend = await sendFacilityEmailWithCompliance(
+      {
+        to: to,
+        from: {
+          email: SENDGRID_FROM_EMAIL.value(),
+          name: facilityName,
+        },
+        subject: subject,
       },
-      subject: subject,
-      html: html,
-      ...(text && { text: text }),
-    };
+      html || '',
+      text || null,
+      {
+        facilityId,
+        tenantId: tenantIdForDigest || null,
+        facilityName,
+        facilityAddress: fd.address as string | null,
+        facilityPhone: fd.phone as string | null,
+      },
+    );
+    if (!digestSend.sent) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'This recipient has unsubscribed from emails from this facility.',
+      );
+    }
 
-    // Send digest email via SendGrid
-    const [result] = await sgMail.send(msg);
+    const messageId = digestSend.messageId || `sg-${Date.now()}`;
 
-    // Log digest send
     await admin.firestore()
       .collection('facilities')
       .doc(facilityId)
-      .collection('emailLogs');
-      // Extract message ID from SendGrid response
-      const messageId = result.headers['x-message-id'] || `sg-${Date.now()}`;
-
-      await admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('emailLogs')
-        .add({
-          to,
-          subject,
-          status: 'sent',
-          messageId: messageId,
-          timestamp: admin.firestore.FieldValue.serverTimestamp(),
-          facilityId,
-          templateId,
-          digestId,
-          variables,
-          sentBy: context.auth.uid,
-        });
-
-      functions.logger.info(`Digest email sent successfully to ${to} for facility ${facilityId}`, {
+      .collection('emailLogs')
+      .add({
+        to,
+        subject,
+        status: 'sent',
         messageId: messageId,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
         facilityId,
+        templateId,
         digestId,
+        variables,
+        sentBy: context.auth.uid,
       });
+
+    functions.logger.info(`Digest email sent successfully to ${to} for facility ${facilityId}`, {
+      messageId: messageId,
+      facilityId,
+      digestId,
+    });
 
     return {
       success: true,
@@ -1718,27 +2212,36 @@ export const sendDailyDigests = functions.runWith({ secrets: SENDGRID_SECRETS })
           
           // Generate digest HTML
           const digestHtml = generateDigestHtml(facilityData.name, items);
-          
-          // Initialize SendGrid
-          initializeSendGrid();
+          const tenantIdForToken = String((items[0] as any)?.tenantId || '').trim();
+          const textBase = `Daily reminders from ${facilityData.name}`;
+          const fn = facilityData.name || 'Storage Facility';
 
-          // Prepare email for SendGrid
-          const msg = {
-            to: email,
-            from: {
-              email: SENDGRID_FROM_EMAIL.value(),
-              name: SENDGRID_FROM_NAME.value(),
+          const dailySend = await sendFacilityEmailWithCompliance(
+            {
+              to: email,
+              from: {
+                email: SENDGRID_FROM_EMAIL.value(),
+                name: fn,
+              },
+              subject: `Daily Reminders - ${facilityData.name}`,
             },
-            subject: `Daily Reminders - ${facilityData.name}`,
-            html: digestHtml,
-            text: `Daily reminders from ${facilityData.name}`,
-          };
+            digestHtml,
+            textBase,
+            {
+              facilityId,
+              tenantId: tenantIdForToken || null,
+              facilityName: fn,
+              facilityAddress: facilityData.address,
+              facilityPhone: facilityData.phone,
+            },
+          );
 
-          // Send digest email via SendGrid
-          const [result] = await sgMail.send(msg);
+          if (!dailySend.sent) {
+            functions.logger.info(`Skipping daily digest for unsubscribed recipient at ${facilityId}`);
+            return;
+          }
 
-          // Extract message ID from SendGrid response
-          const messageId = result.headers['x-message-id'] || `sg-${Date.now()}`;
+          const messageId = dailySend.messageId || `sg-${Date.now()}`;
 
           // Mark digest items as sent
           const batch = admin.firestore().batch();
@@ -2107,31 +2610,34 @@ export const uploadSignedContract = functions.https.onCall(async (data: {
  * Same-origin requests avoid CORS preflight 403. Accepts callable-style body: { data: {...} }.
  * Uses Express with 10MB body limit for base64 PDF payloads.
  */
-const uploadSignedContractApp = express();
-uploadSignedContractApp.use(express.json({ limit: '10mb' }));
+let uploadSignedContractAppInstance: Application | null = null;
+function getUploadSignedContractApp(): Application {
+  if (uploadSignedContractAppInstance) return uploadSignedContractAppInstance;
+  const ex = requireExpress();
+  const app = ex();
+  app.use(ex.json({ limit: '10mb' }));
+  app.all('*', async (req: ExpressRequest, res: ExpressResponse) => {
+    const corsHeaders: Record<string, string> = {
+      'Access-Control-Allow-Origin': req.headers.origin || '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
+    };
 
-uploadSignedContractApp.all('*', async (req: express.Request, res: express.Response) => {
-  const corsHeaders: Record<string, string> = {
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-  };
+    Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
 
-  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
+    }
 
-  if (req.method === 'OPTIONS') {
-    res.status(204).send('');
-    return;
-  }
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
+      return;
+    }
 
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
-    return;
-  }
-
-  try {
-    const body = req.body as { data?: Record<string, unknown> } | undefined;
+    try {
+      const body = req.body as { data?: Record<string, unknown> } | undefined;
     const data = (body?.data || body) as Record<string, unknown> | undefined;
     const facilityId = (data?.facilityId || '').toString().trim();
     const contractId = (data?.contractId || '').toString().trim();
@@ -2210,34 +2716,42 @@ uploadSignedContractApp.all('*', async (req: express.Request, res: express.Respo
     functions.logger.error('uploadSignedContractHttp error:', msg, stack ?? '');
     res.status(500).json({ error: { status: 'INTERNAL', message: 'Internal error' } });
   }
-});
+  });
+  uploadSignedContractAppInstance = app;
+  return app;
+}
 
-export const uploadSignedContractHttp = functions.https.onRequest(uploadSignedContractApp);
+export const uploadSignedContractHttp = functions.https.onRequest((req, res) => {
+  getUploadSignedContractApp()(req, res);
+});
 
 /**
  * HTTP endpoint for contract PDF upload - used via Firebase Hosting rewrite.
  * Same-origin requests avoid CORS preflight 403 when uploading from custom domain.
  */
-const uploadContractPdfApp = express();
-uploadContractPdfApp.use(express.json({ limit: '16mb' }));
-
-uploadContractPdfApp.all('*', async (req: express.Request, res: express.Response) => {
-  const corsHeaders: Record<string, string> = {
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-  };
-  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
-  if (req.method === 'OPTIONS') {
-    res.status(204).send('');
-    return;
-  }
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
-    return;
-  }
-  try {
+let uploadContractPdfAppInstance: Application | null = null;
+function getUploadContractPdfApp(): Application {
+  if (uploadContractPdfAppInstance) return uploadContractPdfAppInstance;
+  const ex = requireExpress();
+  const app = ex();
+  app.use(ex.json({ limit: '16mb' }));
+  app.all('*', async (req: ExpressRequest, res: ExpressResponse) => {
+    const corsHeaders: Record<string, string> = {
+      'Access-Control-Allow-Origin': req.headers.origin || '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
+    };
+    Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: { status: 'INVALID_ARGUMENT', message: 'Method not allowed' } });
+      return;
+    }
+    try {
     const body = req.body as { data?: Record<string, unknown> } | undefined;
     const data = (body?.data || body) as Record<string, unknown> | undefined;
     const facilityId = (data?.facilityId || '').toString().trim();
@@ -2302,9 +2816,14 @@ uploadContractPdfApp.all('*', async (req: express.Request, res: express.Response
     functions.logger.error('uploadContractPdfHttp error:', msg);
     res.status(500).json({ error: { status: 'INTERNAL', message: 'Internal error' } });
   }
-});
+  });
+  uploadContractPdfAppInstance = app;
+  return app;
+}
 
-export const uploadContractPdfHttp = functions.https.onRequest(uploadContractPdfApp);
+export const uploadContractPdfHttp = functions.https.onRequest((req, res) => {
+  getUploadContractPdfApp()(req, res);
+});
 
 /** Allowed Storage bucket patterns for proxy (contract PDFs only) */
 const PROXY_ALLOWED_BUCKETS = [
@@ -2316,25 +2835,29 @@ const PROXY_ALLOWED_BUCKETS = [
  * HTTP proxy for contract PDFs - bypasses Storage CORS when loading PDFs from custom domain.
  * Same-origin GET to /api/proxyContractPdf avoids CORS on firebasestorage.googleapis.com.
  */
-const proxyContractPdfApp = express();
-proxyContractPdfApp.all('*', async (req: express.Request, res: express.Response) => {
-  const corsHeaders: Record<string, string> = {
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '86400',
-  };
-  Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
-  if (req.method === 'OPTIONS') {
-    res.status(204).send('');
-    return;
-  }
-  if (req.method !== 'GET') {
-    res.status(405).set('Content-Type', 'application/json').json({ error: { message: 'Method not allowed' } });
-    return;
-  }
-  try {
-    const rawUrl = (req.query.url || '').toString().trim();
+let proxyContractPdfAppInstance: Application | null = null;
+function getProxyContractPdfApp(): Application {
+  if (proxyContractPdfAppInstance) return proxyContractPdfAppInstance;
+  const ex = requireExpress();
+  const app = ex();
+  app.all('*', async (req: ExpressRequest, res: ExpressResponse) => {
+    const corsHeaders: Record<string, string> = {
+      'Access-Control-Allow-Origin': req.headers.origin || '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    };
+    Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.status(405).set('Content-Type', 'application/json').json({ error: { message: 'Method not allowed' } });
+      return;
+    }
+    try {
+      const rawUrl = (req.query.url || '').toString().trim();
     if (!rawUrl) {
       res.status(400).set('Content-Type', 'application/json').json({ error: { message: 'url query param required' } });
       return;
@@ -2382,9 +2905,14 @@ proxyContractPdfApp.all('*', async (req: express.Request, res: express.Response)
     functions.logger.error('proxyContractPdf error:', msg);
     res.status(500).set('Content-Type', 'application/json').json({ error: { message: 'Internal error' } });
   }
-});
+  });
+  proxyContractPdfAppInstance = app;
+  return app;
+}
 
-export const proxyContractPdfHttp = functions.https.onRequest(proxyContractPdfApp);
+export const proxyContractPdfHttp = functions.https.onRequest((req, res) => {
+  getProxyContractPdfApp()(req, res);
+});
 
 /**
  * Firestore trigger: Send confirmation email when a contract is signed.
@@ -2438,40 +2966,47 @@ export const onContractSigned = functions.runWith({ secrets: SENDGRID_SECRETS })
       const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
       const facilityData = facilityDoc.exists ? (facilityDoc.data() as Record<string, any>) : {};
       const facilityName = facilityData?.name || 'Storage Facility';
-      const footer = buildFacilityFooter(
-        facilityName,
-        facilityData?.address,
-        facilityData?.phone,
-      );
+      const tenantIdForUnsub = (after?.tenantId || '').toString().trim();
 
       const viewLink = signedFileUrl
         ? `<p><a clicktracking="off" href="${signedFileUrl}" style="color:#1E3A8A;font-weight:600;">View your signed contract</a></p>`
         : '';
-      const html = `
+      const htmlBody = `
         <h2 style="color:#1E3A8A;">Contract signed successfully</h2>
         <p>Hello${signedBy ? ` ${escapeHtml(signedBy)}` : ''},</p>
         <p>Your signature has been recorded for <strong>${escapeHtml(title)}</strong>.</p>
         ${viewLink}
         <p>Please keep this email for your records.</p>
-        ${footer.html}
       `;
-      const text = [
+      const textBody = [
         'Contract signed successfully',
         signedBy ? `Hello ${signedBy},` : 'Hello,',
         `Your signature has been recorded for ${title}.`,
         signedFileUrl ? `View your signed contract: ${signedFileUrl}` : '',
         'Please keep this email for your records.',
-        footer.text,
       ].filter(Boolean).join('\n\n');
 
-      sgMail.setApiKey(apiKey);
-      await sgMail.send({
-        to: toEmail,
-        from: { email: fromEmail, name: facilityName },
-        subject: `Contract Signed: ${title}`,
-        html,
-        text,
-      });
+      initializeSendGrid();
+      const signedSend = await sendFacilityEmailWithCompliance(
+        {
+          to: toEmail,
+          from: { email: fromEmail, name: facilityName },
+          subject: `Contract Signed: ${title}`,
+        },
+        htmlBody,
+        textBody,
+        {
+          facilityId,
+          tenantId: tenantIdForUnsub || null,
+          facilityName,
+          facilityAddress: facilityData?.address,
+          facilityPhone: facilityData?.phone,
+        },
+      );
+      if (!signedSend.sent) {
+        functions.logger.info('onContractSigned: Skipped (recipient unsubscribed)', { to: toEmail, contractId });
+        return;
+      }
       functions.logger.info('onContractSigned: Confirmation email sent', { to: toEmail, contractId });
     } catch (err: unknown) {
       functions.logger.error('onContractSigned: Failed to send confirmation email', err);
@@ -3750,21 +4285,56 @@ async function sendSMSAsEmail(
     `;
     const emailText = message + '\n\n---\nThis message was sent via email because SMS fair-use limits have been reached.';
 
-    // Send email via SendGrid
-    initializeSendGrid();
-    const msg = {
-      to: emailAddress,
-      from: {
-        email: SENDGRID_FROM_EMAIL.value(),
-        name: SENDGRID_FROM_NAME.value(),
-      },
-      subject: emailSubject,
-      html: emailHtml,
-      text: emailText,
-    };
+    const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+    const fd = facilitySnap.exists ? facilitySnap.data() : {};
+    const facilityName = (fd?.name as string) || 'Storage Facility';
 
-    const [result] = await sgMail.send(msg);
-    const messageId = result.headers['x-message-id'] || `email-${Date.now()}`;
+    let tenantIdForToken = '';
+    try {
+      const tenantsSnap = await admin
+        .firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('tenants')
+        .where('email', '==', emailAddress)
+        .limit(1)
+        .get();
+      if (!tenantsSnap.empty) tenantIdForToken = tenantsSnap.docs[0].id;
+    } catch {
+      /* ignore lookup failures */
+    }
+
+    const sendResult = await sendFacilityEmailWithCompliance(
+      {
+        to: emailAddress,
+        from: {
+          email: SENDGRID_FROM_EMAIL.value(),
+          name: (fd?.name as string) || SENDGRID_FROM_NAME.value(),
+        },
+        subject: emailSubject,
+      },
+      emailHtml,
+      emailText,
+      {
+        facilityId,
+        tenantId: tenantIdForToken || null,
+        facilityName,
+        facilityAddress: (fd?.address as string) || null,
+        facilityPhone: (fd?.phone as string) || null,
+      },
+    );
+
+    if (!sendResult.sent) {
+      functions.logger.warn(`SMS email fallback skipped (unsubscribed): ${emailAddress}`);
+      return {
+        success: false,
+        fallbackUsed: true,
+        usageState: usageCheck.state,
+        usageWarning: 'SMS limit exceeded; email not sent (recipient unsubscribed).',
+      };
+    }
+
+    const messageId = sendResult.messageId || `email-${Date.now()}`;
 
     // Log fallback email send
     await admin.firestore()
@@ -3974,6 +4544,50 @@ async function attachPhoneNumberToMessagingService(
   }
 }
 
+// From Twilio ISV A2P 10DLC API guide (template policies; override via env if your account differs).
+const TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID_DEFAULT = 'RNdfbf3fae0e1107f8aded0e7cead80bf5';
+const TWILIO_A2P_TRUST_PRODUCT_POLICY_SID_DEFAULT = 'RNb0d4771c2c98518d916a3d4cd70a8f8b';
+
+async function resolveTrustHubA2PPolicySids(twilio: any): Promise<{
+  customerProfilePolicySid: string;
+  trustProductPolicySid: string;
+}> {
+  const envCustomer = (process.env.TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID || '').trim();
+  const envTrustProduct = (
+    process.env.TWILIO_A2P_TRUST_PRODUCT_POLICY_SID ||
+    process.env.TWILIO_A2P_POLICY_SID ||
+    ''
+  ).trim();
+
+  const policies = await twilio.trusthub.v1.policies.list({ limit: 200 });
+  const list: any[] = Array.isArray(policies) ? policies : [];
+
+  let customerProfilePolicySid = envCustomer;
+  if (!customerProfilePolicySid) {
+    const hit = list.find((p: any) => {
+      const sid = (p?.sid || '').toString();
+      const fn = (p?.friendlyName || '').toString().toLowerCase();
+      return sid.startsWith('RN') && fn.includes('secondary') && fn.includes('customer');
+    });
+    customerProfilePolicySid = (hit?.sid as string) || TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID_DEFAULT;
+  }
+
+  let trustProductPolicySid = envTrustProduct;
+  if (!trustProductPolicySid) {
+    const hit = list.find((p: any) => {
+      const sid = (p?.sid || '').toString();
+      const fn = (p?.friendlyName || '').toString().toLowerCase();
+      return (
+        sid.startsWith('RN') &&
+        (fn.includes('a2p') || fn.includes('10dlc') || fn.includes('messaging trust'))
+      );
+    });
+    trustProductPolicySid = (hit?.sid as string) || TWILIO_A2P_TRUST_PRODUCT_POLICY_SID_DEFAULT;
+  }
+
+  return { customerProfilePolicySid, trustProductPolicySid };
+}
+
 async function createOrUpdateA2PProfileInternal(
   facilityRef: FirebaseFirestore.DocumentReference,
   facilityData: Record<string, any>,
@@ -3993,17 +4607,37 @@ async function createOrUpdateA2PProfileInternal(
     trustProductSid = buildTwilioDryRunSid('TP', facilityRef.id);
   } else {
     const twilio = getTwilioClient() as any;
-    const profile = await twilio.trusthub.v1.customerProfiles.create({
-      friendlyName: `SFC ${facilityRef.id} ${businessData.legalBusinessName}`.slice(0, 60),
-      email: businessData.supportEmail,
-      status: 'draft',
-    });
-    trustProfileSid = profile.sid;
-    const trustProduct = await twilio.trusthub.v1.trustProducts.create({
-      friendlyName: `SFC ${facilityRef.id} A2P`,
-      customerProfileSid: trustProfileSid,
-    });
-    trustProductSid = trustProduct.sid;
+    const { customerProfilePolicySid, trustProductPolicySid } = await resolveTrustHubA2PPolicySids(twilio);
+
+    const existingProfileSid = facilityData.twilioTrustProfileSid as string | undefined;
+    const existingProductSid = facilityData.twilioTrustProductSid as string | undefined;
+
+    if (existingProfileSid?.trim()) {
+      trustProfileSid = existingProfileSid.trim();
+    } else {
+      const profile = await twilio.trusthub.v1.customerProfiles.create({
+        friendlyName: `SFC ${facilityRef.id} ${businessData.legalBusinessName}`.slice(0, 60),
+        email: businessData.supportEmail,
+        policySid: customerProfilePolicySid,
+      });
+      trustProfileSid = profile.sid;
+    }
+
+    if (existingProductSid?.trim()) {
+      trustProductSid = existingProductSid.trim();
+    } else {
+      const trustProduct = await twilio.trusthub.v1.trustProducts.create({
+        friendlyName: `SFC ${facilityRef.id} A2P`,
+        email: businessData.supportEmail,
+        policySid: trustProductPolicySid,
+      });
+      trustProductSid = trustProduct.sid;
+      await twilio.trusthub.v1
+        .trustProducts(trustProductSid)
+        .trustProductsEntityAssignments.create({
+          objectSid: trustProfileSid,
+        });
+    }
   }
 
   await facilityRef.set({
@@ -4135,6 +4769,39 @@ function getTextingOnboardingState(facilityData: Record<string, any>): TextingOn
   };
 }
 
+function mapTextingOnboardingError(operation: string, error: unknown): functions.https.HttpsError {
+  if (error instanceof functions.https.HttpsError) return error;
+
+  const err = error as any;
+  const message = (err?.message as string) || 'Unexpected texting onboarding error';
+  const code = (err?.code as string | undefined) || undefined;
+
+  functions.logger.error('Texting onboarding operation failed', {
+    operation,
+    code: code || null,
+    message,
+    stack: err?.stack || null,
+  });
+
+  const passthroughCodes = new Set([
+    'invalid-argument',
+    'failed-precondition',
+    'permission-denied',
+    'not-found',
+    'resource-exhausted',
+    'unauthenticated',
+  ]);
+
+  if (code && passthroughCodes.has(code)) {
+    return new functions.https.HttpsError(code as any, message);
+  }
+
+  return new functions.https.HttpsError(
+    'internal',
+    `Texting onboarding failed during ${operation}: ${message}`,
+  );
+}
+
 export const getTextingOnboardingStatus = functions.https.onCall(async (data: { facilityId: string }, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   const { facilityId } = data || {};
@@ -4150,42 +4817,8 @@ export const getTextingOnboardingStatus = functions.https.onCall(async (data: { 
   };
 });
 
-export const saveTextingBusinessInfo = functions.https.onCall(async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
-  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-  const { facilityId, businessData } = data || {};
-  if (!facilityId || !businessData?.legalBusinessName) {
-    throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
-  }
-  await assertTextingOnboardingEnabled(facilityId);
-  const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-  await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
-  await ref.set({
-    textingOnboardingEnabled: true,
-    a2pStatus: 'draft',
-    textingPlatformApproved: false,
-    textingPlatformApprovedAt: null,
-    textingPlatformApprovedBy: null,
-    a2pLastError: null,
-    a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
-  return { success: true };
-});
-
-export const ensureMessagingService = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId } = data || {};
-    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-    await assertTextingOnboardingEnabled(facilityId);
-    const requestId = crypto.randomUUID();
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const result = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-    return { success: true, requestId, ...result };
-  },
-);
-
-export const createOrUpdateA2PProfile = functions.https.onCall(
-  async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
+export const saveTextingBusinessInfo = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
+  try {
     if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
     const { facilityId, businessData } = data || {};
     if (!facilityId || !businessData?.legalBusinessName) {
@@ -4193,172 +4826,286 @@ export const createOrUpdateA2PProfile = functions.https.onCall(
     }
     await assertTextingOnboardingEnabled(facilityId);
     const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const result = await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
-    return { success: true, ...result };
-  },
-);
-
-export const provisionPhoneNumber = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string; areaCode?: string }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId, areaCode } = data || {};
-    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-    await assertTextingOnboardingEnabled(facilityId);
-    const requestId = crypto.randomUUID();
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-    const phone = await provisionFacilityPhoneNumber(ref, facilityData, areaCode, requestId);
-    await attachPhoneNumberToMessagingService(ms.messagingServiceSid, phone.phoneNumberSid);
-    return {
-      success: true,
-      requestId,
-      messagingServiceSid: ms.messagingServiceSid,
-      phoneNumberSid: phone.phoneNumberSid,
-      phoneNumberE164: phone.phoneNumberE164,
-      reusedExisting: !phone.created,
-    };
-  },
-);
-
-export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId, campaignData } = data || {};
-    if (!facilityId || !campaignData?.consentConfirmed) {
-      throw new functions.https.HttpsError('invalid-argument', 'facilityId and consent confirmation are required');
-    }
-    await assertTextingOnboardingEnabled(facilityId);
-    const requestId = crypto.randomUUID();
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const baseState = getTextingOnboardingState(facilityData);
-    if (!baseState.twilioTrustProfileSid || !baseState.twilioTrustProductSid) {
-      throw new functions.https.HttpsError('failed-precondition', 'Business profile is incomplete. Save business info first.');
-    }
-    const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
-    const pn = await provisionFacilityPhoneNumber(ref, facilityData, undefined, requestId);
-    await attachPhoneNumberToMessagingService(ms.messagingServiceSid, pn.phoneNumberSid);
-
-    const latest = (await ref.get()).data() as Record<string, any>;
-    const brandSid = await submitBrandRegistrationInternal(ref, latest);
-    const latestAfterBrand = (await ref.get()).data() as Record<string, any>;
-    const campaignSid = await submitCampaignInternal(ref, {
-      ...latestAfterBrand,
-      twilioBrandSid: brandSid,
-      twilioMessagingServiceSid: latestAfterBrand.twilioMessagingServiceSid || ms.messagingServiceSid,
-      twilioPhoneNumberSid: latestAfterBrand.twilioPhoneNumberSid || pn.phoneNumberSid,
-    }, campaignData);
-
-    return {
-      success: true,
-      requestId,
-      a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
-      twilioBrandSid: brandSid,
-      twilioCampaignSid: campaignSid,
-      twilioMessagingServiceSid: ms.messagingServiceSid,
-      twilioPhoneNumberSid: pn.phoneNumberSid,
-      twilioPhoneNumberE164: pn.phoneNumberE164,
-    };
-  },
-);
-
-export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId } = data || {};
-    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-    await assertTextingOnboardingEnabled(facilityId);
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const sid = await submitBrandRegistrationInternal(ref, facilityData);
-    return { success: true, brandSid: sid };
-  },
-);
-
-export const submitCampaign = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId, campaignData } = data || {};
-    if (!facilityId || !campaignData?.consentConfirmed) {
-      throw new functions.https.HttpsError('invalid-argument', 'facilityId and campaignData are required');
-    }
-    await assertTextingOnboardingEnabled(facilityId);
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-    const sid = await submitCampaignInternal(ref, facilityData, campaignData);
-    return { success: true, campaignSid: sid };
-  },
-);
-
-export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId } = data || {};
-    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-    await assertTextingOnboardingEnabled(facilityId);
-    const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
-
-    if (isTwilioDryRunEnabled()) {
-      const current = (facilityData.a2pStatus as A2PStatus | undefined) || 'draft';
-      const next = current === 'submitted' || current === 'pending' ? 'approved' : current;
-      await ref.set({
-        a2pStatus: next,
-        textingPlatformApproved: false,
-        textingPlatformApprovedAt: null,
-        textingPlatformApprovedBy: null,
-        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        ...(next === 'approved' ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-      }, { merge: true });
-      return { success: true, a2pStatus: next };
-    }
-
-    const twilio = getTwilioClient() as any;
-    let brandStatus: string | undefined;
-    let campaignStatus: string | undefined;
-    if (facilityData.twilioBrandSid) {
-      const brand = await twilio.messaging.v1.brandRegistrations(facilityData.twilioBrandSid).fetch();
-      brandStatus = brand.status;
-    }
-    if (facilityData.twilioCampaignSid) {
-      const campaign = await twilio.messaging.v1.campaigns(facilityData.twilioCampaignSid).fetch();
-      campaignStatus = campaign.status;
-    }
-    const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
-    const next = computeA2PStatus(current, brandStatus, campaignStatus);
-    const update: Record<string, any> = {
-      a2pStatus: next,
-      a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      a2pLastError: null,
-      a2pRejectionReason: next === 'rejected' ? (campaignStatus || brandStatus || 'Rejected by Twilio') : null,
-      ...(next !== 'approved' ? {
-        textingPlatformApproved: false,
-        textingPlatformApprovedAt: null,
-        textingPlatformApprovedBy: null,
-      } : {}),
-    };
-    if (next === 'approved') update.a2pApprovedAt = admin.firestore.FieldValue.serverTimestamp();
-    if (next === 'rejected') update.a2pRejectedAt = admin.firestore.FieldValue.serverTimestamp();
-    await ref.set(update, { merge: true });
-    return { success: true, a2pStatus: next, brandStatus, campaignStatus };
-  },
-);
-
-export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
-  async (data: { facilityId: string }, context) => {
-    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-    const { facilityId } = data || {};
-    if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-    await assertTextingOnboardingEnabled(facilityId);
-    const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+    await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
     await ref.set({
-      twilioBrandSid: admin.firestore.FieldValue.delete(),
-      twilioCampaignSid: admin.firestore.FieldValue.delete(),
+      textingOnboardingEnabled: true,
       a2pStatus: 'draft',
       textingPlatformApproved: false,
       textingPlatformApprovedAt: null,
       textingPlatformApprovedBy: null,
       a2pLastError: null,
-      a2pRejectionReason: null,
       a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
     return { success: true };
+  } catch (error: unknown) {
+    throw mapTextingOnboardingError('saveTextingBusinessInfo', error);
+  }
+});
+
+export const ensureMessagingService = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const requestId = crypto.randomUUID();
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const result = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+      return { success: true, requestId, ...result };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('ensureMessagingService', error);
+    }
+  },
+);
+
+export const createOrUpdateA2PProfile = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; businessData: TextingBusinessData }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId, businessData } = data || {};
+      if (!facilityId || !businessData?.legalBusinessName) {
+        throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
+      }
+      await assertTextingOnboardingEnabled(facilityId);
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const result = await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
+      return { success: true, ...result };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('createOrUpdateA2PProfile', error);
+    }
+  },
+);
+
+export const setTextingPlatformApproval = functions.https.onCall(
+  async (data: { facilityId: string; approved: boolean }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const callerEmail = context.auth.token?.email as string | undefined;
+      if (!isSuperAdmin(callerEmail)) {
+        throw new functions.https.HttpsError('permission-denied', 'Only super admins can change texting platform approval');
+      }
+
+      const { facilityId, approved } = data || {};
+      if (!facilityId || typeof approved !== 'boolean') {
+        throw new functions.https.HttpsError('invalid-argument', 'facilityId and approved(boolean) are required');
+      }
+
+      await assertTextingOnboardingEnabled(facilityId);
+      const ref = admin.firestore().collection('facilities').doc(facilityId);
+      const doc = await ref.get();
+      const facilityData = doc.data() as Record<string, any> | undefined;
+      if (!doc.exists || !facilityData) {
+        throw new functions.https.HttpsError('not-found', 'Facility not found');
+      }
+
+      const carrierApproved = ((facilityData.a2pStatus as string) || '').toLowerCase() === 'approved';
+      if (approved && !carrierApproved) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Carrier approval is required before platform approval can be granted.',
+        );
+      }
+
+      await ref.set({
+        textingPlatformApproved: approved,
+        textingPlatformApprovedAt: approved ? admin.firestore.FieldValue.serverTimestamp() : null,
+        textingPlatformApprovedBy: approved ? callerEmail || context.auth.uid : null,
+        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      return { success: true, facilityId, approved };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('setTextingPlatformApproval', error);
+    }
+  },
+);
+
+export const provisionPhoneNumber = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; areaCode?: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId, areaCode } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const requestId = crypto.randomUUID();
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+      const phone = await provisionFacilityPhoneNumber(ref, facilityData, areaCode, requestId);
+      await attachPhoneNumberToMessagingService(ms.messagingServiceSid, phone.phoneNumberSid);
+      return {
+        success: true,
+        requestId,
+        messagingServiceSid: ms.messagingServiceSid,
+        phoneNumberSid: phone.phoneNumberSid,
+        phoneNumberE164: phone.phoneNumberE164,
+        reusedExisting: !phone.created,
+      };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('provisionPhoneNumber', error);
+    }
+  },
+);
+
+export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId, campaignData } = data || {};
+      if (!facilityId || !campaignData?.consentConfirmed) {
+        throw new functions.https.HttpsError('invalid-argument', 'facilityId and consent confirmation are required');
+      }
+      await assertTextingOnboardingEnabled(facilityId);
+      const requestId = crypto.randomUUID();
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const baseState = getTextingOnboardingState(facilityData);
+      if (!baseState.twilioTrustProfileSid || !baseState.twilioTrustProductSid) {
+        throw new functions.https.HttpsError('failed-precondition', 'Business profile is incomplete. Save business info first.');
+      }
+      const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
+      const pn = await provisionFacilityPhoneNumber(ref, facilityData, undefined, requestId);
+      await attachPhoneNumberToMessagingService(ms.messagingServiceSid, pn.phoneNumberSid);
+
+      const latest = (await ref.get()).data() as Record<string, any>;
+      const brandSid = await submitBrandRegistrationInternal(ref, latest);
+      const latestAfterBrand = (await ref.get()).data() as Record<string, any>;
+      const campaignSid = await submitCampaignInternal(ref, {
+        ...latestAfterBrand,
+        twilioBrandSid: brandSid,
+        twilioMessagingServiceSid: latestAfterBrand.twilioMessagingServiceSid || ms.messagingServiceSid,
+        twilioPhoneNumberSid: latestAfterBrand.twilioPhoneNumberSid || pn.phoneNumberSid,
+      }, campaignData);
+
+      return {
+        success: true,
+        requestId,
+        a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+        twilioBrandSid: brandSid,
+        twilioCampaignSid: campaignSid,
+        twilioMessagingServiceSid: ms.messagingServiceSid,
+        twilioPhoneNumberSid: pn.phoneNumberSid,
+        twilioPhoneNumberE164: pn.phoneNumberE164,
+      };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('submitTextingOnboarding', error);
+    }
+  },
+);
+
+export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const sid = await submitBrandRegistrationInternal(ref, facilityData);
+      return { success: true, brandSid: sid };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('submitBrandRegistration', error);
+    }
+  },
+);
+
+export const submitCampaign = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string; campaignData: CampaignData }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId, campaignData } = data || {};
+      if (!facilityId || !campaignData?.consentConfirmed) {
+        throw new functions.https.HttpsError('invalid-argument', 'facilityId and campaignData are required');
+      }
+      await assertTextingOnboardingEnabled(facilityId);
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      const sid = await submitCampaignInternal(ref, facilityData, campaignData);
+      return { success: true, campaignSid: sid };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('submitCampaign', error);
+    }
+  },
+);
+
+export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+
+      if (isTwilioDryRunEnabled()) {
+        const current = (facilityData.a2pStatus as A2PStatus | undefined) || 'draft';
+        const next = current === 'submitted' || current === 'pending' ? 'approved' : current;
+        await ref.set({
+          a2pStatus: next,
+          textingPlatformApproved: false,
+          textingPlatformApprovedAt: null,
+          textingPlatformApprovedBy: null,
+          a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(next === 'approved' ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+        }, { merge: true });
+        return { success: true, a2pStatus: next };
+      }
+
+      const twilio = getTwilioClient() as any;
+      let brandStatus: string | undefined;
+      let campaignStatus: string | undefined;
+      if (facilityData.twilioBrandSid) {
+        const brand = await twilio.messaging.v1.brandRegistrations(facilityData.twilioBrandSid).fetch();
+        brandStatus = brand.status;
+      }
+      if (facilityData.twilioCampaignSid) {
+        const campaign = await twilio.messaging.v1.campaigns(facilityData.twilioCampaignSid).fetch();
+        campaignStatus = campaign.status;
+      }
+      const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
+      const next = computeA2PStatus(current, brandStatus, campaignStatus);
+      const update: Record<string, any> = {
+        a2pStatus: next,
+        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        a2pLastError: null,
+        a2pRejectionReason: next === 'rejected' ? (campaignStatus || brandStatus || 'Rejected by Twilio') : null,
+        ...(next !== 'approved' ? {
+          textingPlatformApproved: false,
+          textingPlatformApprovedAt: null,
+          textingPlatformApprovedBy: null,
+        } : {}),
+      };
+      if (next === 'approved') update.a2pApprovedAt = admin.firestore.FieldValue.serverTimestamp();
+      if (next === 'rejected') update.a2pRejectedAt = admin.firestore.FieldValue.serverTimestamp();
+      await ref.set(update, { merge: true });
+      return { success: true, a2pStatus: next, brandStatus, campaignStatus };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('refreshTextingOnboardingStatus', error);
+    }
+  },
+);
+
+export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const { ref } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+      await ref.set({
+        twilioBrandSid: admin.firestore.FieldValue.delete(),
+        twilioCampaignSid: admin.firestore.FieldValue.delete(),
+        a2pStatus: 'draft',
+        textingPlatformApproved: false,
+        textingPlatformApprovedAt: null,
+        textingPlatformApprovedBy: null,
+        a2pLastError: null,
+        a2pRejectionReason: null,
+        a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return { success: true };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('resubmitTextingOnboarding', error);
+    }
   },
 );
 
@@ -6237,10 +6984,10 @@ async function processDelinquencyForFacility(
                 .get();
 
               if (noticesSnapshot.empty) {
+                let emailDelinquencyNoticeSent = false;
                 // Send email notice
                 if (tenantEmail && tenantEmail.trim() !== '') {
                   try {
-                    initializeSendGrid();
                     const subject = noticeType === 'final' 
                       ? `Final Notice: Payment Overdue - ${facilityData?.name || 'Storage Facility'}`
                       : `Payment Reminder: Account Past Due - ${facilityData?.name || 'Storage Facility'}`;
@@ -6261,39 +7008,46 @@ Thank you,
 ${facilityData?.name || 'Management Team'}
                     `.trim();
 
-                    // Initialize SendGrid if not already initialized
-                    initializeSendGrid();
-                    
-                    // Send email directly via SendGrid
-                    const msg = {
-                      to: tenantEmail,
-                      from: {
-                        email: SENDGRID_FROM_EMAIL.value(),
-                        name: SENDGRID_FROM_NAME.value(),
+                    const sendResult = await sendFacilityEmailWithCompliance(
+                      {
+                        to: tenantEmail,
+                        from: {
+                          email: SENDGRID_FROM_EMAIL.value(),
+                          name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                        },
+                        subject: subject,
                       },
-                      subject: subject,
-                      html: emailContent.replace(/\n/g, '<br>'),
-                      text: emailContent,
-                    };
-                    
-                    await sgMail.send(msg);
+                      emailContent.replace(/\n/g, '<br>'),
+                      emailContent,
+                      {
+                        facilityId,
+                        tenantId,
+                        facilityName: facilityData?.name || 'Storage Facility',
+                        facilityAddress: facilityData?.address,
+                        facilityPhone: facilityData?.phone,
+                      },
+                    );
 
-                    // Record notice in Firestore
-                    await admin.firestore()
-                      .collection('facilities')
-                      .doc(facilityId)
-                      .collection('tenants')
-                      .doc(tenantId)
-                      .collection('notices')
-                      .add({
-                        type: noticeType,
-                        sentDate: admin.firestore.FieldValue.serverTimestamp(),
-                        daysLate: daysLate,
-                        balance: balance,
-                        method: 'email',
-                        recipient: tenantEmail,
-                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                      });
+                    if (sendResult.sent) {
+                      emailDelinquencyNoticeSent = true;
+                      await admin.firestore()
+                        .collection('facilities')
+                        .doc(facilityId)
+                        .collection('tenants')
+                        .doc(tenantId)
+                        .collection('notices')
+                        .add({
+                          type: noticeType,
+                          sentDate: admin.firestore.FieldValue.serverTimestamp(),
+                          daysLate: daysLate,
+                          balance: balance,
+                          method: 'email',
+                          recipient: tenantEmail,
+                          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        });
+                    } else {
+                      functions.logger.info(`Delinquency email skipped (unsubscribed): ${tenantEmail}`);
+                    }
                   } catch (emailError: any) {
                     functions.logger.error(`Failed to send email notice to ${tenantEmail}:`, emailError);
                   }
@@ -6314,7 +7068,9 @@ ${facilityData?.name || 'Management Team'}
                   }
                 }
 
-                noticeSentCount++;
+                if (emailDelinquencyNoticeSent) {
+                  noticeSentCount++;
+                }
               }
             } catch (noticeError: any) {
               functions.logger.error(`Error sending notice to tenant ${tenantId}:`, noticeError);
@@ -6803,15 +7559,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         .get()).data();
 
       if (tenantData?.email) {
-        initializeSendGrid();
-        await sgMail.send({
-          to: tenantData.email,
-          from: {
-            email: SENDGRID_FROM_EMAIL.value(),
-            name: SENDGRID_FROM_NAME.value(),
-          },
-          subject: `Move-Out Confirmation - ${facilityData?.name || 'Storage Facility'}`,
-          html: `
+        const moveOutHtml = `
             <h2>Move-Out Confirmation</h2>
             <p>Dear ${tenantData.name || 'Tenant'},</p>
             <p>This confirms that your move-out has been processed on ${new Date(moveOutDate).toLocaleDateString()}.</p>
@@ -6819,8 +7567,26 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
             ${moveOutRefund > 0 ? `<p><strong>Refund Amount:</strong> $${moveOutRefund.toFixed(2)}</p>` : ''}
             ${moveOutNotes ? `<p><strong>Notes:</strong> ${moveOutNotes}</p>` : ''}
             <p>Thank you for your business.</p>
-          `,
-        });
+          `;
+        await sendFacilityEmailWithCompliance(
+          {
+            to: tenantData.email,
+            from: {
+              email: SENDGRID_FROM_EMAIL.value(),
+              name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+            },
+            subject: `Move-Out Confirmation - ${facilityData?.name || 'Storage Facility'}`,
+          },
+          moveOutHtml,
+          null,
+          {
+            facilityId,
+            tenantId,
+            facilityName: facilityData?.name || 'Storage Facility',
+            facilityAddress: facilityData?.address,
+            facilityPhone: facilityData?.phone,
+          },
+        );
       }
     } catch (emailError: any) {
       functions.logger.error('Error sending move-out confirmation email:', emailError);
@@ -6944,6 +7710,197 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     reservationId: reservationRef.id,
     moveInToken,
     expiresAt: expiresAt.toISOString(),
+  };
+});
+
+/**
+ * Create Stripe Checkout for public move-in payment (no auth; token-gated).
+ */
+export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  const {
+    reservationId,
+    token,
+    amount,
+    description,
+  } = data || {};
+
+  if (!reservationId || !token || amount == null) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'reservationId, token, and amount are required',
+    );
+  }
+
+  const amountNumber = Number(amount);
+  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+    throw new functions.https.HttpsError('invalid-argument', 'amount must be greater than 0');
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(String(reservationId));
+  const reservationSnap = await reservationRef.get();
+  if (!reservationSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+  const reservation = reservationSnap.data() as Record<string, any>;
+  if (reservation.moveInToken !== token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+  if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+  }
+  const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
+  if (expiresAt && expiresAt.toDate() < new Date()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
+  }
+
+  const facilityId = reservation.facilityId as string | undefined;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
+  }
+
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data() as Record<string, any>;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  const onboardingComplete = facilityData.stripeConnectOnboardingComplete as boolean | undefined;
+  if (!connectAccountId || !onboardingComplete) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Facility owner must complete Stripe setup before online payments are enabled',
+    );
+  }
+
+  const safeToken = encodeURIComponent(String(token));
+  const safeReservationId = encodeURIComponent(String(reservationId));
+  const successUrl =
+    `https://app.storagefacilitycreator.com/#/public-move-in?token=${safeToken}` +
+    `&reservationId=${safeReservationId}` +
+    '&checkout=success&session_id={CHECKOUT_SESSION_ID}';
+  const cancelUrl =
+    `https://app.storagefacilitycreator.com/#/public-move-in?token=${safeToken}` +
+    `&reservationId=${safeReservationId}` +
+    '&checkout=cancel';
+
+  const stripe = getStripeClient();
+  const session = await stripe.checkout.sessions.create(
+    {
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: description || `Move-in payment for ${facilityData.name || 'Facility'}`,
+            },
+            unit_amount: Math.round(amountNumber * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      customer_email: reservation.email as string | undefined,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata: {
+        type: 'public_move_in',
+        reservationId: String(reservationId),
+        moveInToken: String(token),
+        facilityId,
+      },
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  return {
+    checkoutUrl: session.url,
+    sessionId: session.id,
+  };
+});
+
+/**
+ * Confirm Stripe Checkout payment result for public move-in.
+ */
+export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  const {
+    reservationId,
+    token,
+    sessionId,
+  } = data || {};
+
+  if (!reservationId || !token || !sessionId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'reservationId, token, and sessionId are required',
+    );
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(String(reservationId));
+  const reservationSnap = await reservationRef.get();
+  if (!reservationSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+  const reservation = reservationSnap.data() as Record<string, any>;
+  if (reservation.moveInToken !== token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+
+  const facilityId = reservation.facilityId as string | undefined;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
+  }
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data() as Record<string, any>;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  const onboardingComplete = facilityData.stripeConnectOnboardingComplete as boolean | undefined;
+  if (!connectAccountId || !onboardingComplete) {
+    throw new functions.https.HttpsError('failed-precondition', 'Stripe is not enabled for this facility');
+  }
+
+  const stripe = getStripeClient();
+  const session = await stripe.checkout.sessions.retrieve(
+    String(sessionId),
+    {
+      expand: ['payment_intent'],
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  if (session.payment_status !== 'paid') {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      `Checkout is not paid (status: ${session.payment_status || 'unknown'})`,
+    );
+  }
+
+  const metaReservationId = session.metadata?.reservationId;
+  const metaToken = session.metadata?.moveInToken;
+  if (metaReservationId !== String(reservationId) || metaToken !== String(token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Checkout session does not match reservation');
+  }
+
+  const paymentIntentRaw = session.payment_intent;
+  const paymentIntentId = typeof paymentIntentRaw === 'string'
+    ? paymentIntentRaw
+    : paymentIntentRaw?.id;
+  if (!paymentIntentId) {
+    throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+
+  return {
+    success: true,
+    paymentIntentId,
+    amountPaid: (session.amount_total || 0) / 100,
+    currency: session.currency || 'usd',
+    sessionId: session.id,
   };
 });
 
@@ -7706,8 +8663,10 @@ export const autoProtectMoveIn = functions.runWith({ secrets: SENDGRID_SECRETS }
               totalEnrolled++;
 
               // Send email notification to tenant
-              try {
-                const emailHtml = `
+              const enrollEmail = tenantData.email && String(tenantData.email).trim();
+              if (enrollEmail) {
+                try {
+                  const emailHtml = `
                   <h2>Tenant Protection Plan Enrollment</h2>
                   <p>Dear ${tenantData.name},</p>
                   <p>You have been automatically enrolled in our Tenant Protection Plan (TPP) as you have not provided proof of your own insurance coverage within the 14-day grace period.</p>
@@ -7721,19 +8680,33 @@ export const autoProtectMoveIn = functions.runWith({ secrets: SENDGRID_SECRETS }
                   <p>Thank you,<br>${facilityData.name || 'Storage Facility'}</p>
                 `;
 
-                await sgMail.send({
-                  to: tenantData.email,
-                  from: {
-                    email: SENDGRID_FROM_EMAIL.value(),
-                    name: SENDGRID_FROM_NAME.value(),
-                  },
-                  subject: 'Tenant Protection Plan Enrollment Notification',
-                  html: emailHtml,
-                });
-
-                functions.logger.info(`Auto-enrollment email sent to ${tenantData.email}`);
-              } catch (emailError: any) {
-                functions.logger.error(`Error sending auto-enrollment email: ${emailError.message}`);
+                  const sendResult = await sendFacilityEmailWithCompliance(
+                    {
+                      to: enrollEmail,
+                      from: {
+                        email: SENDGRID_FROM_EMAIL.value(),
+                        name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                      },
+                      subject: 'Tenant Protection Plan Enrollment Notification',
+                    },
+                    emailHtml,
+                    null,
+                    {
+                      facilityId,
+                      tenantId,
+                      facilityName: facilityData?.name || 'Storage Facility',
+                      facilityAddress: facilityData?.address,
+                      facilityPhone: facilityData?.phone,
+                    },
+                  );
+                  if (sendResult.sent) {
+                    functions.logger.info(`Auto-enrollment email sent to ${enrollEmail}`);
+                  } else {
+                    functions.logger.info(`Auto-enrollment email skipped (unsubscribed): ${enrollEmail}`);
+                  }
+                } catch (emailError: any) {
+                  functions.logger.error(`Error sending auto-enrollment email: ${emailError.message}`);
+                }
               }
 
               functions.logger.info(`Auto-enrolled tenant ${tenantId} in TPP`);
@@ -7821,15 +8794,13 @@ export const autoProtectAudit = functions.runWith({ secrets: SENDGRID_SECRETS })
               const insuranceNotifiedDate = tenantData.insuranceNotifiedDate?.toDate();
 
               if (!insuranceNotifiedDate) {
-                // First notification
-                await tenantDoc.ref.update({
-                  insuranceNotifiedDate: admin.firestore.FieldValue.serverTimestamp(),
-                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
-
-                // Send first notification email
-                try {
-                  const emailHtml = `
+                // First notification — persist insuranceNotifiedDate only after a successful send
+                const firstNoticeEmail = tenantData.email && String(tenantData.email).trim();
+                if (!firstNoticeEmail) {
+                  functions.logger.warn(`Auto-Protect Audit: no email for tenant ${tenantId}, skipping first notice`);
+                } else {
+                  try {
+                    const emailHtml = `
                     <h2>Insurance Requirement Notice</h2>
                     <p>Dear ${tenantData.name},</p>
                     <p>Our facility now requires all tenants to have insurance coverage for their stored items. You currently do not have proof of insurance on file.</p>
@@ -7838,20 +8809,39 @@ export const autoProtectAudit = functions.runWith({ secrets: SENDGRID_SECRETS })
                     <p>Thank you,<br>${facilityData.name || 'Storage Facility'}</p>
                   `;
 
-                  await sgMail.send({
-                    to: tenantData.email,
-                    from: {
-                      email: SENDGRID_FROM_EMAIL.value(),
-                      name: SENDGRID_FROM_NAME.value(),
-                    },
-                    subject: 'Insurance Requirement Notice',
-                    html: emailHtml,
-                  });
+                    const sendResult = await sendFacilityEmailWithCompliance(
+                      {
+                        to: firstNoticeEmail,
+                        from: {
+                          email: SENDGRID_FROM_EMAIL.value(),
+                          name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                        },
+                        subject: 'Insurance Requirement Notice',
+                      },
+                      emailHtml,
+                      null,
+                      {
+                        facilityId,
+                        tenantId,
+                        facilityName: facilityData?.name || 'Storage Facility',
+                        facilityAddress: facilityData?.address,
+                        facilityPhone: facilityData?.phone,
+                      },
+                    );
 
-                  totalNotified++;
-                  functions.logger.info(`First notification sent to ${tenantData.email}`);
-                } catch (emailError: any) {
-                  functions.logger.error(`Error sending first notification: ${emailError.message}`);
+                    if (sendResult.sent) {
+                      await tenantDoc.ref.update({
+                        insuranceNotifiedDate: admin.firestore.FieldValue.serverTimestamp(),
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                      });
+                      totalNotified++;
+                      functions.logger.info(`First notification sent to ${firstNoticeEmail}`);
+                    } else {
+                      functions.logger.info(`First insurance notice skipped (unsubscribed): ${firstNoticeEmail}`);
+                    }
+                  } catch (emailError: any) {
+                    functions.logger.error(`Error sending first notification: ${emailError.message}`);
+                  }
                 }
               } else {
                 // Check if grace period has passed
@@ -7892,8 +8882,10 @@ export const autoProtectAudit = functions.runWith({ secrets: SENDGRID_SECRETS })
                   totalEnrolled++;
 
                   // Send enrollment notification
-                  try {
-                    const emailHtml = `
+                  const auditEnrollEmail = tenantData.email && String(tenantData.email).trim();
+                  if (auditEnrollEmail) {
+                    try {
+                      const emailHtml = `
                       <h2>Tenant Protection Plan Auto-Enrollment</h2>
                       <p>Dear ${tenantData.name},</p>
                       <p>You have been automatically enrolled in our Tenant Protection Plan as proof of insurance was not provided within the ${gracePeriodDays}-day grace period.</p>
@@ -7906,19 +8898,33 @@ export const autoProtectAudit = functions.runWith({ secrets: SENDGRID_SECRETS })
                       <p>Thank you,<br>${facilityData.name || 'Storage Facility'}</p>
                     `;
 
-                    await sgMail.send({
-                      to: tenantData.email,
-                      from: {
-                        email: SENDGRID_FROM_EMAIL.value(),
-                        name: SENDGRID_FROM_NAME.value(),
-                      },
-                      subject: 'Tenant Protection Plan Auto-Enrollment',
-                      html: emailHtml,
-                    });
-
-                    functions.logger.info(`Auto-enrollment email sent to ${tenantData.email}`);
-                  } catch (emailError: any) {
-                    functions.logger.error(`Error sending auto-enrollment email: ${emailError.message}`);
+                      const sendResult = await sendFacilityEmailWithCompliance(
+                        {
+                          to: auditEnrollEmail,
+                          from: {
+                            email: SENDGRID_FROM_EMAIL.value(),
+                            name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                          },
+                          subject: 'Tenant Protection Plan Auto-Enrollment',
+                        },
+                        emailHtml,
+                        null,
+                        {
+                          facilityId,
+                          tenantId,
+                          facilityName: facilityData?.name || 'Storage Facility',
+                          facilityAddress: facilityData?.address,
+                          facilityPhone: facilityData?.phone,
+                        },
+                      );
+                      if (sendResult.sent) {
+                        functions.logger.info(`Auto-enrollment email sent to ${auditEnrollEmail}`);
+                      } else {
+                        functions.logger.info(`Auto-enrollment email skipped (unsubscribed): ${auditEnrollEmail}`);
+                      }
+                    } catch (emailError: any) {
+                      functions.logger.error(`Error sending auto-enrollment email: ${emailError.message}`);
+                    }
                   }
                 }
               }
@@ -8031,8 +9037,10 @@ export const checkInsuranceCompliance = functions.runWith({ secrets: SENDGRID_SE
             totalEnrolled++;
 
             // Send enrollment email (same as in autoProtectAudit)
-            try {
-              const emailHtml = `
+            const complianceEnrollEmail = tenantData.email && String(tenantData.email).trim();
+            if (complianceEnrollEmail) {
+              try {
+                const emailHtml = `
                 <h2>Tenant Protection Plan Auto-Enrollment</h2>
                 <p>Dear ${tenantData.name},</p>
                 <p>You have been automatically enrolled in our Tenant Protection Plan as proof of insurance was not provided within the ${gracePeriodDays}-day grace period.</p>
@@ -8044,17 +9052,31 @@ export const checkInsuranceCompliance = functions.runWith({ secrets: SENDGRID_SE
                 <p>Thank you,<br>${facilityData.name || 'Storage Facility'}</p>
               `;
 
-              await sgMail.send({
-                to: tenantData.email,
-                from: {
-                  email: SENDGRID_FROM_EMAIL.value(),
-                  name: SENDGRID_FROM_NAME.value(),
-                },
-                subject: 'Tenant Protection Plan Auto-Enrollment',
-                html: emailHtml,
-              });
-            } catch (emailError: any) {
-              functions.logger.error(`Error sending enrollment email: ${emailError.message}`);
+                const sendResult = await sendFacilityEmailWithCompliance(
+                  {
+                    to: complianceEnrollEmail,
+                    from: {
+                      email: SENDGRID_FROM_EMAIL.value(),
+                      name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                    },
+                    subject: 'Tenant Protection Plan Auto-Enrollment',
+                  },
+                  emailHtml,
+                  null,
+                  {
+                    facilityId,
+                    tenantId,
+                    facilityName: facilityData?.name || 'Storage Facility',
+                    facilityAddress: facilityData?.address,
+                    facilityPhone: facilityData?.phone,
+                  },
+                );
+                if (!sendResult.sent) {
+                  functions.logger.info(`Compliance enrollment email skipped (unsubscribed): ${complianceEnrollEmail}`);
+                }
+              } catch (emailError: any) {
+                functions.logger.error(`Error sending enrollment email: ${emailError.message}`);
+              }
             }
           } catch (error: any) {
             functions.logger.error(`Error processing tenant ${tenantDoc.id}:`, error);
@@ -8193,17 +9215,30 @@ export const submitClaim = functions.runWith({ secrets: SENDGRID_SECRETS }).http
           <p>Claim ID: ${claimRef.id}</p>
         `;
 
-        await sgMail.send({
-          to: adjusterEmailToUse,
-          from: {
-            email: SENDGRID_FROM_EMAIL.value(),
-            name: SENDGRID_FROM_NAME.value(),
+        const claimSend = await sendFacilityEmailWithCompliance(
+          {
+            to: adjusterEmailToUse,
+            from: {
+              email: SENDGRID_FROM_EMAIL.value(),
+              name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+            },
+            subject: `New Insurance Claim - ${facilityData?.name || 'Storage Facility'}`,
           },
-          subject: `New Insurance Claim - ${facilityData?.name || 'Storage Facility'}`,
-          html: emailHtml,
-        });
-
-        functions.logger.info(`Claim notification email sent to ${adjusterEmailToUse}`);
+          emailHtml,
+          null,
+          {
+            facilityId,
+            tenantId,
+            facilityName: facilityData?.name || 'Storage Facility',
+            facilityAddress: facilityData?.address,
+            facilityPhone: facilityData?.phone,
+          },
+        );
+        if (claimSend.sent) {
+          functions.logger.info(`Claim notification email sent to ${adjusterEmailToUse}`);
+        } else {
+          functions.logger.info(`Claim notification skipped (unsubscribed): ${adjusterEmailToUse}`);
+        }
       } catch (emailError: any) {
         functions.logger.error(`Error sending claim email: ${emailError.message}`);
         // Don't fail the claim submission if email fails
@@ -8361,6 +9396,10 @@ export const processPaymentReminders = functions.runWith({ secrets: SENDGRID_SEC
               const monthlyRate = tenantData.monthlyRate || 0;
 
               // Send email reminder
+              const reminderTo = tenantData.email && String(tenantData.email).trim();
+              if (!reminderTo) {
+                continue;
+              }
               try {
                 const emailHtml = `
                   <h2>Payment Reminder</h2>
@@ -8372,25 +9411,37 @@ export const processPaymentReminders = functions.runWith({ secrets: SENDGRID_SEC
                   ${facilityData.phone ? `<p>Phone: ${facilityData.phone}</p>` : ''}
                 `;
 
-                await sgMail.send({
-                  to: tenantData.email,
-                  from: {
-                    email: SENDGRID_FROM_EMAIL.value(),
-                    name: SENDGRID_FROM_NAME.value(),
+                const reminderSend = await sendFacilityEmailWithCompliance(
+                  {
+                    to: reminderTo,
+                    from: {
+                      email: SENDGRID_FROM_EMAIL.value(),
+                      name: facilityData?.name || SENDGRID_FROM_NAME.value(),
+                    },
+                    subject: `Payment Reminder - Due ${nextDueDate.toLocaleDateString()}`,
                   },
-                  subject: `Payment Reminder - Due ${nextDueDate.toLocaleDateString()}`,
-                  html: emailHtml,
-                });
+                  emailHtml,
+                  null,
+                  {
+                    facilityId,
+                    tenantId,
+                    facilityName: facilityData?.name || 'Storage Facility',
+                    facilityAddress: facilityData?.address,
+                    facilityPhone: facilityData?.phone,
+                  },
+                );
 
-                // Update tenant with reminder sent date
-                await tenantDoc.ref.update({
-                  lastPaymentReminderDate: admin.firestore.FieldValue.serverTimestamp(),
-                });
-
-                totalRemindersSent++;
-                functions.logger.info(`Payment reminder sent to ${tenantData.email} (tenant: ${tenantId})`);
+                if (reminderSend.sent) {
+                  await tenantDoc.ref.update({
+                    lastPaymentReminderDate: admin.firestore.FieldValue.serverTimestamp(),
+                  });
+                  totalRemindersSent++;
+                  functions.logger.info(`Payment reminder sent to ${reminderTo} (tenant: ${tenantId})`);
+                } else {
+                  functions.logger.info(`Payment reminder skipped (unsubscribed): ${reminderTo}`);
+                }
               } catch (emailError: any) {
-                functions.logger.error(`Error sending payment reminder to ${tenantData.email}: ${emailError.message}`);
+                functions.logger.error(`Error sending payment reminder to ${reminderTo}: ${emailError.message}`);
               }
             } catch (error: any) {
               functions.logger.error(`Error processing tenant ${tenantDoc.id} for reminders:`, error);
@@ -11813,7 +12864,7 @@ export const reconcileStripePayment = functions.runWith({ secrets: STRIPE_SECRET
  * This creates a Standard Connect account that facility owners will complete onboarding for
  * Feature-flagged: Requires connectEnabledGlobal OR facilityId in allowlist
  */
-export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SECRETS_WITH_CONNECT }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
@@ -11856,8 +12907,8 @@ export const createStripeConnectAccount = functions.runWith({ secrets: STRIPE_SE
 
     const stripe = getStripeClient();
 
-    // Get Client ID (available for future use or Express Connect migration)
-    const clientId = process.env.STRIPE_CONNECT_CLIENT_ID;
+    // Connect client id (`ca_…`) from Secret Manager (optional; omit secret or use placeholder if unused)
+    const clientId = STRIPE_CONNECT_CLIENT_ID.value().trim() || undefined;
     if (clientId) {
       functions.logger.info(`Using Stripe Connect Client ID for facility ${facilityId}`);
     }
@@ -11971,24 +13022,33 @@ export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIP
 export type StripeConnectState = 'DISCONNECTED' | 'ONBOARDING_INCOMPLETE' | 'ENABLED' | 'ACTION_REQUIRED';
 
 /**
- * Get Stripe Connect status for a facility (state machine).
- * Returns: state, connectedAccountId, chargesEnabled, payoutsEnabled, detailsSubmitted, requirements, and persisted stripeStatus.
- * Callable by any authenticated user with facility access (owner/manager for settings; staff/tenant for payment UI gating).
+ * Same access as Firestore isFacilityStaff + tenant portal occupants (for legacy checks).
+ * Prefer getFacilityDataForUserOrThrow for staff-only flows.
  */
-/** Verify user has access to facility: owner, manager, or tenant (occupant) */
 async function canAccessFacility(uid: string, facilityId: string): Promise<boolean> {
-  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-  if (!facilityDoc.exists) return false;
-  const d = facilityDoc.data()!;
-  if (d.ownerUid === uid) return true;
-  const roles = (d.roles || {}) as Record<string, string>;
-  if (roles[uid] === 'manager' || roles[uid] === 'owner') return true;
-  const tenantsSnap = await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').get();
-  for (const t of tenantsSnap.docs) {
-    const occupants = (t.data().occupants || []) as Array<{ userId?: string }>;
-    if (occupants.some((o) => o.userId === uid)) return true;
+  try {
+    await getFacilityDataForUserOrThrow(uid, facilityId);
+    return true;
+  } catch (e: any) {
+    const code = e?.code;
+    if (code === 'permission-denied' || code === 'not-found') {
+      // Tenant (occupant) access: not in getFacilityDataForUserOrThrow
+      const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+      if (!facilityDoc.exists) return false;
+      const tenantsSnap = await admin
+        .firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('tenants')
+        .get();
+      for (const t of tenantsSnap.docs) {
+        const occupants = (t.data().occupants || []) as Array<{ userId?: string }>;
+        if (occupants.some((o) => o.userId === uid)) return true;
+      }
+      return false;
+    }
+    throw e;
   }
-  return false;
 }
 
 export const stripeConnectGetStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
@@ -12002,17 +13062,7 @@ export const stripeConnectGetStatus = functions.runWith({ secrets: STRIPE_SECRET
   }
 
   try {
-    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-    if (!facilityDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Facility not found');
-    }
-
-    const hasAccess = await canAccessFacility(context.auth!.uid, facilityId);
-    if (!hasAccess) {
-      throw new functions.https.HttpsError('permission-denied', 'Access denied');
-    }
-
-    const facilityData = facilityDoc.data()!;
+    const facilityData = await getFacilityDataForUserOrThrow(context.auth!.uid, facilityId);
     const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
 
     if (!connectAccountId) {
@@ -12097,7 +13147,8 @@ export const stripeConnectGetStatus = functions.runWith({ secrets: STRIPE_SECRET
 
 /**
  * Check Stripe Connect account status (legacy shape; prefer stripeConnectGetStatus for state machine)
- * Returns the current status of the connected account
+ * Returns the current status of the connected account.
+ * Any facility staff (owner, manager, employee, user_roles) may read status; only owners should start onboarding (enforced in UI / createAccount).
  */
 export const getStripeConnectAccountStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   if (!context.auth) {
@@ -12111,20 +13162,7 @@ export const getStripeConnectAccountStatus = functions.runWith({ secrets: STRIPE
   }
 
   try {
-    // Verify user has access to this facility
-    const facilityDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .get();
-
-    if (!facilityDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Facility not found');
-    }
-
-    const facilityData = facilityDoc.data()!;
-    if (facilityData.ownerUid !== context.auth.uid) {
-      throw new functions.https.HttpsError('permission-denied', 'Access denied');
-    }
+    const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
 
     const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
     if (!connectAccountId) {
@@ -12168,8 +13206,11 @@ export const getStripeConnectAccountStatus = functions.runWith({ secrets: STRIPE
       status: connectStatus,
     };
   } catch (error: any) {
+    if (error?.code && typeof error.code === 'string' && error.message) {
+      throw error;
+    }
     functions.logger.error('Error getting Stripe Connect account status', error);
-    throw new functions.https.HttpsError('internal', `Failed to get status: ${error.message}`);
+    throw new functions.https.HttpsError('internal', `Failed to get status: ${error?.message || 'Unknown error'}`);
   }
 });
 
@@ -13239,8 +14280,13 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
 
   const { facilityId, tenantId, paymentMethodId, amount, description } = data;
 
-  if (!facilityId || !tenantId || !paymentMethodId || !amount) {
+  if (!facilityId || !tenantId || !paymentMethodId || amount === undefined || amount === null) {
     throw new functions.https.HttpsError('invalid-argument', 'Missing required parameters');
+  }
+
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum < 0.5) {
+    throw new functions.https.HttpsError('invalid-argument', 'Amount must be a number of at least 0.50 (USD).');
   }
 
   // Use same gate as Add Card / one-time payments: facility must have Connect + charges_enabled
@@ -13262,16 +14308,22 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
 
     const facilityData = facilityDoc.data();
     const ownerUid = facilityData?.ownerUid;
-    const roles = facilityData?.roles || {};
+    const roles = (facilityData?.roles || {}) as Record<string, string>;
     const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
 
     if (!connectAccountId) {
       throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
     }
 
-    // Check if user is owner or has manager role
-    if (ownerUid !== context.auth.uid && roles[context.auth.uid] !== 'manager' && roles[context.auth.uid] !== 'owner') {
-      throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+    const isElevated =
+      ownerUid === context.auth.uid ||
+      roles[context.auth.uid] === 'manager' ||
+      roles[context.auth.uid] === 'owner';
+    if (!isElevated) {
+      const staffOk = await canAccessFacility(context.auth.uid, facilityId);
+      if (!staffOk) {
+        throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+      }
     }
 
     // Verify tenant exists
@@ -13297,7 +14349,7 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
 
     // Create PaymentIntent on CONNECTED account (off-session)
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Convert to cents
+      amount: Math.round(amountNum * 100), // Convert to cents
       currency: 'usd',
       payment_method: paymentMethodId,
       customer: customerId,
@@ -13315,108 +14367,344 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
       stripeAccount: connectAccountId, // Create on connected account
     });
 
-    const amountCents = Math.round(amount * 100);
+    if (paymentIntent.status !== 'succeeded') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Payment was not completed (status: ${paymentIntent.status}). Try "Pay with new card" or ask the tenant to approve with their bank.`,
+      );
+    }
+
+    const amountCents = Math.round(amountNum * 100);
     const now = admin.firestore.FieldValue.serverTimestamp();
 
-    // Store in tenant payments subcollection (shows in Payment History)
-    const tenantPaymentsRef = admin.firestore()
-      .collection('facilities').doc(facilityId)
-      .collection('tenants').doc(tenantId)
-      .collection('payments');
-    const paymentDocRef = tenantPaymentsRef.doc();
-    await paymentDocRef.set({
-      facilityId,
-      tenantId,
-      type: 'one_time',
-      amountCents,
-      currency: 'usd',
-      stripeObjectId: paymentIntent.id,
-      status: 'succeeded',
-      chargeType: 'tenant_one_time_card_on_file',
-      description: description || `One-time payment`,
-      createdAt: now,
-      updatedAt: now,
-      failureCode: null,
-      failureMessage: null,
-    });
-
-    // Store in facility payments (shows in main Payments screen)
-    const facilityPaymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('payments');
-    const facilityPaymentDoc = await facilityPaymentsRef.add({
-      tenantId,
-      facilityId,
-      contractId: '',
-      amount: amount,
-      status: 'completed',
-      method: 'stripe',
-      paidAt: now,
-      paidDate: now,
-      externalPaymentId: paymentIntent.id,
-      transactionId: paymentIntent.id,
-      createdAt: now,
-      updatedAt: now,
-      createdBy: context.auth.uid,
-      isActive: true,
-    });
-
-    // Create ledger entry (shows in View Ledger)
-    const ledgerRef = admin.firestore().collection('facilities').doc(facilityId).collection('ledgers').doc();
-    await ledgerRef.set({
-      tenantId,
-      facilityId,
-      type: 'payment',
-      amount: -(amount),
-      description: `Payment via Stripe - ${paymentIntent.id}`,
-      referenceId: facilityPaymentDoc.id,
-      entryDate: now,
-      status: 'posted',
-      createdAt: now,
-      createdBy: context.auth.uid,
-      metadata: { paymentIntentId: paymentIntent.id },
-    });
-
-    // Also store in tenantCharges for legacy/reconciliation
-    const chargeRef = admin.firestore().collection('tenantCharges').doc();
-    await chargeRef.set({
-      facilityId,
-      tenantId,
-      stripePaymentIntentId: paymentIntent.id,
-      stripeCustomerId: customerId,
-      stripeConnectedAccountId: connectAccountId,
-      amount: amount,
-      currency: 'usd',
-      status: paymentIntent.status,
-      description: description || `One-time payment for tenant ${tenantId}`,
-      metadata: {
+    let recordingWarning: string | undefined;
+    try {
+      // Store in tenant payments subcollection (shows in Payment History)
+      const tenantPaymentsRef = admin.firestore()
+        .collection('facilities').doc(facilityId)
+        .collection('tenants').doc(tenantId)
+        .collection('payments');
+      const paymentDocRef = tenantPaymentsRef.doc();
+      await paymentDocRef.set({
+        facilityId,
+        tenantId,
+        type: 'one_time',
+        amountCents,
+        currency: 'usd',
+        stripeObjectId: paymentIntent.id,
+        status: 'succeeded',
         chargeType: 'tenant_one_time_card_on_file',
-        userId: context.auth.uid,
-        paymentDocId: paymentDocRef.id,
-      },
-      createdAt: now,
-      updatedAt: now,
-    });
+        description: description || `One-time payment`,
+        createdAt: now,
+        updatedAt: now,
+        failureCode: null,
+        failureMessage: null,
+      });
 
-    functions.logger.info(`Off-session charge created on connected account: ${paymentIntent.id} for tenant ${tenantId}`);
+      // Store in facility payments (shows in main Payments screen)
+      const facilityPaymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('payments');
+      const facilityPaymentRef = await facilityPaymentsRef.add({
+        tenantId,
+        facilityId,
+        contractId: '',
+        amount: amountNum,
+        status: 'completed',
+        method: 'stripe',
+        paidAt: now,
+        paidDate: now,
+        externalPaymentId: paymentIntent.id,
+        transactionId: paymentIntent.id,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: context.auth.uid,
+        isActive: true,
+      });
+
+      // Create ledger entry (shows in View Ledger)
+      const ledgerRef = admin.firestore().collection('facilities').doc(facilityId).collection('ledgers').doc();
+      await ledgerRef.set({
+        tenantId,
+        facilityId,
+        type: 'payment',
+        amount: -amountNum,
+        description: `Payment via Stripe - ${paymentIntent.id}`,
+        referenceId: facilityPaymentRef.id,
+        entryDate: now,
+        status: 'posted',
+        createdAt: now,
+        createdBy: context.auth.uid,
+        metadata: { paymentIntentId: paymentIntent.id },
+      });
+
+      // Also store in tenantCharges for legacy/reconciliation
+      const chargeRef = admin.firestore().collection('tenantCharges').doc();
+      await chargeRef.set({
+        facilityId,
+        tenantId,
+        stripePaymentIntentId: paymentIntent.id,
+        stripeCustomerId: customerId,
+        stripeConnectedAccountId: connectAccountId,
+        amount: amountNum,
+        currency: 'usd',
+        status: paymentIntent.status,
+        description: description || `One-time payment for tenant ${tenantId}`,
+        metadata: {
+          chargeType: 'tenant_one_time_card_on_file',
+          userId: context.auth.uid,
+          paymentDocId: paymentDocRef.id,
+        },
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      functions.logger.info(`Off-session charge recorded: ${paymentIntent.id} for tenant ${tenantId}`);
+    } catch (persistErr: any) {
+      functions.logger.error('chargeTenantOffSession: Stripe succeeded but Firestore persist failed', {
+        facilityId,
+        tenantId,
+        paymentIntentId: paymentIntent.id,
+        error: persistErr?.message,
+        stack: persistErr?.stack,
+      });
+      recordingWarning =
+        'Your card was charged successfully, but saving the receipt in the app failed. ' +
+        `Give support this payment ID: ${paymentIntent.id}`;
+    }
 
     return {
       success: true,
       paymentIntentId: paymentIntent.id,
       status: paymentIntent.status,
-      amount: amount,
+      amount: amountNum,
+      ...(recordingWarning ? { recordingWarning } : {}),
     };
   } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
     const safeError = error?.message || 'Failed to charge tenant';
     functions.logger.error('Error charging tenant off-session on connected account:', {
       facilityId,
       tenantId,
       error: safeError,
+      stack: error?.stack,
     });
-    
-    // Map Stripe error codes to user-friendly messages
+
     const userMessage = mapStripeErrorToUserMessage(error);
     throw new functions.https.HttpsError('internal', userMessage);
   }
 });
+
+/**
+ * One-click / link unsubscribe for facility marketing-style emails (SendGrid List-Unsubscribe target).
+ */
+export const emailUnsubscribeHttp = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  const sendGridApiKey = SENDGRID_API_KEY.value();
+  const token =
+    (typeof req.query.token === 'string' && req.query.token) ||
+    (typeof (req.body as any)?.token === 'string' && (req.body as any).token) ||
+    '';
+
+  const parsed = token ? parseEmailUnsubscribeToken(sendGridApiKey, token) : null;
+
+  const htmlOk =
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Unsubscribed</title></head><body style="font-family:system-ui,sans-serif;max-width:520px;margin:48px auto;padding:16px;">' +
+    '<h1>Preferences updated</h1>' +
+    '<p>You will no longer receive non-essential emails from this facility sent through Storage Facility Creator.</p>' +
+    '<p style="color:#666;font-size:14px;">Time-sensitive or legally required messages may still be sent.</p>' +
+    '</body></html>';
+  const htmlInvalid =
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Link invalid</title></head><body style="font-family:system-ui,sans-serif;max-width:520px;margin:48px auto;padding:16px;">' +
+    '<h1>Link invalid or expired</h1>' +
+    '<p>This unsubscribe link is invalid or has expired. Contact the facility directly to update your email preferences.</p>' +
+    '</body></html>';
+
+  if (!parsed) {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.status(400).send(htmlInvalid);
+    return;
+  }
+
+  const suppressId = crypto.createHash('sha256').update(`${parsed.facilityId}|${parsed.emailLower}`).digest('hex');
+  await admin
+    .firestore()
+    .collection('facilities')
+    .doc(parsed.facilityId)
+    .collection('emailSuppressions')
+    .doc(suppressId)
+    .set(
+      {
+        emailLower: parsed.emailLower,
+        tenantId: parsed.tenantId || null,
+        unsubscribedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'list_unsubscribe',
+      },
+      { merge: true },
+    );
+
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send(htmlOk);
+});
+
+/**
+ * Staff: list addresses that unsubscribed from non-essential facility emails (emailSuppressions subcollection).
+ */
+export const listFacilityEmailSuppressions = functions.https.onCall(async (data: { facilityId?: string }, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+  const facilityId = data?.facilityId;
+  if (!facilityId || typeof facilityId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+  await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+  await enforceRateLimit({
+    facilityId,
+    key: 'listFacilityEmailSuppressions',
+    limit: 60,
+    windowSeconds: 60,
+    userId: context.auth.uid,
+  });
+
+  const snap = await admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('emailSuppressions')
+    .orderBy('unsubscribedAt', 'desc')
+    .limit(500)
+    .get();
+
+  const suppressions = snap.docs.map((d) => {
+    const x = d.data() as Record<string, unknown>;
+    const ts = x.unsubscribedAt as admin.firestore.Timestamp | undefined;
+    let unsubscribedAt: string | null = null;
+    if (ts && typeof (ts as { toDate?: () => Date }).toDate === 'function') {
+      unsubscribedAt = (ts as admin.firestore.Timestamp).toDate().toISOString();
+    }
+    return {
+      suppressId: d.id,
+      emailLower: String(x.emailLower ?? ''),
+      tenantId: x.tenantId != null ? String(x.tenantId) : null,
+      unsubscribedAt,
+      source: x.source != null ? String(x.source) : null,
+    };
+  });
+
+  return { suppressions };
+});
+
+/**
+ * Staff: remove an email suppression (re-allow facility emails). Optionally sends a confirmation email after removal.
+ */
+export const removeFacilityEmailSuppression = functions.runWith({ secrets: SENDGRID_SECRETS }).https.onCall(
+  async (
+    data: { facilityId?: string; suppressId?: string; emailLower?: string; sendConfirmation?: boolean },
+    context,
+  ) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    enforceAppCheckOrThrow(context);
+    const facilityId = data?.facilityId;
+    if (!facilityId || typeof facilityId !== 'string') {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+    const sendConfirmation = data?.sendConfirmation !== false;
+
+    let suppressId = typeof data?.suppressId === 'string' ? data.suppressId.trim() : '';
+    if (!suppressId && typeof data?.emailLower === 'string' && data.emailLower.trim()) {
+      const el = data.emailLower.trim().toLowerCase();
+      suppressId = crypto.createHash('sha256').update(`${facilityId}|${el}`).digest('hex');
+    }
+    if (!suppressId) {
+      throw new functions.https.HttpsError('invalid-argument', 'suppressId or emailLower is required');
+    }
+
+    const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+    await enforceRateLimit({
+      facilityId,
+      key: 'removeFacilityEmailSuppression',
+      limit: 30,
+      windowSeconds: 60,
+      userId: context.auth.uid,
+    });
+
+    const ref = admin.firestore().collection('facilities').doc(facilityId).collection('emailSuppressions').doc(suppressId);
+    const doc = await ref.get();
+    if (!doc.exists) {
+      throw new functions.https.HttpsError('not-found', 'No unsubscribe record found for this recipient');
+    }
+    const row = doc.data() as Record<string, unknown>;
+    const emailLower = String(row.emailLower ?? '').trim().toLowerCase();
+    const tenantId = row.tenantId != null ? String(row.tenantId) : null;
+
+    await ref.delete();
+
+    let confirmationSent = false;
+    if (sendConfirmation && emailLower.includes('@')) {
+      try {
+        let sendGridFromEmail: string;
+        try {
+          sendGridFromEmail = SENDGRID_FROM_EMAIL.value();
+        } catch {
+          sendGridFromEmail = '';
+        }
+        if (!sendGridFromEmail?.trim()) {
+          functions.logger.warn('removeFacilityEmailSuppression: SENDGRID_SENDER_EMAIL not set; skip confirmation');
+        } else {
+          initializeSendGrid();
+          const facilityName = (facilityData.name as string) || 'Storage Facility';
+          const facilityAddress =
+            facilityData.address != null && facilityData.address !== '' ? String(facilityData.address) : undefined;
+          const facilityPhone =
+            facilityData.phone != null && facilityData.phone !== '' ? String(facilityData.phone) : undefined;
+
+          const htmlBody =
+            '<p>You are set to receive non-essential emails from <strong>' +
+            escapeHtml(facilityName) +
+            '</strong> again. These messages are sent through Storage Facility Creator.</p>' +
+            '<p style="font-size:14px;color:#444;">If you did not ask to receive these emails again, contact the facility directly.</p>';
+
+          const result = await sendFacilityEmailWithCompliance(
+            {
+              to: emailLower,
+              from: { email: sendGridFromEmail.trim(), name: facilityName },
+              subject: `Email preferences updated - ${facilityName}`,
+            },
+            htmlBody,
+            null,
+            {
+              facilityId,
+              tenantId: tenantId || null,
+              facilityName,
+              facilityAddress,
+              facilityPhone,
+            },
+          );
+          confirmationSent = result.sent;
+        }
+      } catch (e: any) {
+        functions.logger.error('removeFacilityEmailSuppression: confirmation email failed', {
+          error: e?.message,
+          facilityId,
+          emailLower,
+        });
+      }
+    }
+
+    return { ok: true, confirmationSent };
+  },
+);
 
 /**
  * Create a one-time PaymentIntent for store checkout (locks/boxes) on connected account
@@ -13904,6 +15192,132 @@ async function updateAccountFromSubscription(accountId: string, subscriptionId: 
 }
 
 /**
+ * Handle inbound SMS to the SFC marketing line and log as superadmin leads.
+ */
+async function processSfcLeadInboundSMSWebhook(params: {
+  res: functions.Response<any>;
+  from: string;
+  to: string;
+  body: string;
+  messageSid?: string;
+  requestId?: string;
+}) {
+  const { res, from, to, body, messageSid, requestId } = params;
+  const lead = await upsertSfcLeadFromInboundContact({
+    channel: 'sms',
+    fromRaw: from,
+    toRaw: to,
+    messageBody: body,
+    messageSid,
+  });
+  functions.logger.info('Logged inbound SMS as SFC lead', {
+    requestId: requestId || null,
+    leadId: lead.leadId,
+    messageSid: messageSid || null,
+  });
+
+  const autoReply = SFC_LEAD_SMS_AUTO_REPLY.value().trim();
+  const xml = autoReply
+    ? `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(autoReply)}</Message></Response>`
+    : '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
+  res.status(200).contentType('text/xml').send(xml);
+}
+
+/**
+ * Dedicated Twilio webhook for the SFC lead line (SMS).
+ * Can be pointed to directly from Twilio, or internally reused by handleIncomingSMS.
+ */
+export const handleSfcLeadSMS = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).send('');
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+
+  try {
+    const from = String(req.body.From || '').trim();
+    const to = String(req.body.To || '').trim();
+    const body = String(req.body.Body || '').trim();
+    const messageSid = String(req.body.MessageSid || '').trim();
+    const requestId = crypto.randomUUID();
+
+    await processSfcLeadInboundSMSWebhook({
+      res,
+      from,
+      to,
+      body,
+      messageSid: messageSid || undefined,
+      requestId,
+    });
+  } catch (error: any) {
+    functions.logger.error('Error handling SFC lead SMS webhook', { error: error?.message });
+    res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  }
+});
+
+/**
+ * Dedicated Twilio webhook for voice calls to the SFC lead line.
+ * Logs inbound call activity and forwards the call to a configured personal number.
+ */
+export const handleSfcLeadCall = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).send('');
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+
+  try {
+    const from = String(req.body.From || '').trim();
+    const to = String(req.body.To || '').trim();
+    const callSid = String(req.body.CallSid || '').trim();
+    const callStatus = String(req.body.CallStatus || '').trim();
+
+    const lead = await upsertSfcLeadFromInboundContact({
+      channel: 'call',
+      fromRaw: from,
+      toRaw: to,
+      callSid: callSid || undefined,
+      callStatus: callStatus || undefined,
+    });
+
+    const forwardToRaw = SFC_LEAD_FORWARD_TO_NUMBER.value().trim();
+    const forwardTo = formatPhoneNumber(forwardToRaw) || forwardToRaw;
+
+    functions.logger.info('Inbound SFC lead call received', {
+      leadId: lead.leadId,
+      callSid: callSid || null,
+      callStatus: callStatus || null,
+      hasForwardTarget: Boolean(forwardTo),
+    });
+
+    const xml = forwardTo
+      ? `<?xml version="1.0" encoding="UTF-8"?><Response><Dial answerOnBridge="true"><Number>${escapeXml(forwardTo)}</Number></Dial></Response>`
+      : '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">Thanks for calling Storage Facility Creator. Please text this number and we will follow up shortly.</Say></Response>';
+
+    res.status(200).contentType('text/xml').send(xml);
+  } catch (error: any) {
+    functions.logger.error('Error handling SFC lead call webhook', { error: error?.message });
+    res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  }
+});
+
+/**
  * Phase 12: Two-Way SMS Messaging
  * Handle incoming SMS messages from tenants via Twilio webhook
  */
@@ -13937,6 +15351,19 @@ export const handleIncomingSMS = functions.runWith({
     const body = (req.body.Body as string || '').trim();
     const messageSid = req.body.MessageSid as string;
     const requestId = crypto.randomUUID();
+
+    if (to && isSfcLeadLineMatch(to)) {
+      await processSfcLeadInboundSMSWebhook({
+        res,
+        from,
+        to,
+        body,
+        messageSid,
+        requestId,
+      });
+      return;
+    }
+
     const inboundFacilityId = await findFacilityIdByInboundNumber(to);
     functions.logger.info('Incoming SMS webhook', {
       requestId,
@@ -15055,7 +16482,7 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
         throw new Error('OpenAI API key not configured');
       }
 
-      // Initialize OpenAI client
+      const { default: OpenAI } = await import('openai');
       const openai = new OpenAI({ apiKey });
 
       // Prepare messages for OpenAI (convert to OpenAI format)
@@ -15496,6 +16923,7 @@ export const aiAssistantChat = functions
       if (!apiKey) {
         throw new Error('OpenAI API key not configured');
       }
+      const { default: OpenAI } = await import('openai');
       const openai = new OpenAI({ apiKey });
 
       // Enhanced guardrail: Use OpenAI Moderation API to check for harmful content
@@ -15803,6 +17231,7 @@ export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, me
       throw new functions.https.HttpsError('invalid-argument', 'PDF too large (max 10MB)');
     }
 
+    const { PDFDocument } = await import('pdf-lib');
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const pages = pdfDoc.getPages();
 
@@ -15974,6 +17403,7 @@ export const generateOTP = functions.runWith({ secrets: SENDGRID_SECRETS }).http
       `;
       const emailText = `Your verification code is: ${otpCode}\n\nThis code will expire in 10 minutes.\n\nIf you didn't request this code, please ignore this email.`;
 
+      const { html: otpHtml, text: otpText } = appendPlatformSecurityEmailFooter(emailHtml, emailText);
       const msg = {
         to: userEmail,
         from: {
@@ -15981,11 +17411,11 @@ export const generateOTP = functions.runWith({ secrets: SENDGRID_SECRETS }).http
           name: SENDGRID_FROM_NAME.value(),
         },
         subject: emailSubject,
-        html: emailHtml,
-        text: emailText,
+        html: otpHtml,
+        text: otpText,
       };
 
-      await sgMail.send(msg);
+      await getSgMail().send(msg);
 
       // Update lastOTPSentAt only *after* successful send so failed sends don't rate-limit the user.
       await admin.firestore()

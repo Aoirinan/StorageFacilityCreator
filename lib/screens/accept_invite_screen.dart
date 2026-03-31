@@ -1,9 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
 import '../services/permission_service.dart';
 import '../services/facility_service.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../theme/app_theme.dart';
 
@@ -31,15 +32,20 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
   String? _invitedByEmail;
   /// Email the invitation was sent to (for "Log in with invited email" when mismatch)
   String? _inviteeEmail;
+  /// Email the invite was sent to (for login/signup deep links).
+  String? _inviteEmail;
+
+  StreamSubscription<User?>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
     print('🔗 [AcceptInviteScreen] Initialized with facilityId: ${widget.facilityId}, inviteId: ${widget.inviteId}');
     _loadInvite();
-    
-    // Listen for auth state changes - if user logs in, try to fulfill invite
-    FirebaseAuth.instance.authStateChanges().listen((user) {
+
+    // One listener per screen instance; must cancel on dispose so we do not run after leaving this route.
+    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
+      if (!mounted) return;
       if (user != null && !_isProcessing && !_isLoading && !_hasTriedAutoAccept) {
         print('👤 [AcceptInviteScreen] User logged in, attempting to fulfill invite');
         _hasTriedAutoAccept = true;
@@ -48,15 +54,28 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadInvite() async {
     print('📥 [AcceptInviteScreen] Loading invite...');
     try {
-      final invites = await PermissionService.getFacilityInvites(widget.facilityId);
-      print('📋 [AcceptInviteScreen] Found ${invites.length} invites');
-      final invite = invites.firstWhere(
-        (inv) => inv.id == widget.inviteId,
-        orElse: () => invites.first, // Fallback
+      final invite = await PermissionService.getFacilityInviteById(
+        facilityId: widget.facilityId,
+        inviteId: widget.inviteId,
       );
+      if (invite == null) {
+        print('📋 [AcceptInviteScreen] Invite document not found or not readable');
+        setState(() {
+          _errorMessage =
+              'This invitation was not found. It may have been cancelled, the link may be wrong, or the facility ID in the link does not match.';
+          _isLoading = false;
+        });
+        return;
+      }
       print('✅ [AcceptInviteScreen] Found invite: ${invite.email}, status: ${invite.status}');
 
       if (!invite.isPending) {
@@ -78,6 +97,7 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
         _facilityName = facility?.name ?? 'Unknown Facility';
         _roleType = role?.name ?? invite.roleType.name;
         _invitedByEmail = invite.invitedByEmail;
+        _inviteEmail = invite.email;
         _isLoading = false;
       });
     } catch (e) {
@@ -93,22 +113,22 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
     final user = FirebaseAuth.instance.currentUser;
     print('👤 [AcceptInviteScreen] Current user: ${user?.email ?? "null"}');
     if (user == null) {
-      print('🔐 [AcceptInviteScreen] User not logged in, redirecting to signup');
-      // User needs to sign up or log in first
-      // Get the invite email
+      print('🔐 [AcceptInviteScreen] User not logged in, redirecting to login');
       try {
-        final invites = await PermissionService.getFacilityInvites(widget.facilityId);
-        final invite = invites.firstWhere(
-          (inv) => inv.id == widget.inviteId,
-          orElse: () => invites.first,
+        final invite = await PermissionService.getFacilityInviteById(
+          facilityId: widget.facilityId,
+          inviteId: widget.inviteId,
         );
-        
-        // Store the invite info in the URL for redirect after signup
+        if (invite == null) {
+          throw Exception('Invitation not found');
+        }
+
         final redirectUrl = '${AppRoute.acceptInvite}?facilityId=${widget.facilityId}&inviteId=${widget.inviteId}';
-        
+
         if (mounted) {
-          // Redirect to signup with email pre-filled and redirect back to accept invite
-          context.go('${AppRoute.signup}?email=${Uri.encodeComponent(invite.email)}&redirect=${Uri.encodeComponent(redirectUrl)}');
+          context.go(
+            '${AppRoute.login}?email=${Uri.encodeComponent(invite.email)}&redirect=${Uri.encodeComponent(redirectUrl)}',
+          );
         }
       } catch (e) {
         setState(() {
@@ -128,14 +148,17 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
 
     try {
       print('✅ [AcceptInviteScreen] User is logged in, fulfilling invite...');
-      
-      // First, verify the invite exists and matches the user's email
-      final invites = await PermissionService.getFacilityInvites(widget.facilityId);
-      final invite = invites.firstWhere(
-        (inv) => inv.id == widget.inviteId,
-        orElse: () => invites.first,
+
+      final invite = await PermissionService.getFacilityInviteById(
+        facilityId: widget.facilityId,
+        inviteId: widget.inviteId,
       );
-      
+      if (invite == null) {
+        throw Exception(
+          'Invitation not found. It may have been cancelled or the link is invalid.',
+        );
+      }
+
       print('📧 [AcceptInviteScreen] Invite email: ${invite.email}, User email: ${user.email}');
       
       // Check if email matches (case-insensitive)
@@ -162,6 +185,8 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
       if (!fulfilled) {
         throw Exception('Failed to accept invitation. The invite may have already been accepted or cancelled.');
       }
+
+      FacilityService.clearFacilitiesCache();
       
       print('✅ [AcceptInviteScreen] Invite fulfilled successfully');
 
@@ -288,6 +313,19 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
                                   ),
                                 ],
                                 const SizedBox(height: 32),
+                                if (FirebaseAuth.instance.currentUser == null &&
+                                    _inviteEmail != null) ...[
+                                  Text(
+                                    'If you\'re not signed in yet, Accept will open the sign-in page. '
+                                    'New to SFC? Tap Sign up there—the invited email stays filled in.',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 16),
+                                ],
                                 if (_errorMessage != null)
                                   Padding(
                                     padding: const EdgeInsets.only(bottom: 16),
@@ -351,7 +389,20 @@ class _AcceptInviteScreenState extends State<AcceptInviteScreen> {
                                 ),
                                 const SizedBox(height: 12),
                                 TextButton(
-                                  onPressed: () => context.go(AppRoute.login),
+                                  onPressed: () {
+                                    final redirect =
+                                        '${AppRoute.acceptInvite}?facilityId=${widget.facilityId}&inviteId=${widget.inviteId}';
+                                    final email = _inviteEmail;
+                                    if (email != null && email.isNotEmpty) {
+                                      context.go(
+                                        '${AppRoute.login}?email=${Uri.encodeComponent(email)}&redirect=${Uri.encodeComponent(redirect)}',
+                                      );
+                                    } else {
+                                      context.go(
+                                        '${AppRoute.login}?redirect=${Uri.encodeComponent(redirect)}',
+                                      );
+                                    }
+                                  },
                                   child: const Text('Already have an account? Log in'),
                                 ),
                               ],

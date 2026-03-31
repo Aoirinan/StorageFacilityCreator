@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -37,6 +38,14 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
   WebViewController? _webViewController;
   /// Facility we're showing status for; stays in sync with the global facility dropdown.
   String _displayFacilityId = '';
+
+  bool get _isFacilityOwner {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return false;
+    if (widget.facility.currentUserOwnsFacility == true) return true;
+    if (widget.facility.currentUserOwnsFacility == false) return false;
+    return widget.facility.ownerUid == uid;
+  }
 
   @override
   void initState() {
@@ -502,51 +511,59 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                     const SizedBox(height: 16),
                   ],
 
-                  // Action Buttons
+                  // Action Buttons (only owners can create accounts / onboarding links — enforced on server too)
                   if (_accountStatus == null || _accountStatus!['connected'] != true) ...[
-                    // Create Account Button
-                    ElevatedButton.icon(
-                      onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink) 
-                          ? null 
-                          : _createConnectAccount,
-                      icon: _isCreatingAccount
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.add),
-                      label: Text(_isCreatingAccount
-                          ? 'Creating Account...'
-                          : 'Connect Stripe Account'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.success,
-                        foregroundColor: AppTheme.textOnDark,
-                        padding: const EdgeInsets.all(16),
+                    if (_isFacilityOwner)
+                      ElevatedButton.icon(
+                        onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink)
+                            ? null
+                            : _createConnectAccount,
+                        icon: _isCreatingAccount
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.add),
+                        label: Text(_isCreatingAccount
+                            ? 'Creating Account...'
+                            : 'Connect Stripe Account'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.success,
+                          foregroundColor: AppTheme.textOnDark,
+                          padding: const EdgeInsets.all(16),
+                        ),
+                      )
+                    else
+                      _nonOwnerStripeCallout(
+                        'Stripe is not connected for this facility yet. Only the facility owner can connect Stripe (Accounting → Payment Processing while signed in as owner).',
                       ),
-                    ),
                   ] else if (_accountStatus!['onboardingComplete'] != true) ...[
-                    // Continue Onboarding Button
-                    ElevatedButton.icon(
-                      onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink) 
-                          ? null 
-                          : _createOnboardingLink,
-                      icon: _isCreatingLink
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.arrow_forward),
-                      label: Text(_isCreatingLink
-                          ? 'Creating Link...'
-                          : 'Continue Onboarding'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primaryBlue,
-                        foregroundColor: AppTheme.textOnDark,
-                        padding: const EdgeInsets.all(16),
+                    if (_isFacilityOwner)
+                      ElevatedButton.icon(
+                        onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink)
+                            ? null
+                            : _createOnboardingLink,
+                        icon: _isCreatingLink
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.arrow_forward),
+                        label: Text(_isCreatingLink
+                            ? 'Creating Link...'
+                            : 'Continue Onboarding'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.primaryBlue,
+                          foregroundColor: AppTheme.textOnDark,
+                          padding: const EdgeInsets.all(16),
+                        ),
+                      )
+                    else
+                      _nonOwnerStripeCallout(
+                        'Stripe setup is not finished. Only the facility owner can complete Stripe onboarding.',
                       ),
-                    ),
                   ] else ...[
                     // Already Connected
                     Container(
@@ -634,21 +651,21 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                         ],
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    // Reconnect option (if needed)
-                    OutlinedButton.icon(
-                      onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink) 
-                          ? null 
-                          : () {
-                              // Allow reconnecting if account was disconnected
-                              _createOnboardingLink();
-                            },
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Reconnect or Update Account'),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.all(12),
+                    if (_isFacilityOwner) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink)
+                            ? null
+                            : () {
+                                _createOnboardingLink();
+                              },
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Reconnect or Update Account'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.all(12),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
 
                   const SizedBox(height: 16),
@@ -671,6 +688,33 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
               ),
             ),
           ),
+    );
+  }
+
+  Widget _nonOwnerStripeCallout(String message) {
+    return Material(
+      color: AppTheme.primaryBlue.withOpacity(0.08),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, color: AppTheme.primaryBlue, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.35,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

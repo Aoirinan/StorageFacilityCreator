@@ -4,6 +4,7 @@ import 'dart:html' as html;
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/services/web_externals_loader.dart';
 
 class StripeConfirmResult {
   final bool succeeded;
@@ -18,12 +19,13 @@ class StripeWebBridge {
   static JSObject? _paymentElement;
   static String _currentMode = '';
 
-  static void initialize(String publishableKey) {
+  static Future<void> initialize(String publishableKey) async {
     try {
+      await ensureStripeJsForWeb();
       final win = html.window as JSObject;
       final stripeCtor = win['Stripe'];
       if (stripeCtor == null || stripeCtor.isUndefinedOrNull) {
-        throw Exception('Stripe not loaded. Add <script src="https://js.stripe.com/v3/"></script> to index.html');
+        throw Exception('Stripe.js failed to load. Check network and CSP.');
       }
       _stripe = (stripeCtor as JSFunction).callAsConstructor<JSObject>(publishableKey.toJS);
     } catch (e) {

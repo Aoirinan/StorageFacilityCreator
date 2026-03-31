@@ -282,15 +282,19 @@ class AppShell extends ConsumerWidget {
             ),
           ],
         ),
-      drawer: isMobile ? Drawer(
-        child: _SubscriptionAwareSidebar(
-          currentRoute: currentRoute,
-          onNavigate: (route) {
-            Navigator.of(context).pop();
-            ModernNavigationService.navigateToRoute(context, route);
-          },
-        ),
-      ) : null,
+      drawer: isMobile
+          ? Drawer(
+              width: (MediaQuery.sizeOf(context).width * 0.88)
+                  .clamp(280.0, 360.0),
+              child: _SubscriptionAwareSidebar(
+                currentRoute: currentRoute,
+                onNavigate: (route) {
+                  Navigator.of(context).pop();
+                  ModernNavigationService.navigateToRoute(context, route);
+                },
+              ),
+            )
+          : null,
     ),
       ),
     );

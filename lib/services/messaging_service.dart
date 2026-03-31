@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/messaging_model.dart';
+import 'audit_service.dart';
 
 class MessagingService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -357,14 +358,32 @@ class MessagingService {
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
 
-      await _firestore
+      final convRef = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('conversations')
-          .doc(conversationId)
-          .update({
+          .doc(conversationId);
+      final beforeSnap = await convRef.get();
+      final beforeData = beforeSnap.exists && beforeSnap.data() != null
+          ? Map<String, dynamic>.from(beforeSnap.data()!)
+          : null;
+
+      await convRef.update({
         'isActive': false,
       });
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'conversation.archived',
+        targetType: 'conversation',
+        targetId: conversationId,
+        before: beforeData,
+        after: {'isActive': false},
+        metadata: {
+          if (beforeData != null && beforeData['title'] != null) 'title': beforeData['title'],
+          if (beforeData != null) 'isPrivate': beforeData['isPrivate'],
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Conversation archived: $conversationId');
@@ -386,28 +405,40 @@ class MessagingService {
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
 
-      // Delete all messages first
-      final messagesSnapshot = await _firestore
+      final convRef = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('conversations')
-          .doc(conversationId)
-          .collection('messages')
-          .get();
+          .doc(conversationId);
+      final convSnap = await convRef.get();
+      final beforeData = convSnap.exists && convSnap.data() != null
+          ? Map<String, dynamic>.from(convSnap.data()!)
+          : null;
+
+      // Delete all messages first
+      final messagesSnapshot = await convRef.collection('messages').get();
 
       final batch = _firestore.batch();
       for (final doc in messagesSnapshot.docs) {
         batch.delete(doc.reference);
       }
 
-      // Delete conversation
-      batch.delete(_firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('conversations')
-          .doc(conversationId));
+      batch.delete(convRef);
 
       await batch.commit();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'conversation.deleted',
+        targetType: 'conversation',
+        targetId: conversationId,
+        before: beforeData,
+        metadata: {
+          'messagesDeleted': messagesSnapshot.docs.length,
+          if (beforeData != null && beforeData['title'] != null) 'title': beforeData['title'],
+          if (beforeData != null) 'isPrivate': beforeData['isPrivate'],
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Conversation deleted: $conversationId');

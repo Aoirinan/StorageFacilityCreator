@@ -34,7 +34,8 @@ class ModernSidebar extends StatelessWidget {
     };
 
     return Container(
-      width: isCollapsed ? 80 : 240,
+      width: isCollapsed ? 80 : null,
+      constraints: isCollapsed ? null : const BoxConstraints(minWidth: 240),
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(

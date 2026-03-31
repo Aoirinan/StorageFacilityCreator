@@ -409,7 +409,7 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
       ''';
 
       // Send email with PDF link
-      await EmailService.sendEmail(
+      final emailResult = await EmailService.sendEmail(
         to: tenant.email,
         subject: subject,
         html: htmlBody,
@@ -417,6 +417,10 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
         facilityId: facilityId,
         tenantId: tenantId,
       );
+
+      if (!emailResult.success) {
+        throw Exception(EmailService.staffEmailFailureHint(emailResult));
+      }
 
       if (kDebugMode) {
         print('✅ [Statement] Statement sent successfully to ${tenant.email}');

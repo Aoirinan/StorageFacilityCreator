@@ -25,7 +25,8 @@ service cloud.firestore {
         facilityDoc(facilityId).ownerUid == request.auth.uid ||
         (facilityDoc(facilityId).managers != null && facilityDoc(facilityId).managers[request.auth.uid] == true) ||
         facilityRole(facilityId) == 'owner' ||
-        facilityRole(facilityId) == 'manager'
+        facilityRole(facilityId) == 'manager' ||
+        facilityRole(facilityId) == 'admin'
       );
     }
 
@@ -49,6 +50,52 @@ service cloud.firestore {
         email == 'russell_Forsyth_1992@outlook.com' ||
         email == 'kennethgriggs03@gmail.com'
       );
+    }
+
+    // Viewer role + staff/owner: read calendar and shared lists (writes stay stricter per collection).
+    function isFacilityViewer(facilityId) {
+      return facilityExists(facilityId) && facilityRole(facilityId) == 'viewer';
+    }
+
+    function canReadFacilityCalendarAndLists(facilityId) {
+      return isSuperAdmin() ||
+        isFacilityStaff(facilityId) ||
+        isFacilityViewer(facilityId);
+    }
+
+    function inviteDocPath(facilityId, inviteId) {
+      return /databases/$(database)/documents/facilities/$(facilityId)/invites/$(inviteId);
+    }
+
+    // Invite acceptance: pending invite must match signed-in email and claimed role (see PermissionService.assignRole).
+    function pendingInviteMatchesUserRoleWrite(facilityId, inviteId, roleType, assignedBy) {
+      return inviteId is string &&
+        exists(inviteDocPath(facilityId, inviteId)) &&
+        get(inviteDocPath(facilityId, inviteId)).data.status == 'pending' &&
+        get(inviteDocPath(facilityId, inviteId)).data.facilityId == facilityId &&
+        authEmailLower() != null &&
+        get(inviteDocPath(facilityId, inviteId)).data.emailLower == authEmailLower() &&
+        get(inviteDocPath(facilityId, inviteId)).data.roleType == roleType &&
+        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy;
+    }
+
+    function facilityInviteRoleMergeAllowed(facilityId) {
+      return request.auth != null &&
+        request.resource.data.acceptingInviteId is string &&
+        request.resource.data.roles != null &&
+        request.resource.data.roles[request.auth.uid] is string &&
+        pendingInviteMatchesUserRoleWrite(
+          facilityId,
+          request.resource.data.acceptingInviteId,
+          request.resource.data.roles[request.auth.uid],
+          get(inviteDocPath(facilityId, request.resource.data.acceptingInviteId)).data.invitedBy
+        ) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['roles', 'acceptingInviteId']) &&
+        (
+          !('roles' in resource.data) ||
+          resource.data.roles == null ||
+          request.resource.data.roles.diff(resource.data.roles).changedKeys().hasOnly([request.auth.uid])
+        );
     }
 
     function stringMatchesTime(value) {
@@ -197,10 +244,11 @@ service cloud.firestore {
         request.resource.data.keys().hasAll(['name', 'ownerUid', 'createdAt', 'active']) &&
         request.resource.data.active == true;
       
-      // Allow update by owner or super admin
+      // Allow update by owner or super admin, or invitee merging their own role + trace field (assignRole)
       allow update: if request.auth != null && (
         isSuperAdmin() ||
-        resource.data.ownerUid == request.auth.uid
+        resource.data.ownerUid == request.auth.uid ||
+        facilityInviteRoleMergeAllowed(facilityId)
       );
       
       // Allow delete only by owner
@@ -209,7 +257,15 @@ service cloud.firestore {
       
       // Sub-collections under facilities
       match /tenants/{tenantId} {
-        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+
+        // Per-tenant insurance docs (InsuranceService: tenants/{tenantId}/insurance)
+        match /insurance/{insuranceId} {
+          allow read: if canReadFacilityCalendarAndLists(facilityId);
+          allow create, update: if isSuperAdmin() || isFacilityStaff(facilityId);
+          allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        }
 
         // Tenant Stripe billing (server-only writes; facility staff can read)
         match /billing/{billingDocId} {
@@ -279,12 +335,31 @@ service cloud.firestore {
       }
       
       match /units/{unitId} {
-        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         match /overlockEvents/{eventId} {
-          allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow read: if canReadFacilityCalendarAndLists(facilityId);
           allow create: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
           allow update, delete: if false;
         }
+      }
+
+      // Internal facility reservations (calendar). Public flow uses /publicReservations.
+      match /reservations/{reservationId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Optional facility-level tenant insurance index (calendar aggregation)
+      match /tenant_insurance/{insuranceId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityStaff(facilityId);
+      }
+
+      // Facility-level overlock schedule (calendar); distinct from units/.../overlockEvents
+      match /overlocks/{overlockId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
       // Facility-level settings (including settings/public used by online rentals)
@@ -303,7 +378,7 @@ service cloud.firestore {
       }
 
       match /contracts/{contractId} {
-        allow read: if isFacilityStaff(facilityId);
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow create: if isFacilityStaff(facilityId) &&
           request.resource.data.facilityId == facilityId &&
           request.resource.data.keys().hasAll([
@@ -576,9 +651,18 @@ service cloud.firestore {
       }
 
       match /invites/{inviteId} {
-        allow read: if isSuperAdmin() ||
-          isFacilityOwnerOrManager(facilityId) ||
-          (authEmailLower() != null && resource.data.emailLower == authEmailLower());
+        // get: invitee can open email link before sign-in (pending only); staff; or signed-in invitee
+        allow get: if resource != null &&
+          (
+            resource.data.status == 'pending' ||
+            isSuperAdmin() ||
+            isFacilityOwnerOrManager(facilityId) ||
+            (authEmailLower() != null &&
+              'emailLower' in resource.data &&
+              resource.data.emailLower == authEmailLower())
+          );
+        // list: management UI only (collection queries); not public listing
+        allow list: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         allow create: if isSuperAdmin() ||
           (isFacilityOwnerOrManager(facilityId) &&
           request.resource.data.facilityId == facilityId &&
@@ -622,6 +706,28 @@ service cloud.firestore {
 
       match /dnr/{dnrId} {
         allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Shared team notes — readable by everyone who can use facility lists; editable by staff
+      match /team_notes/{noteId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.body is string &&
+          request.resource.data.body.size() > 0 &&
+          request.resource.data.body.size() <= 8000 &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          request.resource.data.updatedByUid == request.auth.uid &&
+          request.resource.data.createdAt is timestamp &&
+          request.resource.data.updatedAt is timestamp;
+        allow update: if isFacilityStaff(facilityId) &&
+          request.resource.data.body is string &&
+          request.resource.data.body.size() > 0 &&
+          request.resource.data.body.size() <= 8000 &&
+          request.resource.data.createdByUid == resource.data.createdByUid &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.updatedAt is timestamp &&
+          request.resource.data.updatedByUid == request.auth.uid;
+        allow delete: if isFacilityStaff(facilityId);
       }
 
       // Team messaging (conversations and messages) - facility staff can read/write
@@ -712,6 +818,11 @@ service cloud.firestore {
         allow read, write: if isFacilityOwnerOrManager(facilityId);
       }
 
+      // Email opt-outs (List-Unsubscribe). Written by Cloud Functions only.
+      match /emailSuppressions/{suppressionId} {
+        allow read, write: if false;
+      }
+
       // Autopay events (Payments > Autopay tab activity). Written by Cloud Functions only.
       match /AutopayEvents/{eventId} {
         allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
@@ -786,7 +897,8 @@ service cloud.firestore {
       }
 
       match /liens/{lienId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
       match /claims/{claimId} {
@@ -1018,6 +1130,44 @@ service cloud.firestore {
         resource.data.facilityId is string &&
         isFacilityOwnerOrManager(resource.data.facilityId);
     }
+
+    // Public reservations used by unauthenticated online rental flow.
+    // NOTE: This collection is intentionally separate from facility private data.
+    match /publicReservations/{reservationId} {
+      // Public move-in flow needs token lookup without authentication.
+      allow read: if true;
+
+      // Allow creating reservation holds from public rental page.
+      allow create: if request.resource.data.keys().hasAll([
+        'facilityId',
+        'email',
+        'status',
+        'reservedAt',
+        'moveInToken'
+      ]) &&
+      request.resource.data.facilityId is string &&
+      request.resource.data.facilityId.size() > 0 &&
+      request.resource.data.email is string &&
+      request.resource.data.email.size() > 3 &&
+      request.resource.data.status in ['pending', 'confirmed', 'expired', 'completed', 'cancelled'] &&
+      request.resource.data.moveInToken is string &&
+      request.resource.data.moveInToken.size() >= 16;
+
+      // Allow status transitions during public move-in fallback paths.
+      allow update: if request.resource.data.keys().hasAll([
+        'facilityId',
+        'email',
+        'status',
+        'reservedAt',
+        'moveInToken'
+      ]) &&
+      request.resource.data.facilityId == resource.data.facilityId &&
+      request.resource.data.email == resource.data.email &&
+      request.resource.data.moveInToken == resource.data.moveInToken &&
+      request.resource.data.status in ['pending', 'confirmed', 'expired', 'completed', 'cancelled'];
+
+      allow delete: if false;
+    }
     
     // Super admin internal notes - only superadmin can read/write
     match /superAdminNotes/{noteId} {
@@ -1083,11 +1233,51 @@ service cloud.firestore {
             get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.ownerUid == request.auth.uid ||
             get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.managers[request.auth.uid] == true
           )
+        ) ||
+        (
+          request.resource.data.inviteId is string &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.facilityId is string &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy is string &&
+          request.resource.data.isActive == true &&
+          pendingInviteMatchesUserRoleWrite(
+            request.resource.data.facilityId,
+            request.resource.data.inviteId,
+            request.resource.data.roleType,
+            request.resource.data.assignedBy
+          )
         )
       );
       
-      // Allow update/delete if super admin, facility owner, or assigned by current user
-      allow update, delete: if request.auth != null && (
+      // Allow update if super admin, facility owner, assignedBy self, or pending-invite acceptance (merge)
+      allow update: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
+            resource.data.assignedBy == request.auth.uid
+          )
+        ) ||
+        (
+          request.resource.data.inviteId is string &&
+          resource.data.userId == request.auth.uid &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.facilityId == resource.data.facilityId &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy is string &&
+          pendingInviteMatchesUserRoleWrite(
+            resource.data.facilityId,
+            request.resource.data.inviteId,
+            request.resource.data.roleType,
+            request.resource.data.assignedBy
+          )
+        )
+      );
+
+      allow delete: if request.auth != null && (
         isSuperAdmin() ||
         (
           exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&

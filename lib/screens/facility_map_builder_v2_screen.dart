@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
@@ -28,7 +27,6 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
   late TabController _tabController;
   bool _publishing = false;
   bool _rollingBack = false;
-  bool _copying = false;
 
   @override
   void initState() {
@@ -64,23 +62,6 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
       );
     } finally {
       if (mounted) setState(() => _publishing = false);
-    }
-  }
-
-  Future<void> _copyPublicUrl(String slug) async {
-    setState(() => _copying = true);
-    try {
-      final url = FacilityMapV2Service.buildPublicMapUrl(slug);
-      await Clipboard.setData(ClipboardData(text: url));
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Copied public URL: $url'),
-          backgroundColor: AppTheme.success,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _copying = false);
     }
   }
 
@@ -166,12 +147,6 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-          TextButton.icon(
-            onPressed: _copying ? null : () => _copyPublicUrl(slug),
-            icon: const Icon(Icons.link),
-            label: const Text('Copy Public URL'),
-          ),
-          const SizedBox(width: 8),
           TextButton(
             onPressed: () => FacilityMapV2Service.setFacilityV2Enabled(
               facilityId: widget.facilityId,

@@ -57,6 +57,11 @@ class FacilityPublicService {
     bool? showAvailableUnits,
     bool? allowOnlineReservations,
     bool? allowOnlineMoveIn,
+    bool? chargeNextMonthAfterMidMonthMoveIn,
+    bool? chargeInsuranceAtMoveIn,
+    double? publicInsuranceAmount,
+    bool? chargeSecurityDepositAtMoveIn,
+    double? publicSecurityDepositAmount,
     Map<String, dynamic>? customStyles,
     Map<String, dynamic>? widgets,
   }) async {
@@ -106,6 +111,20 @@ class FacilityPublicService {
             true,
         allowOnlineMoveIn:
             allowOnlineMoveIn ?? currentSettings?.allowOnlineMoveIn ?? false,
+        chargeNextMonthAfterMidMonthMoveIn:
+            chargeNextMonthAfterMidMonthMoveIn ??
+                currentSettings?.chargeNextMonthAfterMidMonthMoveIn ??
+                false,
+        chargeInsuranceAtMoveIn: chargeInsuranceAtMoveIn ??
+            currentSettings?.chargeInsuranceAtMoveIn ??
+            false,
+        publicInsuranceAmount:
+            publicInsuranceAmount ?? currentSettings?.publicInsuranceAmount,
+        chargeSecurityDepositAtMoveIn: chargeSecurityDepositAtMoveIn ??
+            currentSettings?.chargeSecurityDepositAtMoveIn ??
+            false,
+        publicSecurityDepositAmount: publicSecurityDepositAmount ??
+            currentSettings?.publicSecurityDepositAmount,
         customStyles: customStyles ?? currentSettings?.customStyles,
         widgets: widgets ?? currentSettings?.widgets,
         updatedAt: DateTime.now(),

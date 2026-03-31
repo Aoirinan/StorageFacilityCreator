@@ -34,6 +34,7 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   final TextEditingController _searchController = TextEditingController();
   String? _selectedFacilityId;
   List<dynamic> _cachedFacilities = [];
+  bool _facilitiesLoadComplete = false;
 
   @override
   void initState() {
@@ -51,16 +52,31 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   Future<void> _loadUserFacilities() async {
     try {
       final facilities = await FacilityService.getUserFacilities();
-      if (mounted) setState(() => _cachedFacilities = facilities);
-      if (_selectedFacilityId == null && facilities.isNotEmpty) {
-        final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
-        final id = (activeId != null && facilities.any((f) => f.id == activeId))
-            ? activeId
-            : _kAllFacilitiesContracts;
-        setState(() => _selectedFacilityId = id);
-      }
+      if (!mounted) return;
+      setState(() {
+        _cachedFacilities = facilities;
+        _facilitiesLoadComplete = true;
+        if (_selectedFacilityId == null) {
+          if (facilities.isNotEmpty) {
+            final activeId =
+                ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+            _selectedFacilityId =
+                (activeId != null && facilities.any((f) => f.id == activeId))
+                    ? activeId
+                    : _kAllFacilitiesContracts;
+          } else {
+            // Avoid infinite spinner when user has no facility access yet
+            _selectedFacilityId = _kAllFacilitiesContracts;
+          }
+        }
+      });
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _facilitiesLoadComplete = true;
+          _cachedFacilities = [];
+          _selectedFacilityId ??= _kAllFacilitiesContracts;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error loading facilities: $e'),
@@ -106,7 +122,7 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   }
 
   Widget _buildBody(String userId) {
-    if (_selectedFacilityId == null) {
+    if (!_facilitiesLoadComplete || _selectedFacilityId == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -193,9 +209,22 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
   Widget _buildFacilitySelector() {
     final facilities = _cachedFacilities;
     if (facilities.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+      if (!_facilitiesLoadComplete) {
+        return const Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Center(
+              child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2))),
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Text(
+          'No facilities to select',
+          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
       );
     }
 
@@ -335,7 +364,31 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
     // All Facilities: merge contracts from every facility
     if (_selectedFacilityId == _kAllFacilitiesContracts) {
       if (_cachedFacilities.isEmpty) {
-        return const Center(child: CircularProgressIndicator());
+        final cs = Theme.of(context).colorScheme;
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.business_outlined, size: 64, color: cs.onSurfaceVariant),
+                const SizedBox(height: 16),
+                Text(
+                  'No facilities available',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'If you were invited, ensure you completed “Accept invitation” while signed in with the invited email. '
+                  'Otherwise ask a facility owner to confirm your access.',
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        );
       }
       final allAsync = _cachedFacilities
           .map((f) => ref.watch(contractsProvider(f.id as String)))

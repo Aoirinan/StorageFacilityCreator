@@ -561,12 +561,30 @@ class UnitService {
         print('🔄 Deleting unit: $unitId');
       }
 
-      await _firestore
+      final unitRef = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('units')
-          .doc(unitId)
-          .delete();
+          .doc(unitId);
+      final beforeSnap = await unitRef.get();
+      final beforeData = beforeSnap.exists && beforeSnap.data() != null
+          ? Map<String, dynamic>.from(beforeSnap.data()!)
+          : null;
+
+      await unitRef.delete();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'unit.deleted',
+        targetType: 'unit',
+        targetId: unitId,
+        tenantId: beforeData?['tenantId'] as String?,
+        before: beforeData,
+        metadata: {
+          if (beforeData != null && beforeData['unitNumber'] != null)
+            'unitNumber': beforeData['unitNumber'],
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Unit deleted successfully: $unitId');

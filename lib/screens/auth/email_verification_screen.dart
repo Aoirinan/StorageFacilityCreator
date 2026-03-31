@@ -1,96 +1,124 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
-import '../../providers/auth_provider.dart';
 import '../../services/auth_service.dart';
 import '../subscription_test_screen.dart';
-import '../../router/app_router.dart';
 import '../../router/app_route.dart';
 import '../../theme/app_theme.dart';
 
 class EmailVerificationScreen extends ConsumerStatefulWidget {
   final String email;
-  
+
   const EmailVerificationScreen({
     super.key,
     required this.email,
   });
 
   @override
-  ConsumerState<EmailVerificationScreen> createState() => _EmailVerificationScreenState();
+  ConsumerState<EmailVerificationScreen> createState() =>
+      _EmailVerificationScreenState();
 }
 
 class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScreen> {
-  bool _isVerifying = false;
+  bool _manualCheckBusy = false;
   bool _isResending = false;
   int _resendCooldown = 0;
+  Timer? _pollingTimer;
+  bool _pollInFlight = false;
+  DateTime? _lastSilentCheck;
 
   @override
   void initState() {
     super.initState();
-    _checkVerificationStatus();
-    // Poll for email verification every 3 seconds
-    _startPolling();
-  }
-
-  void _startPolling() {
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        _checkVerificationStatus();
-        _startPolling();
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkVerification(showLoadingUi: true);
+    });
+    _pollingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) _checkVerification(showLoadingUi: false);
     });
   }
 
-  Future<void> _checkVerificationStatus() async {
-    if (_isVerifying) return;
-    
-    setState(() {
-      _isVerifying = true;
-    });
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
 
+  Future<void> _checkVerification({required bool showLoadingUi}) async {
+    if (_pollInFlight) return;
+    _pollInFlight = true;
+    if (showLoadingUi && mounted) {
+      setState(() => _manualCheckBusy = true);
+    }
     try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      await user.reload();
+      final refreshed = FirebaseAuth.instance.currentUser;
+      if (refreshed == null) return;
+
+      if (mounted) {
+        setState(() => _lastSilentCheck = DateTime.now());
+      }
+
+      if (!refreshed.emailVerified) return;
+
       final authService = AuthService();
-      final isVerified = await authService.isEmailVerified();
-      
-      if (isVerified) {
-        final user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
-          // Complete signup process
-          await authService.completeSignupAfterVerification(
-            email: widget.email,
-            tosAccepted: true,
+      try {
+        await authService.completeSignupAfterVerification(
+          email: widget.email,
+          tosAccepted: true,
+        );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Email verified, but setup failed: $e'),
+              backgroundColor: AppTheme.error,
+            ),
           );
-          
-          if (mounted) {
-            context.go(
-              AppRoute.subscription,
-              extra: const SubscriptionTestScreen(
-                requireSubscriptionChoice: true,
-                message: 'Welcome! Please choose a subscription option to get started.',
-              ),
-            );
-          }
         }
+        return;
+      }
+
+      if (mounted) {
+        context.go(
+          AppRoute.subscription,
+          extra: const SubscriptionTestScreen(
+            requireSubscriptionChoice: true,
+            message:
+                'Welcome! Please choose a subscription option to get started.',
+          ),
+        );
       }
     } catch (e) {
-      if (mounted && kDebugMode) {
+      if (kDebugMode) {
         print('Error checking verification status: $e');
       }
+      if (mounted && showLoadingUi) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not check verification: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isVerifying = false;
-        });
+      _pollInFlight = false;
+      if (showLoadingUi && mounted) {
+        setState(() => _manualCheckBusy = false);
       }
     }
   }
 
   Future<void> _resendVerificationEmail() async {
     if (_resendCooldown > 0) return;
-    
+
     setState(() {
       _isResending = true;
     });
@@ -98,29 +126,21 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
     try {
       final authService = AuthService();
       await authService.resendVerificationEmail();
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Verification email sent! Please check your inbox.'),
+            content: Text(
+              'Verification email sent. Older links from previous emails will stop working — use this newest one.',
+            ),
             backgroundColor: AppTheme.success,
           ),
         );
-        
-        // Set cooldown timer
+
         setState(() {
-          _resendCooldown = 60; // 60 second cooldown
+          _resendCooldown = 60;
         });
-        
-        // Countdown timer
-        Future.delayed(const Duration(seconds: 1), () {
-          if (mounted && _resendCooldown > 0) {
-            setState(() {
-              _resendCooldown--;
-            });
-            _resendCooldownTimer();
-          }
-        });
+        _resendCooldownTimer();
       }
     } catch (e) {
       if (mounted) {
@@ -156,7 +176,7 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
   @override
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 600;
-    
+
     return Scaffold(
       backgroundColor: AppTheme.primaryBlueDark,
       body: SafeArea(
@@ -167,8 +187,6 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(height: isMobile ? 40 : 80),
-              
-              // Email icon
               Container(
                 padding: EdgeInsets.all(isMobile ? 20 : 24),
                 decoration: BoxDecoration(
@@ -182,7 +200,6 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                 ),
               ),
               SizedBox(height: isMobile ? 32 : 48),
-              
               Text(
                 'Verify Your Email',
                 style: TextStyle(
@@ -193,7 +210,6 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              
               Text(
                 'We sent a verification email to:',
                 style: TextStyle(
@@ -203,7 +219,6 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
-              
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -220,8 +235,48 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                   textAlign: TextAlign.center,
                 ),
               ),
-              const SizedBox(height: 24),
-              
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.textOnDark.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: AppTheme.textOnDark.withOpacity(0.2),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 18, color: AppTheme.textOnDark),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Tips',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textOnDark,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '• Check Spam or Promotions in Gmail. Tap “Report not spam” so future messages land in your inbox.\n'
+                      '• If you tap Resend, only the newest email’s link works; older links show “expired or already used.”\n'
+                      '• Open the verification link once; wait until you see success from Firebase, then return here.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.45,
+                        color: AppTheme.textOnDark.withOpacity(0.85),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
               Text(
                 'Please check your inbox and click the verification link to continue.',
                 style: TextStyle(
@@ -230,31 +285,40 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 32),
-              
-              // Verification status
-              if (_isVerifying)
+              const SizedBox(height: 16),
+              if (_manualCheckBusy)
                 Column(
                   children: [
                     CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textOnDark),
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(AppTheme.textOnDark),
                     ),
-                    SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     Text(
-                      'Checking verification status...',
+                      'Checking…',
                       style: TextStyle(
                         color: AppTheme.textOnDark.withOpacity(0.7),
                         fontSize: 14,
                       ),
                     ),
                   ],
+                )
+              else
+                Text(
+                  _lastSilentCheck == null
+                      ? 'We also check automatically every 15 seconds (this page stays still — no need to refresh).'
+                      : 'Last automatic check: ${_formatTime(_lastSilentCheck!)} · next in the background.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textOnDark.withOpacity(0.55),
+                  ),
                 ),
-              
-              const SizedBox(height: 32),
-              
-              // Resend button
+              const SizedBox(height: 28),
               OutlinedButton.icon(
-                onPressed: _resendCooldown > 0 || _isResending ? null : _resendVerificationEmail,
+                onPressed: _resendCooldown > 0 || _isResending
+                    ? null
+                    : _resendVerificationEmail,
                 icon: _isResending
                     ? const SizedBox(
                         width: 20,
@@ -278,12 +342,12 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
-              
-              // Manual refresh button
+              const SizedBox(height: 16),
               ElevatedButton.icon(
-                onPressed: _isVerifying ? null : _checkVerificationStatus,
-                icon: _isVerifying
+                onPressed: _manualCheckBusy
+                    ? null
+                    : () => _checkVerification(showLoadingUi: true),
+                icon: _manualCheckBusy
                     ? const SizedBox(
                         width: 20,
                         height: 20,
@@ -309,5 +373,10 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
       ),
     );
   }
-}
 
+  String _formatTime(DateTime t) {
+    final h = t.hour > 12 ? t.hour - 12 : (t.hour == 0 ? 12 : t.hour);
+    final am = t.hour >= 12 ? 'PM' : 'AM';
+    return '$h:${t.minute.toString().padLeft(2, '0')} $am';
+  }
+}

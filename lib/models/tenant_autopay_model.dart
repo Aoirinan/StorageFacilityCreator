@@ -92,6 +92,9 @@ class TenantAutopayModel {
   final AutopayUpdatedBy updatedBy;
   final DateTime? updatedAt;
 
+  /// Day of month (1–31) to run or schedule autopay; null = no override (use default billing).
+  final int? chargeDayOfMonth;
+
   const TenantAutopayModel({
     this.requested = false,
     this.enabled = false,
@@ -101,6 +104,7 @@ class TenantAutopayModel {
     this.disabledReason,
     this.updatedBy = AutopayUpdatedBy.system,
     this.updatedAt,
+    this.chargeDayOfMonth,
   });
 
   bool get isOn => status == AutopayStatus.on;
@@ -109,6 +113,12 @@ class TenantAutopayModel {
 
   factory TenantAutopayModel.fromMap(Map<String, dynamic>? data) {
     if (data == null) return const TenantAutopayModel();
+    int? day;
+    final rawDay = data['chargeDayOfMonth'];
+    if (rawDay is num) {
+      final d = rawDay.toInt();
+      if (d >= 1 && d <= 31) day = d;
+    }
     return TenantAutopayModel(
       requested: data['requested'] == true,
       enabled: data['enabled'] == true,
@@ -118,6 +128,7 @@ class TenantAutopayModel {
       disabledReason: data['disabledReason'] as String?,
       updatedBy: AutopayUpdatedByX.fromString(data['updatedBy'] as String?),
       updatedAt: _parseTimestamp(data['updatedAt']),
+      chargeDayOfMonth: day,
     );
   }
 
@@ -129,6 +140,7 @@ class TenantAutopayModel {
       if (enabledAt != null) 'enabledAt': Timestamp.fromDate(enabledAt!),
       if (disabledAt != null) 'disabledAt': Timestamp.fromDate(disabledAt!),
       if (disabledReason != null && disabledReason!.isNotEmpty) 'disabledReason': disabledReason,
+      if (chargeDayOfMonth != null) 'chargeDayOfMonth': chargeDayOfMonth,
       'updatedBy': updatedBy.value,
       'updatedAt': FieldValue.serverTimestamp(),
     };

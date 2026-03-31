@@ -114,6 +114,17 @@ class EmailService {
         print('❌ [EmailService] Firebase Functions error: ${e.code} - ${e.message}');
       }
 
+      // Recipient opted out via List-Unsubscribe / emailSuppressions
+      if (e.code == 'failed-precondition' &&
+          e.message?.toLowerCase().contains('unsubscribed') == true) {
+        return const EmailResult(
+          success: false,
+          error:
+              'This recipient has unsubscribed from emails from this facility.',
+          errorCode: 'recipient-unsubscribed',
+        );
+      }
+
       // Check if this is an App Check error
       if (e.code == 'failed-precondition' && 
           (e.message?.contains('App Check') == true || 
@@ -153,6 +164,18 @@ class EmailService {
     } catch (e) {
       if (kDebugMode) {
         print('❌ [EmailService] Unexpected error: $e');
+      }
+
+      // Web / some platforms surface callable failures as a generic Exception
+      // instead of FirebaseFunctionsException; still map known copy.
+      final es = e.toString().toLowerCase();
+      if (es.contains('unsubscribed')) {
+        return const EmailResult(
+          success: false,
+          error:
+              'This recipient has unsubscribed from emails from this facility.',
+          errorCode: 'recipient-unsubscribed',
+        );
       }
 
       return EmailResult(
@@ -225,6 +248,21 @@ class EmailService {
     }
   }
 
+  /// Short guidance when showing email send errors to facility staff (Messaging, etc.).
+  static String staffEmailFailureHint(EmailResult result) {
+    if (result.success) return '';
+    if (result.errorCode == 'recipient-unsubscribed') {
+      return 'This tenant has unsubscribed from emails from this facility. '
+          'Use SMS, a phone call, or in-person contact instead.';
+    }
+    final err = result.error?.toLowerCase() ?? '';
+    if (err.contains('unsubscribed')) {
+      return 'This tenant has unsubscribed from emails from this facility. '
+          'Use SMS, a phone call, or in-person contact instead.';
+    }
+    return result.error ?? 'Could not send email.';
+  }
+
   /// Get user-friendly error message from Firebase Functions exception
   static String _getErrorMessage(FirebaseFunctionsException e) {
     switch (e.code) {
@@ -237,6 +275,9 @@ class EmailService {
       case 'resource-exhausted':
         return 'Email quota exceeded: ${e.message}';
       case 'failed-precondition':
+        if (e.message?.toLowerCase().contains('unsubscribed') == true) {
+          return 'This recipient has unsubscribed from emails from this facility.';
+        }
         // App Check errors are handled separately above, but fallback here if needed
         if (e.message?.contains('App Check') == true || 
             e.message?.contains('app check') == true ||

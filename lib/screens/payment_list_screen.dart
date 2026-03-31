@@ -56,6 +56,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   DateTime? _filterDateEnd;
   String _autopayTenantSearch = '';
   bool _autopayToggleLoading = false;
+  bool _autopayChargeDaySaving = false;
   bool _appliedRouteParams = false;
 
   @override
@@ -228,7 +229,27 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   Widget build(BuildContext context) {
     // Use AsyncValue to properly handle loading state
     final authState = ref.watch(authStateProvider);
-    
+
+    ref.listen<AsyncValue<String?>>(activeFacilityIdProvider, (prev, next) {
+      if (!mounted) return;
+      final user = ref.read(authStateProvider).maybeWhen(
+            data: (u) => u,
+            orElse: () => null,
+          );
+      if (user == null) return;
+      final facilities = ref.read(userFacilitiesProvider(user.uid)).maybeWhen(
+            data: (f) => f,
+            orElse: () => null,
+          );
+      if (facilities == null || facilities.isEmpty) return;
+      final nextId = next.whenOrNull(data: (d) => d);
+      if (nextId != null &&
+          facilities.any((f) => f.id == nextId) &&
+          _selectedFacilityId != nextId) {
+        setState(() => _selectedFacilityId = nextId);
+      }
+    });
+
     return authState.when(
       data: (user) {
         if (user == null) {
@@ -750,6 +771,57 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: smallSize),
                       overflow: TextOverflow.ellipsis,
                     ),
+                  SizedBox(height: isPhone ? 10 : 12),
+                  Text(
+                    'Autopay charge date',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(fontSize: isPhone ? 12 : null),
+                  ),
+                  SizedBox(height: isPhone ? 4 : 6),
+                  Text(
+                    'Day of the month to charge rent on autopay. For months with fewer days, the last day of that month is used.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontSize: smallSize,
+                          color: AppTheme.textSecondary,
+                        ),
+                  ),
+                  SizedBox(height: isPhone ? 6 : 8),
+                  if (_autopayChargeDaySaving)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+                  DropdownButtonFormField<int?>(
+                    value: () {
+                      final d = tenant.autopay.chargeDayOfMonth;
+                      if (d == null || d < 1 || d > 31) return null;
+                      return d;
+                    }(),
+                    decoration: InputDecoration(
+                      labelText: 'Day of month',
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: isPhone ? 8 : 10,
+                      ),
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(
+                        value: null,
+                        child: Text('Not set (default)'),
+                      ),
+                      ...List.generate(
+                        31,
+                        (i) => DropdownMenuItem<int?>(
+                          value: i + 1,
+                          child: Text('${i + 1}'),
+                        ),
+                      ),
+                    ],
+                    onChanged: _autopayChargeDaySaving
+                        ? null
+                        : (v) => _onAutopayChargeDayChanged(tenant, v),
+                  ),
                   if (lastUpdated != null) ...[
                     SizedBox(height: isPhone ? 6 : 8),
                     Text(
@@ -782,6 +854,45 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _onAutopayChargeDayChanged(TenantModel tenant, int? day) async {
+    final current = tenant.autopay.chargeDayOfMonth;
+    final a = current == null || current < 1 || current > 31 ? null : current;
+    if (day == a) return;
+
+    setState(() => _autopayChargeDaySaving = true);
+    try {
+      await AutopayService.setAutopayChargeDayOfMonth(
+        facilityId: tenant.facilityId,
+        tenantId: tenant.id,
+        chargeDayOfMonth: day,
+      );
+      if (mounted) {
+        ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              day == null
+                  ? 'Autopay charge date cleared (default billing applies).'
+                  : 'Autopay charge date set to day $day of each month.',
+            ),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _autopayChargeDaySaving = false);
+    }
   }
 
   Future<void> _showAutopayConfirm(BuildContext context, TenantModel tenant, bool enable) async {
@@ -995,13 +1106,6 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                   return ref.watch(userFacilitiesProvider(user.uid)).when(
                     data: (facilities) {
                       if (facilities.isEmpty) return const SizedBox.shrink();
-                      ref.listen(activeFacilityIdProvider, (prev, next) {
-                        final nextId = next.whenOrNull(data: (d) => d);
-                        if (nextId != null && facilities.any((f) => f.id == nextId) &&
-                            _selectedFacilityId != nextId && mounted) {
-                          setState(() => _selectedFacilityId = nextId);
-                        }
-                      });
                       return Row(
                         children: [
                           Expanded(

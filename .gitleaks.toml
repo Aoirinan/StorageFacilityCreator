@@ -1,0 +1,29 @@
+# Gitleaks: extend defaults, then allowlist paths that only contain *public* client
+# identifiers (Firebase web API key + reCAPTCHA site key). Both should be restricted
+# in Google Cloud / Firebase Console — they still must not be treated like passwords.
+#
+# Run: gitleaks detect --source . --verbose
+# https://github.com/gitleaks/gitleaks
+
+title = "Storage Facility Creator"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public client keys, generated/build output, compiled functions, and legacy commits cleaned up in tree"
+paths = [
+  '''lib/firebase_options\.dart$''',
+  '''lib/config/app_check_public\.dart$''',
+  '''(^|/)\.dart_tool/''',
+  '''(^|/)build/''',
+  '''marketing/\.next/''',
+  '''functions/lib/''',
+]
+# Historical blobs only (pre-sanitization). Rewriting history would also redact the live reCAPTCHA key in
+# later commits that reuse the same site key in app_check_public.dart — allowlist avoids that.
+commits = [
+  "0611361be41bc02513e3accebbc4ea2230e48b5b",
+  "c656461622a65227cfd01722d29df083b6c98d1b",
+  "9ed500ac49af3a42acdc471b4b0cdab78333f68b",
+]

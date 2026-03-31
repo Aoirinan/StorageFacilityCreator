@@ -422,6 +422,8 @@ class PermissionService {
   }
 
   // Assign role to user
+  /// When [fulfilledInviteId] is set (invite acceptance), Firestore rules validate against
+  /// `facilities/{facilityId}/invites/{id}` so the invitee can write without being owner yet.
   static Future<AssignRoleResult> assignRole({
     required String userId,
     required String facilityId,
@@ -430,6 +432,7 @@ class PermissionService {
     DateTime? expiresAt,
     String? userDisplayName,
     String? userEmail,
+    String? fulfilledInviteId,
   }) async {
     try {
       // Check super admin status
@@ -466,6 +469,7 @@ class PermissionService {
           'isActive': true,
           if (userDisplayName != null) 'userDisplayName': userDisplayName,
           if (userEmail != null) 'userEmail': userEmail,
+          if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         };
         await _firestore
             .collection(_userRolesCollection)
@@ -485,14 +489,19 @@ class PermissionService {
           'updatedAt': Timestamp.fromDate(DateTime.now()),
           if (userDisplayName != null) 'userDisplayName': userDisplayName,
           if (userEmail != null) 'userEmail': userEmail,
+          if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         });
       }
 
-      await facilityRef.set({
+      final facilityPayload = <String, dynamic>{
         'roles': {
           userId: roleType.name,
         },
-      }, SetOptions(merge: true));
+      };
+      if (fulfilledInviteId != null) {
+        facilityPayload['acceptingInviteId'] = fulfilledInviteId;
+      }
+      await facilityRef.set(facilityPayload, SetOptions(merge: true));
 
       print('✅ [PermissionService.assignRole] Role assigned successfully');
       return AssignRoleResult(success: true);
@@ -634,6 +643,28 @@ class PermissionService {
         print('❌ [PermissionService] Error loading facility invites: $e');
       }
       return [];
+    }
+  }
+
+  /// Load a single invite by document id (works for signed-out users on pending invites; see Firestore rules).
+  static Future<FacilityInvite?> getFacilityInviteById({
+    required String facilityId,
+    required String inviteId,
+  }) async {
+    try {
+      final doc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection(_facilityInvitesCollection)
+          .doc(inviteId)
+          .get();
+      if (!doc.exists) return null;
+      return FacilityInvite.fromFirestore(doc: doc, facilityId: facilityId);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [PermissionService] getFacilityInviteById: $e');
+      }
+      return null;
     }
   }
 
@@ -885,6 +916,7 @@ class PermissionService {
         assignedBy: invitedBy,
         userDisplayName: displayName,
         userEmail: email ?? inviteEmail,
+        fulfilledInviteId: inviteId,
       );
 
       if (assigned.success) {
@@ -937,6 +969,7 @@ class PermissionService {
         print('📧 [PermissionService] Found ${invitesSnapshot.docs.length} pending invite(s)');
       }
 
+      var anyInviteAccepted = false;
       for (final doc in invitesSnapshot.docs) {
         final facilityRef = doc.reference.parent.parent;
         if (facilityRef == null) continue;
@@ -956,9 +989,11 @@ class PermissionService {
           assignedBy: invitedBy,
           userDisplayName: displayName,
           userEmail: email ?? emailLower,
+          fulfilledInviteId: doc.id,
         );
 
         if (assigned.success) {
+          anyInviteAccepted = true;
           await doc.reference.update({
             'status': 'accepted',
             'acceptedAt': Timestamp.fromDate(DateTime.now()),
@@ -969,6 +1004,9 @@ class PermissionService {
             print('✅ [PermissionService] Auto-accepted invite for facility: $facilityId');
           }
         }
+      }
+      if (anyInviteAccepted) {
+        FacilityService.clearFacilitiesCache();
       }
     } catch (e) {
       if (kDebugMode) {
@@ -1146,27 +1184,12 @@ Please do not reply directly to this email. For support, contact support@storage
       }
 
       if (!result.success) {
-        final errorMsg = result.error ?? 'Unknown email service error';
-        final errorCode = result.errorCode;
-        
-        // Always log errors for debugging
-        print('❌ [PermissionService] Error sending invite email: $errorMsg');
-        print('❌ [PermissionService] Error code: $errorCode');
-        print('❌ [PermissionService] Full error details: ${result.toString()}');
-        
-        // Format error message - don't duplicate error codes if already in message
-        String formattedError;
-        if (errorCode != null && errorMsg.contains(errorCode)) {
-          formattedError = errorMsg;
-        } else if (errorCode != null) {
-          formattedError = '[$errorCode] $errorMsg';
-        } else {
-          formattedError = errorMsg;
-        }
-        
+        final hint = EmailService.staffEmailFailureHint(result);
+        print('❌ [PermissionService] Error sending invite email: $hint');
+        print('❌ [PermissionService] Error code: ${result.errorCode}');
         return EmailSendResult(
           success: false,
-          errorMessage: formattedError,
+          errorMessage: hint,
         );
       }
 

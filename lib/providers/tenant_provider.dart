@@ -157,7 +157,7 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
       return Stream.value(sorted);
     },
     loading: () => Stream.value([]),
-    error: (error, stack) => Stream.value([]),
+    error: (error, stack) => Stream<List<TenantModel>>.error(error, stack),
   );
 });
 

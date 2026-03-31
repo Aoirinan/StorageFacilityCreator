@@ -26,6 +26,7 @@ import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/email_send_feedback.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
@@ -158,7 +159,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
     }
   }
 
-  Future<void> _sendWelcomeEmailWithAccessCodes({
+  /// Returns [null] if no email was attempted; otherwise the send result.
+  Future<EmailResult?> _sendWelcomeEmailWithAccessCodes({
     required String tenantId,
     required String tenantName,
     required String tenantEmail,
@@ -178,7 +180,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         if (kDebugMode) {
           print('⚠️ Facility not found: $facilityId');
         }
-        return;
+        return null;
       }
 
       // Get gate access code if it exists
@@ -200,7 +202,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         if (kDebugMode) {
           print('ℹ️ No access codes to send, skipping email');
         }
-        return;
+        return null;
       }
 
       // Generate email HTML
@@ -231,11 +233,13 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
           print('❌ Failed to send welcome email: ${emailResult.error}');
         }
       }
+      return emailResult;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error sending welcome email: $e');
       }
       // Don't throw - email failure shouldn't block tenant creation
+      return null;
     }
   }
 
@@ -1010,7 +1014,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
       final hasPortalAccess = _portalEnabled && portalAccessCode != null && portalAccessCode.isNotEmpty;
       if (hasPortalAccess) {
         try {
-          await _sendWelcomeEmailWithAccessCodes(
+          final welcomeResult = await _sendWelcomeEmailWithAccessCodes(
             tenantId: result,
             tenantName: _nameController.text.trim(),
             tenantEmail: _emailController.text.trim(),
@@ -1019,6 +1023,11 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
             portalAccessCode: portalAccessCode,
             welcomeMessage: portalWelcomeMessage,
           );
+          if (mounted &&
+              welcomeResult != null &&
+              !welcomeResult.success) {
+            showStaffEmailFailureSnackBar(context, welcomeResult);
+          }
         } catch (e) {
           if (kDebugMode) {
             print('⚠️ Error sending welcome email: $e');

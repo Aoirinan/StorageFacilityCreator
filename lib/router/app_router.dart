@@ -100,6 +100,7 @@ import '../screens/claims_list_screen.dart';
 import '../screens/claim_detail_screen.dart';
 import '../screens/insurance_report_screen.dart';
 import '../screens/notification_settings_screen.dart';
+import '../screens/email_opt_outs_settings_screen.dart';
 import '../screens/profile_edit_screen.dart';
 import '../screens/appearance_settings_screen.dart';
 import '../screens/bulk_messaging_screen.dart';
@@ -215,7 +216,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoute.signup,
         name: 'signup',
-        builder: (context, state) => const SignupScreen(),
+        builder: (context, state) {
+          final email = state.uri.queryParameters['email'];
+          return SignupScreen(initialEmail: email);
+        },
       ),
       GoRoute(
         path: AppRoute.forgotPassword,
@@ -692,7 +696,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'contract-templates-create',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
-              if (facilityId.isEmpty) {
+              // __all__ is a UI sentinel for “all facilities”; not a Firestore document id
+              if (facilityId.isEmpty || facilityId == '__all__') {
                 return NotFoundPage(state: state);
               }
               return CreateContractTemplateScreen(facilityId: facilityId);
@@ -1038,6 +1043,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.emailOptOutsSettings,
+            name: 'email-opt-outs-settings',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return const SettingsScreen();
+              }
+              return EmailOptOutsSettingsScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
             path: AppRoute.profileEdit,
             name: 'profile-edit',
             builder: (context, state) => const ProfileEditScreen(),
@@ -1125,7 +1141,24 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               if (facilityId.isEmpty) {
-                return const SettingsScreen();
+                // No facility selected — trigger facility picker
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) {
+                    ModernNavigationService.navigateToRoute(
+                        context, '/online-rentals');
+                  }
+                });
+                return const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.storefront, size: 64, color: Colors.grey),
+                      SizedBox(height: 16),
+                      Text('Select a facility to manage online rentals.',
+                          style: TextStyle(fontSize: 16)),
+                    ],
+                  ),
+                );
               }
               return OnlineRentalsManagementScreen(facilityId: facilityId);
             },
@@ -1324,6 +1357,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final showTrialExpiredDialog =
                   state.uri.queryParameters['trialExpired'] == '1';
+              final showMaintenanceLockoutNotice =
+                  state.uri.queryParameters['maintenance'] == '1';
               final tabParam = state.uri.queryParameters['tab'];
               final initialTab = tabParam == 'processing'
                   ? 1
@@ -1337,6 +1372,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 showTrialExpiredDialog: showTrialExpiredDialog,
                 initialTab: initialTab,
                 subscriptionChild: subscriptionChild,
+                showMaintenanceLockoutNotice: showMaintenanceLockoutNotice,
               );
             },
           ),

@@ -24,6 +24,13 @@ class FacilityPublicSettings {
   final bool showAvailableUnits; // Show available units on page
   final bool allowOnlineReservations; // Allow online reservations
   final bool allowOnlineMoveIn; // Allow full online move-in
+  final bool
+      chargeNextMonthAfterMidMonthMoveIn; // If move-in is after mid-month, charge next month too
+  final bool chargeInsuranceAtMoveIn; // Charge insurance at move-in
+  final double? publicInsuranceAmount; // Insurance amount to charge at move-in
+  final bool chargeSecurityDepositAtMoveIn; // Charge deposit at move-in
+  final double?
+      publicSecurityDepositAmount; // Deposit amount override for move-in
   final Map<String, dynamic>? customStyles; // Custom CSS/styling
   final Map<String, dynamic>? widgets; // Widget configuration
   final DateTime? updatedAt;
@@ -51,6 +58,11 @@ class FacilityPublicSettings {
     this.showAvailableUnits = true,
     this.allowOnlineReservations = true,
     this.allowOnlineMoveIn = false,
+    this.chargeNextMonthAfterMidMonthMoveIn = false,
+    this.chargeInsuranceAtMoveIn = false,
+    this.publicInsuranceAmount,
+    this.chargeSecurityDepositAtMoveIn = false,
+    this.publicSecurityDepositAmount,
     this.customStyles,
     this.widgets,
     this.updatedAt,
@@ -80,6 +92,11 @@ class FacilityPublicSettings {
       'showAvailableUnits': showAvailableUnits,
       'allowOnlineReservations': allowOnlineReservations,
       'allowOnlineMoveIn': allowOnlineMoveIn,
+      'chargeNextMonthAfterMidMonthMoveIn': chargeNextMonthAfterMidMonthMoveIn,
+      'chargeInsuranceAtMoveIn': chargeInsuranceAtMoveIn,
+      'publicInsuranceAmount': publicInsuranceAmount,
+      'chargeSecurityDepositAtMoveIn': chargeSecurityDepositAtMoveIn,
+      'publicSecurityDepositAmount': publicSecurityDepositAmount,
       'customStyles': customStyles,
       'widgets': widgets,
       'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : null,
@@ -117,6 +134,14 @@ class FacilityPublicSettings {
       showAvailableUnits: map['showAvailableUnits'] as bool? ?? true,
       allowOnlineReservations: map['allowOnlineReservations'] as bool? ?? true,
       allowOnlineMoveIn: map['allowOnlineMoveIn'] as bool? ?? false,
+      chargeNextMonthAfterMidMonthMoveIn:
+          map['chargeNextMonthAfterMidMonthMoveIn'] as bool? ?? false,
+      chargeInsuranceAtMoveIn: map['chargeInsuranceAtMoveIn'] as bool? ?? false,
+      publicInsuranceAmount: (map['publicInsuranceAmount'] as num?)?.toDouble(),
+      chargeSecurityDepositAtMoveIn:
+          map['chargeSecurityDepositAtMoveIn'] as bool? ?? false,
+      publicSecurityDepositAmount:
+          (map['publicSecurityDepositAmount'] as num?)?.toDouble(),
       customStyles: map['customStyles'] as Map<String, dynamic>?,
       widgets: map['widgets'] as Map<String, dynamic>?,
       updatedAt: (map['updatedAt'] as Timestamp?)?.toDate(),

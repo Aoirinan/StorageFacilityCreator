@@ -26,6 +26,81 @@ class FacilityService {
   static List<FacilityModel>? _cachedFacilities;
   static DateTime? _lastFacilitiesFetch;
   static const Duration _facilityCacheTtl = Duration(minutes: 2);
+
+  /// Clears in-memory facility list cache (e.g. after accepting an invite).
+  static void clearFacilitiesCache() {
+    _cachedFacilities = null;
+    _lastFacilitiesFetch = null;
+  }
+
+  /// Facilities the user can access via `user_roles` (invited staff), excluding pure duplicates of [ownedIds].
+  static Future<List<FacilityModel>> _facilitiesFromActiveUserRoles(
+    String uid, {
+    required bool includeArchived,
+    Set<String>? ownedIds,
+  }) async {
+    try {
+      final snap = await _firestore
+          .collection(PermissionService.userRolesCollection)
+          .where('userId', isEqualTo: uid)
+          .where('isActive', isEqualTo: true)
+          .get();
+
+      final ids = <String>{};
+      for (final doc in snap.docs) {
+        final fid = doc.data()['facilityId'] as String?;
+        if (fid == null || fid.isEmpty) continue;
+        if (ownedIds != null && ownedIds.contains(fid)) continue;
+        ids.add(fid);
+      }
+      if (ids.isEmpty) return [];
+
+      final out = <FacilityModel>[];
+      for (final id in ids) {
+        final d = await _firestore.collection('facilities').doc(id).get();
+        if (!d.exists) continue;
+        final f = FacilityModel.fromFirestore(d);
+        if (!includeArchived && !f.active) continue;
+        out.add(f);
+      }
+      return out;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [FacilityService] Error loading role-based facilities: $e');
+      }
+      return [];
+    }
+  }
+
+  static Future<bool> _userMayReadFacilityDoc({
+    required String facilityId,
+    required Map<String, dynamic> data,
+    required User user,
+  }) async {
+    if (SuperAdminService.isSuperAdmin(user)) return true;
+    if (data['ownerUid'] == user.uid) return true;
+    final managers = data['managers'] as Map<String, dynamic>?;
+    if (managers != null && managers[user.uid] == true) return true;
+    final roles = data['roles'] as Map<String, dynamic>?;
+    if (roles != null && roles[user.uid] != null) return true;
+
+    try {
+      final qs = await _firestore
+          .collection(PermissionService.userRolesCollection)
+          .where('userId', isEqualTo: user.uid)
+          .where('facilityId', isEqualTo: facilityId)
+          .limit(8)
+          .get();
+      for (final doc in qs.docs) {
+        if (doc.data()['isActive'] == true) return true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [FacilityService] user_roles lookup for getFacility: $e');
+      }
+    }
+    return false;
+  }
   
   // Track if backfill has been run to avoid multiple runs
   static bool _backfillCompleted = false;
@@ -360,12 +435,32 @@ class FacilityService {
         print('✅ Successfully retrieved ${snapshot.docs.length} facilities');
       }
 
-      final facilities = snapshot.docs
-          .map((doc) => FacilityModel.fromFirestore(doc))
+      final owned = snapshot.docs
+          .map(
+            (doc) => FacilityModel.fromFirestore(doc)
+                .copyWith(currentUserOwnsFacility: true),
+          )
           .toList();
-      
-      // Sort in memory if we used fallback query
-      facilities.sort((a, b) => a.name.compareTo(b.name));
+
+      final ownedIds = owned.map((f) => f.id).toSet();
+      final fromRoles = await _facilitiesFromActiveUserRoles(
+        user.uid,
+        includeArchived: includeArchived,
+        ownedIds: ownedIds,
+      );
+
+      final byId = <String, FacilityModel>{};
+      for (final f in owned) {
+        byId[f.id] = f;
+      }
+      for (final f in fromRoles) {
+        byId.putIfAbsent(
+          f.id,
+          () => f.copyWith(currentUserOwnsFacility: false),
+        );
+      }
+      final facilities = byId.values.toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
 
       if (!includeArchived) {
         _cachedFacilities = facilities;
@@ -412,7 +507,13 @@ class FacilityService {
 
     void emit() {
       if (controller.isClosed) return;
-      final list = facilityMap.values.toList()
+      final list = facilityMap.values
+          .map(
+            (f) => f.copyWith(
+              currentUserOwnsFacility: ownerFacilityIds.contains(f.id),
+            ),
+          )
+          .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
       controller.add(list);
     }
@@ -499,52 +600,16 @@ class FacilityService {
     return controller.stream;
   }
 
-  // Real-time stream for ACTIVE facilities only
+  // Real-time stream for ACTIVE facilities only (owned + invited via user_roles)
   static Stream<List<FacilityModel>> getUserActiveFacilitiesStream() {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Not signed in');
-      }
-
-      if (kDebugMode) {
-        print('🔄 Setting up ACTIVE facilities stream for owner: ${user.uid}');
-      }
-
-      Query query = _firestore
-          .collection('facilities')
-          .where('ownerUid', isEqualTo: user.uid)
-          .where('active', isEqualTo: true);
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('createdAt', descending: true);
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final facilities = snapshot.docs.map((doc) {
-          return FacilityModel.fromFirestore(doc);
-        }).toList();
-
-        // Sort in memory by name if we used fallback query
-        facilities.sort((a, b) => a.name.compareTo(b.name));
-
-        if (kDebugMode) {
-          print('📡 Stream update: ${facilities.length} ACTIVE facilities for owner: ${user.uid}');
-        }
-
-        return facilities;
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error setting up active facilities stream: $e');
-      }
-      rethrow;
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('Not signed in');
     }
+    if (kDebugMode) {
+      print('🔄 ACTIVE facilities stream (owned + roles): ${user.uid}');
+    }
+    return getFacilitiesForUserStream();
   }
 
   // Real-time stream for ARCHIVED facilities only
@@ -609,17 +674,22 @@ class FacilityService {
         return null;
       }
 
-      final facility = FacilityModel.fromFirestore(doc);
-      
-      // Verify ownership
-      if (facility.ownerUid != user.uid) {
+      final raw = doc.data();
+      if (raw == null) return null;
+      final data = Map<String, dynamic>.from(raw);
+      final allowed = await _userMayReadFacilityDoc(
+        facilityId: facilityId,
+        data: data,
+        user: user,
+      );
+      if (!allowed) {
         if (kDebugMode) {
-          print('❌ User ${user.uid} does not own facility ${facilityId}');
+          print('❌ User ${user.uid} cannot read facility $facilityId');
         }
         return null;
       }
 
-      return facility;
+      return FacilityModel.fromFirestore(doc);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting facility: $e');

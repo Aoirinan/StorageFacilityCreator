@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import '../services/facility_service.dart';
+import '../services/superadmin_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../services/payment_service.dart';
@@ -107,6 +109,26 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     );
   }
 
+  final fbUser = FirebaseAuth.instance.currentUser;
+  if (fbUser != null &&
+      !fbUser.emailVerified &&
+      !SuperAdminService.isSuperAdmin(fbUser)) {
+    if (kDebugMode) {
+      print('🔍 [Dashboard] User not verified — skip Firestore (verify-email flow)');
+    }
+    return DashboardStats(
+      totalFacilities: 0,
+      totalTenants: 0,
+      totalUnits: 0,
+      occupiedUnits: 0,
+      availableUnits: 0,
+      occupancyRate: 0.0,
+      monthlyRevenue: 0.0,
+      pastDueCount: 0,
+      openLeads: 0,
+    );
+  }
+
   if (kDebugMode) {
     print('🔍 [Dashboard] User ID: $userId');
   }
@@ -172,13 +194,18 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     final stats = await FacilityStatsService.getFacilityStats(facility.id);
     
     if (stats != null) {
-      // Use precomputed stats (faster)
+      // Use precomputed stats (faster), but align **capacity** with the facility document —
+      // same rule as Facilities list / facility cards. Cached stats can lag after capacity edits.
       final statsActive = (stats['totalTenantsActive'] as int?) ?? 0;
-      final statsUnits = (stats['totalUnits'] as int?) ?? 0;
-      final statsOccupied = (stats['occupiedUnits'] as int?) ?? 0;
+      final cachedTotalUnits = (stats['totalUnits'] as int?) ?? 0;
+      final statsOccupiedRaw = (stats['occupiedUnits'] as int?) ?? 0;
+      final capacity = facility.totalUnits;
+      final statsUnits = capacity > 0 ? capacity : cachedTotalUnits;
+      final statsOccupied =
+          statsOccupiedRaw > statsUnits ? statsUnits : statsOccupiedRaw;
       final statsRevenue = (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
       final statsPastDue = (stats['totalPastDue'] as int?) ?? 0;
-      
+
       totalTenants += statsActive;
       totalUnits += statsUnits;
       occupiedUnits += statsOccupied;
@@ -188,9 +215,15 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       if (kDebugMode) {
         print('📊 [Dashboard] Using cached stats for ${facility.name}:');
         print('   - Tenants: $statsActive');
-        print('   - Units: $statsUnits (occupied: $statsOccupied)');
+        print(
+          '   - Units: $statsUnits (occupied: $statsOccupied; cache had total $cachedTotalUnits, capacity field $capacity)',
+        );
         print('   - Revenue: \$${statsRevenue.toStringAsFixed(2)}');
         print('   - Past due: $statsPastDue');
+      }
+
+      if (capacity > 0 && cachedTotalUnits != capacity) {
+        FacilityStatsService.updateFacilityStats(facility.id);
       }
     } else {
       // Fallback to computing on-the-fly (slower)
@@ -280,7 +313,8 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     print('   - Past due: $pastDueCount');
   }
 
-  final availableUnits = totalUnits - occupiedUnits;
+  final rawAvailable = totalUnits - occupiedUnits;
+  final availableUnits = rawAvailable < 0 ? 0 : rawAvailable;
   final occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) : 0.0;
 
   // Get top 5 delinquent tenants across all facilities

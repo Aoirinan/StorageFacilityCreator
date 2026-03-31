@@ -344,14 +344,24 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
           );
         }
 
-        return Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Form(
+        return Scaffold(
+          backgroundColor: Theme.of(context).colorScheme.surface,
+          appBar: AppBar(
+            title: const Text('Edit Facility'),
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Back',
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+          ),
+          body: Form(
             key: _formKey,
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+            child: ListView(
+              padding: const EdgeInsets.all(16.0),
+              // Clamping avoids extra scroll extent on web when content is shorter than the viewport
+              // (AlwaysScrollableScrollPhysics from app builder was exposing a gray gap while scrolling).
+              physics: const ClampingScrollPhysics(),
+              children: [
                   const Text(
                     'Facility Information',
                     style: TextStyle(
@@ -591,7 +601,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                     TextFormField(
                       controller: _publicRentalSlugController,
                       decoration: const InputDecoration(
-                        labelText: 'Public Rental Slug',
+                        labelText: 'Public URL Name',
                         hintText: 'example-facility',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.link),
@@ -840,8 +850,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
 
                   const SizedBox(height: 16),
-                ],
-              ),
+              ],
             ),
           ),
         );

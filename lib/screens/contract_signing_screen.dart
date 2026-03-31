@@ -17,6 +17,7 @@ import '../models/contract_model.dart';
 import '../models/contract_template_model.dart';
 import '../router/app_route.dart';
 import '../services/contract_service.dart';
+import '../services/web_externals_loader.dart';
 import '../services/tenant_service.dart';
 import '../models/tenant_model.dart';
 import '../theme/app_theme.dart';
@@ -490,6 +491,7 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
       }
     }
 
+    await ensurePdfJsForWeb();
     final fetchUrl = ContractService.getPdfFetchUrl(_contract!.fileUrl);
     final resp = await http.get(Uri.parse(fetchUrl));
     if (resp.statusCode != 200) throw Exception('Failed to load PDF');
@@ -1239,6 +1241,7 @@ class _ClickablePdfViewerState extends State<_ClickablePdfViewer> {
 
   Future<void> _loadPdf() async {
     final errors = <String>[];
+    await ensurePdfJsForWeb();
     for (final url in _candidateUrls()) {
       try {
         final response = await http.get(Uri.parse(url));

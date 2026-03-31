@@ -242,11 +242,20 @@ Future<String?> routeGuard(
   // Never redirect from /login: only the login screen may navigate to dashboard after 2FA is complete.
   // Also allow users to stay on signup/verify-email routes if their email is not verified yet.
   // Allow contract sign: managers may click "Sign" from contract detail to open the signing flow.
+  // Keep authenticated users on public commerce routes (rental/payment/move-in/map pages)
+  // so facility owners can test the public flow while signed in.
+  final isPublicCommerceRoute = path.startsWith(AppRoute.publicPayment) ||
+      path.startsWith(AppRoute.publicRental) ||
+      path.startsWith('${AppRoute.publicFacility}/') ||
+      path.startsWith('${AppRoute.publicMapBase}/') ||
+      path.startsWith('${AppRoute.publicFacilityRentalBase}/');
   if (isAuthenticated &&
       publicRoutes.contains(loc) &&
       loc != AppRoute.acceptInvite &&
       loc != AppRoute.contractSign &&
       loc != AppRoute.legacyScreen &&
+      loc != AppRoute.publicMoveIn &&
+      !isPublicCommerceRoute &&
       !loggingIn) {
     // Allow users to stay on signup/verify-email routes if email is not verified
     final isSignupOrVerifyEmail =
@@ -277,16 +286,27 @@ Future<String?> routeGuard(
     return target;
   }
 
-  // Maintenance mode: block all non-superadmin authenticated users from app routes
+  // Maintenance mode: keep users without platform access on subscription; allow trial/active
+  // (Previously this blocked everyone except super admins, which trapped trial accounts on /subscription.)
   if (isAuthenticated &&
       !isPublicRoute &&
       !path.startsWith('/subscription') &&
       !path.startsWith(AppRoute.superAdmin) &&
       !SuperAdminService.isSuperAdmin(firebaseUser)) {
     final isMaintenanceMode = ref.read(maintenanceModeProvider);
-    if (isMaintenanceMode) {
-      // Allow /maintenance route if it exists; otherwise redirect to subscription page with a message
-      if (!path.startsWith('/maintenance')) {
+    if (isMaintenanceMode && !path.startsWith('/maintenance')) {
+      try {
+        final maintenanceGate = await SubscriptionGuardService.checkAccess(
+          currentRoute: path,
+          allowSubscriptionRoutes: true,
+        );
+        if (!maintenanceGate.canAccess) {
+          return '/subscription?maintenance=1';
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Maintenance mode subscription check failed: $e');
+        }
         return '/subscription?maintenance=1';
       }
     }

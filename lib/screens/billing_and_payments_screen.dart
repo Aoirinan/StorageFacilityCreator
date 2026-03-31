@@ -21,6 +21,9 @@ class BillingAndPaymentsScreen extends ConsumerStatefulWidget {
   /// When provided (e.g. from route guard redirect), use this widget for Subscription tab
   final Widget? subscriptionChild;
 
+  /// True when redirected here because platform maintenance blocks users without subscription access
+  final bool showMaintenanceLockoutNotice;
+
   const BillingAndPaymentsScreen({
     super.key,
     this.requireSubscriptionChoice = false,
@@ -28,6 +31,7 @@ class BillingAndPaymentsScreen extends ConsumerStatefulWidget {
     this.showTrialExpiredDialog = false,
     this.initialTab = 0,
     this.subscriptionChild,
+    this.showMaintenanceLockoutNotice = false,
   });
 
   @override
@@ -59,6 +63,33 @@ class _BillingAndPaymentsScreenState extends ConsumerState<BillingAndPaymentsScr
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (widget.showMaintenanceLockoutNotice)
+          Material(
+            color: AppTheme.warning.withValues(alpha: 0.15),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.engineering_outlined,
+                      color: AppTheme.warning, size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Platform maintenance is on. Accounts without an active trial or subscription can only use this billing page. '
+                      'If you were approved for a trial, refresh the app or go to Dashboard from the sidebar. '
+                      'Super admins can turn maintenance off under Super Admin → feature flags.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.35,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         TabBar(
           controller: _tabController,
           indicatorColor: AppTheme.primaryBlue,

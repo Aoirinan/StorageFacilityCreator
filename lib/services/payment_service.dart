@@ -853,12 +853,30 @@ class PaymentService {
         print('🔄 Deleting payment: $paymentId');
       }
 
-      await _firestore
+      final ref = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('payments')
-          .doc(paymentId)
-          .delete();
+          .doc(paymentId);
+      final snap = await ref.get();
+      final beforeData = snap.exists && snap.data() != null
+          ? Map<String, dynamic>.from(snap.data()!)
+          : null;
+
+      await ref.delete();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'payment.deleted',
+        targetType: 'payment',
+        targetId: paymentId,
+        tenantId: beforeData?['tenantId'] as String?,
+        before: beforeData,
+        metadata: {
+          if (beforeData != null && beforeData['amount'] != null) 'amount': beforeData['amount'],
+          if (beforeData != null && beforeData['status'] != null) 'status': beforeData['status'],
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Payment deleted successfully: $paymentId');
@@ -1013,7 +1031,9 @@ class PaymentService {
         }
       } else {
         if (kDebugMode) {
-          print('⚠️ Failed to send receipt email: ${emailResult.error}');
+          print(
+            '⚠️ Failed to send receipt email: ${EmailService.staffEmailFailureHint(emailResult)}',
+          );
         }
       }
     } catch (e) {

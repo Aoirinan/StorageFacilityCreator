@@ -14,7 +14,12 @@ import '../../router/app_router.dart';
 import '../../router/app_route.dart';
 
 class SignupScreen extends ConsumerStatefulWidget {
-  const SignupScreen({super.key});
+  final String? initialEmail;
+
+  const SignupScreen({
+    super.key,
+    this.initialEmail,
+  });
 
   @override
   ConsumerState<SignupScreen> createState() => _SignupScreenState();
@@ -33,6 +38,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   @override
   void initState() {
     super.initState();
+    final pre = widget.initialEmail;
+    if (pre != null && pre.trim().isNotEmpty) {
+      _emailController.text = pre.trim();
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       HomeButtonService.instance.hide();
     });

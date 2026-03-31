@@ -699,9 +699,11 @@ class StripeService {
         'description': description,
       });
 
-      final success = result.data['success'] as bool? ?? false;
-      final paymentIntentId = result.data['paymentIntentId'] as String?;
-      final status = result.data['status'] as String?;
+      final data = Map<String, dynamic>.from(result.data as Map);
+      final success = data['success'] as bool? ?? false;
+      final paymentIntentId = data['paymentIntentId'] as String?;
+      final status = data['status'] as String?;
+      final recordingWarning = data['recordingWarning'] as String?;
 
       if (!success || paymentIntentId == null) {
         throw Exception('Failed to charge tenant');
@@ -716,6 +718,8 @@ class StripeService {
         'paymentIntentId': paymentIntentId,
         'status': status,
         'amount': amount,
+        if (recordingWarning != null && recordingWarning.isNotEmpty)
+          'recordingWarning': recordingWarning,
       };
     } catch (e) {
       if (kDebugMode) {

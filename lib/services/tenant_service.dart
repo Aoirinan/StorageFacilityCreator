@@ -740,6 +740,15 @@ class TenantService {
         print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
       }
 
+      final tenantRef = _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId);
+      final beforeSnap = await tenantRef.get();
+      final beforeData =
+          beforeSnap.exists && beforeSnap.data() != null ? Map<String, dynamic>.from(beforeSnap.data()!) : null;
+
       // 1) Find and unlink all units that reference this tenant (avoid ghost data)
       final units = await UnitService.getUnitsForFacility(facilityId);
       final unitsWithTenant = units.where((u) => u.tenantId == tenantId).toList();
@@ -758,12 +767,17 @@ class TenantService {
       }
 
       // 2) Delete tenant document
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .delete();
+      await tenantRef.delete();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'tenant.deleted',
+        targetType: 'tenant',
+        targetId: tenantId,
+        tenantId: tenantId,
+        before: beforeData,
+        metadata: {'unitsUnlinked': unitsWithTenant.length},
+      );
 
       if (kDebugMode) {
         print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${unitsWithTenant.length} unit(s)');
@@ -815,11 +829,30 @@ class TenantService {
           .doc(facilityId)
           .collection('tenants');
 
+      final snapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
       for (final tenantId in tenantIds) {
+        final s = await tenantsRef.doc(tenantId).get();
+        snapshots.add(s);
         batch.delete(tenantsRef.doc(tenantId));
       }
 
       await batch.commit();
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'tenant.bulkDeleted',
+        targetType: 'tenant',
+        targetId: 'bulk_${tenantIds.length}_${DateTime.now().millisecondsSinceEpoch}',
+        metadata: {
+          'tenantIds': tenantIds,
+          'count': tenantIds.length,
+          'unitsUnlinked': unlinked,
+          'tenantNames': snapshots
+              .where((s) => s.exists && s.data() != null)
+              .map((s) => s.data()!['name']?.toString() ?? s.id)
+              .toList(),
+        },
+      );
 
       if (kDebugMode) {
         print('✅ [TenantService] Deleted ${tenantIds.length} tenants, unlinked $unlinked unit(s)');

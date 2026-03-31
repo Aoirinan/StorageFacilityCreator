@@ -480,10 +480,13 @@ class _ContractTemplateManagementScreenState extends ConsumerState<ContractTempl
   }
 
   void _showCreateTemplateDialog() {
-    if (_selectedFacilityId == null) {
+    if (_selectedFacilityId == null || _selectedFacilityId == _kAllFacilities) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please select a facility first'),
+          content: Text(
+            'Choose a specific facility in the dropdown first. '
+            'Templates are stored per facility; “All facilities” is only for viewing.',
+          ),
           backgroundColor: AppTheme.error,
         ),
       );
@@ -493,10 +496,12 @@ class _ContractTemplateManagementScreenState extends ConsumerState<ContractTempl
   }
 
   Future<void> _createDefaultTemplates() async {
-    if (_selectedFacilityId == null) {
+    if (_selectedFacilityId == null || _selectedFacilityId == _kAllFacilities) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please select a facility first'),
+          content: Text(
+            'Choose a specific facility before adding default templates.',
+          ),
           backgroundColor: AppTheme.error,
         ),
       );

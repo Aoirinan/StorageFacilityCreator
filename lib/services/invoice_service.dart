@@ -796,13 +796,17 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
 </html>
 ''';
 
-          await EmailService.sendEmail(
+          final emailResult = await EmailService.sendEmail(
             to: tenant.email,
             subject: subject,
             html: htmlBody,
             text: body,
             facilityId: facilityId,
           );
+
+          if (!emailResult.success) {
+            throw Exception(EmailService.staffEmailFailureHint(emailResult));
+          }
 
           if (kDebugMode) {
             print('✅ [Invoice] Invoice email sent to ${tenant.email}');
@@ -811,8 +815,7 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
           if (kDebugMode) {
             print('⚠️ [Invoice] Error sending email: $emailError');
           }
-          // Don't fail the whole operation if email fails
-          // Invoice status is already updated
+          rethrow;
         }
       } else {
         if (kDebugMode) {

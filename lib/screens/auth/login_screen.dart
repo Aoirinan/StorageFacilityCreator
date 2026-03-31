@@ -595,7 +595,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                     ),
                     TextButton(
-                      onPressed: () => context.go(AppRoute.signup),
+                      onPressed: () {
+                        final r = widget.redirectAfterLogin;
+                        final e = _emailController.text.trim();
+                        if (r != null &&
+                            r.isNotEmpty &&
+                            e.isNotEmpty) {
+                          context.go(
+                            '${AppRoute.signup}?email=${Uri.encodeComponent(e)}&redirect=${Uri.encodeComponent(r)}',
+                          );
+                        } else if (r != null && r.isNotEmpty) {
+                          context.go(
+                            '${AppRoute.signup}?redirect=${Uri.encodeComponent(r)}',
+                          );
+                        } else if (e.isNotEmpty) {
+                          context.go(
+                            '${AppRoute.signup}?email=${Uri.encodeComponent(e)}',
+                          );
+                        } else {
+                          context.go(AppRoute.signup);
+                        }
+                      },
                       child: Text(
                         'Sign Up',
                         style: TextStyle(

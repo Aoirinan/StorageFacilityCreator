@@ -67,52 +67,123 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
       );
     }
 
+    final narrowHeader = MediaQuery.sizeOf(context).width < 640;
+
     return Scaffold(
       backgroundColor: AppTheme.backgroundLight,
       appBar: AppBar(
         backgroundColor: AppTheme.backgroundDark,
         foregroundColor: Colors.white,
         elevation: 0,
-        title: Row(
-          children: [
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppTheme.error.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                    color: AppTheme.error.withValues(alpha: 0.4)),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
+        toolbarHeight: narrowHeader ? 96 : kToolbarHeight,
+        titleSpacing: narrowHeader ? 12 : null,
+        title: narrowHeader
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.shield, size: 14, color: AppTheme.error),
-                  SizedBox(width: 6),
-                  Text('SUPER ADMIN',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: AppTheme.error,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1)),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.error.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: AppTheme.error.withValues(alpha: 0.4)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.shield, size: 14, color: AppTheme.error),
+                            SizedBox(width: 4),
+                            Text(
+                              'SUPER ADMIN',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: AppTheme.error,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Platform Control',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (email.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      email,
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.white70),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              )
+            : Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppTheme.error.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: AppTheme.error.withValues(alpha: 0.4)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.shield, size: 14, color: AppTheme.error),
+                        SizedBox(width: 6),
+                        Text('SUPER ADMIN',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.error,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Platform Control',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: Colors.white, fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(width: 16),
-            Text('Platform Control',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.white, fontWeight: FontWeight.w600)),
-          ],
-        ),
         actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Center(
-              child: Text(email,
-                  style: const TextStyle(
-                      fontSize: 12, color: Colors.white70)),
+          if (!narrowHeader)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: Text(email,
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.white70)),
+              ),
             ),
-          ),
           IconButton(
             icon: const Icon(Icons.open_in_new, size: 18),
             tooltip: 'Go to Dashboard',

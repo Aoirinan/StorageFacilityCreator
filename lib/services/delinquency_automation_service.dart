@@ -418,14 +418,18 @@ Thank you,
 ${facility.name}
 ''';
 
-      // Send email
       if (tenant.email.isNotEmpty) {
-        await EmailService.sendEmail(
+        final emailResult = await EmailService.sendEmail(
           to: tenant.email,
           subject: subject,
           text: body,
           facilityId: facilityId,
         );
+        if (!emailResult.success && kDebugMode) {
+          print(
+            '⚠️ [Delinquency] Late notice email: ${EmailService.staffEmailFailureHint(emailResult)}',
+          );
+        }
       }
 
       // Send SMS if email fails or as backup
@@ -479,12 +483,17 @@ ${facility.name}
 ''';
 
       if (tenant.email.isNotEmpty) {
-        await EmailService.sendEmail(
+        final emailResult = await EmailService.sendEmail(
           to: tenant.email,
           subject: subject,
           text: body,
           facilityId: facilityId,
         );
+        if (!emailResult.success && kDebugMode) {
+          print(
+            '⚠️ [Delinquency] Final notice email: ${EmailService.staffEmailFailureHint(emailResult)}',
+          );
+        }
       }
 
       return true;

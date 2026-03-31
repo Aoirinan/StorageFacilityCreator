@@ -37,7 +37,17 @@ class AuditLogEntry {
   });
 
   Map<String, dynamic> toFirestore() {
+    final changes = <String, dynamic>{
+      if (before != null) 'before': before,
+      if (after != null) 'after': after,
+    };
+    final meta = <String, dynamic>{
+      ...?metadata,
+      if (actorRole != null) 'actorRole': actorRole!,
+    };
+
     return {
+      // App UI (audit log screen)
       'eventType': eventType,
       'actorUid': actorUid,
       if (actorEmail != null) 'actorEmail': actorEmail,
@@ -51,7 +61,14 @@ class AuditLogEntry {
       'timestamp': Timestamp.fromDate(timestamp),
       if (ipAddress != null) 'ipAddress': ipAddress,
       if (userAgent != null) 'userAgent': userAgent,
-      if (metadata != null) 'metadata': metadata,
+      'metadata': meta,
+      // Firestore rules (facilities/.../auditLogs) — hasAll + userId match
+      'action': eventType,
+      'entityType': targetType,
+      'entityId': targetId,
+      'userId': actorUid,
+      'userEmail': actorEmail ?? '',
+      'changes': changes,
     };
   }
 }

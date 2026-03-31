@@ -252,6 +252,32 @@ class FacilityStatsService {
         final cachedOccupied = (cached['occupiedUnits'] as int?) ?? 0;
         final cachedTenants = (cached['totalTenantsActive'] as int?) ?? 0;
 
+        // Cache often has unit capacity pre-seeded (e.g. imports) while tenant aggregates
+        // were never recomputed → dashboard shows 0 tenants but Tenants list has rows.
+        if (cachedTenants == 0 && cachedOccupied == 0) {
+          final anyTenantSnap = await _firestore
+              .collection('facilities')
+              .doc(facilityId)
+              .collection('tenants')
+              .limit(1)
+              .get();
+          if (anyTenantSnap.docs.isNotEmpty) {
+            if (kDebugMode) {
+              print(
+                '🔄 [FacilityStatsService] Stale cache (0 tenants/occupied in stats but tenant docs exist), recomputing...',
+              );
+            }
+            await updateFacilityStats(facilityId);
+            return (await _firestore
+                    .collection('facilities')
+                    .doc(facilityId)
+                    .collection('stats')
+                    .doc('current')
+                    .get())
+                .data();
+          }
+        }
+
         // Ghost occupancy: 0 tenants but occupied > 0 → stale cache, recompute and heal
         if (cachedTenants == 0 && cachedOccupied > 0) {
           if (kDebugMode) {
@@ -282,6 +308,26 @@ class FacilityStatsService {
                   .doc('current')
                   .get())
               .data();
+        }
+
+        // Capacity unset (0): effective total is unit-document count — refresh if cache drifted.
+        if (facilityCapacity == 0 && cachedTotalUnits > 0) {
+          final units = await UnitService.getUnitsForFacility(facilityId);
+          if (cachedTotalUnits != units.length) {
+            if (kDebugMode) {
+              print(
+                '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != ${units.length} unit docs (capacity 0), recomputing...',
+              );
+            }
+            await updateFacilityStats(facilityId);
+            return (await _firestore
+                    .collection('facilities')
+                    .doc(facilityId)
+                    .collection('stats')
+                    .doc('current')
+                    .get())
+                .data();
+          }
         }
         return cached;
       }

@@ -50,6 +50,40 @@ final facilityMapShapesProvider = StreamProvider.family<List<MapShapeModel>, Str
 /// Provider for selected shape state
 final selectedMapShapeProvider = StateProvider<String?>((ref) => null);
 
+/// Auto-seed and default "Starter Row" size — not tied to total facility unit count.
+const int kMapStarterRowBlockCount = 20;
+
+List<Object> _alphanumericPartsForSort(String raw) {
+  final s = raw.trim();
+  if (s.isEmpty) return <Object>[''];
+  final out = <Object>[];
+  for (final m in RegExp(r'\d+|\D+').allMatches(s)) {
+    final g = m.group(0)!;
+    final n = int.tryParse(g);
+    out.add(n ?? g.toLowerCase());
+  }
+  return out;
+}
+
+/// Puts "2" before "10" for typical storage unit labels.
+int compareUnitNumbersNatural(String a, String b) {
+  final pa = _alphanumericPartsForSort(a);
+  final pb = _alphanumericPartsForSort(b);
+  final n = pa.length < pb.length ? pa.length : pb.length;
+  for (var i = 0; i < n; i++) {
+    final va = pa[i];
+    final vb = pb[i];
+    if (va is int && vb is int) {
+      final c = va.compareTo(vb);
+      if (c != 0) return c;
+    } else {
+      final c = va.toString().compareTo(vb.toString());
+      if (c != 0) return c;
+    }
+  }
+  return pa.length.compareTo(pb.length);
+}
+
 /// Interactive facility map editor
 class FacilityMapEditorScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -63,10 +97,27 @@ class FacilityMapEditorScreen extends ConsumerStatefulWidget {
   ConsumerState<FacilityMapEditorScreen> createState() => _FacilityMapEditorScreenState();
 }
 
+/// World-coordinate rectangle for the grey map workspace (matches _buildCanvas sizing).
+class _MapWorkspaceBounds {
+  final double minX;
+  final double minY;
+  final double maxX;
+  final double maxY;
+
+  const _MapWorkspaceBounds({
+    required this.minX,
+    required this.minY,
+    required this.maxX,
+    required this.maxY,
+  });
+}
+
 class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScreen>
     with AutomaticKeepAliveClientMixin {
   final TransformationController _transformationController = TransformationController();
   final GlobalKey _mapCanvasKey = GlobalKey(); // Key for RepaintBoundary to capture map
+  /// `toScene` must use coordinates in the InteractiveViewer's viewport, not full-screen MediaQuery.
+  final GlobalKey _interactiveViewerKey = GlobalKey();
   bool _isDisposed = false;
   String? _selectedShapeId;
   bool _showGrid = true;
@@ -88,6 +139,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   double? _lastCanvasMinY;
   bool _shapePointerActive = false;
   String? _pendingFocusShapeId;
+  bool _didAutoSeedBottomRow = false;
+  bool _isSeedingBottomRow = false;
+  bool _isDeletingAllShapes = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -150,6 +204,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _selectedUnitIds.clear();
       _isResizing = false;
       _transformationController.value = Matrix4.identity();
+      _didAutoSeedBottomRow = false;
+      _isSeedingBottomRow = false;
     }
   }
 
@@ -190,12 +246,53 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     setState(() {});
   }
 
+  /// Same bounds logic as [_buildCanvas] (all shapes, unfiltered) for placement and clamping.
+  _MapWorkspaceBounds _computeWorkspaceBounds(List<MapShapeModel> shapes) {
+    double minX = 0;
+    double minY = 0;
+    double maxX = 2000.0;
+    double maxY = 1500.0;
+
+    if (shapes.isNotEmpty) {
+      for (final shape in shapes) {
+        final shapeRight = shape.x + shape.width;
+        final shapeBottom = shape.y + shape.height;
+        if (shape.x < minX) minX = shape.x;
+        if (shape.y < minY) minY = shape.y;
+        if (shapeRight > maxX) maxX = shapeRight;
+        if (shapeBottom > maxY) maxY = shapeBottom;
+      }
+      minX = minX - 200;
+      minY = minY - 200;
+      maxX = maxX + 200;
+      maxY = maxY + 200;
+    }
+
+    if (maxX - minX < 2000) {
+      maxX = minX + 2000;
+    }
+    if (maxY - minY < 1500) {
+      maxY = minY + 1500;
+    }
+
+    return _MapWorkspaceBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY);
+  }
+
+  Size _interactiveViewerViewportSize() {
+    final ctx = _interactiveViewerKey.currentContext;
+    if (ctx == null) return Size.zero;
+    final box = ctx.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return Size.zero;
+    return box.size;
+  }
+
   void _focusShapeOnCanvas(MapShapeModel shape) {
     final centerX = shape.x + shape.width / 2;
     final centerY = shape.y + shape.height / 2;
     const scale = 1.4;
-    final vw = MediaQuery.of(context).size.width;
-    final vh = MediaQuery.of(context).size.height;
+    final vs = _interactiveViewerViewportSize();
+    final vw = vs.width > 0 ? vs.width : MediaQuery.sizeOf(context).width;
+    final vh = vs.height > 0 ? vs.height : MediaQuery.sizeOf(context).height;
     _transformationController.value = Matrix4.identity()
       ..translate(-(centerX * scale) + (vw / 2), -(centerY * scale) + (vh / 2))
       ..scale(scale);
@@ -219,19 +316,33 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
   Future<void> _addRectangle() async {
     try {
-      // Place new shape near current viewport center, not off-screen.
-      final viewportCenter = Offset(
-        MediaQuery.of(context).size.width / 2,
-        (MediaQuery.of(context).size.height / 2) - 80,
-      );
-      final scenePoint =
-          _transformationController.toScene(viewportCenter);
-      double defaultX = scenePoint.dx - 50;
-      double defaultY = scenePoint.dy - 40;
-      defaultX = _snapToGridValue(defaultX);
-      defaultY = _snapToGridValue(defaultY);
+      final shapes = ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value ??
+          const <MapShapeModel>[];
+      final bounds = _computeWorkspaceBounds(shapes);
+
+      final vs = _interactiveViewerViewportSize();
       final w = _snapToGridValue(100.0).clamp(_gridSize, 2000.0);
       final h = _snapToGridValue(80.0).clamp(_gridSize, 1500.0);
+
+      final Offset scenePoint;
+      if (vs.width > 0 && vs.height > 0) {
+        scenePoint = _transformationController.toScene(Offset(vs.width / 2, vs.height / 2));
+      } else {
+        // Viewer not laid out yet; do not use full-screen coords with [toScene].
+        scenePoint = Offset(
+          bounds.minX + (bounds.maxX - bounds.minX) / 2,
+          bounds.minY + (bounds.maxY - bounds.minY) / 2,
+        );
+      }
+      double defaultX = scenePoint.dx - w / 2;
+      double defaultY = scenePoint.dy - h / 2;
+      defaultX = _snapToGridValue(defaultX);
+      defaultY = _snapToGridValue(defaultY);
+
+      final maxPlaceX = (bounds.maxX - w).clamp(bounds.minX, bounds.maxX);
+      final maxPlaceY = (bounds.maxY - h).clamp(bounds.minY, bounds.maxY);
+      defaultX = defaultX.clamp(bounds.minX, maxPlaceX);
+      defaultY = defaultY.clamp(bounds.minY, maxPlaceY);
 
       final createdId = await MapLayoutService.createMapShape(
         facilityId: widget.facilityId,
@@ -265,6 +376,158 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             backgroundColor: AppTheme.error,
           ),
         );
+      }
+    }
+  }
+
+  Future<void> _createBottomStarterBlocks({int? count}) async {
+    if (_isSeedingBottomRow) return;
+    _isSeedingBottomRow = true;
+    try {
+      final units = ref.read(facilityUnitsProvider(widget.facilityId)).asData?.value ?? const <UnitModel>[];
+      final shapes = ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value ?? const <MapShapeModel>[];
+      final assignedUnitIds = shapes.where((s) => s.unitId != null).map((s) => s.unitId!).toSet();
+      final availableUnassignedUnits = units.where((u) => !assignedUnitIds.contains(u.id)).toList()
+        ..sort((a, b) => compareUnitNumbersNatural(a.unitNumber, b.unitNumber));
+
+      final requested = count ?? kMapStarterRowBlockCount;
+      if (requested <= 0) return;
+      final targetCount = requested.clamp(1, 100);
+
+      const maxBlockWidth = 100.0;
+      const minBlockWidth = 48.0;
+      const blockHeight = 80.0;
+      const margin = 30.0;
+      final bounds = _computeWorkspaceBounds(shapes);
+      final workspaceInnerW = bounds.maxX - bounds.minX - 2 * margin;
+      if (workspaceInnerW <= 0) return;
+
+      double gap = 12.0;
+      double blockWidth = maxBlockWidth;
+      double rowWidth(int n, double w, double g) => n * w + (n > 1 ? (n - 1) * g : 0);
+      while (targetCount > 1 && rowWidth(targetCount, blockWidth, gap) > workspaceInnerW && gap > 4) {
+        gap -= 2;
+      }
+      while (targetCount > 1 && rowWidth(targetCount, blockWidth, gap) > workspaceInnerW && blockWidth > minBlockWidth) {
+        blockWidth -= 4;
+      }
+      if (rowWidth(targetCount, blockWidth, gap) > workspaceInnerW && targetCount > 1) {
+        gap = 4;
+        blockWidth = ((workspaceInnerW - (targetCount - 1) * gap) / targetCount).clamp(minBlockWidth, maxBlockWidth);
+      }
+
+      final startX = bounds.minX + margin;
+      final y = (bounds.maxY - blockHeight - margin).clamp(bounds.minY, bounds.maxY - blockHeight);
+
+      String? firstCreatedId;
+      var assignedCount = 0;
+      for (int i = 0; i < targetCount; i++) {
+        final unitId =
+            i < availableUnassignedUnits.length ? availableUnassignedUnits[i].id : null;
+        if (unitId != null) assignedCount++;
+        final createdId = await MapLayoutService.createMapShape(
+          facilityId: widget.facilityId,
+          unitId: unitId,
+          type: 'rect',
+          x: startX + (i * (blockWidth + gap)),
+          y: y,
+          width: blockWidth,
+          height: blockHeight,
+          zIndex: 1,
+        );
+        firstCreatedId ??= createdId;
+      }
+
+      if (mounted && firstCreatedId != null) {
+        setState(() {
+          _pendingFocusShapeId = firstCreatedId;
+          _selectedShapeId = firstCreatedId;
+        });
+        final unassignedLeft = targetCount - assignedCount;
+        final msg = unassignedLeft > 0
+            ? 'Created $targetCount blocks ($assignedCount linked to units; $unassignedLeft unassigned)'
+            : 'Created $targetCount blocks linked to units along the bottom';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error creating starter row: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      _isSeedingBottomRow = false;
+    }
+  }
+
+  Future<void> _deleteAllShapes() async {
+    final shapesAsync = ref.read(facilityMapShapesProvider(widget.facilityId));
+    final shapes = shapesAsync.asData?.value ?? const <MapShapeModel>[];
+    if (shapes.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No shapes to delete')),
+        );
+      }
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete all map shapes?'),
+        content: Text(
+          'This removes all ${shapes.length} shapes from the map for this facility. '
+          'Your units and tenants are not deleted. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Delete all'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAllShapes = true);
+    try {
+      final removed = await MapLayoutService.deleteAllMapShapes(facilityId: widget.facilityId);
+      _selectShape(null);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(removed == 0 ? 'No shapes were removed' : 'Removed $removed shapes from the map'),
+            backgroundColor: removed == 0 ? null : AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not delete all shapes: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDeletingAllShapes = false);
       }
     }
   }
@@ -486,6 +749,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
   Widget _buildToolbar() {
     final cs = Theme.of(context).colorScheme;
+    final shapesAsync = ref.watch(facilityMapShapesProvider(widget.facilityId));
+    final shapeCount = shapesAsync.asData?.value.length ?? 0;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       color: cs.surface,
@@ -499,6 +764,18 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               backgroundColor: cs.primary,
               foregroundColor: cs.onPrimary,
             ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: _isSeedingBottomRow ? null : () => _createBottomStarterBlocks(),
+            icon: _isSeedingBottomRow
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.view_week, size: 18),
+            label: Text(_isSeedingBottomRow ? 'Building...' : 'Starter row ($kMapStarterRowBlockCount)'),
           ),
           const SizedBox(width: 12),
           IconButton(
@@ -577,6 +854,21 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPressed: _openShapeManager,
           ),
           const Spacer(),
+          TextButton.icon(
+            onPressed: _isDeletingAllShapes || shapeCount == 0 || shapesAsync.isLoading
+                ? null
+                : _deleteAllShapes,
+            icon: _isDeletingAllShapes
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.delete_sweep, size: 20),
+            label: Text(_isDeletingAllShapes ? 'Deleting…' : 'Delete all'),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+          ),
+          const SizedBox(width: 4),
           if (_selectedShapeId != null)
             IconButton(
               onPressed: _deleteSelectedShape,
@@ -612,6 +904,15 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     try {
       print('[MapEditor] _buildCanvas called with ${shapes.length} shapes, ${units.length} units');
       final unitsMap = {for (var unit in units) unit.id: unit};
+
+      if (!_didAutoSeedBottomRow && shapes.isEmpty && !_isSeedingBottomRow) {
+        _didAutoSeedBottomRow = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _createBottomStarterBlocks(count: kMapStarterRowBlockCount);
+          }
+        });
+      }
 
       if (_pendingFocusShapeId != null) {
         final pending = shapes.where((s) => s.id == _pendingFocusShapeId).firstOrNull;
@@ -674,6 +975,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       print('[MapEditor] Canvas size: ${canvasWidth}x${canvasHeight}, offset: ($minX, $minY)');
 
       return InteractiveViewer(
+        key: _interactiveViewerKey,
         transformationController: _transformationController,
         minScale: 0.1,
         maxScale: 4.0,

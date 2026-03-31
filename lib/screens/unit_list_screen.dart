@@ -64,6 +64,29 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<AsyncValue<String?>>(activeFacilityIdProvider, (prev, next) {
+      if (!mounted) return;
+      final user = ref.read(authStateProvider).maybeWhen(
+            data: (u) => u,
+            orElse: () => null,
+          );
+      if (user == null) return;
+      final facilities = ref.read(userFacilitiesProvider(user.uid)).maybeWhen(
+            data: (f) => f,
+            orElse: () => null,
+          );
+      if (facilities == null || facilities.isEmpty) return;
+      final nextId = next.whenOrNull(data: (d) => d);
+      if (nextId != null &&
+          facilities.any((f) => f.id == nextId) &&
+          _selectedFacilityId != nextId) {
+        setState(() {
+          _selectedFacilityId = nextId;
+          _selectedUnitIds.clear();
+        });
+      }
+    });
+
     if (_selectedFacilityId == null) {
       return _buildNoFacilityMessage();
     }
@@ -109,16 +132,6 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         return facilitiesAsync.when(
           data: (facilities) {
             if (facilities.isEmpty) return const SizedBox.shrink();
-            ref.listen(activeFacilityIdProvider, (prev, next) {
-              final nextId = next.whenOrNull(data: (d) => d);
-              if (nextId != null && facilities.any((f) => f.id == nextId) &&
-                  _selectedFacilityId != nextId && mounted) {
-                setState(() {
-                  _selectedFacilityId = nextId;
-                  _selectedUnitIds.clear();
-                });
-              }
-            });
             return Padding(
               padding: const EdgeInsets.all(16),
               child: Row(

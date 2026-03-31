@@ -20,6 +20,7 @@ import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/email_send_feedback.dart';
 
 class ContractDetailScreen extends ConsumerStatefulWidget {
   final ContractModel contract;
@@ -745,8 +746,12 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Contract marked as sent, but email failed: ${emailResult.error}'),
-            backgroundColor: AppTheme.warning,
+            content: Text(
+              'Contract marked as sent, but email failed. ${EmailService.staffEmailFailureHint(emailResult)}',
+            ),
+            backgroundColor: recipientUnsubscribedEmailFailure(emailResult)
+                ? AppTheme.warning
+                : AppTheme.error,
           ),
         );
       }
@@ -852,8 +857,10 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       } else if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Contract link updated, but email failed: ${emailResult.error}'),
-            backgroundColor: AppTheme.warning,
+            content: Text(EmailService.staffEmailFailureHint(emailResult)),
+            backgroundColor: recipientUnsubscribedEmailFailure(emailResult)
+                ? AppTheme.warning
+                : AppTheme.error,
           ),
         );
       }

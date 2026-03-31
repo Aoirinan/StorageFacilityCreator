@@ -32,12 +32,19 @@ List<RouteBase> getPublicRoutes() {
     GoRoute(
       path: AppRoute.login,
       name: 'login',
-      builder: (context, state) => const LoginScreen(),
+      builder: (context, state) {
+        final email = state.uri.queryParameters['email'];
+        final redirect = state.uri.queryParameters['redirect'];
+        return LoginScreen(initialEmail: email, redirectAfterLogin: redirect);
+      },
     ),
     GoRoute(
       path: AppRoute.signup,
       name: 'signup',
-      builder: (context, state) => const SignupScreen(),
+      builder: (context, state) {
+        final email = state.uri.queryParameters['email'];
+        return SignupScreen(initialEmail: email);
+      },
     ),
     GoRoute(
       path: AppRoute.forgotPassword,

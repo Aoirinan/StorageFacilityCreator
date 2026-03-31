@@ -48,11 +48,15 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'tenant.created',
     'tenant.edited',
     'tenant.archived',
+    'tenant.deleted',
+    'tenant.bulkDeleted',
     'unit.statusChanged',
+    'unit.deleted',
     'payment.created',
     'payment.charged',
     'payment.refunded',
     'payment.refundRequested',
+    'payment.deleted',
     'invoice.created',
     'invoice.voided',
     'template.created',
@@ -62,6 +66,10 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'delinquency.lockoutTriggered',
     'delinquency.unlocked',
     'portal.accessed',
+    'team_note.deleted',
+    'conversation.archived',
+    'conversation.deleted',
+    'contract.deleted',
   ];
 
   final List<String> _targetTypes = [
@@ -73,6 +81,9 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'template',
     'reminder',
     'gateAccess',
+    'team_note',
+    'conversation',
+    'contract',
   ];
 
   final List<String> _actorRoles = [
@@ -566,8 +577,12 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
   }
 
   Icon _getEventIcon(String eventType) {
-    if (eventType.contains('tenant')) {
+    if (eventType.contains('deleted')) {
+      return Icon(Icons.delete_forever, color: AppTheme.error);
+    } else if (eventType.contains('tenant')) {
       return Icon(Icons.person, color: AppTheme.primaryBlue);
+    } else if (eventType.contains('unit')) {
+      return Icon(Icons.warehouse, color: AppTheme.info);
     } else if (eventType.contains('payment') || eventType.contains('charge') || eventType.contains('refund')) {
       return Icon(Icons.payment, color: AppTheme.success);
     } else if (eventType.contains('invoice')) {
@@ -580,6 +595,12 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
       return Icon(Icons.notifications, color: AppTheme.info);
     } else if (eventType.contains('portal')) {
       return Icon(Icons.login, color: AppTheme.primaryBlue);
+    } else if (eventType.contains('conversation')) {
+      return Icon(Icons.forum, color: AppTheme.primaryBlue);
+    } else if (eventType.contains('team_note') || eventType.contains('note')) {
+      return Icon(Icons.sticky_note_2, color: AppTheme.warning);
+    } else if (eventType.contains('contract')) {
+      return Icon(Icons.article, color: AppTheme.textSecondary);
     } else {
       return Icon(Icons.history, color: AppTheme.textTertiary);
     }

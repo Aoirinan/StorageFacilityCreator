@@ -33,12 +33,17 @@ class _OnlineRentalsManagementScreenState
   bool _isSaving = false;
   String? _error;
   FacilityModel? _facility;
+  List<FacilityModel> _userFacilities = const <FacilityModel>[];
 
   final TextEditingController _slugController = TextEditingController();
   final TextEditingController _customDomainController = TextEditingController();
   final TextEditingController _marketingContentController =
       TextEditingController();
   final TextEditingController _logoUrlController = TextEditingController();
+  final TextEditingController _insuranceAmountController =
+      TextEditingController();
+  final TextEditingController _securityDepositAmountController =
+      TextEditingController();
   bool _publicRentalsEnabled = false;
   bool _publicPricingEnabled = true;
   bool _publicUnitNumbersEnabled = true;
@@ -46,6 +51,9 @@ class _OnlineRentalsManagementScreenState
   bool _allowUnitSelection = true;
   bool _showAvailabilityCount = true;
   bool _hideUnavailableTypes = true;
+  bool _chargeNextMonthAfterMidMonthMoveIn = false;
+  bool _chargeInsuranceAtMoveIn = false;
+  bool _chargeSecurityDepositAtMoveIn = false;
   Set<String> _enabledPublicUnitTypes = <String>{};
   Set<String> _availableUnitTypes = <String>{};
   Map<String, String> _unitTypeImageUrls = <String, String>{};
@@ -63,11 +71,21 @@ class _OnlineRentalsManagementScreenState
   }
 
   @override
+  void didUpdateWidget(covariant OnlineRentalsManagementScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.facilityId != widget.facilityId) {
+      _load();
+    }
+  }
+
+  @override
   void dispose() {
     _slugController.dispose();
     _customDomainController.dispose();
     _marketingContentController.dispose();
     _logoUrlController.dispose();
+    _insuranceAmountController.dispose();
+    _securityDepositAmountController.dispose();
     super.dispose();
   }
 
@@ -77,6 +95,7 @@ class _OnlineRentalsManagementScreenState
       _error = null;
     });
     try {
+      final facilities = await FacilityService.getUserFacilities();
       final facility = await FacilityService.getFacility(widget.facilityId);
       final settings =
           await FacilityPublicService.getPublicSettings(widget.facilityId);
@@ -88,6 +107,7 @@ class _OnlineRentalsManagementScreenState
       if (!mounted) return;
       setState(() {
         _facility = facility;
+        _userFacilities = facilities;
         _publicRentalsEnabled = settings?.publicRentalsEnabled ?? false;
         _publicPricingEnabled = settings?.publicPricingEnabled ?? true;
         _publicUnitNumbersEnabled = settings?.publicUnitNumbersEnabled ?? true;
@@ -95,15 +115,27 @@ class _OnlineRentalsManagementScreenState
         _allowUnitSelection = settings?.allowUnitSelection ?? true;
         _showAvailabilityCount = settings?.showAvailabilityCount ?? true;
         _hideUnavailableTypes = settings?.hideUnavailableTypes ?? true;
+        _chargeNextMonthAfterMidMonthMoveIn =
+            settings?.chargeNextMonthAfterMidMonthMoveIn ?? false;
+        _chargeInsuranceAtMoveIn = settings?.chargeInsuranceAtMoveIn ?? false;
+        _chargeSecurityDepositAtMoveIn =
+            settings?.chargeSecurityDepositAtMoveIn ?? false;
         _enabledPublicUnitTypes =
             settings?.enabledPublicUnitTypes.toSet() ?? <String>{};
         _availableUnitTypes = types;
         _unitTypeImageUrls = settings?.unitTypeImageUrls ?? <String, String>{};
         _customDomainController.text = settings?.customDomain ?? '';
-        _marketingContentController.text = settings?.marketingContent ??
-            settings?.pageDescription ??
-            '';
+        _marketingContentController.text =
+            settings?.marketingContent ?? settings?.pageDescription ?? '';
         _logoUrlController.text = settings?.publicLogoUrl ?? '';
+        _insuranceAmountController.text =
+            (settings?.publicInsuranceAmount ?? 0) > 0
+                ? (settings!.publicInsuranceAmount!).toStringAsFixed(2)
+                : '';
+        _securityDepositAmountController.text =
+            (settings?.publicSecurityDepositAmount ?? 0) > 0
+                ? (settings!.publicSecurityDepositAmount!).toStringAsFixed(2)
+                : '';
         _slugController.text =
             (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
                 ? settings!.publicRentalSlug!
@@ -127,9 +159,13 @@ class _OnlineRentalsManagementScreenState
     final customDomain = _normalizedDomain(_customDomainController.text);
     final marketingContent = _marketingContentController.text.trim();
     final logoUrl = _logoUrlController.text.trim();
+    final insuranceAmount =
+        double.tryParse(_insuranceAmountController.text.trim()) ?? 0;
+    final securityDepositAmount =
+        double.tryParse(_securityDepositAmountController.text.trim()) ?? 0;
     if (slug.isEmpty) {
       setState(() {
-        _error = 'Please enter a valid public rental slug.';
+        _error = 'Please enter a valid public URL name.';
       });
       return;
     }
@@ -156,6 +192,12 @@ class _OnlineRentalsManagementScreenState
         allowUnitSelection: _allowUnitSelection,
         showAvailabilityCount: _showAvailabilityCount,
         hideUnavailableTypes: _hideUnavailableTypes,
+        chargeNextMonthAfterMidMonthMoveIn: _chargeNextMonthAfterMidMonthMoveIn,
+        chargeInsuranceAtMoveIn: _chargeInsuranceAtMoveIn,
+        publicInsuranceAmount: insuranceAmount > 0 ? insuranceAmount : null,
+        chargeSecurityDepositAtMoveIn: _chargeSecurityDepositAtMoveIn,
+        publicSecurityDepositAmount:
+            securityDepositAmount > 0 ? securityDepositAmount : null,
         enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
         publicRentalSlug: slug,
         customDomain: customDomain.isEmpty ? null : customDomain,
@@ -281,7 +323,8 @@ class _OnlineRentalsManagementScreenState
       final path =
           'facilities/${widget.facilityId}/public-branding/logo-$stamp-$safeName';
       final ref = FirebaseStorage.instance.ref(path);
-      await ref.putData(file.bytes!, SettableMetadata(contentType: contentType));
+      await ref.putData(
+          file.bytes!, SettableMetadata(contentType: contentType));
       final url = await ref.getDownloadURL();
       if (!mounted) return;
       setState(() {
@@ -332,6 +375,47 @@ class _OnlineRentalsManagementScreenState
         .replaceAll(RegExp(r'^-|-$'), '');
   }
 
+  String _activePricingPresetId() {
+    final minimal = !_chargeNextMonthAfterMidMonthMoveIn &&
+        !_chargeInsuranceAtMoveIn &&
+        !_chargeSecurityDepositAtMoveIn;
+    if (minimal) return 'minimal';
+
+    final standard = !_chargeNextMonthAfterMidMonthMoveIn &&
+        !_chargeInsuranceAtMoveIn &&
+        _chargeSecurityDepositAtMoveIn;
+    if (standard) return 'standard';
+
+    final full = _chargeNextMonthAfterMidMonthMoveIn &&
+        _chargeInsuranceAtMoveIn &&
+        _chargeSecurityDepositAtMoveIn;
+    if (full) return 'full';
+
+    return 'custom';
+  }
+
+  void _applyPricingPreset(String presetId) {
+    setState(() {
+      switch (presetId) {
+        case 'minimal':
+          _chargeNextMonthAfterMidMonthMoveIn = false;
+          _chargeInsuranceAtMoveIn = false;
+          _chargeSecurityDepositAtMoveIn = false;
+          break;
+        case 'standard':
+          _chargeNextMonthAfterMidMonthMoveIn = false;
+          _chargeInsuranceAtMoveIn = false;
+          _chargeSecurityDepositAtMoveIn = true;
+          break;
+        case 'full':
+          _chargeNextMonthAfterMidMonthMoveIn = true;
+          _chargeInsuranceAtMoveIn = true;
+          _chargeSecurityDepositAtMoveIn = true;
+          break;
+      }
+    });
+  }
+
   Future<void> _uploadUnitTypeImage(String unitType) async {
     setState(() {
       _uploadingUnitType = unitType;
@@ -364,7 +448,8 @@ class _OnlineRentalsManagementScreenState
       final path =
           'facilities/${widget.facilityId}/public-branding/unit-types/$safeType-$stamp-$safeName';
       final ref = FirebaseStorage.instance.ref(path);
-      await ref.putData(file.bytes!, SettableMetadata(contentType: contentType));
+      await ref.putData(
+          file.bytes!, SettableMetadata(contentType: contentType));
       final url = await ref.getDownloadURL();
 
       if (!mounted) return;
@@ -407,385 +492,500 @@ class _OnlineRentalsManagementScreenState
           ],
         ),
         const SizedBox(height: 8),
-                    Text(
-                      _facility?.name ?? 'Facility',
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                      ),
+        if (_userFacilities.length > 1) ...[
+          DropdownButtonFormField<String>(
+            value: widget.facilityId,
+            decoration: const InputDecoration(
+              labelText: 'Facility',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.apartment),
+            ),
+            items: _userFacilities
+                .map(
+                  (f) => DropdownMenuItem<String>(
+                    value: f.id,
+                    child: Text(f.name),
+                  ),
+                )
+                .toList(),
+            onChanged: (value) {
+              if (value == null || value == widget.facilityId) {
+                return;
+              }
+              context.go('/online-rentals?facilityId=$value');
+            },
+          ),
+          const SizedBox(height: 12),
+        ],
+        Text(
+          _facility?.name ?? 'Facility',
+          style: const TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Manage SFC-hosted public rental links for your website, social pages, SMS, and email.',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _customDomainController,
+          onChanged: (_) {
+            setState(() {
+              _domainConnected = null;
+              _domainCheckMessage = null;
+              _domainRecords = const <String>[];
+            });
+          },
+          decoration: const InputDecoration(
+            labelText: 'Custom Domain (optional)',
+            hintText: 'rent.yourfacility.com',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.language),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              onPressed: _isCheckingDomain
+                  ? null
+                  : () => _checkDomainStatus(showSnackBar: true),
+              icon: _isCheckingDomain
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.wifi_tethering),
+              label: Text(_isCheckingDomain
+                  ? 'Checking...'
+                  : 'Check Domain Connection'),
+            ),
+            const SizedBox(width: 10),
+            if (_domainConnected != null)
+              _DomainStatusChip(connected: _domainConnected!),
+          ],
+        ),
+        if (_domainCheckMessage != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            _domainCheckMessage!,
+            style: TextStyle(
+              color: _domainConnected == true
+                  ? AppTheme.success
+                  : AppTheme.warning,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+        if (_domainRecords.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            'DNS records: ${_domainRecords.join(', ')}',
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        TextField(
+          controller: _marketingContentController,
+          maxLines: 4,
+          minLines: 3,
+          decoration: const InputDecoration(
+            labelText: 'Public Marketing Text',
+            hintText:
+                'Write anything you want renters to see on your rental page.',
+            border: OutlineInputBorder(),
+            alignLabelWithHint: true,
+            prefixIcon: Icon(Icons.edit_note),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFF),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFE2E8F5)),
+          ),
+          child: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Page Suggestions',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 6),
+              Text('- Add one clear headline with city/location'),
+              Text('- Use 1-2 short trust paragraphs'),
+              Text('- Upload images for each unit type'),
+              Text('- Keep FAQs practical and short'),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _logoUrlController,
+          decoration: InputDecoration(
+            labelText: 'Public Logo URL',
+            hintText: 'https://...',
+            border: const OutlineInputBorder(),
+            prefixIcon: const Icon(Icons.image),
+            suffixIcon: _isUploadingLogo
+                ? const Padding(
+                    padding: EdgeInsets.all(10),
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Manage SFC-hosted public rental links for your website, social pages, SMS, and email.',
-                      style: TextStyle(color: AppTheme.textSecondary),
+                  )
+                : IconButton(
+                    tooltip: 'Upload Logo',
+                    onPressed: _uploadLogo,
+                    icon: const Icon(Icons.upload),
+                  ),
+          ),
+        ),
+        if (_logoUrlController.text.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 64),
+              child: Image.network(
+                _logoUrlController.text.trim(),
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        TextField(
+          controller: _slugController,
+          decoration: const InputDecoration(
+            labelText: 'Public URL Name',
+            hintText: 'your-facility',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.link),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SwitchListTile(
+          value: _publicRentalsEnabled,
+          onChanged: (v) => setState(() => _publicRentalsEnabled = v),
+          title: const Text('Enable Public Online Rentals'),
+        ),
+        SwitchListTile(
+          value: _publicPricingEnabled,
+          onChanged: (v) => setState(() => _publicPricingEnabled = v),
+          title: const Text('Show Pricing Publicly'),
+        ),
+        SwitchListTile(
+          value: _publicUnitNumbersEnabled,
+          onChanged: (v) => setState(() => _publicUnitNumbersEnabled = v),
+          title: const Text('Show Exact Unit Numbers'),
+        ),
+        SwitchListTile(
+          value: _allowAutoAssign,
+          onChanged: (v) => setState(() => _allowAutoAssign = v),
+          title: const Text('Allow Auto-Assign'),
+        ),
+        SwitchListTile(
+          value: _allowUnitSelection,
+          onChanged: (v) => setState(() => _allowUnitSelection = v),
+          title: const Text('Allow Specific Unit Selection'),
+        ),
+        SwitchListTile(
+          value: _showAvailabilityCount,
+          onChanged: (v) => setState(() => _showAvailabilityCount = v),
+          title: const Text('Show Availability Count'),
+        ),
+        SwitchListTile(
+          value: _hideUnavailableTypes,
+          onChanged: (v) => setState(() => _hideUnavailableTypes = v),
+          title: const Text('Hide Unavailable Types'),
+        ),
+        SwitchListTile(
+          value: _chargeNextMonthAfterMidMonthMoveIn,
+          onChanged: (v) =>
+              setState(() => _chargeNextMonthAfterMidMonthMoveIn = v),
+          title: const Text('After mid-month, also charge next month'),
+          subtitle: const Text(
+            'If move-in is after the halfway mark, charge prorated current month plus next month upfront.',
+          ),
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Pricing Presets',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Apply a one-tap payment setup, then tweak if needed.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Minimal'),
+                      selected: _activePricingPresetId() == 'minimal',
+                      onSelected: (_) => _applyPricingPreset('minimal'),
                     ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: _customDomainController,
-                      onChanged: (_) {
-                        setState(() {
-                          _domainConnected = null;
-                          _domainCheckMessage = null;
-                          _domainRecords = const <String>[];
-                        });
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'Custom Domain (optional)',
-                        hintText: 'rent.yourfacility.com',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.language),
-                      ),
+                    ChoiceChip(
+                      label: const Text('Standard'),
+                      selected: _activePricingPresetId() == 'standard',
+                      onSelected: (_) => _applyPricingPreset('standard'),
                     ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed:
-                              _isCheckingDomain ? null : () => _checkDomainStatus(showSnackBar: true),
-                          icon: _isCheckingDomain
-                              ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2),
-                                )
-                              : const Icon(Icons.wifi_tethering),
-                          label: Text(_isCheckingDomain
-                              ? 'Checking...'
-                              : 'Check Domain Connection'),
-                        ),
-                        const SizedBox(width: 10),
-                        if (_domainConnected != null)
-                          _DomainStatusChip(connected: _domainConnected!),
-                      ],
+                    ChoiceChip(
+                      label: const Text('Full'),
+                      selected: _activePricingPresetId() == 'full',
+                      onSelected: (_) => _applyPricingPreset('full'),
                     ),
-                    if (_domainCheckMessage != null) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        _domainCheckMessage!,
-                        style: TextStyle(
-                          color: _domainConnected == true
-                              ? AppTheme.success
-                              : AppTheme.warning,
-                          fontWeight: FontWeight.w600,
-                        ),
+                    if (_activePricingPresetId() == 'custom')
+                      const Chip(
+                        label: Text('Custom'),
+                        avatar: Icon(Icons.tune, size: 16),
                       ),
-                    ],
-                    if (_domainRecords.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        'DNS records: ${_domainRecords.join(', ')}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppTheme.textSecondary,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _marketingContentController,
-                      maxLines: 4,
-                      minLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: 'Public Marketing Text',
-                        hintText:
-                            'Write anything you want renters to see on your rental page.',
-                        border: OutlineInputBorder(),
-                        alignLabelWithHint: true,
-                        prefixIcon: Icon(Icons.edit_note),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFF),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFFE2E8F5)),
-                      ),
-                      child: const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Page Suggestions',
-                            style: TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          SizedBox(height: 6),
-                          Text('- Add one clear headline with city/location'),
-                          Text('- Use 1-2 short trust paragraphs'),
-                          Text('- Upload images for each unit type'),
-                          Text('- Keep FAQs practical and short'),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _logoUrlController,
-                      decoration: InputDecoration(
-                        labelText: 'Public Logo URL',
-                        hintText: 'https://...',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.image),
-                        suffixIcon: _isUploadingLogo
-                            ? const Padding(
-                                padding: EdgeInsets.all(10),
-                                child: SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2),
-                                ),
-                              )
-                            : IconButton(
-                                tooltip: 'Upload Logo',
-                                onPressed: _uploadLogo,
-                                icon: const Icon(Icons.upload),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Minimal: prorate only | Standard: prorate + deposit | Full: prorate + next month + deposit + insurance',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SwitchListTile(
+          value: _chargeInsuranceAtMoveIn,
+          onChanged: (v) => setState(() => _chargeInsuranceAtMoveIn = v),
+          title: const Text('Charge insurance at move-in'),
+        ),
+        if (_chargeInsuranceAtMoveIn)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextField(
+              controller: _insuranceAmountController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Insurance Amount',
+                prefixText: '\$',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+        SwitchListTile(
+          value: _chargeSecurityDepositAtMoveIn,
+          onChanged: (v) => setState(() => _chargeSecurityDepositAtMoveIn = v),
+          title: const Text('Charge security deposit at move-in'),
+          subtitle: const Text(
+              'If no amount is set, unit or facility default deposit is used.'),
+        ),
+        if (_chargeSecurityDepositAtMoveIn)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextField(
+              controller: _securityDepositAmountController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Security Deposit Amount (optional override)',
+                prefixText: '\$',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
+        const Text(
+          'Publicly Visible Unit Types',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: () {
+            final types = (_availableUnitTypes.isEmpty
+                    ? UnitType.values.map((e) => e.name).toSet()
+                    : _availableUnitTypes)
+                .toList()
+              ..sort();
+            return types.map((type) {
+              final selected = _enabledPublicUnitTypes.contains(type);
+              return FilterChip(
+                selected: selected,
+                label: Text(_unitTypeLabel(type)),
+                onSelected: (checked) {
+                  setState(() {
+                    if (checked) {
+                      _enabledPublicUnitTypes.add(type);
+                    } else {
+                      _enabledPublicUnitTypes.remove(type);
+                    }
+                  });
+                },
+              );
+            }).toList();
+          }(),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Unit Type Photos',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        ...(() {
+          final types = (_availableUnitTypes.isEmpty
+                  ? UnitType.values.map((e) => e.name).toSet()
+                  : _availableUnitTypes)
+              .toList()
+            ..sort();
+          return types.map((type) {
+            final key = _normalizeUnitTypeKey(type);
+            final imageUrl = _unitTypeImageUrls[key];
+            final uploading = _uploadingUnitType == type;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 72,
+                      height: 52,
+                      child: imageUrl == null
+                          ? Container(
+                              color: const Color(0xFFF1F5F9),
+                              child: const Icon(Icons.image_outlined),
+                            )
+                          : ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    const Icon(Icons.broken_image),
                               ),
-                      ),
-                    ),
-                    if (_logoUrlController.text.trim().isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 64),
-                          child: Image.network(
-                            _logoUrlController.text.trim(),
-                            errorBuilder: (_, __, ___) =>
-                                const SizedBox.shrink(),
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _slugController,
-                      decoration: const InputDecoration(
-                        labelText: 'Public Rental Slug',
-                        hintText: 'your-facility',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.link),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    SwitchListTile(
-                      value: _publicRentalsEnabled,
-                      onChanged: (v) =>
-                          setState(() => _publicRentalsEnabled = v),
-                      title: const Text('Enable Public Online Rentals'),
-                    ),
-                    SwitchListTile(
-                      value: _publicPricingEnabled,
-                      onChanged: (v) =>
-                          setState(() => _publicPricingEnabled = v),
-                      title: const Text('Show Pricing Publicly'),
-                    ),
-                    SwitchListTile(
-                      value: _publicUnitNumbersEnabled,
-                      onChanged: (v) =>
-                          setState(() => _publicUnitNumbersEnabled = v),
-                      title: const Text('Show Exact Unit Numbers'),
-                    ),
-                    SwitchListTile(
-                      value: _allowAutoAssign,
-                      onChanged: (v) => setState(() => _allowAutoAssign = v),
-                      title: const Text('Allow Auto-Assign'),
-                    ),
-                    SwitchListTile(
-                      value: _allowUnitSelection,
-                      onChanged: (v) => setState(() => _allowUnitSelection = v),
-                      title: const Text('Allow Specific Unit Selection'),
-                    ),
-                    SwitchListTile(
-                      value: _showAvailabilityCount,
-                      onChanged: (v) =>
-                          setState(() => _showAvailabilityCount = v),
-                      title: const Text('Show Availability Count'),
-                    ),
-                    SwitchListTile(
-                      value: _hideUnavailableTypes,
-                      onChanged: (v) =>
-                          setState(() => _hideUnavailableTypes = v),
-                      title: const Text('Hide Unavailable Types'),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Publicly Visible Unit Types',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: () {
-                        final types = (_availableUnitTypes.isEmpty
-                                ? UnitType.values.map((e) => e.name).toSet()
-                                : _availableUnitTypes)
-                            .toList()
-                          ..sort();
-                        return types.map((type) {
-                          final selected =
-                              _enabledPublicUnitTypes.contains(type);
-                          return FilterChip(
-                            selected: selected,
-                            label: Text(_unitTypeLabel(type)),
-                            onSelected: (checked) {
-                              setState(() {
-                                if (checked) {
-                                  _enabledPublicUnitTypes.add(type);
-                                } else {
-                                  _enabledPublicUnitTypes.remove(type);
-                                }
-                              });
-                            },
-                          );
-                        }).toList();
-                      }(),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Unit Type Photos',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 8),
-                    ...(() {
-                      final types = (_availableUnitTypes.isEmpty
-                              ? UnitType.values.map((e) => e.name).toSet()
-                              : _availableUnitTypes)
-                          .toList()
-                        ..sort();
-                      return types.map((type) {
-                        final key = _normalizeUnitTypeKey(type);
-                        final imageUrl = _unitTypeImageUrls[key];
-                        final uploading = _uploadingUnitType == type;
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: Row(
-                              children: [
-                                SizedBox(
-                                  width: 72,
-                                  height: 52,
-                                  child: imageUrl == null
-                                      ? Container(
-                                          color: const Color(0xFFF1F5F9),
-                                          child: const Icon(Icons.image_outlined),
-                                        )
-                                      : ClipRRect(
-                                          borderRadius:
-                                              BorderRadius.circular(6),
-                                          child: Image.network(
-                                            imageUrl,
-                                            fit: BoxFit.cover,
-                                            errorBuilder: (_, __, ___) =>
-                                                const Icon(Icons.broken_image),
-                                          ),
-                                        ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    _unitTypeLabel(type),
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w600),
-                                  ),
-                                ),
-                                if (uploading)
-                                  const Padding(
-                                    padding: EdgeInsets.only(right: 8),
-                                    child: SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2),
-                                    ),
-                                  ),
-                                IconButton(
-                                  tooltip: 'Upload Photo',
-                                  onPressed: uploading
-                                      ? null
-                                      : () => _uploadUnitTypeImage(type),
-                                  icon: const Icon(Icons.upload),
-                                ),
-                                if (imageUrl != null)
-                                  IconButton(
-                                    tooltip: 'Remove Photo',
-                                    onPressed: () {
-                                      setState(() {
-                                        _unitTypeImageUrls.remove(key);
-                                      });
-                                    },
-                                    icon: const Icon(Icons.delete_outline),
-                                  ),
-                              ],
                             ),
-                          ),
-                        );
-                      }).toList();
-                    })(),
-                    const SizedBox(height: 16),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _LinkRow(
-                              label: 'Main Rent Link',
-                              value: FacilityPublicService.getPublicRentUrl(
-                                _slugPreview,
-                                baseUrl: _linkBaseUrl,
-                              ),
-                              onCopy: _copy,
-                            ),
-                            const Divider(),
-                            _LinkRow(
-                              label: 'All Available Units Link',
-                              value: FacilityPublicService
-                                  .getPublicAvailableUnitsUrl(
-                                _slugPreview,
-                                baseUrl: _linkBaseUrl,
-                              ),
-                              onCopy: _copy,
-                            ),
-                          ],
-                        ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _unitTypeLabel(type),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
-                    if (_error != null) ...[
-                      const SizedBox(height: 12),
-                      Text(_error!,
-                          style: const TextStyle(color: AppTheme.error)),
-                    ],
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () =>
-                                context.push('/f/$_slugPreview/rent'),
-                            icon: const Icon(Icons.open_in_new),
-                            label: const Text('Preview Public Page'),
-                          ),
+                    if (uploading)
+                      const Padding(
+                        padding: EdgeInsets.only(right: 8),
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: _isSaving ? null : _save,
-                            icon: _isSaving
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.save),
-                            label: Text(_isSaving ? 'Saving...' : 'Save'),
-                          ),
-                        ),
-                      ],
+                      ),
+                    IconButton(
+                      tooltip: 'Upload Photo',
+                      onPressed:
+                          uploading ? null : () => _uploadUnitTypeImage(type),
+                      icon: const Icon(Icons.upload),
                     ),
+                    if (imageUrl != null)
+                      IconButton(
+                        tooltip: 'Remove Photo',
+                        onPressed: () {
+                          setState(() {
+                            _unitTypeImageUrls.remove(key);
+                          });
+                        },
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          }).toList();
+        })(),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _LinkRow(
+                  label: 'Main Rent Link',
+                  value: FacilityPublicService.getPublicRentUrl(
+                    _slugPreview,
+                    baseUrl: _linkBaseUrl,
+                  ),
+                  onCopy: _copy,
+                ),
+                const Divider(),
+                _LinkRow(
+                  label: 'All Available Units Link',
+                  value: FacilityPublicService.getPublicAvailableUnitsUrl(
+                    _slugPreview,
+                    baseUrl: _linkBaseUrl,
+                  ),
+                  onCopy: _copy,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_error != null) ...[
+          const SizedBox(height: 12),
+          Text(_error!, style: const TextStyle(color: AppTheme.error)),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => context.push('/f/$_slugPreview/rent'),
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Preview Public Page'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isSaving ? null : _save,
+                icon: _isSaving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save),
+                label: Text(_isSaving ? 'Saving...' : 'Save'),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }

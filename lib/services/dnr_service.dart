@@ -863,7 +863,9 @@ class DNRService {
         }
       } else {
         if (kDebugMode) {
-          print('❌ Failed to send DNR verification code email: ${result.error}');
+          print(
+            '❌ Failed to send DNR verification code email: ${EmailService.staffEmailFailureHint(result)}',
+          );
         }
       }
     } catch (e) {

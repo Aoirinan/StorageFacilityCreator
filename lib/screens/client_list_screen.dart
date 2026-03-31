@@ -89,7 +89,33 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
-    
+
+    // Riverpod: ref.listen must run on every build, not only inside AsyncValue.when(data:).
+    // Placing it in the data branch caused uncaught errors and a frozen Tenants UI.
+    ref.listen<AsyncValue<String?>>(activeFacilityIdProvider, (prev, next) {
+      if (!mounted) return;
+      final user = ref.read(authStateProvider).maybeWhen(
+            data: (u) => u,
+            orElse: () => null,
+          );
+      if (user == null) return;
+      final facilities = ref.read(userFacilitiesProvider(user.uid)).maybeWhen(
+            data: (f) => f,
+            orElse: () => null,
+          );
+      if (facilities == null || facilities.isEmpty) return;
+
+      final activeId = next.whenOrNull(data: (d) => d);
+      final newLocal = activeId == null ? 'all' : activeId;
+      if (newLocal == _selectedFacilityId) return;
+      if (activeId == null || facilities.any((f) => f.id == activeId)) {
+        setState(() {
+          _selectedFacilityId = newLocal;
+          _hasInitializedFacility = true;
+        });
+      }
+    });
+
     return authState.when(
       data: (user) {
         if (user == null) {
@@ -130,20 +156,6 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 }
               });
             }
-
-            // Sync local dropdown when the global header facility changes (header -> Tenants)
-            ref.listen(activeFacilityIdProvider, (prev, next) {
-              if (!mounted) return;
-              final activeId = next.whenOrNull(data: (d) => d);
-              final newLocal = activeId == null ? 'all' : activeId;
-              if (newLocal == _selectedFacilityId) return;
-              if (activeId == null || facilities.any((f) => f.id == activeId)) {
-                setState(() {
-                  _selectedFacilityId = newLocal;
-                  _hasInitializedFacility = true;
-                });
-              }
-            });
 
             return _buildContent(facilities);
           },

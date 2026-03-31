@@ -329,6 +329,15 @@ class FacilityMapV2Service {
         publicSettingsModel?.showAvailabilityCount ?? true;
     final hideUnavailableTypes =
         publicSettingsModel?.hideUnavailableTypes ?? true;
+    final chargeNextMonthAfterMidMonthMoveIn =
+        publicSettingsModel?.chargeNextMonthAfterMidMonthMoveIn ?? false;
+    final chargeInsuranceAtMoveIn =
+        publicSettingsModel?.chargeInsuranceAtMoveIn ?? false;
+    final publicInsuranceAmount = publicSettingsModel?.publicInsuranceAmount;
+    final chargeSecurityDepositAtMoveIn =
+        publicSettingsModel?.chargeSecurityDepositAtMoveIn ?? false;
+    final publicSecurityDepositAmount =
+        publicSettingsModel?.publicSecurityDepositAmount;
     final enabledPublicUnitTypes =
         (publicSettingsModel?.enabledPublicUnitTypes ?? const <String>[])
             .map((e) => e.trim())
@@ -369,15 +378,18 @@ class FacilityMapV2Service {
       };
     }).toList();
 
-    final publicDescription = publicSettingsModel?.marketingContent?.trim().isNotEmpty == true
-        ? publicSettingsModel!.marketingContent!.trim()
-        : (publicSettingsModel?.pageDescription?.trim().isNotEmpty == true
-            ? publicSettingsModel!.pageDescription!.trim()
-            : facilityDescription);
-    final publicLogoUrl = publicSettingsModel?.publicLogoUrl?.trim().isNotEmpty == true
-        ? publicSettingsModel!.publicLogoUrl!.trim()
-        : facilityLogoUrl;
-    final unitTypeImageUrls = publicSettingsModel?.unitTypeImageUrls ?? const <String, String>{};
+    final publicDescription =
+        publicSettingsModel?.marketingContent?.trim().isNotEmpty == true
+            ? publicSettingsModel!.marketingContent!.trim()
+            : (publicSettingsModel?.pageDescription?.trim().isNotEmpty == true
+                ? publicSettingsModel!.pageDescription!.trim()
+                : facilityDescription);
+    final publicLogoUrl =
+        publicSettingsModel?.publicLogoUrl?.trim().isNotEmpty == true
+            ? publicSettingsModel!.publicLogoUrl!.trim()
+            : facilityLogoUrl;
+    final unitTypeImageUrls =
+        publicSettingsModel?.unitTypeImageUrls ?? const <String, String>{};
 
     return PublicFacilityMapSnapshot(
       facilityId: facilityId,
@@ -400,6 +412,12 @@ class FacilityMapV2Service {
         'showAvailabilityCount': showAvailabilityCount,
         'hideUnavailableTypes': hideUnavailableTypes,
         'enabledPublicUnitTypes': enabledPublicUnitTypes,
+        'chargeNextMonthAfterMidMonthMoveIn':
+            chargeNextMonthAfterMidMonthMoveIn,
+        'chargeInsuranceAtMoveIn': chargeInsuranceAtMoveIn,
+        'publicInsuranceAmount': publicInsuranceAmount,
+        'chargeSecurityDepositAtMoveIn': chargeSecurityDepositAtMoveIn,
+        'publicSecurityDepositAmount': publicSecurityDepositAmount,
         'mapSettings': mapSettings,
       },
       elements: visibleElements,

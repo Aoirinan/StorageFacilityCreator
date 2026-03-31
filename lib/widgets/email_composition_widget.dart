@@ -5,6 +5,62 @@ import '../providers/tenant_provider.dart';
 import '../models/tenant_model.dart';
 import '../services/email_service.dart';
 import '../services/debug_logger.dart';
+import '../utils/email_send_feedback.dart';
+
+class _QuickEmailTemplate {
+  final String label;
+  final String? subject;
+  final String body;
+
+  const _QuickEmailTemplate({
+    required this.label,
+    this.subject,
+    required this.body,
+  });
+}
+
+/// Starter messages for the tenant email tab. Use {{tenant_name}}, {{first_name}}, {{unit}}, {{email}}, {{phone}}.
+const List<_QuickEmailTemplate> _kQuickEmailTemplates = [
+  _QuickEmailTemplate(
+    label: 'Payment reminder',
+    subject: 'Reminder: storage rent',
+    body:
+        'Hi {{first_name}},\n\n'
+        'This is a friendly reminder about your upcoming storage rent. If you have already paid, please disregard this message.\n\n'
+        'Thank you,\nManagement',
+  ),
+  _QuickEmailTemplate(
+    label: 'Past due notice',
+    subject: 'Important: past due balance',
+    body:
+        'Hi {{first_name}},\n\n'
+        'Our records show a past-due balance on your account for unit {{unit}}. Please contact us at your earliest convenience to arrange payment or discuss options.\n\n'
+        'Thank you,\nManagement',
+  ),
+  _QuickEmailTemplate(
+    label: 'Thank you',
+    subject: 'Thank you',
+    body:
+        'Hi {{first_name}},\n\n'
+        'Thank you for being a valued customer. We appreciate your business.\n\n'
+        'Best regards,\nManagement',
+  ),
+  _QuickEmailTemplate(
+    label: 'Document / update needed',
+    subject: 'Action needed for your account',
+    body:
+        'Hi {{first_name}},\n\n'
+        'We need a quick update for your account (unit {{unit}}). Please reply to this email or call the office when you have a moment.\n\n'
+        'Thank you,\nManagement',
+  ),
+  _QuickEmailTemplate(
+    label: 'Blank greeting',
+    body:
+        'Hi {{first_name}},\n\n'
+        '\n\n'
+        'Best regards,\nManagement',
+  ),
+];
 
 /// Widget for composing and sending a single email to a tenant
 class EmailCompositionWidget extends ConsumerStatefulWidget {
@@ -35,6 +91,60 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
     super.dispose();
   }
 
+  static String _firstNameFromTenant(TenantModel t) {
+    final n = t.name.trim();
+    if (n.isEmpty) return 'there';
+    return n.split(RegExp(r'\s+')).first;
+  }
+
+  static String _interpolateTemplate(String template, TenantModel t) {
+    return template
+        .replaceAll('{{tenant_name}}', t.name)
+        .replaceAll('{{name}}', t.name)
+        .replaceAll('{{first_name}}', _firstNameFromTenant(t))
+        .replaceAll('{{unit}}', t.unitNumber)
+        .replaceAll('{{email}}', t.email)
+        .replaceAll('{{phone}}', t.phone);
+  }
+
+  void _applyQuickTemplate(_QuickEmailTemplate template) {
+    if (_selectedTenantId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a tenant first')),
+      );
+      return;
+    }
+
+    final tenantsAsync = ref.read(facilityTenantsProvider(widget.facilityId));
+    final tenants = tenantsAsync.maybeWhen(
+      data: (list) => list,
+      orElse: () => <TenantModel>[],
+    );
+
+    TenantModel? tenant;
+    for (final t in tenants) {
+      if (t.id == _selectedTenantId) {
+        tenant = t;
+        break;
+      }
+    }
+
+    if (tenant == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not load tenant')),
+      );
+      return;
+    }
+
+    final t = tenant;
+    setState(() {
+      _messageController.text = _interpolateTemplate(template.body, t);
+      if (template.subject != null) {
+        _subjectController.text = _interpolateTemplate(template.subject!, t);
+      }
+    });
+  }
+
   Future<void> _sendEmail() async {
     if (_messageController.text.trim().isEmpty) {
       setState(() {
@@ -62,10 +172,9 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
 
     // Get selected tenant
     final tenantsAsync = ref.read(facilityTenantsProvider(widget.facilityId));
-    final tenants = await tenantsAsync.when(
+    final tenants = tenantsAsync.maybeWhen(
       data: (list) => list,
-      loading: () => <TenantModel>[],
-      error: (_, __) => <TenantModel>[],
+      orElse: () => <TenantModel>[],
     );
 
     final tenant = tenants.firstWhere(
@@ -132,11 +241,15 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
           }
         });
       } else {
+        final hint = EmailService.staffEmailFailureHint(result);
         setState(() {
           _isSending = false;
-          _statusMessage = 'Failed to send email: ${result.error ?? 'Unknown error'}';
+          _statusMessage = hint;
           _statusIsError = true;
         });
+        if (mounted && recipientUnsubscribedEmailFailure(result)) {
+          showStaffEmailFailureSnackBar(context, result);
+        }
       }
     } catch (e) {
       // #region agent log
@@ -275,6 +388,32 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Quick messages',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tap to fill the message (and subject when provided). Names and unit come from the tenant you selected.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _kQuickEmailTemplates.map((t) {
+                      return ActionChip(
+                        label: Text(t.label),
+                        onPressed:
+                            _isSending ? null : () => _applyQuickTemplate(t),
+                      );
+                    }).toList(),
                   ),
                   const SizedBox(height: 16),
                   TextField(

@@ -4,6 +4,30 @@ import 'package:cloud_functions/cloud_functions.dart';
 /// Calls Cloud Functions for autopay: request, enable, disable.
 class AutopayService {
   static final _functions = FirebaseFunctions.instance;
+  static final _firestore = FirebaseFirestore.instance;
+
+  /// Set which calendar day of the month autopay should target (1–31), or clear override.
+  /// Stored on [facilities/{facilityId}/tenants/{tenantId}].autopay.chargeDayOfMonth.
+  static Future<void> setAutopayChargeDayOfMonth({
+    required String facilityId,
+    required String tenantId,
+    int? chargeDayOfMonth,
+  }) async {
+    if (chargeDayOfMonth != null && (chargeDayOfMonth < 1 || chargeDayOfMonth > 31)) {
+      throw ArgumentError.value(chargeDayOfMonth, 'chargeDayOfMonth', 'Must be 1–31 or null');
+    }
+    final ref = _firestore.collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
+    final update = <String, dynamic>{
+      'autopay.updatedAt': FieldValue.serverTimestamp(),
+      'autopay.updatedBy': 'FACILITY',
+    };
+    if (chargeDayOfMonth == null) {
+      update['autopay.chargeDayOfMonth'] = FieldValue.delete();
+    } else {
+      update['autopay.chargeDayOfMonth'] = chargeDayOfMonth;
+    }
+    await ref.update(update);
+  }
 
   /// Request autopay (sets requested=true, enabled=false, status=REQUESTED). Creates notification + event.
   static Future<void> requestTenantAutopay({

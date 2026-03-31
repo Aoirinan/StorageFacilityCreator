@@ -29,7 +29,7 @@
   <link rel="icon" type="image/png" href="favicon.png"/>
 
   <title>Storage Facility Creator - Modern Self Storage Management Software</title>
-  <meta name="app-version" content="2.6.22">
+  <meta name="app-version" content="2.10.5">
   <!-- Manifest removed - PWA installability disabled for web-only SaaS -->
   <!-- Canonical domain -->
   <link rel="canonical" href="https://storagefacilitycreator.com">
@@ -37,21 +37,54 @@
   <!-- Noto Sans - reduces "Could not find a set of Noto fonts" warning on Flutter web -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
-  
-  <!-- Stripe.js for Payment Elements (Phase 11: Stripe Embedded UI) -->
-  <script src="https://js.stripe.com/v3/"></script>
+  <!-- Load Noto without blocking first paint (Flutter/google_fonts still fetch as needed). -->
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"></noscript>
 
-  <!-- PDF.js for pdfx package (tap-to-place PDF rendering on web) -->
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.js" type="text/javascript"></script>
+  <!-- Lazy-load Stripe.js / PDF.js on demand (see lib/services/web_externals_loader_web.dart). -->
   <script type="text/javascript">
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.worker.min.js";
+    (function () {
+      var PDFJS_VER = '3.4.120';
+      var PDFJS_BASE = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/build/';
+      window.__sfcScriptPromises = window.__sfcScriptPromises || {};
+      window.sfcLoadStripeJs = function () {
+        if (window.Stripe) return Promise.resolve();
+        var p = window.__sfcScriptPromises.stripe;
+        if (p) return p;
+        p = new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = 'https://js.stripe.com/v3/';
+          s.async = true;
+          s.onload = function () { resolve(); };
+          s.onerror = function () { reject(new Error('Failed to load Stripe.js')); };
+          document.head.appendChild(s);
+        });
+        window.__sfcScriptPromises.stripe = p;
+        return p;
+      };
+      window.sfcLoadPdfJs = function () {
+        if (window.pdfjsLib) return Promise.resolve();
+        var p = window.__sfcScriptPromises.pdfjs;
+        if (p) return p;
+        p = new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = PDFJS_BASE + 'pdf.min.js';
+          s.async = true;
+          s.onload = function () {
+            try {
+              window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js';
+            } catch (e) {}
+            resolve();
+          };
+          s.onerror = function () { reject(new Error('Failed to load PDF.js')); };
+          document.head.appendChild(s);
+        });
+        window.__sfcScriptPromises.pdfjs = p;
+        return p;
+      };
+    })();
   </script>
-  
-  <!-- AGGRESSIVE CACHE BUSTING - FORCE NEW CODE -->
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0, private">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
+  <!-- HTML shell caching is controlled by Firebase Hosting headers, not meta tags. -->
 </head>
 <body style="margin: 0; padding: 0; overflow-x: hidden;">
   <style>

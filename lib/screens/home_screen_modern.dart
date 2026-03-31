@@ -510,15 +510,6 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           
           const SizedBox(height: 24),
           
-          // Critical items section (delinquent tenants & upcoming move-outs)
-          dashboardStats.when(
-            data: (stats) => _buildCriticalItemsSection(stats),
-            loading: () => const SizedBox.shrink(),
-            error: (_, __) => const SizedBox.shrink(),
-          ),
-          
-          const SizedBox(height: 24),
-          
           // Quick actions grid
           _buildQuickActionsGrid(),
         ],
@@ -612,15 +603,18 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
         }
 
         String facilityName;
+        FacilityModel? activeFacility;
         if (activeFacilityId == null) {
           facilityName = 'All Facilities';
         } else {
-          final facility = facilities.firstWhere(
+          activeFacility = facilities.firstWhere(
             (f) => f.id == activeFacilityId,
             orElse: () => facilities.first,
           );
-          facilityName = facility.name;
+          facilityName = activeFacility.name;
         }
+        final showTeamMemberWelcome = activeFacility != null &&
+            activeFacility.showsAsTeamMemberForViewer(widget.user.uid);
         return Card(
           elevation: 0,
           shape: RoundedRectangleBorder(
@@ -667,6 +661,65 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                           letterSpacing: -0.5,
                         ),
                       ),
+                      if (showTeamMemberWelcome) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.groups_outlined,
+                              size: 18,
+                              color: colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'You’re a team member at this facility (not the owner).',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      if (activeFacilityId == null && facilities.isNotEmpty) ...[
+                        Builder(
+                          builder: (context) {
+                            final teamCount = facilities
+                                .where(
+                                    (f) => f.showsAsTeamMemberForViewer(widget.user.uid))
+                                .length;
+                            if (teamCount == 0) return const SizedBox.shrink();
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.groups_outlined,
+                                    size: 18,
+                                    color: colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      teamCount == facilities.length
+                                          ? 'You’re a team member on all $teamCount ${teamCount == 1 ? 'facility' : 'facilities'} shown here.'
+                                          : 'Team member on $teamCount of ${facilities.length} facilities — check the facility menu for which ones.',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                       if (widget.user.email != null) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -761,6 +814,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   }
 
   Widget _buildMetricsGrid(DashboardStats stats) {
+    final activeFacilityId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+    final linkedFacilityCount = ref.watch(userFacilitiesProvider(widget.user.uid)).whenOrNull(data: (l) => l.length) ?? 0;
+    final aggregateAll = activeFacilityId == null;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         int crossAxisCount;
@@ -774,7 +831,23 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           crossAxisCount = 4;
         }
 
-        return GridView.count(
+        final cs = Theme.of(context).colorScheme;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (aggregateAll && linkedFacilityCount > 1)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Totals combine all ${stats.totalFacilities} facilities you can select in the facility menu (your account only). Pick one facility to see its numbers alone.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.35,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            GridView.count(
           crossAxisCount: crossAxisCount,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
@@ -814,14 +887,22 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   : null,
             ),
           ],
+        ),
+          ],
         );
       },
     );
   }
 
   Widget _buildChartsSection(DashboardStats stats) {
-    final isMobile = MediaQuery.of(context).size.width < 900;
-    
+    final activeFacilityId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+    final linkedFacilityCount = ref.watch(userFacilitiesProvider(widget.user.uid)).whenOrNull(data: (l) => l.length) ?? 0;
+    final activities = _generateSampleActivities(
+      stats,
+      aggregateAllLinkedFacilities: activeFacilityId == null,
+      linkedFacilityCount: linkedFacilityCount,
+    );
+
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth < 900) {
@@ -831,7 +912,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               _buildOccupancyCard(stats),
               const SizedBox(height: 16),
               activity.ActivityFeed(
-                activities: _generateSampleActivities(stats),
+                activities: activities,
               ),
             ],
           );
@@ -849,7 +930,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           Expanded(
             flex: 3,
             child: activity.ActivityFeed(
-              activities: _generateSampleActivities(stats),
+              activities: activities,
             ),
           ),
           ],
@@ -906,13 +987,21 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     );
   }
 
-  List<activity.ActivityItem> _generateSampleActivities(DashboardStats stats) {
+  List<activity.ActivityItem> _generateSampleActivities(
+    DashboardStats stats, {
+    required bool aggregateAllLinkedFacilities,
+    required int linkedFacilityCount,
+  }) {
     final activities = <activity.ActivityItem>[];
-    
+    final multiFacility = aggregateAllLinkedFacilities && linkedFacilityCount > 1;
+    final tenantSubtitle = multiFacility
+        ? '${stats.totalTenants} active tenants across $linkedFacilityCount facilities in your account'
+        : '${stats.totalTenants} active tenant${stats.totalTenants == 1 ? '' : 's'}';
+
     if (stats.totalTenants > 0) {
       activities.add(activity.ActivityItem(
         title: 'Tenants',
-        subtitle: '${stats.totalTenants} total tenants across all facilities',
+        subtitle: tenantSubtitle,
         icon: Icons.people,
         iconColor: AppTheme.primaryBlue,
         timestamp: DateTime.now().subtract(const Duration(minutes: 5)),
@@ -922,7 +1011,9 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     if (stats.totalUnits > 0) {
       activities.add(activity.ActivityItem(
         title: 'Units',
-        subtitle: '${stats.occupiedUnits} occupied, ${stats.availableUnits} available',
+        subtitle: multiFacility
+            ? '${stats.occupiedUnits} occupied, ${stats.availableUnits} available (combined)'
+            : '${stats.occupiedUnits} occupied, ${stats.availableUnits} available',
         icon: Icons.home_work,
         iconColor: AppTheme.info,
         timestamp: DateTime.now().subtract(const Duration(minutes: 10)),

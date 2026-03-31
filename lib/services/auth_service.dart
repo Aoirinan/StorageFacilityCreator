@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, debugPrint;
 import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/app_check_service.dart';
 import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/debug_logger.dart';
@@ -9,6 +10,31 @@ import 'package:sfcapp/services/debug_logger.dart';
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  /// Continue URL after the user completes the email action (production web only).
+  static ActionCodeSettings? verificationContinueSettings() {
+    if (!kIsWeb) return null;
+    final host = Uri.base.host.toLowerCase();
+    const continueUrl = 'https://app.storagefacilitycreator.com/login';
+    if (host == 'app.storagefacilitycreator.com' ||
+        host == 'storage-facility-creator.web.app' ||
+        host.endsWith('.storagefacilitycreator.com')) {
+      return ActionCodeSettings(
+        url: continueUrl,
+        handleCodeInApp: false,
+      );
+    }
+    return null;
+  }
+
+  Future<void> _sendEmailVerificationToUser(User user) async {
+    final settings = verificationContinueSettings();
+    if (settings != null) {
+      await user.sendEmailVerification(settings);
+    } else {
+      await user.sendEmailVerification();
+    }
+  }
 
   // Get current user
   User? get currentUser => _auth.currentUser;
@@ -123,6 +149,20 @@ class AuthService {
         email: email,
         password: password,
       );
+      // Enforce email verification at login (super admins may access unverified; matches route guards)
+      await credential.user?.reload();
+      final freshUser = FirebaseAuth.instance.currentUser;
+      final superAdmin = SuperAdminService.isSuperAdmin(freshUser);
+      if (freshUser != null &&
+          !freshUser.emailVerified &&
+          !superAdmin) {
+        await _auth.signOut();
+        throw FirebaseAuthException(
+          code: 'email-not-verified',
+          message:
+              'Please verify your email address before logging in. Check your inbox for a verification link.',
+        );
+      }
       if (kDebugMode) {
         print('✅ User signed in: ${credential.user?.email}');
       }
@@ -134,10 +174,13 @@ class AuthService {
         data: {'userEmail': credential.user?.email},
       );
       // #endregion
-      
-      // Update last login timestamp
-      await updateLastLogin();
-      
+
+      // Update last login for verified users and for super admins (may be unverified)
+      if (freshUser != null &&
+          (freshUser.emailVerified || superAdmin)) {
+        await updateLastLogin();
+      }
+
       return credential;
     } on FirebaseAuthException catch (e) {
       if (kDebugMode) {
@@ -238,7 +281,7 @@ class AuthService {
 
       if (credential.user != null) {
         // Send email verification before completing signup
-        await credential.user!.sendEmailVerification();
+        await _sendEmailVerificationToUser(credential.user!);
         
         if (kDebugMode) {
           print('✅ Verification email sent to: ${credential.user?.email}');
@@ -316,8 +359,8 @@ class AuthService {
       throw Exception('Email already verified');
     }
     
-    await user.sendEmailVerification();
-    
+    await _sendEmailVerificationToUser(user);
+
     if (kDebugMode) {
       print('✅ Verification email resent to: ${user.email}');
     }

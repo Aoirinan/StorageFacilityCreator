@@ -15,6 +15,7 @@ import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../services/modern_navigation_service.dart';
+import '../utils/email_send_feedback.dart';
 
 /// Centralized document center screen
 class DocumentCenterScreen extends ConsumerStatefulWidget {
@@ -689,12 +690,7 @@ ${facilityName}
             ),
           );
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to send document: ${result.error ?? "Unknown error"}'),
-              backgroundColor: AppTheme.error,
-            ),
-          );
+          showStaffEmailFailureSnackBar(context, result);
         }
       }
     } catch (e) {

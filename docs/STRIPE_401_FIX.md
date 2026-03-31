@@ -48,9 +48,9 @@ Stripe is rejecting the request because the **publishable key** (`key=`) and the
 
 ## Check your current keys
 
-- Your request shows `key=pk_live_51SVEOC...` → you are using a **live** publishable key for account `51SVEOC...`.
-- So in Firebase, **STRIPE_SECRET_KEY** must be the **live** secret key (`sk_live_...`) for that same account `51SVEOC...`.
-- If **STRIPE_SECRET_KEY** is currently `sk_test_...` (test key), Stripe will return 401 when the frontend uses `pk_live_...`. Fix: set **STRIPE_SECRET_KEY** to the **live** secret key from Stripe Dashboard (Live keys section).
+- If the failing request shows `key=pk_live_...`, you are using a **live** publishable key for some Stripe account (the prefix after `pk_live_` identifies which account).
+- In Firebase, **STRIPE_SECRET_KEY** must be the **live** secret key (`sk_live_...`) for that **same** Stripe account and mode.
+- If **STRIPE_SECRET_KEY** is `sk_test_...` while the client uses `pk_live_...`, Stripe returns **401**. Fix: use **live** secret + **live** publishable from the same Dashboard account, or switch both to test.
 
 ## After changing the secret
 

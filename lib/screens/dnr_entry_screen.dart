@@ -10,6 +10,7 @@ import '../providers/facility_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../models/tenant_model.dart';
 import '../services/email_service.dart';
+import '../utils/email_send_feedback.dart';
 import '../theme/app_theme.dart';
 import 'package:flutter/foundation.dart';
 import '../widgets/modern_page_wrapper.dart';
@@ -266,7 +267,13 @@ Enter this code in the SFC App to complete the DNR entry creation.
       );
 
       if (!result.success) {
-        throw Exception(result.error ?? 'Unknown error sending verification email');
+        if (mounted) {
+          setState(() {
+            _verificationError = EmailService.staffEmailFailureHint(result);
+          });
+          showStaffEmailFailureSnackBar(context, result);
+        }
+        return;
       }
 
       if (mounted) {
@@ -274,6 +281,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
           _generatedVerificationCode = code;
           _verificationSent = true;
           _verificationSuccessful = false;
+          _verificationError = null;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

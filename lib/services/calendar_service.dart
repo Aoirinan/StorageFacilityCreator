@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import '../models/calendar_event_model.dart';
 import '../models/contract_model.dart';
 import '../router/app_route.dart';
@@ -8,6 +9,21 @@ import '../router/app_route.dart';
 /// no separate calendar collection is required.
 class CalendarService {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  /// One failed sub-query must not deny the whole calendar (e.g. rules/index gaps).
+  static Future<List<CalendarEvent>> _safeLoad(
+    Future<List<CalendarEvent>> Function() load,
+    String label,
+  ) async {
+    try {
+      return await load();
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('CalendarService: skipped "$label": $e\n$st');
+      }
+      return <CalendarEvent>[];
+    }
+  }
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -19,12 +35,12 @@ class CalendarService {
     required DateTime end,
   }) async {
     final results = await Future.wait([
-      _getTenantLifecycleEvents(facilityId, start, end),
-      _getContractEvents(facilityId, start, end),
-      _getLienAndAuctionEvents(facilityId, start, end),
-      _getInsuranceEvents(facilityId, start, end),
-      _getOverlockEvents(facilityId, start, end),
-      _getMaintenanceEvents(facilityId, start, end),
+      _safeLoad(() => _getTenantLifecycleEvents(facilityId, start, end), 'tenant lifecycle'),
+      _safeLoad(() => _getContractEvents(facilityId, start, end), 'contracts'),
+      _safeLoad(() => _getLienAndAuctionEvents(facilityId, start, end), 'liens'),
+      _safeLoad(() => _getInsuranceEvents(facilityId, start, end), 'insurance'),
+      _safeLoad(() => _getOverlockEvents(facilityId, start, end), 'overlocks'),
+      _safeLoad(() => _getMaintenanceEvents(facilityId, start, end), 'maintenance'),
     ]);
 
     final all = results.expand((list) => list).toList();

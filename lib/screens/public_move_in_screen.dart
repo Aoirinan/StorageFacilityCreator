@@ -7,11 +7,10 @@ import '../models/reservation_model.dart';
 import '../services/public_rental_service.dart';
 import '../models/unit_model.dart';
 import '../models/facility_model.dart';
-import '../services/public_rental_service.dart';
 import '../services/move_in_service.dart';
 import '../services/unit_service.dart';
 import '../services/facility_service.dart';
-import '../services/stripe_service.dart';
+import '../services/facility_public_service.dart';
 import '../models/invoice_line_item_model.dart';
 import '../theme/app_theme.dart';
 import '../router/app_router.dart';
@@ -48,12 +47,42 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
 
   bool _agreeToTerms = false;
   bool _isSubmitting = false;
-  
+  bool _isLaunchingCheckout = false;
+  bool _isVerifyingCheckout = false;
+  bool _stripePaymentRequired = false;
+  bool _chargeNextMonthAfterMidMonthMoveIn = false;
+  bool _chargeInsuranceAtMoveIn = false;
+  double? _publicInsuranceAmount;
+  bool _chargeSecurityDepositAtMoveIn = false;
+  double? _publicSecurityDepositAmount;
+
   // Move-in charges
   List<InvoiceLineItem> _lineItems = [];
   double _totalAmount = 0.0;
   bool _chargesCalculated = false;
   String? _paymentIntentId;
+
+  double get _effectiveMonthlyRate {
+    final reservationRate =
+        (_reservation?.metadata?['monthlyRate'] as num?)?.toDouble();
+    if (reservationRate != null && reservationRate > 0) {
+      return reservationRate;
+    }
+    return _unit?.monthlyRate ?? 0;
+  }
+
+  double _numberFromMap(Map<String, dynamic>? map, List<String> keys) {
+    if (map == null) return 0;
+    for (final key in keys) {
+      final value = map[key];
+      if (value is num) return value.toDouble();
+      if (value is String) {
+        final parsed = double.tryParse(value);
+        if (parsed != null) return parsed;
+      }
+    }
+    return 0;
+  }
 
   @override
   void initState() {
@@ -88,8 +117,9 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     });
 
     try {
-      final reservation = await PublicRentalService.getReservationByToken(token);
-      
+      final reservation =
+          await PublicRentalService.getReservationByToken(token);
+
       if (reservation == null) {
         setState(() {
           _error = 'Reservation not found or has expired';
@@ -111,8 +141,11 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         reservation.facilityId,
         reservation.unitId!,
       );
-      
-      final facility = await FacilityService.getFacility(reservation.facilityId);
+
+      final facility =
+          await FacilityService.getFacility(reservation.facilityId);
+      final publicSettings =
+          await FacilityPublicService.getPublicSettings(reservation.facilityId);
 
       if (unit == null || facility == null) {
         setState(() {
@@ -131,13 +164,24 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         _phoneController.text = reservation.phone!;
       }
 
-      // Calculate move-in charges
-      await _calculateCharges();
-
       setState(() {
         _reservation = reservation;
         _unit = unit;
         _facility = facility;
+        _chargeNextMonthAfterMidMonthMoveIn =
+            publicSettings?.chargeNextMonthAfterMidMonthMoveIn ?? false;
+        _chargeInsuranceAtMoveIn =
+            publicSettings?.chargeInsuranceAtMoveIn ?? false;
+        _publicInsuranceAmount = publicSettings?.publicInsuranceAmount;
+        _chargeSecurityDepositAtMoveIn =
+            publicSettings?.chargeSecurityDepositAtMoveIn ?? false;
+        _publicSecurityDepositAmount =
+            publicSettings?.publicSecurityDepositAmount;
+      });
+      await _calculateCharges();
+      await _handleCheckoutReturnIfPresent();
+
+      setState(() {
         _isLoading = false;
       });
     } catch (e) {
@@ -153,27 +197,75 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
 
   Future<void> _calculateCharges() async {
     if (_unit == null || _facility == null || _reservation == null) return;
-    
+
     try {
       final moveInDate = _reservation!.moveInDate ?? DateTime.now();
-      
+      final billing = _facility?.billingSettings;
+      final adminFee = _numberFromMap(
+        billing,
+        const ['adminFee', 'admin_fee', 'newTenantAdminFee'],
+      );
+      final moveInFee = _numberFromMap(
+        billing,
+        const ['moveInFee', 'move_in_fee'],
+      );
+      final fallbackDeposit = (_unit?.securityDeposit ?? 0) > 0
+          ? (_unit?.securityDeposit ?? 0)
+          : _numberFromMap(
+              billing,
+              const ['securityDeposit', 'security_deposit', 'depositAmount'],
+            );
+      final securityDeposit = _chargeSecurityDepositAtMoveIn
+          ? ((_publicSecurityDepositAmount ?? 0) > 0
+              ? (_publicSecurityDepositAmount ?? 0)
+              : fallbackDeposit)
+          : 0.0;
+      final insuranceAmount =
+          _chargeInsuranceAtMoveIn && (_publicInsuranceAmount ?? 0) > 0
+              ? (_publicInsuranceAmount ?? 0)
+              : 0.0;
+
       // Calculate move-in charges
       _lineItems = await MoveInService.calculateMoveInCharges(
         facilityId: _facility!.id,
         unitId: _unit!.id,
-        monthlyRent: _unit!.monthlyRate,
+        monthlyRent: _effectiveMonthlyRate,
         moveInDate: moveInDate,
         prorateRent: true,
-        // Note: These fees would typically come from facility settings
-        // For now, we'll use defaults or zero
-        adminFee: 0.0,
-        moveInFee: 0.0,
-        securityDeposit: 0.0,
+        insuranceAmount: insuranceAmount > 0 ? insuranceAmount : null,
+        adminFee: adminFee > 0 ? adminFee : 0.0,
+        moveInFee: moveInFee > 0 ? moveInFee : 0.0,
+        securityDeposit: securityDeposit > 0 ? securityDeposit : 0.0,
       );
-      
+
+      // Optional pricing rule: if move-in is after mid-month, charge next month too.
+      if (_chargeNextMonthAfterMidMonthMoveIn && _effectiveMonthlyRate > 0) {
+        final daysInMonth =
+            DateTime(moveInDate.year, moveInDate.month + 1, 0).day;
+        final isAfterHalfway = moveInDate.day > (daysInMonth / 2).floor();
+        if (isAfterHalfway) {
+          final nextMonth = DateTime(moveInDate.year, moveInDate.month + 1, 1);
+          _lineItems.add(
+            InvoiceLineItem(
+              id: 'next_month_rent_${DateTime.now().millisecondsSinceEpoch}',
+              type: InvoiceLineItemType.rent,
+              description:
+                  'Next Month Rent (${DateFormat('MMM yyyy').format(nextMonth)})',
+              amount: _effectiveMonthlyRate,
+              isProrated: false,
+              dueDate: nextMonth,
+            ),
+          );
+        }
+      }
+
       _totalAmount = _lineItems.fold(0.0, (sum, item) => sum + item.amount);
       _chargesCalculated = true;
-      
+      _stripePaymentRequired =
+          (_facility?.stripeConnectAccountId?.isNotEmpty ?? false) &&
+              (_facility?.stripeConnectOnboardingComplete ?? false) &&
+              _totalAmount > 0;
+
       if (mounted) {
         setState(() {});
       }
@@ -183,6 +275,114 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       }
       // Continue without charges if calculation fails
       _chargesCalculated = true;
+    }
+  }
+
+  Future<void> _handleCheckoutReturnIfPresent() async {
+    final reservation = _reservation;
+    final token = widget.token;
+    if (reservation == null || token == null || token.isEmpty) return;
+    final qp = <String, String>{
+      ...Uri.base.queryParameters,
+    };
+    final fragment = Uri.base.fragment;
+    if (fragment.contains('?')) {
+      final queryPart = fragment.split('?').last;
+      qp.addAll(Uri.splitQueryString(queryPart));
+    }
+    final checkoutState = qp['checkout'];
+    final sessionId = qp['session_id'];
+    final reservationIdParam = qp['reservationId'];
+    if (reservationIdParam != null &&
+        reservationIdParam.isNotEmpty &&
+        reservationIdParam != reservation.id) {
+      return;
+    }
+    if (checkoutState == 'cancel') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Payment was canceled. You can try again.'),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+      }
+      return;
+    }
+    if (checkoutState != 'success' ||
+        sessionId == null ||
+        sessionId.trim().isEmpty) {
+      return;
+    }
+    try {
+      setState(() => _isVerifyingCheckout = true);
+      final result = await PublicRentalService.confirmPublicMoveInCheckout(
+        reservationId: reservation.id,
+        token: token,
+        sessionId: sessionId,
+      );
+      final paymentIntentId = result['paymentIntentId']?.toString();
+      if (paymentIntentId == null || paymentIntentId.isEmpty) {
+        throw Exception('Payment intent missing from checkout confirmation.');
+      }
+      if (!mounted) return;
+      setState(() {
+        _paymentIntentId = paymentIntentId;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Payment verified. You can now submit move-in.'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Payment verification failed: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isVerifyingCheckout = false);
+      }
+    }
+  }
+
+  Future<void> _startCheckout() async {
+    final reservation = _reservation;
+    final token = widget.token;
+    if (reservation == null || token == null || token.isEmpty) return;
+    try {
+      setState(() => _isLaunchingCheckout = true);
+      final result = await PublicRentalService.createPublicMoveInCheckout(
+        reservationId: reservation.id,
+        token: token,
+        amount: _totalAmount,
+        description: 'Move-in payment for ${_facility?.name ?? 'Facility'}',
+      );
+      final checkoutUrl = result['checkoutUrl']?.toString();
+      if (checkoutUrl == null || checkoutUrl.isEmpty) {
+        throw Exception('Checkout URL not returned.');
+      }
+      final uri = Uri.parse(checkoutUrl);
+      final launched = await launchUrl(uri);
+      if (!launched) {
+        throw Exception('Unable to open Stripe Checkout.');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to start payment: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLaunchingCheckout = false);
+      }
     }
   }
 
@@ -197,7 +397,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       // Create a public payment checkout session
       // Note: This would need a Cloud Function that creates a payment link for the reservation
       // For now, we'll show a message that payment will be processed
-      
+
       if (mounted) {
         final proceed = await showDialog<bool>(
           context: context,
@@ -220,7 +420,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
             ],
           ),
         );
-        
+
         if (proceed == true) {
           await _completeMoveIn();
         }
@@ -248,7 +448,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       );
       return;
     }
-    
+
     if (_phoneController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -258,7 +458,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       );
       return;
     }
-    
+
     if (_addressController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -268,8 +468,8 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       );
       return;
     }
-    
-    if (_emergencyContactController.text.trim().isEmpty || 
+
+    if (_emergencyContactController.text.trim().isEmpty ||
         _emergencyPhoneController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -290,21 +490,30 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       return;
     }
 
+    if (_stripePaymentRequired &&
+        _totalAmount > 0 &&
+        _paymentIntentId == null) {
+      await _startCheckout();
+      return;
+    }
+
     setState(() {
       _isSubmitting = true;
     });
 
     try {
       // Convert line items to map format for Cloud Function
-      final lineItemsMap = _lineItems.map((item) => {
-        'id': item.id,
-        'type': item.type.name,
-        'description': item.description,
-        'amount': item.amount,
-        'isProrated': item.isProrated,
-        'dueDate': item.dueDate?.toIso8601String(),
-        'metadata': item.metadata,
-      }).toList();
+      final lineItemsMap = _lineItems
+          .map((item) => {
+                'id': item.id,
+                'type': item.type.name,
+                'description': item.description,
+                'amount': item.amount,
+                'isProrated': item.isProrated,
+                'dueDate': item.dueDate?.toIso8601String(),
+                'metadata': item.metadata,
+              })
+          .toList();
 
       // Call Cloud Function to complete move-in
       final result = await PublicRentalService.completePublicMoveIn(
@@ -319,18 +528,19 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         paymentIntentId: _paymentIntentId,
         totalAmount: _totalAmount,
         lineItems: lineItemsMap,
-        skipPayment: _totalAmount <= 0,
+        skipPayment: !(_stripePaymentRequired && _totalAmount > 0),
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(result['message'] ?? 'Move-in completed successfully!'),
+            content:
+                Text(result['message'] ?? 'Move-in completed successfully!'),
             backgroundColor: AppTheme.success,
             duration: const Duration(seconds: 5),
           ),
         );
-        
+
         // Navigate to confirmation page
         await Future.delayed(const Duration(seconds: 2));
         if (mounted) {
@@ -369,7 +579,8 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.error_outline, size: 64, color: AppTheme.error),
+                        Icon(Icons.error_outline,
+                            size: 64, color: AppTheme.error),
                         const SizedBox(height: 16),
                         Text(
                           _error!,
@@ -387,232 +598,377 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                 )
               : _reservation == null || _unit == null || _facility == null
                   ? const Center(child: Text('Invalid reservation'))
-                  : SingleChildScrollView(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // Reservation Summary Card
-                          Card(
-                            color: AppTheme.primaryBlueDark,
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Reservation Summary',
-                                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
+                  : Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 920),
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Reservation Summary Card
+                              Card(
+                                color: AppTheme.primaryBlueDark,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Reservation Summary',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      _buildSummaryRow(
+                                          'Unit',
+                                          _reservation!.unitNumber ??
+                                              _unit!.unitNumber),
+                                      _buildSummaryRow('Monthly Rate',
+                                          '\$${_effectiveMonthlyRate.toStringAsFixed(2)}'),
+                                      if (_reservation!.moveInDate != null)
+                                        _buildSummaryRow(
+                                            'Desired Move-In',
+                                            DateFormat('MMM d, y').format(
+                                                _reservation!.moveInDate!)),
+                                      _buildSummaryRow(
+                                          'Facility', _facility!.name),
+                                    ],
                                   ),
-                                  const SizedBox(height: 16),
-                                  _buildSummaryRow('Unit', _reservation!.unitNumber ?? _unit!.unitNumber),
-                                  _buildSummaryRow('Monthly Rate', '\$${(_reservation!.metadata?['monthlyRate'] as num?)?.toDouble() ?? _unit!.monthlyRate}'),
-                                  if (_reservation!.moveInDate != null)
-                                    _buildSummaryRow('Desired Move-In', DateFormat('MMM d, y').format(_reservation!.moveInDate!)),
-                                  _buildSummaryRow('Facility', _facility!.name),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          // Contact Information Form
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Text(
-                                    'Contact Information',
-                                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                          fontWeight: FontWeight.bold,
+                              const SizedBox(height: 12),
+                              _buildChargesCard(),
+                              const SizedBox(height: 24),
+                              // Contact Information Form
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Contact Information',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _nameController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Full Name *',
+                                          border: OutlineInputBorder(),
                                         ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _nameController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Full Name *',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    readOnly: true, // Pre-filled from reservation
-                                  ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _emailController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Email Address *',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    keyboardType: TextInputType.emailAddress,
-                                    readOnly: true, // Pre-filled from reservation
-                                  ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _phoneController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Phone Number *',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    keyboardType: TextInputType.phone,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _addressController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Mailing Address *',
-                                      border: OutlineInputBorder(),
-                                      helperText: 'Where should we send your documents?',
-                                    ),
-                                    maxLines: 2,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Emergency Contact
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Text(
-                                    'Emergency Contact',
-                                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                          fontWeight: FontWeight.bold,
+                                        readOnly:
+                                            true, // Pre-filled from reservation
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _emailController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Email Address *',
+                                          border: OutlineInputBorder(),
                                         ),
+                                        keyboardType:
+                                            TextInputType.emailAddress,
+                                        readOnly:
+                                            true, // Pre-filled from reservation
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _phoneController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Phone Number *',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        keyboardType: TextInputType.phone,
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _addressController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Mailing Address *',
+                                          border: OutlineInputBorder(),
+                                          helperText:
+                                              'Where should we send your documents?',
+                                        ),
+                                        maxLines: 2,
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _emergencyContactController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Emergency Contact Name *',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  TextFormField(
-                                    controller: _emergencyPhoneController,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Emergency Contact Phone *',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    keyboardType: TextInputType.phone,
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Terms and Conditions
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  CheckboxListTile(
-                                    title: const Text('I agree to the terms and conditions'),
-                                    subtitle: TextButton(
-                                      onPressed: () {
-                                        showDialog(
-                                          context: context,
-                                          builder: (context) => AlertDialog(
-                                            title: const Text('Terms and Conditions'),
-                                            content: SingleChildScrollView(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Text(
-                                                    'By completing this move-in, you agree to the following terms and conditions:',
-                                                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
+                              const SizedBox(height: 16),
+                              // Emergency Contact
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Emergency Contact',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _emergencyContactController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Emergency Contact Name *',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _emergencyPhoneController,
+                                        decoration: const InputDecoration(
+                                          labelText:
+                                              'Emergency Contact Phone *',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        keyboardType: TextInputType.phone,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              // Terms and Conditions
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      CheckboxListTile(
+                                        title: const Text(
+                                            'I agree to the terms and conditions'),
+                                        subtitle: TextButton(
+                                          onPressed: () {
+                                            showDialog(
+                                              context: context,
+                                              builder: (context) => AlertDialog(
+                                                title: const Text(
+                                                    'Terms and Conditions'),
+                                                content: SingleChildScrollView(
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Text(
+                                                        'By completing this move-in, you agree to the following terms and conditions:',
+                                                        style: Theme.of(context)
+                                                            .textTheme
+                                                            .titleSmall
+                                                            ?.copyWith(
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold,
+                                                            ),
+                                                      ),
+                                                      const SizedBox(
+                                                          height: 16),
+                                                      _buildTermItem(
+                                                          '1. Payment Obligations',
+                                                          'You agree to pay monthly rent on time as specified in your lease agreement. Late fees may apply for overdue payments.'),
+                                                      _buildTermItem(
+                                                          '2. Insurance Requirements',
+                                                          'You must maintain appropriate insurance coverage for your stored items. The facility may require proof of insurance.'),
+                                                      _buildTermItem(
+                                                          '3. Facility Rules',
+                                                          'You agree to follow all facility rules and regulations, including access hours, prohibited items, and safety requirements.'),
+                                                      _buildTermItem(
+                                                          '4. Accurate Information',
+                                                          'You must provide and maintain accurate contact information, including email, phone, and mailing address.'),
+                                                      _buildTermItem(
+                                                          '5. Access and Security',
+                                                          'You are responsible for maintaining the security of your unit and access codes. Report any security concerns immediately.'),
+                                                      _buildTermItem(
+                                                          '6. Prohibited Items',
+                                                          'You may not store hazardous materials, perishable items, or illegal substances. Violations may result in immediate termination.'),
+                                                      _buildTermItem(
+                                                          '7. Liability',
+                                                          'The facility is not responsible for damage to stored items. You are encouraged to maintain your own insurance coverage.'),
+                                                      const SizedBox(
+                                                          height: 16),
+                                                      Text(
+                                                        'Please review the full lease agreement before signing. By proceeding, you acknowledge that you have read and agree to these terms.',
+                                                        style: Theme.of(context)
+                                                            .textTheme
+                                                            .bodySmall
+                                                            ?.copyWith(
+                                                              fontStyle:
+                                                                  FontStyle
+                                                                      .italic,
+                                                            ),
+                                                      ),
+                                                    ],
                                                   ),
-                                                  const SizedBox(height: 16),
-                                                  _buildTermItem('1. Payment Obligations', 'You agree to pay monthly rent on time as specified in your lease agreement. Late fees may apply for overdue payments.'),
-                                                  _buildTermItem('2. Insurance Requirements', 'You must maintain appropriate insurance coverage for your stored items. The facility may require proof of insurance.'),
-                                                  _buildTermItem('3. Facility Rules', 'You agree to follow all facility rules and regulations, including access hours, prohibited items, and safety requirements.'),
-                                                  _buildTermItem('4. Accurate Information', 'You must provide and maintain accurate contact information, including email, phone, and mailing address.'),
-                                                  _buildTermItem('5. Access and Security', 'You are responsible for maintaining the security of your unit and access codes. Report any security concerns immediately.'),
-                                                  _buildTermItem('6. Prohibited Items', 'You may not store hazardous materials, perishable items, or illegal substances. Violations may result in immediate termination.'),
-                                                  _buildTermItem('7. Liability', 'The facility is not responsible for damage to stored items. You are encouraged to maintain your own insurance coverage.'),
-                                                  const SizedBox(height: 16),
-                                                  Text(
-                                                    'Please review the full lease agreement before signing. By proceeding, you acknowledge that you have read and agree to these terms.',
-                                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                      fontStyle: FontStyle.italic,
-                                                    ),
+                                                ),
+                                                actions: [
+                                                  TextButton(
+                                                    onPressed: () =>
+                                                        Navigator.of(context)
+                                                            .pop(),
+                                                    child: const Text(
+                                                        'I Understand'),
                                                   ),
                                                 ],
                                               ),
-                                            ),
-                                            actions: [
-                                              TextButton(
-                                                onPressed: () => Navigator.of(context).pop(),
-                                                child: const Text('I Understand'),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                      },
-                                      child: const Text('View Terms'),
-                                    ),
-                                    value: _agreeToTerms,
-                                    onChanged: (value) {
-                                      setState(() {
-                                        _agreeToTerms = value ?? false;
-                                      });
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          // Submit Button
-                          SizedBox(
-                            height: 50,
-                            child: ElevatedButton(
-                              onPressed: _isSubmitting ? null : _completeMoveIn,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppTheme.primaryBlueDark,
-                                foregroundColor: Colors.white,
-                              ),
-                              child: _isSubmitting
-                                  ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                            );
+                                          },
+                                          child: const Text('View Terms'),
+                                        ),
+                                        value: _agreeToTerms,
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _agreeToTerms = value ?? false;
+                                          });
+                                        },
                                       ),
-                                    )
-                                  : const Text(
-                                      'Submit Move-In Request',
-                                      style: TextStyle(fontSize: 16),
-                                    ),
-                            ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                              // Submit Button
+                              SizedBox(
+                                height: 50,
+                                child: ElevatedButton(
+                                  onPressed: (_isSubmitting ||
+                                          _isLaunchingCheckout ||
+                                          _isVerifyingCheckout)
+                                      ? null
+                                      : _completeMoveIn,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppTheme.primaryBlueDark,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  child: (_isSubmitting ||
+                                          _isLaunchingCheckout ||
+                                          _isVerifyingCheckout)
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                    Colors.white),
+                                          ),
+                                        )
+                                      : Text(
+                                          (_stripePaymentRequired &&
+                                                  _totalAmount > 0 &&
+                                                  _paymentIntentId == null)
+                                              ? 'Pay and Submit Move-In'
+                                              : 'Submit Move-In Request',
+                                          style: const TextStyle(fontSize: 16),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                (_stripePaymentRequired && _totalAmount > 0)
+                                    ? 'Payment is required today to complete this move-in.'
+                                    : 'After submission, our team will review your information and finalize your move-in.',
+                                style: TextStyle(
+                                  color: AppTheme.textSecondary,
+                                  fontSize: 12,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Note: After submission, our team will review your information and contact you to complete the contract signing and payment process.',
-                            style: TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
+                        ),
                       ),
                     ),
+    );
+  }
+
+  Widget _buildChargesCard() {
+    final currency = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.receipt_long_outlined,
+                    size: 18, color: AppTheme.primaryBlue),
+                const SizedBox(width: 8),
+                Text(
+                  'Due Today',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const Spacer(),
+                Text(
+                  currency.format(_totalAmount),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.primaryBlueDark,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (_lineItems.isEmpty)
+              const Text(
+                'No charges were calculated.',
+                style: TextStyle(color: AppTheme.textSecondary),
+              )
+            else
+              ..._lineItems.map(
+                (item) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          item.description,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      Text(
+                        currency.format(item.amount),
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -661,4 +1017,3 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     );
   }
 }
-

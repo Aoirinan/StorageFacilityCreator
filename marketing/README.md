@@ -70,7 +70,7 @@ In `src/config/site.ts`:
 
 ```ts
 export const SUPPORT_EMAIL = 'support@example.com';
-export const SUPPORT_PHONE = '(555) 123-4567';
+export const SUPPORT_PHONE = '(855) 526-4544';
 ```
 
 Update these for footer, contact page, and A2P/support references.

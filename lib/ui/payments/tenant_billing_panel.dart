@@ -197,6 +197,16 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
       if (mounted) {
         ref.invalidate(facilityTenantsProvider(widget.facilityId));
         final paymentIntentId = result['paymentIntentId'] as String?;
+        final recordingWarning = result['recordingWarning'] as String?;
+        if (recordingWarning != null && recordingWarning.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(recordingWarning),
+              duration: const Duration(seconds: 10),
+              backgroundColor: AppTheme.warning,
+            ),
+          );
+        }
         await showDialog<void>(
           context: context,
           builder: (ctx) => _PaymentReceiptDialog(

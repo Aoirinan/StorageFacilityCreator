@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:pdfx/pdfx.dart';
 import '../models/contract_template_model.dart';
+import '../services/web_externals_loader.dart';
 import '../theme/app_theme.dart';
 
 /// Configurator for contract signature fields. Lets facility owners add fields
@@ -62,6 +63,7 @@ class _SignatureFieldConfiguratorState extends State<SignatureFieldConfigurator>
 
   Future<void> _loadPdf() async {
     try {
+      await ensurePdfJsForWeb();
       Uint8List bytes;
       if (widget.pdfBytes != null) {
         bytes = widget.pdfBytes!;

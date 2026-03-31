@@ -313,6 +313,48 @@ class MapLayoutService {
     }
   }
 
+  /// Deletes every map shape for the facility (layout only; does not delete units).
+  /// Uses batched writes (max 500 ops per batch). Respects the same 300-shape query cap as [getMapShapes].
+  static Future<int> deleteAllMapShapes({required String facilityId}) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Not signed in');
+      }
+
+      if (kDebugMode) {
+        print('🔄 Deleting all map shapes for facility: $facilityId');
+      }
+
+      final col = _firestore.collection('facilities').doc(facilityId).collection('mapShapes');
+      final snapshot = await col.limit(300).get();
+      final docs = snapshot.docs;
+      if (docs.isEmpty) {
+        return 0;
+      }
+
+      const chunkSize = 500;
+      for (var i = 0; i < docs.length; i += chunkSize) {
+        final batch = _firestore.batch();
+        final end = (i + chunkSize < docs.length) ? i + chunkSize : docs.length;
+        for (var j = i; j < end; j++) {
+          batch.delete(docs[j].reference);
+        }
+        await batch.commit();
+      }
+
+      if (kDebugMode) {
+        print('✅ Deleted ${docs.length} map shapes');
+      }
+      return docs.length;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error deleting all map shapes: $e');
+      }
+      rethrow;
+    }
+  }
+
   /// Batch update multiple shapes (for drag operations)
   /// ✅ All shapes must belong to the same facilityId
   static Future<void> batchUpdateShapes({

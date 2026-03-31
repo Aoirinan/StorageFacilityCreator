@@ -3,7 +3,7 @@ export const SITE_VERSION = '1.3.0';
 export const SITE_NAME = 'Storage Facility Creator';
 export const SITE_DOMAIN = 'https://storagefacilitycreator.com';
 export const SUPPORT_EMAIL = 'support@storagefacilitycreator.com';
-export const SUPPORT_PHONE = '903-715-7504';
+export const SUPPORT_PHONE = '855-526-4544';
 
 /** Website-domain login entry used by header/CTA links. */
 export const APP_LOGIN_URL = '/login';

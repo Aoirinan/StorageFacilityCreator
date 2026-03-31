@@ -1,6 +1,7 @@
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:sfcapp/utils/hostname_stub.dart' if (dart.library.html) 'package:sfcapp/utils/hostname_web.dart' as hostname_util;
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/config/app_check_public.dart';
 import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/error_reporter.dart';
 import 'package:sfcapp/services/debug_logger.dart';
@@ -492,7 +493,8 @@ class AppCheckService {
         print('   📋 Most likely cause: Secret key in Firebase Console does NOT match site key');
         print('   🔧 FIX:');
         print('      1. Go to reCAPTCHA Admin: https://www.google.com/recaptcha/admin');
-        print('      2. Find site key: 6LeQ_0osAAAAAHiMJCujnzWG8ldPZhrKbgADZ2wH');
+        print(
+            '      2. Match site key to lib/config/app_check_public.dart (prefix: ${kAppCheckRecaptchaSiteKey.substring(0, 8)}...)');
         print('      3. Copy the SECRET KEY (not site key) from that page');
         print('      4. Go to Firebase Console > App Check > Apps > [Your Web App]');
         print('      5. Paste the SECRET KEY into reCAPTCHA v3 provider settings');

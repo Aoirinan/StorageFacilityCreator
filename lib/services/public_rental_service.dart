@@ -22,9 +22,7 @@ class PublicRentalService {
           .orderBy('monthlyRate')
           .get();
 
-      return snapshot.docs
-          .map((doc) => UnitModel.fromFirestore(doc))
-          .toList();
+      return snapshot.docs.map((doc) => UnitModel.fromFirestore(doc)).toList();
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRental] Error getting available units: $e');
@@ -36,10 +34,8 @@ class PublicRentalService {
   /// Get facility public information
   static Future<FacilityModel?> getFacility(String facilityId) async {
     try {
-      final doc = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .get();
+      final doc =
+          await _firestore.collection('facilities').doc(facilityId).get();
 
       if (!doc.exists) return null;
 
@@ -62,13 +58,17 @@ class PublicRentalService {
     String? name,
     DateTime? moveInDate,
     Map<String, dynamic>? metadata,
-    Duration expirationDuration = const Duration(hours: 24), // Default 24 hour hold
+    Duration expirationDuration =
+        const Duration(hours: 24), // Default 24 hour hold
   }) async {
     try {
       if (unitId != null) {
         try {
-          final callable = FirebaseFunctions.instance.httpsCallable('createPublicReservationHold');
-          final holdMinutes = expirationDuration.inMinutes <= 0 ? 10 : expirationDuration.inMinutes;
+          final callable = FirebaseFunctions.instance
+              .httpsCallable('createPublicReservationHold');
+          final holdMinutes = expirationDuration.inMinutes <= 0
+              ? 10
+              : expirationDuration.inMinutes;
           final response = await callable.call(<String, dynamic>{
             'facilityId': facilityId,
             'unitId': unitId,
@@ -82,7 +82,8 @@ class PublicRentalService {
           });
           final payload = Map<String, dynamic>.from(response.data as Map);
           if (payload['success'] == true) {
-            final holdToken = payload['moveInToken']?.toString() ?? _generateSecureToken();
+            final holdToken =
+                payload['moveInToken']?.toString() ?? _generateSecureToken();
             final expiresIso = payload['expiresAt']?.toString();
             return Reservation(
               id: payload['reservationId']?.toString() ?? '',
@@ -94,7 +95,9 @@ class PublicRentalService {
               name: name?.trim(),
               status: ReservationStatus.pending,
               reservedAt: DateTime.now(),
-              expiresAt: expiresIso != null ? DateTime.tryParse(expiresIso) : DateTime.now().add(expirationDuration),
+              expiresAt: expiresIso != null
+                  ? DateTime.tryParse(expiresIso)
+                  : DateTime.now().add(expirationDuration),
               moveInDate: moveInDate,
               moveInToken: holdToken,
               metadata: metadata,
@@ -102,7 +105,8 @@ class PublicRentalService {
           }
         } catch (holdError) {
           if (kDebugMode) {
-            print('⚠️ [PublicRental] Hold function unavailable, using legacy reservation path: $holdError');
+            print(
+                '⚠️ [PublicRental] Hold function unavailable, using legacy reservation path: $holdError');
           }
         }
       }
@@ -155,7 +159,10 @@ class PublicRentalService {
       final snapshot = await _firestore
           .collection('publicReservations')
           .where('moveInToken', isEqualTo: token)
-          .where('status', whereIn: [ReservationStatus.pending.name, ReservationStatus.confirmed.name])
+          .where('status', whereIn: [
+            ReservationStatus.pending.name,
+            ReservationStatus.confirmed.name
+          ])
           .limit(1)
           .get();
 
@@ -165,7 +172,8 @@ class PublicRentalService {
       final reservation = Reservation.fromMap(doc.id, doc.data());
 
       // Check if expired
-      if (reservation.expiresAt != null && DateTime.now().isAfter(reservation.expiresAt!)) {
+      if (reservation.expiresAt != null &&
+          DateTime.now().isAfter(reservation.expiresAt!)) {
         // Mark as expired
         await doc.reference.update({'status': ReservationStatus.expired.name});
         return null;
@@ -205,7 +213,8 @@ class PublicRentalService {
           .update(updates);
 
       if (kDebugMode) {
-        print('✅ [PublicRental] Updated reservation status: $reservationId to ${status.name}');
+        print(
+            '✅ [PublicRental] Updated reservation status: $reservationId to ${status.name}');
       }
     } catch (e) {
       if (kDebugMode) {
@@ -218,9 +227,11 @@ class PublicRentalService {
   /// Generate secure token for move-in link
   static String _generateSecureToken() {
     final random = Random.secure();
-    final chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final chars =
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final tokenParts = List.generate(2, (_) {
-      return List.generate(32, (_) => chars[random.nextInt(chars.length)]).join();
+      return List.generate(32, (_) => chars[random.nextInt(chars.length)])
+          .join();
     });
     return tokenParts.join();
   }
@@ -267,7 +278,8 @@ class PublicRentalService {
     String? address,
     String? emergencyContactName,
     String? emergencyContactPhone,
-    String? paymentIntentId, // Stripe payment intent ID if payment was processed
+    String?
+        paymentIntentId, // Stripe payment intent ID if payment was processed
     double? totalAmount,
     List<Map<String, dynamic>>? lineItems, // Move-in charges breakdown
     bool skipPayment = false,
@@ -281,10 +293,10 @@ class PublicRentalService {
       // 4. Process payment (if provided)
       // 5. Complete the move-in workflow
       // 6. Update reservation status
-      
+
       final functions = FirebaseFunctions.instance;
       final callable = functions.httpsCallable('completePublicMoveIn');
-      
+
       final result = await callable.call(<String, dynamic>{
         'reservationId': reservationId,
         'token': token,
@@ -298,6 +310,7 @@ class PublicRentalService {
         'totalAmount': totalAmount,
         'lineItems': lineItems,
         'skipPayment': skipPayment,
+        '_appCheckToken': 'public-move-in',
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () {
@@ -306,7 +319,7 @@ class PublicRentalService {
       );
 
       final response = Map<String, dynamic>.from(result.data);
-      
+
       if (kDebugMode) {
         print('✅ [PublicRental] Public move-in completed: $response');
       }
@@ -316,7 +329,7 @@ class PublicRentalService {
       if (kDebugMode) {
         print('❌ [PublicRental] Error completing public move-in: $e');
       }
-      
+
       // Fallback: Mark reservation as completed with submitted data
       // This allows the system to work even if Cloud Function isn't deployed yet
       try {
@@ -337,10 +350,11 @@ class PublicRentalService {
             },
           },
         );
-        
+
         return {
           'success': true,
-          'message': 'Move-in request submitted. Our team will process it shortly.',
+          'message':
+              'Move-in request submitted. Our team will process it shortly.',
           'note': 'Cloud Function not available - using fallback method',
         };
       } catch (fallbackError) {
@@ -349,6 +363,62 @@ class PublicRentalService {
         }
         rethrow;
       }
+    }
+  }
+
+  /// Create a Stripe Checkout session for public move-in.
+  static Future<Map<String, dynamic>> createPublicMoveInCheckout({
+    required String reservationId,
+    required String token,
+    required double amount,
+    String? description,
+  }) async {
+    try {
+      final callable = FirebaseFunctions.instance
+          .httpsCallable('createPublicMoveInCheckout');
+      final result = await callable.call(<String, dynamic>{
+        'reservationId': reservationId,
+        'token': token,
+        'amount': amount,
+        'description': description,
+      }).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () =>
+            throw Exception('Request timed out. Please try again.'),
+      );
+      return Map<String, dynamic>.from(result.data as Map);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [PublicRental] Error creating public move-in checkout: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Validate a Stripe Checkout session for a public move-in and return payment details.
+  static Future<Map<String, dynamic>> confirmPublicMoveInCheckout({
+    required String reservationId,
+    required String token,
+    required String sessionId,
+  }) async {
+    try {
+      final callable = FirebaseFunctions.instance
+          .httpsCallable('confirmPublicMoveInCheckout');
+      final result = await callable.call(<String, dynamic>{
+        'reservationId': reservationId,
+        'token': token,
+        'sessionId': sessionId,
+      }).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () =>
+            throw Exception('Request timed out. Please try again.'),
+      );
+      return Map<String, dynamic>.from(result.data as Map);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [PublicRental] Error confirming move-in checkout: $e');
+      }
+      rethrow;
     }
   }
 }
@@ -388,4 +458,3 @@ extension ReservationExtension on Reservation {
     );
   }
 }
-

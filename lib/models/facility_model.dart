@@ -6,6 +6,12 @@ class FacilityModel {
   final String name;
   final String? logoUrl;
   final String ownerUid;
+
+  /// Set by [FacilityService] when building the signed-in user's facility list.
+  /// `true` = user is the facility owner query match; `false` = access via team / [user_roles].
+  /// When null, UI may fall back to comparing [ownerUid] with the current user id.
+  final bool? currentUserOwnsFacility;
+
   final String?
       facilityCreatorAccountId; // Link to Facility Creator Account (for SaaS model)
   final DateTime createdAt;
@@ -67,6 +73,7 @@ class FacilityModel {
     required this.name,
     this.logoUrl,
     required this.ownerUid,
+    this.currentUserOwnsFacility,
     this.facilityCreatorAccountId,
     required this.createdAt,
     this.updatedAt,
@@ -117,6 +124,7 @@ class FacilityModel {
       name: data?['name'] ?? '',
       logoUrl: data?['logoUrl'],
       ownerUid: data?['ownerUid'] ?? '',
+      currentUserOwnsFacility: null,
       facilityCreatorAccountId: data?['facilityCreatorAccountId'],
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate(),
@@ -248,6 +256,7 @@ class FacilityModel {
     String? name,
     String? logoUrl,
     String? ownerUid,
+    bool? currentUserOwnsFacility,
     String? facilityCreatorAccountId,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -293,6 +302,8 @@ class FacilityModel {
       name: name ?? this.name,
       logoUrl: logoUrl ?? this.logoUrl,
       ownerUid: ownerUid ?? this.ownerUid,
+      currentUserOwnsFacility:
+          currentUserOwnsFacility ?? this.currentUserOwnsFacility,
       facilityCreatorAccountId:
           facilityCreatorAccountId ?? this.facilityCreatorAccountId,
       createdAt: createdAt ?? this.createdAt,
@@ -369,5 +380,14 @@ class FacilityModel {
   @override
   String toString() {
     return 'FacilityModel(id: $id, name: $name, ownerUid: $ownerUid, totalUnits: $totalUnits, occupiedUnits: $occupiedUnits, active: $active)';
+  }
+
+  /// Whether the UI should show this facility as "team" access for [viewerUid].
+  bool showsAsTeamMemberForViewer(String? viewerUid) {
+    if (viewerUid == null || viewerUid.isEmpty) return false;
+    if (currentUserOwnsFacility == true) return false;
+    if (currentUserOwnsFacility == false) return true;
+    if (ownerUid.isEmpty) return false;
+    return ownerUid != viewerUid;
   }
 }

@@ -21,6 +21,7 @@ import 'widgets/error_banner.dart';
 import 'config/firebase_emulator_config.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'config/app_check_public.dart';
 import 'services/app_check_service.dart';
 
 // Static flag to ensure App Check is activated exactly once (DEPRECATED - use AppCheckService.isActivated instead)
@@ -110,7 +111,7 @@ void main() async {
       // Use the centralized AppCheckService to keep web + debug behavior consistent.
       // AppCheckService.activate() has its own guard against duplicate initialization
       await AppCheckService.activate(
-        webSiteKey: '6LeQ_0osAAAAAHiMJCujnzWG8ldPZhrKbgADZ2wH',
+        webSiteKey: kAppCheckRecaptchaSiteKey,
         forceEnable: true,
       );
       _appCheckActivated = true; // Also set local flag for backward compatibility

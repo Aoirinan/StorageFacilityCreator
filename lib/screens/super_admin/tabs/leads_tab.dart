@@ -174,6 +174,10 @@ class _LeadRowState extends State<_LeadRow> {
     switch (source) {
       case 'website_contact':
         return 'Website';
+      case 'twilio_inbound_sms':
+        return 'Inbound SMS';
+      case 'twilio_inbound_call':
+        return 'Inbound Call';
       default:
         return source.replaceAll('_', ' ');
     }

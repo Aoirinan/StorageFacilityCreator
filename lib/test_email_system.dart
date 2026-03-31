@@ -53,7 +53,9 @@ class EmailSystemTester {
           print('✅ Email service call successful');
           print('📧 Message ID: ${result.messageId}');
         } else {
-          print('⚠️ Email service call failed (expected): ${result.error}');
+          print(
+            '⚠️ Email service call failed (expected): ${EmailService.staffEmailFailureHint(result)}',
+          );
           print('📧 Error code: ${result.errorCode}');
         }
       } catch (e) {
