@@ -371,7 +371,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             },
                           ),
                           _SettingsTile(
-                            icon: Icons.mark_email_unread_outlined,
+                            icon: Icons.email_outlined,
                             title: 'Email opt-outs',
                             subtitle:
                                 'See who unsubscribed and allow facility emails again',

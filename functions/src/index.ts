@@ -14647,6 +14647,7 @@ export const removeFacilityEmailSuppression = functions.runWith({ secrets: SENDG
     const row = doc.data() as Record<string, unknown>;
     const emailLower = String(row.emailLower ?? '').trim().toLowerCase();
     const tenantId = row.tenantId != null ? String(row.tenantId) : null;
+    const priorSource = row.source != null ? String(row.source) : null;
 
     await ref.delete();
 
@@ -14701,6 +14702,54 @@ export const removeFacilityEmailSuppression = functions.runWith({ secrets: SENDG
         });
       }
     }
+
+    let actorEmail = '';
+    try {
+      const u = await admin.auth().getUser(context.auth!.uid);
+      actorEmail = u.email || '';
+    } catch (_) {
+      /* ignore */
+    }
+    let actorRole = 'staff';
+    if (facilityData.ownerUid === context.auth.uid) {
+      actorRole = 'owner';
+    } else {
+      const roles = (facilityData.roles as Record<string, string> | undefined) || {};
+      const r = roles[context.auth.uid!];
+      if (r) actorRole = r;
+      else if ((facilityData.managers as Record<string, boolean> | undefined)?.[context.auth.uid!] === true) {
+        actorRole = 'manager';
+      }
+    }
+
+    await admin
+      .firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('auditLogs')
+      .add({
+        eventType: 'communication.emailSuppressionRemoved',
+        action: 'communication.emailSuppressionRemoved',
+        actorUid: context.auth.uid,
+        actorEmail,
+        actorRole,
+        userId: context.auth.uid,
+        userEmail: actorEmail,
+        targetType: 'emailSuppression',
+        targetId: suppressId,
+        entityType: 'emailSuppression',
+        entityId: suppressId,
+        facilityId,
+        tenantId: tenantId || null,
+        metadata: {
+          emailLower,
+          confirmationSent,
+          priorSource,
+          sendConfirmationRequested: sendConfirmation,
+        },
+        changes: {},
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      });
 
     return { ok: true, confirmationSent };
   },
