@@ -86,7 +86,7 @@ Write-Host 'Storage rules deployed!' -ForegroundColor Green
 # Step 7: Deploy hosting
 Write-Host ''
 Write-Host 'Step 7: Deploying web hosting...' -ForegroundColor Cyan
-firebase deploy --only hosting:prod
+firebase deploy --only hosting
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Hosting deployment failed' -ForegroundColor Red
     exit 1
