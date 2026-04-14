@@ -133,6 +133,7 @@ import '../screens/conditional_rules_management_screen.dart';
 import '../screens/facility_calendar_screen.dart';
 import '../screens/pending_approval_screen.dart';
 import '../models/document_attachment_model.dart';
+import '../config/web_host_config.dart';
 import '../screens/marketing_landing_page.dart';
 import '../screens/sms_policy_screen.dart';
 import '../screens/contact_screen.dart';
@@ -168,7 +169,8 @@ class DelinquencyShellScreen extends StatelessWidget {
 /// are in separate files. The routes array is still here but will be further modularized.
 final goRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
-    initialLocation: AppRoute.landing,
+    initialLocation:
+        isProductionAppWebHost() ? AppRoute.login : AppRoute.landing,
     debugLogDiagnostics: kDebugMode,
     refreshListenable:
         GoRouterRefreshStream(FirebaseAuth.instance.authStateChanges()),

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -165,15 +168,33 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
                 ),
             ]),
             const SizedBox(height: 24),
-            
-            // Files Information
-            if (contract.fileUrl != null || contract.signedFileUrl != null)
+
+            // Signed agreement: PDF links and/or online move-in signature preview
+            if (contract.status == ContractStatus.signed) ...[
+              if (contract.fileUrl != null || contract.signedFileUrl != null)
+                _buildSection(context, 'Files', [
+                  if (contract.fileUrl != null)
+                    _buildFileRow(context, 'Contract File', contract.fileUrl!, 'View Contract'),
+                  if (contract.signedFileUrl != null)
+                    _buildFileRow(
+                      context,
+                      'Signed agreement (PDF)',
+                      contract.signedFileUrl!,
+                      'View signed PDF',
+                    ),
+                ])
+              else
+                _buildOnlineMoveInSignatureSection(context),
+              const SizedBox(height: 24),
+            ] else if (contract.fileUrl != null || contract.signedFileUrl != null) ...[
               _buildSection(context, 'Files', [
                 if (contract.fileUrl != null)
                   _buildFileRow(context, 'Contract File', contract.fileUrl!, 'View Contract'),
                 if (contract.signedFileUrl != null)
                   _buildFileRow(context, 'Signed File', contract.signedFileUrl!, 'View Signed Contract'),
               ]),
+              const SizedBox(height: 24),
+            ],
             
             // Custom Fields
             if (contract.customFields != null && contract.customFields!.isNotEmpty)
@@ -330,6 +351,115 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Online move-ins stored a PNG signature in customFields before PDF upload existed.
+  Widget _buildOnlineMoveInSignatureSection(BuildContext context) {
+    final raw = contract.customFields?['publicMoveInSignature'];
+    if (raw is! Map) {
+      return _buildSection(
+        context,
+        'Signed agreement',
+        [
+          Text(
+            'There is no PDF or signature image stored for this contract. '
+            'If this was an older online move-in, only the summary above was saved.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      );
+    }
+    final map = Map<String, dynamic>.from(raw);
+    final b64 = map['signaturePngBase64'] as String?;
+    if (b64 == null || b64.isEmpty) {
+      return _buildSection(
+        context,
+        'Signed agreement',
+        [
+          Text(
+            'Signature data is missing on this record.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      );
+    }
+    late final Uint8List bytes;
+    try {
+      bytes = base64Decode(b64);
+    } catch (_) {
+      return _buildSection(
+        context,
+        'Signed agreement',
+        [
+          const Text('Could not decode the stored signature image.'),
+        ],
+      );
+    }
+    final signedAt = map['signedAt']?.toString() ?? '';
+    final signerName = map['signerName']?.toString() ?? '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Signed agreement',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: AppTheme.primaryBlueDark,
+              ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.backgroundLight,
+            border: Border.all(color: AppTheme.borderLight),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Electronic signature (online move-in)',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              if (signerName.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Signer: $signerName'),
+              ],
+              if (signedAt.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('Signed at: $signedAt'),
+              ],
+              const SizedBox(height: 12),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(
+                  child: Image.memory(
+                    bytes,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Text('Unable to display image'),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'New online move-ins also generate a PDF copy you can open with “View signed PDF” above when available.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

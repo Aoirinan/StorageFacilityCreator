@@ -8,11 +8,17 @@ import '../theme/app_theme.dart';
 class TeamNotesPanel extends StatefulWidget {
   final String facilityId;
   final bool compact;
+  /// When false, only the composer and list are shown (e.g. dialog with its own title).
+  final bool showHeader;
+  /// When false, no right border (e.g. embedded in a dialog).
+  final bool showTrailingBorder;
 
   const TeamNotesPanel({
     super.key,
     required this.facilityId,
     this.compact = false,
+    this.showHeader = true,
+    this.showTrailingBorder = true,
   });
 
   @override
@@ -141,42 +147,45 @@ class _TeamNotesPanelState extends State<TeamNotesPanel> {
     return Container(
       decoration: BoxDecoration(
         color: cs.surface,
-        border: Border(right: BorderSide(color: cs.outline)),
+        border: widget.showTrailingBorder
+            ? Border(right: BorderSide(color: cs.outline))
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: EdgeInsets.all(widget.compact ? 12 : 16),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerHighest,
-              border: Border(bottom: BorderSide(color: cs.outline)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.note_alt_outlined, color: cs.primary, size: 22),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Team notes',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Shared with everyone who can access this facility.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
+          if (widget.showHeader)
+            Container(
+              padding: EdgeInsets.all(widget.compact ? 12 : 16),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                border: Border(bottom: BorderSide(color: cs.outline)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.note_alt_outlined, color: cs.primary, size: 22),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Team notes',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
                       ),
-                ),
-              ],
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Shared with everyone who can access this facility.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                  ),
+                ],
+              ),
             ),
-          ),
           Padding(
             padding: EdgeInsets.all(widget.compact ? 8 : 12),
             child: Column(

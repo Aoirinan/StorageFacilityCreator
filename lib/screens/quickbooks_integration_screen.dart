@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/quickbooks_oauth_handoff_stub.dart'
+    if (dart.library.html) 'package:sfcapp/services/quickbooks_oauth_handoff_web.dart'
+    as quickbooks_oauth_handoff;
 import 'package:sfcapp/services/quickbooks_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
@@ -90,9 +93,24 @@ class _QuickBooksIntegrationScreenState extends State<QuickBooksIntegrationScree
   }
 
   Future<void> _initialize() async {
+    _prefillOAuthFromHandoff();
     _prefillOAuthFromUrl();
     await _refreshStatus();
     await _maybeAutoCompleteConnect();
+  }
+
+  void _prefillOAuthFromHandoff() {
+    if (_autoFilledFromUrl) return;
+    final payload = quickbooks_oauth_handoff.takePendingQuickBooksOAuthPayload();
+    if (payload == null) return;
+    final code = (payload['code'] ?? '').trim();
+    final realmId = (payload['realmId'] ?? '').trim();
+    final state = (payload['state'] ?? '').trim();
+    if (code.isEmpty || realmId.isEmpty || state.isEmpty) return;
+    _autoFilledFromUrl = true;
+    _stateController.text = state;
+    _codeController.text = code;
+    _realmController.text = realmId;
   }
 
   void _prefillOAuthFromUrl() {
@@ -152,7 +170,33 @@ class _QuickBooksIntegrationScreenState extends State<QuickBooksIntegrationScree
         throw Exception('QuickBooks authorization URL was not returned');
       }
       if (kIsWeb) {
-        open_url.openUrlInBrowserWeb(authUrl);
+        final opened = open_url.openUrlInBrowserWeb(authUrl);
+        if (!opened) {
+          if (!mounted) return;
+          await showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Pop-up blocked'),
+              content: const Text(
+                'Your browser blocked the QuickBooks authorization pop-up.\n\n'
+                'Allow pop-ups for this site, then try again. You can also continue in this tab.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Close'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    open_url.openUrlInCurrentTabWeb(authUrl);
+                  },
+                  child: const Text('Continue in this tab'),
+                ),
+              ],
+            ),
+          );
+        }
       } else {
         if (!mounted) return;
         await showDialog<void>(
@@ -171,7 +215,8 @@ class _QuickBooksIntegrationScreenState extends State<QuickBooksIntegrationScree
         if (!mounted) return;
       }
       if (!mounted) return;
-      _showSuccess('QuickBooks connect opened. Finish OAuth, then paste code/realm/state below.');
+      _showSuccess(
+          'QuickBooks connect opened. Finish OAuth, then return here (or paste code/realm/state below if needed).');
     } catch (e) {
       _showError(e, prefix: 'Could not start QuickBooks connect');
     } finally {
@@ -397,6 +442,18 @@ class _QuickBooksIntegrationScreenState extends State<QuickBooksIntegrationScree
                   _statusRow('Connected', connected ? 'Yes' : 'No'),
                   _statusRow('Realm ID', '${_status?['realmId'] ?? '-'}'),
                   _statusRow('Environment', '${_status?['environment'] ?? '-'}'),
+                  _statusRow(
+                    'Functions QB env',
+                    '${_status?['functionsQuickBooksEnv'] ?? '-'}',
+                  ),
+                  if ((_status?['oauthRedirectUri'] ?? '')
+                      .toString()
+                      .trim()
+                      .isNotEmpty)
+                    _statusRow(
+                      'OAuth redirect (Intuit)',
+                      _status!['oauthRedirectUri'].toString(),
+                    ),
                   _statusRow('Auto Sync', autoSyncEnabled ? 'Enabled' : 'Disabled'),
                   _statusRow('Last Sync', '${_status?['lastSyncAt'] ?? '-'}'),
                   _statusRow('Last Sync Status', '${_status?['lastSyncStatus'] ?? '-'}'),

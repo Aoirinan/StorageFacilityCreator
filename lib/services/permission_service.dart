@@ -88,21 +88,28 @@ class PermissionService {
         // DNR System
         PermissionType.createDNR,
         PermissionType.editDNR,
+        PermissionType.deleteDNR,
         PermissionType.viewDNR,
         // Unit Management
         PermissionType.createUnit,
         PermissionType.editUnit,
+        PermissionType.deleteUnit,
         PermissionType.viewUnit,
         PermissionType.manageOverlock,
         // Reminder Management
         PermissionType.createReminder,
         PermissionType.editReminder,
+        PermissionType.deleteReminder,
         PermissionType.viewReminder,
         // Data Management
         PermissionType.viewReports,
         PermissionType.exportData,
+        PermissionType.importData,
         PermissionType.manageTemplates,
         PermissionType.manageAutomation,
+        // Contracts / payments (manager ops; owner retains full via PermissionType.values)
+        PermissionType.deleteContract,
+        PermissionType.deletePayment,
       ],
     ),
     RoleType.employee: Role(
@@ -153,30 +160,54 @@ class PermissionService {
         PermissionType.viewReports,
       ],
     ),
-    RoleType.admin: Role(
-      id: 'admin',
-      type: RoleType.admin,
-      name: 'System Admin',
-      description: 'System administration and user management',
-      color: const Color(0xFFDC2626), // Red
-      level: 90,
-      isSystemRole: true,
-      permissions: [
-        ...PermissionType.values.where((p) => p != PermissionType.systemAdmin),
-        PermissionType.manageUsers,
-        PermissionType.viewAuditLogs,
-      ],
-    ),
   };
 
-  // Get all predefined roles
-  static List<Role> getPredefinedRoles() {
-    return _predefinedRoles.values.toList();
+  /// Roles that can be assigned or invited (excludes owner).
+  static List<Role> getAssignableRoles() {
+    final list = _predefinedRoles.values.toList()
+      ..sort((a, b) => b.level.compareTo(a.level));
+    return list;
   }
 
-  // Get role by type
+  // Get all predefined roles (for Roles tab reference cards)
+  static List<Role> getPredefinedRoles() {
+    return getAssignableRoles();
+  }
+
+  // Get role by type.
   static Role? getRoleByType(RoleType type) {
     return _predefinedRoles[type];
+  }
+
+  /// Maps Firestore `roleType` strings to [RoleType]. Legacy value `admin` → [RoleType.manager].
+  static RoleType roleTypeFromFirestoreString(String? raw) {
+    final name = (raw ?? '').trim();
+    if (name.isEmpty) return RoleType.viewer;
+    if (name == 'admin') return RoleType.manager;
+    return RoleType.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => RoleType.viewer,
+    );
+  }
+
+  static Future<CurrentFacilityRoleSummary?> getCurrentUserRoleSummary(String facilityId) async {
+    final user = _auth.currentUser;
+    if (user == null || facilityId.isEmpty) return null;
+    final userRole = await _getUserRole(user.uid, facilityId);
+    if (userRole == null) {
+      return CurrentFacilityRoleSummary(
+        email: user.email ?? '',
+        roleTypeLabel: 'No facility role',
+        canDeleteTenants: false,
+      );
+    }
+    final def = getRoleByType(userRole.roleType);
+    final canDel = def?.permissions.contains(PermissionType.deleteTenant) ?? false;
+    return CurrentFacilityRoleSummary(
+      email: user.email ?? '',
+      roleTypeLabel: userRole.roleType.displayName,
+      canDeleteTenants: canDel,
+    );
   }
 
   static Future<Map<String, dynamic>?> getUserProfile(String userId) async {
@@ -327,10 +358,7 @@ class PermissionService {
             id: doc.id,
             userId: doc.data()['userId'] ?? '',
             facilityId: doc.data()['facilityId'] ?? '',
-            roleType: RoleType.values.firstWhere(
-              (e) => e.name == doc.data()['roleType'],
-              orElse: () => RoleType.viewer,
-            ),
+            roleType: roleTypeFromFirestoreString(doc.data()['roleType'] as String?),
             assignedAt: (doc.data()['assignedAt'] as Timestamp).toDate(),
             assignedBy: doc.data()['assignedBy'] ?? '',
             expiresAt: doc.data()['expiresAt'] != null
@@ -362,10 +390,7 @@ class PermissionService {
             id: doc.id,
             userId: doc.data()['userId'] ?? '',
             facilityId: doc.data()['facilityId'] ?? '',
-            roleType: RoleType.values.firstWhere(
-              (e) => e.name == doc.data()['roleType'],
-              orElse: () => RoleType.viewer,
-            ),
+            roleType: roleTypeFromFirestoreString(doc.data()['roleType'] as String?),
             assignedAt: (doc.data()['assignedAt'] as Timestamp).toDate(),
             assignedBy: doc.data()['assignedBy'] ?? '',
             expiresAt: doc.data()['expiresAt'] != null
@@ -575,10 +600,7 @@ class PermissionService {
           id: doc.id,
           userId: data['userId'] ?? '',
           facilityId: data['facilityId'] ?? '',
-          roleType: RoleType.values.firstWhere(
-            (e) => e.name == data['roleType'],
-            orElse: () => RoleType.viewer,
-          ),
+          roleType: roleTypeFromFirestoreString(data['roleType'] as String?),
           assignedAt: (data['assignedAt'] as Timestamp).toDate(),
           assignedBy: data['assignedBy'] ?? '',
           expiresAt: data['expiresAt'] != null
@@ -896,10 +918,7 @@ class PermissionService {
       
       // Get role type from invite
       final roleTypeName = data['roleType'] as String? ?? RoleType.viewer.name;
-      final roleType = RoleType.values.firstWhere(
-        (role) => role.name == roleTypeName,
-        orElse: () => RoleType.viewer,
-      );
+      final roleType = roleTypeFromFirestoreString(roleTypeName);
       final invitedBy = data['invitedBy'] as String? ?? 'invite';
       final inviteEmail = data['email'] as String? ?? email ?? '';
       
@@ -976,10 +995,7 @@ class PermissionService {
         final facilityId = facilityRef.id;
         final data = doc.data();
         final roleTypeName = data['roleType'] as String? ?? RoleType.viewer.name;
-        final roleType = RoleType.values.firstWhere(
-          (role) => role.name == roleTypeName,
-          orElse: () => RoleType.viewer,
-        );
+        final roleType = roleTypeFromFirestoreString(roleTypeName);
         final invitedBy = data['invitedBy'] as String? ?? 'invite';
 
         final assigned = await assignRole(
@@ -1284,9 +1300,8 @@ class FacilityInvite {
       facilityId: facilityId,
       email: data['email'] as String? ?? '',
       emailLower: data['emailLower'] as String? ?? '',
-      roleType: RoleType.values.firstWhere(
-        (role) => role.name == (data['roleType'] as String? ?? RoleType.viewer.name),
-        orElse: () => RoleType.viewer,
+      roleType: PermissionService.roleTypeFromFirestoreString(
+        data['roleType'] as String? ?? RoleType.viewer.name,
       ),
       status: data['status'] as String? ?? 'pending',
       invitedAt: (data['invitedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),

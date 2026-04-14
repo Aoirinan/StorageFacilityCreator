@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
+import 'package:signature/signature.dart';
 import '../models/reservation_model.dart';
 import '../services/public_rental_service.dart';
 import '../models/unit_model.dart';
@@ -42,10 +44,27 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _addressController = TextEditingController();
+  final _addressLine2Controller = TextEditingController();
+  final _cityController = TextEditingController();
+  final _stateController = TextEditingController();
+  final _zipCodeController = TextEditingController();
+  final _countryController = TextEditingController(text: 'US');
   final _emergencyContactController = TextEditingController();
+  final _emergencyRelationshipController = TextEditingController();
   final _emergencyPhoneController = TextEditingController();
+  final _emergencyEmailController = TextEditingController();
+  final _governmentIdNumberController = TextEditingController();
+  final _governmentIdStateController = TextEditingController();
+  final _governmentIdCountryController = TextEditingController(text: 'US');
+  final _notesController = TextEditingController();
+  String _governmentIdType = 'none';
+  final SignatureController _signatureController = SignatureController(
+    penStrokeWidth: 2,
+    penColor: AppTheme.textPrimary,
+  );
 
   bool _agreeToTerms = false;
+  bool _enrollAutopayInterest = false;
   bool _isSubmitting = false;
   bool _isLaunchingCheckout = false;
   bool _isVerifyingCheckout = false;
@@ -96,9 +115,29 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     _emailController.dispose();
     _phoneController.dispose();
     _addressController.dispose();
+    _addressLine2Controller.dispose();
+    _cityController.dispose();
+    _stateController.dispose();
+    _zipCodeController.dispose();
+    _countryController.dispose();
     _emergencyContactController.dispose();
+    _emergencyRelationshipController.dispose();
     _emergencyPhoneController.dispose();
+    _emergencyEmailController.dispose();
+    _governmentIdNumberController.dispose();
+    _governmentIdStateController.dispose();
+    _governmentIdCountryController.dispose();
+    _notesController.dispose();
+    _signatureController.dispose();
     super.dispose();
+  }
+
+  Future<String?> _exportSignaturePngBase64() async {
+    final signatureBytes = await _signatureController.toPngBytes();
+    if (signatureBytes == null || signatureBytes.isEmpty) {
+      return null;
+    }
+    return base64Encode(signatureBytes);
   }
 
   Future<void> _loadReservation() async {
@@ -490,6 +529,16 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       return;
     }
 
+    if (_signatureController.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please provide your electronic signature'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+      return;
+    }
+
     if (_stripePaymentRequired &&
         _totalAmount > 0 &&
         _paymentIntentId == null) {
@@ -502,6 +551,11 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     });
 
     try {
+      final signaturePngBase64 = await _exportSignaturePngBase64();
+      if (signaturePngBase64 == null || signaturePngBase64.isEmpty) {
+        throw Exception('Unable to capture signature. Please sign again.');
+      }
+
       // Convert line items to map format for Cloud Function
       final lineItemsMap = _lineItems
           .map((item) => {
@@ -523,12 +577,29 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
         address: _addressController.text.trim(),
+        addressLine2: _addressLine2Controller.text.trim(),
+        city: _cityController.text.trim(),
+        state: _stateController.text.trim(),
+        zipCode: _zipCodeController.text.trim(),
+        country: _countryController.text.trim(),
         emergencyContactName: _emergencyContactController.text.trim(),
+        emergencyContactRelationship:
+            _emergencyRelationshipController.text.trim(),
         emergencyContactPhone: _emergencyPhoneController.text.trim(),
+        emergencyContactEmail: _emergencyEmailController.text.trim(),
+        governmentIdType:
+            _governmentIdType == 'none' ? null : _governmentIdType,
+        governmentIdNumber: _governmentIdNumberController.text.trim(),
+        governmentIdState: _governmentIdStateController.text.trim(),
+        governmentIdCountry: _governmentIdCountryController.text.trim(),
+        notes: _notesController.text.trim(),
         paymentIntentId: _paymentIntentId,
         totalAmount: _totalAmount,
         lineItems: lineItemsMap,
         skipPayment: !(_stripePaymentRequired && _totalAmount > 0),
+        signaturePngBase64: signaturePngBase64,
+        signatureSignedAt: DateTime.now().toIso8601String(),
+        enrollAutopayInterest: _enrollAutopayInterest,
       );
 
       if (mounted) {
@@ -705,6 +776,152 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                                         ),
                                         maxLines: 2,
                                       ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _addressLine2Controller,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Address Line 2',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: _cityController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'City',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: _stateController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'State',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: _zipCodeController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'ZIP Code',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: _countryController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'Country',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Government ID (optional)',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      DropdownButtonFormField<String>(
+                                        value: _governmentIdType,
+                                        decoration: const InputDecoration(
+                                          labelText: 'ID Type',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        items: const [
+                                          DropdownMenuItem(
+                                            value: 'none',
+                                            child: Text('None'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'driversLicense',
+                                            child: Text('Driver License'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'stateId',
+                                            child: Text('State ID'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'passport',
+                                            child: Text('Passport'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'other',
+                                            child: Text('Other'),
+                                          ),
+                                        ],
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _governmentIdType = value ?? 'none';
+                                          });
+                                        },
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _governmentIdNumberController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'ID Number',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller:
+                                                  _governmentIdStateController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'ID Issuing State',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller:
+                                                  _governmentIdCountryController,
+                                              decoration: const InputDecoration(
+                                                labelText: 'ID Issuing Country',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -737,6 +954,16 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                                       ),
                                       const SizedBox(height: 16),
                                       TextFormField(
+                                        controller:
+                                            _emergencyRelationshipController,
+                                        decoration: const InputDecoration(
+                                          labelText:
+                                              'Emergency Contact Relationship',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
                                         controller: _emergencyPhoneController,
                                         decoration: const InputDecoration(
                                           labelText:
@@ -744,6 +971,107 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                                           border: OutlineInputBorder(),
                                         ),
                                         keyboardType: TextInputType.phone,
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _emergencyEmailController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Emergency Contact Email',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        keyboardType:
+                                            TextInputType.emailAddress,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Additional Notes (optional)',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextFormField(
+                                        controller: _notesController,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Notes',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        maxLines: 3,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Electronic Signature',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      const Text(
+                                        'Sign below to acknowledge and sign your move-in contract.',
+                                        style: TextStyle(
+                                          color: AppTheme.textSecondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.surface,
+                                          border: Border.all(
+                                            color: AppTheme.borderLight,
+                                          ),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: Signature(
+                                          controller: _signatureController,
+                                          height: 180,
+                                          backgroundColor: AppTheme.surface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
+                                        children: [
+                                          TextButton.icon(
+                                            onPressed: () => setState(
+                                              () => _signatureController.clear(),
+                                            ),
+                                            icon: const Icon(
+                                              Icons.clear,
+                                              size: 16,
+                                            ),
+                                            label: const Text('Clear Signature'),
+                                          ),
+                                        ],
                                       ),
                                     ],
                                   ),
@@ -844,6 +1172,27 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                                         onChanged: (value) {
                                           setState(() {
                                             _agreeToTerms = value ?? false;
+                                          });
+                                        },
+                                      ),
+                                      CheckboxListTile(
+                                        title: const Text(
+                                          'Sign me up for automatic monthly draft (autopay)',
+                                        ),
+                                        subtitle: Text(
+                                          'We will request autopay on your account. The facility may contact you to confirm your card on file before charges run.',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: AppTheme.textSecondary,
+                                              ),
+                                        ),
+                                        value: _enrollAutopayInterest,
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _enrollAutopayInterest =
+                                                value ?? false;
                                           });
                                         },
                                       ),

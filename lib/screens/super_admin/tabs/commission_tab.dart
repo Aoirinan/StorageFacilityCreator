@@ -27,6 +27,13 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
   _CommissionRateType _rateType = _CommissionRateType.percentOfSale;
   bool _savingSnapshot = false;
 
+  DateTime? _commissionEventDate(MarketingLead lead) {
+    final isWon = lead.status == MarketingLeadStatus.won ||
+        lead.saleStatus.toLowerCase() == 'won';
+    if (!isWon) return lead.createdAt;
+    return lead.closedAt ?? lead.updatedAt ?? lead.createdAt;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -92,9 +99,9 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
 
   List<_CommissionRow> _buildRows(List<MarketingLead> leads) {
     final inRange = leads.where((lead) {
-      final created = lead.createdAt;
-      if (created == null) return false;
-      return !created.isBefore(_startDate) && !created.isAfter(_endDate);
+      final eventAt = _commissionEventDate(lead);
+      if (eventAt == null) return false;
+      return !eventAt.isBefore(_startDate) && !eventAt.isAfter(_endDate);
     });
 
     final byRep = <String, _CommissionAccumulator>{};
@@ -140,6 +147,7 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
               _commissionableOnly ? e.value.commissionableSaleTotal : e.value.saleTotal;
           final winsBasis =
               _commissionableOnly ? e.value.commissionableWonCount : e.value.wonCount;
+          final isAssignedRep = e.key != 'Unassigned';
           return _CommissionRow(
             rep: e.key,
             totalLeads: e.value.totalLeads,
@@ -153,9 +161,12 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
             avgCloseDays: e.value.closeSamples == 0
                 ? null
                 : e.value.closeDaysTotal / e.value.closeSamples,
-            commissionAmount: _rateType == _CommissionRateType.percentOfSale
-                ? salesBasis * (_commissionRate / 100)
-                : winsBasis * _commissionRate,
+            // Never pay commission to unassigned leads.
+            commissionAmount: !isAssignedRep
+                ? 0
+                : _rateType == _CommissionRateType.percentOfSale
+                    ? salesBasis * (_commissionRate / 100)
+                    : winsBasis * _commissionRate,
           );
         })
         .toList();
@@ -494,6 +505,10 @@ class _CommissionTabState extends ConsumerState<CommissionTab> {
                           )
                         : const Icon(Icons.lock_clock, size: 16),
                     label: const Text('Lock Payout Period'),
+                  ),
+                  const Chip(
+                    avatar: Icon(Icons.info_outline, size: 16),
+                    label: Text('Won deals are dated by close date'),
                   ),
                 ],
               ),

@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'dart:convert';
 import '../providers/tenant_provider.dart';
+import '../providers/permission_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/active_facility_provider.dart';
@@ -29,6 +30,8 @@ import 'subscription_test_screen.dart';
 import 'facility_map_editor_screen.dart';
 import 'tenant_csv_import_wizard_screen.dart';
 import '../services/late_logic_service.dart';
+import '../services/permission_service.dart';
+import '../models/permission_model.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
 final _facilityGracePeriodProvider = FutureProvider.family<int, String>((ref, facilityId) async {
@@ -256,6 +259,11 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         : ref.watch(filteredTenantsProvider(_selectedFacilityId));
     final graceAsync = ref.watch(_facilityGracePeriodProvider(_selectedFacilityId == 'all' ? '' : _selectedFacilityId));
     final gracePeriodDays = graceAsync.whenOrNull(data: (d) => d) ?? 3;
+    final permFacilityId =
+        _selectedFacilityId.isEmpty || _selectedFacilityId == 'all' ? '' : _selectedFacilityId;
+    final canDeleteTenant = ref
+        .watch(canDeleteTenantAtFacilityProvider(permFacilityId))
+        .maybeWhen(data: (v) => v, orElse: () => false);
 
     return Column(
             children: [
@@ -423,7 +431,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                             ),
                             const SizedBox(width: 8),
                             ElevatedButton.icon(
-                              onPressed: _selectedTenantIds.isEmpty
+                              onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
                                   : () => _deleteSelectedTenants(),
                               icon: const Icon(Icons.delete),
@@ -662,7 +670,11 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                             itemCount: tenants.length,
                             itemBuilder: (context, index) {
                               final tenant = tenants[index];
-                              return _buildTenantCard(tenant, gracePeriodDays: gracePeriodDays);
+                              return _buildTenantCard(
+                                tenant,
+                                gracePeriodDays: gracePeriodDays,
+                                canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
+                              );
                             },
                           );
                         },
@@ -757,7 +769,11 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
   }
 
-  Widget _buildTenantCard(TenantModel tenant, {int? gracePeriodDays}) {
+  Widget _buildTenantCard(
+    TenantModel tenant, {
+    int? gracePeriodDays,
+    bool canDeleteTenant = false,
+  }) {
     final grace = gracePeriodDays ?? 3;
     final isLate = LateLogicService.isTenantLate(tenant, gracePeriodDays: grace);
     final daysLate = LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: grace);
@@ -899,16 +915,17 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       ],
                     ),
                   ),
-                  PopupMenuItem(
-                    value: 'delete',
-                    child: Row(
-                      children: [
-                        Icon(Icons.delete, color: AppTheme.error),
-                        const SizedBox(width: 8),
-                        Text('Delete', style: TextStyle(color: AppTheme.error)),
-                      ],
+                  if (canDeleteTenant)
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete, color: AppTheme.error),
+                          const SizedBox(width: 8),
+                          Text('Delete', style: TextStyle(color: AppTheme.error)),
+                        ],
+                      ),
                     ),
-                  ),
                 ],
               ),
         onTap: _isSelectionMode
@@ -974,6 +991,22 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   }
 
   Future<void> _deleteTenant(TenantModel tenant) async {
+    final check = await PermissionService.hasPermission(
+      permission: PermissionType.deleteTenant,
+      facilityId: tenant.facilityId,
+    );
+    if (!check.hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(check.reason ?? 'You do not have permission to delete tenants.'),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+      }
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1022,6 +1055,22 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
   Future<void> _deleteSelectedTenants() async {
     if (_selectedTenantIds.isEmpty) return;
+
+    final check = await PermissionService.hasPermission(
+      permission: PermissionType.deleteTenant,
+      facilityId: _selectedFacilityId,
+    );
+    if (!check.hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(check.reason ?? 'You do not have permission to delete tenants.'),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+      }
+      return;
+    }
 
     final tenantsAsync = ref.read(filteredTenantsProvider(_selectedFacilityId));
     final tenants = await tenantsAsync.when(

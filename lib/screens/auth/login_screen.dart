@@ -11,6 +11,9 @@ import '../home_screen_modern.dart';
 import '../tenant_portal_access_screen.dart';
 import '../../router/app_router.dart';
 import '../../router/app_route.dart';
+import '../../config/web_host_config.dart';
+import '../../utils/browser_location_stub.dart'
+    if (dart.library.html) '../../utils/browser_location_web.dart' as browser_location;
 import '../../services/home_button_service.dart';
 import '../../services/superadmin_service.dart';
 import '../../services/two_factor_service.dart';
@@ -633,6 +636,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   icon: Icon(Icons.vpn_key_outlined, color: AppTheme.textOnDark.withOpacity(0.7)),
                   label: Text(
                     'Tenant Portal',
+                    style: TextStyle(color: AppTheme.textOnDark.withOpacity(0.7)),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    if (isProductionAppWebHost()) {
+                      browser_location.assignWindowLocation(kMarketingWebsiteOrigin);
+                    } else {
+                      context.go(AppRoute.landing);
+                    }
+                  },
+                  icon: Icon(Icons.home_outlined, color: AppTheme.textOnDark.withOpacity(0.7)),
+                  label: Text(
+                    'Main Page',
                     style: TextStyle(color: AppTheme.textOnDark.withOpacity(0.7)),
                   ),
                 ),

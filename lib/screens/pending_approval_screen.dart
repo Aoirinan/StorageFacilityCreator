@@ -9,7 +9,7 @@ import '../services/facility_creator_account_service.dart';
 import '../services/superadmin_service.dart';
 
 /// Shown to users whose account is in [SubscriptionStatus.pendingApproval].
-/// Polls Firestore every 30 s and auto-advances once the admin approves.
+/// Polls Firestore and auto-advances once the admin approves.
 class PendingApprovalScreen extends ConsumerStatefulWidget {
   const PendingApprovalScreen({super.key});
 
@@ -37,8 +37,8 @@ class _PendingApprovalScreenState extends ConsumerState<PendingApprovalScreen>
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
-    // Poll every 30 s so the screen auto-advances when admin approves
-    _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkStatus());
+    // Poll frequently so newly approved accounts move forward quickly.
+    _pollTimer = Timer.periodic(const Duration(seconds: 8), (_) => _checkStatus());
     // Also check immediately in case admin already approved
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkStatus());
   }
@@ -53,8 +53,7 @@ class _PendingApprovalScreenState extends ConsumerState<PendingApprovalScreen>
   Future<void> _checkStatus() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-    final account =
-        await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
+    final account = await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
     if (!mounted) return;
     if (account == null) return;
     if (account.subscriptionStatus != SubscriptionStatus.pendingApproval) {
@@ -176,7 +175,7 @@ class _PendingApprovalScreenState extends ConsumerState<PendingApprovalScreen>
                       Icon(Icons.sync, size: 16, color: colorScheme.outline),
                       const SizedBox(width: 6),
                       Text(
-                        'This page checks automatically every 30 seconds',
+                        'This page checks automatically every few seconds',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: colorScheme.outline,
                         ),

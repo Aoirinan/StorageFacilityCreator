@@ -1,5 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+DateTime _dateTimeFromFirestoreField(dynamic value, {required DateTime ifMissing}) {
+  if (value is Timestamp) return value.toDate();
+  return ifMissing;
+}
+
 class ConversationModel {
   final String id;
   final String facilityId;
@@ -16,6 +21,8 @@ class ConversationModel {
   final bool isPrivate; // true for 1-on-1, false for group
   final List<String> participantUids; // For private conversations: [user1Uid, user2Uid]
   final Map<String, String>? participantNames; // uid -> displayName for participants
+  /// uid -> email when known (optional; older docs may omit this)
+  final Map<String, String>? participantEmails;
 
   const ConversationModel({
     required this.id,
@@ -31,19 +38,36 @@ class ConversationModel {
     this.isPrivate = false,
     this.participantUids = const [],
     this.participantNames,
+    this.participantEmails,
   });
+
+  /// Placeholder / bad values stored for the other person in older data.
+  static bool isWeakParticipantLabel(String? s) {
+    if (s == null) return true;
+    final t = s.trim().toLowerCase();
+    if (t.isEmpty) return true;
+    const weak = {'unknown', 'user', 'n/a', 'unknown email', 'none', 'teammate'};
+    if (weak.contains(t)) return true;
+    // Generic fallback label when profile data is missing (e.g. unreadable user doc)
+    if (t.startsWith('teammate')) return true;
+    return false;
+  }
 
   factory ConversationModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
     final isPrivate = data['isPrivate'] ?? false;
     final participantUidsList = data['participantUids'];
     final participantNamesMap = data['participantNames'];
-    
+    final participantEmailsMap = data['participantEmails'];
+
     return ConversationModel(
       id: doc.id,
       facilityId: data['facilityId'] ?? '',
       title: data['title'] ?? '',
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: _dateTimeFromFirestoreField(
+        data['createdAt'],
+        ifMissing: DateTime.now(),
+      ),
       createdByUid: data['createdByUid'] ?? '',
       createdByEmail: data['createdByEmail'] ?? '',
       createdByName: data['createdByName'] ?? '',
@@ -58,6 +82,13 @@ class ConversationModel {
           : [],
       participantNames: participantNamesMap != null
           ? Map<String, String>.from(participantNamesMap)
+          : null,
+      participantEmails: participantEmailsMap != null
+          ? Map<String, String>.from(
+              (participantEmailsMap as Map<dynamic, dynamic>).map(
+                (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
+              ),
+            )
           : null,
     );
   }
@@ -76,6 +107,7 @@ class ConversationModel {
       'isPrivate': isPrivate,
       'participantUids': participantUids,
       if (participantNames != null) 'participantNames': participantNames,
+      if (participantEmails != null) 'participantEmails': participantEmails,
     };
   }
 
@@ -93,6 +125,7 @@ class ConversationModel {
     bool? isPrivate,
     List<String>? participantUids,
     Map<String, String>? participantNames,
+    Map<String, String>? participantEmails,
   }) {
     return ConversationModel(
       id: id ?? this.id,
@@ -108,6 +141,7 @@ class ConversationModel {
       isPrivate: isPrivate ?? this.isPrivate,
       participantUids: participantUids ?? this.participantUids,
       participantNames: participantNames ?? this.participantNames,
+      participantEmails: participantEmails ?? this.participantEmails,
     );
   }
   
@@ -134,6 +168,59 @@ class ConversationModel {
     } catch (e) {
       return null;
     }
+  }
+
+  String? _otherParticipantEmail(String currentUserId) {
+    final otherUid = getOtherParticipantUid(currentUserId);
+    if (otherUid == null) return null;
+    final e = participantEmails?[otherUid]?.trim();
+    if (e == null || e.isEmpty) return null;
+    return e;
+  }
+
+  /// Title for list + thread header: best available name, email, or a neutral label.
+  /// [employeeChatNamesByUid] is optional facility-level nicknames (see `employeeChatNames`).
+  String displayTitleForViewer(
+    String currentUserId, {
+    Map<String, String>? employeeChatNamesByUid,
+  }) {
+    if (!isPrivate) {
+      final t = title.trim();
+      return t.isNotEmpty ? t : 'Conversation';
+    }
+    final otherUid = getOtherParticipantUid(currentUserId);
+    if (otherUid == null) {
+      final t = title.trim();
+      return t.isNotEmpty ? t : 'Direct message';
+    }
+
+    final chatName = employeeChatNamesByUid?[otherUid]?.trim();
+    if (chatName != null && chatName.isNotEmpty) {
+      return chatName;
+    }
+
+    final rawName = participantNames?[otherUid]?.trim();
+    if (rawName != null &&
+        rawName.isNotEmpty &&
+        !isWeakParticipantLabel(rawName)) {
+      return rawName;
+    }
+
+    final email = _otherParticipantEmail(currentUserId);
+    if (email != null && email.contains('@')) {
+      return email;
+    }
+    if (email != null && email.isNotEmpty) {
+      return email;
+    }
+
+    final fallbackTitle = title.trim();
+    if (fallbackTitle.isNotEmpty && !isWeakParticipantLabel(fallbackTitle)) {
+      return fallbackTitle;
+    }
+
+    final tail = otherUid.length >= 6 ? otherUid.substring(otherUid.length - 6) : otherUid;
+    return 'Teammate ($tail)';
   }
 }
 
@@ -164,12 +251,18 @@ class MessageModel {
 
   factory MessageModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
+    // Server timestamps are null on the first local snapshot; avoid throwing so the stream
+    // does not briefly flip to AsyncValue.error (red error screen) before the next event.
+    final createdAt = _dateTimeFromFirestoreField(
+      data['createdAt'],
+      ifMissing: DateTime.now(),
+    );
     return MessageModel(
       id: doc.id,
       conversationId: data['conversationId'] ?? '',
       facilityId: data['facilityId'] ?? '',
       text: data['text'] ?? '',
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: createdAt,
       senderUid: data['senderUid'] ?? '',
       senderEmail: data['senderEmail'] ?? '',
       senderName: data['senderName'] ?? '',

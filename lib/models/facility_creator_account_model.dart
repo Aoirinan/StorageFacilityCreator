@@ -222,6 +222,16 @@ class FacilityCreatorAccountModel {
     return subscriptionStatus == SubscriptionStatus.active;
   }
 
+  /// Permanent tenant delete (vs archive) requires paid active or a non-expired trial.
+  /// Stricter than [canAccessPlatform] (excludes past-due grace and cancelled access windows).
+  bool get allowsPermanentTenantDeletion {
+    if (suspended) return false;
+    if (isPendingApproval) return false;
+    if (hasActiveSubscription) return true;
+    if (hasTrial && !isTrialExpired) return true;
+    return false;
+  }
+
   /// Get days until subscription expires
   int? get daysUntilExpiration {
     if (subscriptionCurrentPeriodEnd == null) return null;

@@ -179,6 +179,48 @@ service cloud.firestore {
         request.resource.data.senderUid == request.auth.uid;
     }
 
+    // Permanent tenant doc delete: require active paid or trialing (not expired), via per-facility platform sub or linked creator account.
+    // Stricter than general app access (no past_due grace / cancelled remainder).
+    function creatorAccountData(accountId) {
+      return get(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)).data;
+    }
+
+    function accountAllowsPermanentTenantDelete(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        (creatorAccountData(accountId).suspended == null || creatorAccountData(accountId).suspended == false) &&
+        creatorAccountData(accountId).subscriptionStatus != 'pendingApproval' &&
+        (
+          creatorAccountData(accountId).subscriptionStatus == 'active' ||
+          (
+            creatorAccountData(accountId).subscriptionStatus == 'trialing' &&
+            (
+              !('subscriptionTrialEnd' in creatorAccountData(accountId)) ||
+              creatorAccountData(accountId).subscriptionTrialEnd == null ||
+              request.time < creatorAccountData(accountId).subscriptionTrialEnd
+            )
+          )
+        );
+    }
+
+    function facilityHasActiveOrTrialingPlatformSub(facilityId) {
+      let d = facilityDoc(facilityId);
+      return 'platformSubscriptionStatus' in d &&
+        d.platformSubscriptionStatus is string &&
+        (d.platformSubscriptionStatus == 'active' || d.platformSubscriptionStatus == 'trialing');
+    }
+
+    function facilityAllowsPermanentTenantDelete(facilityId) {
+      return facilityExists(facilityId) && (
+        facilityHasActiveOrTrialingPlatformSub(facilityId) ||
+        (
+          'facilityCreatorAccountId' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).facilityCreatorAccountId is string &&
+          facilityDoc(facilityId).facilityCreatorAccountId.size() > 0 &&
+          accountAllowsPermanentTenantDelete(facilityDoc(facilityId).facilityCreatorAccountId)
+        )
+      );
+    }
+
     function isAccountOwner(accountId) {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
@@ -258,7 +300,10 @@ service cloud.firestore {
       // Sub-collections under facilities
       match /tenants/{tenantId} {
         allow read: if canReadFacilityCalendarAndLists(facilityId);
-        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create, update: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow delete: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) && facilityAllowsPermanentTenantDelete(facilityId)
+        );
 
         // Per-tenant insurance docs (InsuranceService: tenants/{tenantId}/insurance)
         match /insurance/{insuranceId} {
@@ -772,6 +817,28 @@ service cloud.firestore {
         }
       }
 
+      // Employee chat display names (facility-scoped; staff can read; self or owner/manager can write)
+      match /employeeChatNames/{userId} {
+        function validEmployeeChatNameWrite() {
+          return request.resource.data.keys().hasOnly(['chatName', 'updatedAt']) &&
+            request.resource.data.chatName is string &&
+            request.resource.data.chatName.size() <= 80 &&
+            request.resource.data.updatedAt is timestamp;
+        }
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow create: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)) &&
+            validEmployeeChatNameWrite());
+        allow update: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)) &&
+            validEmployeeChatNameWrite());
+        allow delete: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)));
+      }
+
       // SMS conversations - facility owner or manager access (SuperAdmin bypass)
       match /smsConversations/{conversationId} {
         allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
@@ -1131,11 +1198,49 @@ service cloud.firestore {
         isFacilityOwnerOrManager(resource.data.facilityId);
     }
 
+    // Public payment links (/pay?token=...). Doc ID equals data.token (unguessable).
+    match /publicPaymentLinks/{linkId} {
+      // Holder of the token may read that document (checkout page; no sign-in).
+      allow get: if resource != null;
+
+      // Staff management UI: queries must only return docs the user may read (per-doc check).
+      allow list: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
+
+      allow create: if request.auth != null &&
+        request.resource.data.facilityId is string &&
+        facilityExists(request.resource.data.facilityId) &&
+        isFacilityStaff(request.resource.data.facilityId) &&
+        linkId == request.resource.data.token &&
+        request.resource.data.tenantId is string &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.createdBy == request.auth.uid;
+
+      // Revoke pending links only. Marking paid should be done with Admin SDK (e.g. webhook).
+      allow update: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId) &&
+        request.resource.data.facilityId == resource.data.facilityId &&
+        request.resource.data.tenantId == resource.data.tenantId &&
+        request.resource.data.token == resource.data.token &&
+        request.resource.data.amount == resource.data.amount &&
+        resource.data.status == 'pending' &&
+        request.resource.data.status == 'revoked' &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'revokedAt']);
+
+      allow delete: if false;
+    }
+
     // Public reservations used by unauthenticated online rental flow.
     // NOTE: This collection is intentionally separate from facility private data.
     match /publicReservations/{reservationId} {
-      // Public move-in flow needs token lookup without authentication.
-      allow read: if true;
+      // Keep direct single-doc lookups available for public fallback paths.
+      // Block anonymous collection listing/querying to reduce data exposure.
+      allow get: if true;
+      allow list: if request.auth != null;
 
       // Allow creating reservation holds from public rental page.
       allow create: if request.resource.data.keys().hasAll([

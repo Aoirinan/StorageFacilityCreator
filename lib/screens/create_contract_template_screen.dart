@@ -9,7 +9,6 @@ import '../providers/contract_provider.dart';
 import '../services/contract_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/signature_field_configurator.dart';
-import '../router/app_route.dart';
 
 /// Full-page screen for creating a contract template (replaces the previous dialog).
 class CreateContractTemplateScreen extends ConsumerStatefulWidget {
@@ -43,6 +42,12 @@ class _CreateContractTemplateScreenState
     if (name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a template name')),
+      );
+      return;
+    }
+    if (_selectedFile == null || _selectedFile!.bytes == null || _selectedFile!.bytes!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Upload a PDF to create this template.')),
       );
       return;
     }
@@ -162,7 +167,7 @@ class _CreateContractTemplateScreenState
                 _buildSection(
                   title: 'Contract PDF',
                   subtitle:
-                      'Upload once. All contracts from this template will use this PDF.',
+                      'Upload once (required). All contracts from this template will use this PDF.',
                   child: _selectedFile == null
                       ? OutlinedButton.icon(
                           onPressed: () async {

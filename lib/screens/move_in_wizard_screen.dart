@@ -66,6 +66,89 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   bool _isLoading = false;
   String? _errorMessage;
 
+  Future<TenantModel?> _pickTenant() async {
+    final tenants = await TenantService.getTenantsForFacility(widget.facilityId);
+    if (!mounted) return null;
+    return showModalBottomSheet<TenantModel>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: 480,
+          child: Column(
+            children: [
+              const ListTile(
+                title: Text('Select Tenant'),
+                subtitle: Text('Choose the tenant for this move-in'),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: tenants.length,
+                  itemBuilder: (context, index) {
+                    final tenant = tenants[index];
+                    return ListTile(
+                      leading: const Icon(Icons.person),
+                      title: Text(tenant.name),
+                      subtitle: Text(tenant.email),
+                      onTap: () => Navigator.of(context).pop(tenant),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<UnitModel?> _pickUnit() async {
+    final units = await UnitService.getUnitsForFacility(widget.facilityId);
+    final availableUnits = units.where((u) => u.status == UnitStatus.available).toList()
+      ..sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
+    if (!mounted) return null;
+    return showModalBottomSheet<UnitModel>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: 520,
+          child: Column(
+            children: [
+              const ListTile(
+                title: Text('Select Unit'),
+                subtitle: Text('Only currently available units are shown'),
+              ),
+              const Divider(height: 1),
+              if (availableUnits.isEmpty)
+                const Expanded(
+                  child: Center(
+                    child: Text('No available units found for this facility.'),
+                  ),
+                )
+              else
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: availableUnits.length,
+                    itemBuilder: (context, index) {
+                      final unit = availableUnits[index];
+                      return ListTile(
+                        leading: const Icon(Icons.home),
+                        title: Text('Unit ${unit.unitNumber}'),
+                        subtitle: Text('\$${unit.monthlyRate.toStringAsFixed(2)}/month'),
+                        onTap: () => Navigator.of(context).pop(unit),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -423,10 +506,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
           _selectedTenant == null
               ? ElevatedButton.icon(
                   onPressed: () async {
-                    // Navigate to tenant selection
-                    final tenant = await context.push<TenantModel>(
-                      '/tenants/select',
-                    );
+                    final tenant = await _pickTenant();
                     if (tenant != null) {
                       setState(() {
                         _selectedTenant = tenant;
@@ -444,9 +524,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                     trailing: IconButton(
                       icon: const Icon(Icons.edit),
                       onPressed: () async {
-                        final tenant = await context.push<TenantModel>(
-                          '/tenants/select',
-                        );
+                        final tenant = await _pickTenant();
                         if (tenant != null) {
                           setState(() {
                             _selectedTenant = tenant;
@@ -466,10 +544,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
           _selectedUnit == null
               ? ElevatedButton.icon(
                   onPressed: () async {
-                    // Navigate to unit selection
-                    final unit = await context.push<UnitModel>(
-                      '/units/select?facilityId=${widget.facilityId}',
-                    );
+                    final unit = await _pickUnit();
                     if (unit != null) {
                       setState(() {
                         _selectedUnit = unit;
@@ -489,9 +564,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                     trailing: IconButton(
                       icon: const Icon(Icons.edit),
                       onPressed: () async {
-                        final unit = await context.push<UnitModel>(
-                          '/units/select?facilityId=${widget.facilityId}',
-                        );
+                        final unit = await _pickUnit();
                         if (unit != null) {
                           setState(() {
                             _selectedUnit = unit;

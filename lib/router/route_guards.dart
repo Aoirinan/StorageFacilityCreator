@@ -10,6 +10,9 @@ import '../services/debug_session_logger.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/two_factor_service.dart';
+import '../config/web_host_config.dart';
+import '../utils/browser_location_stub.dart'
+    if (dart.library.html) '../utils/browser_location_web.dart' as browser_location;
 import 'app_route.dart';
 
 /// Cache for subscription check results to avoid repeated calls
@@ -61,10 +64,33 @@ Future<String?> routeGuard(
       path.startsWith('${AppRoute.login}?') ||
       path.startsWith('${AppRoute.login}/');
 
+  // app.* hosts the signed-in product; marketing is on storagefacilitycreator.com (Vercel).
+  if (isProductionAppWebHost()) {
+    const marketingMirrorPaths = {
+      '/privacy',
+      '/terms',
+      '/sms-policy',
+      '/contact',
+    };
+    if (marketingMirrorPaths.contains(path)) {
+      browser_location.assignWindowLocation('$kMarketingWebsiteOrigin$path');
+      return null;
+    }
+    final onMarketingPath =
+        path == AppRoute.marketing || loc == AppRoute.marketing;
+    if (!isAuthenticated && (isLanding || onMarketingPath)) {
+      return AppRoute.login;
+    }
+  }
+
   // Define public routes that don't require authentication
   final publicRoutes = {
     AppRoute.landing,
     AppRoute.marketing,
+    '/privacy',
+    '/terms',
+    '/sms-policy',
+    '/contact',
     AppRoute.login,
     AppRoute.signup,
     AppRoute.forgotPassword,
@@ -84,6 +110,10 @@ Future<String?> routeGuard(
 
   // Check if current path matches any public route (including with query params)
   final isPublicRoute = publicRoutes.contains(loc) ||
+      path == '/privacy' ||
+      path == '/terms' ||
+      path == '/sms-policy' ||
+      path == '/contact' ||
       path == AppRoute.acceptInvite ||
       path.startsWith(AppRoute.acceptInvite + '/') ||
       path.startsWith(AppRoute.acceptInvite + '?') ||
@@ -110,7 +140,10 @@ Future<String?> routeGuard(
     ref.read(twoFactorVerifiedProvider.notifier).state = false;
     // Always allow the root/login entry point for signed-out users
     if (isLanding) return null;
-    return isPublicRoute ? null : AppRoute.login;
+    if (isPublicRoute) return null;
+    final intended = state.uri.toString();
+    final encodedIntended = Uri.encodeComponent(intended);
+    return '${AppRoute.login}?redirect=$encodedIntended';
   }
 
   // Enforce email verification before allowing access to authenticated app routes.

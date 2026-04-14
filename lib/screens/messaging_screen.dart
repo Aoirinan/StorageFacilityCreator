@@ -60,10 +60,12 @@ class MessagingScreen extends ConsumerStatefulWidget {
 class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   String? _selectedConversationId;
   final TextEditingController _messageController = TextEditingController();
+  final FocusNode _messageInputFocusNode = FocusNode();
   final TextEditingController _conversationTitleController = TextEditingController();
   bool _loadingPermissions = true;
   bool _canViewConversations = false;
   bool _canManageConversations = false;
+  bool _canManageUsersForFacility = false;
   String? _permissionReason;
   int _selectedTab = 0; // 0 = Employee Chat, 1 = Bulk Messaging, 2 = Email, 3 = SMS, 4 = Message History
   /// On phone, Employee Chat: 0 = conversation list, 1 = team notes.
@@ -88,10 +90,21 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   }
 
   @override
+  void dispose() {
+    _messageController.dispose();
+    _conversationTitleController.dispose();
+    _searchController.dispose();
+    _employeeChatScrollController.dispose();
+    _messageInputFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   void didUpdateWidget(MessagingScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.facilityId != widget.facilityId) {
       _phoneChatNotesSegment = 0;
+      _checkPermissions();
     }
   }
 
@@ -99,23 +112,113 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     setState(() {
       _loadingPermissions = true;
     });
-    // Messaging is available to everyone with facility access - no permission restrictions
+    var canManageUsers = false;
+    if (widget.facilityId.isNotEmpty && widget.facilityId != 'all') {
+      final mgr = await PermissionService.hasPermission(
+        permission: PermissionType.manageUsers,
+        facilityId: widget.facilityId,
+      );
+      canManageUsers = mgr.hasPermission;
+    }
     if (!mounted) return;
     setState(() {
       _loadingPermissions = false;
       _canViewConversations = true;
       _canManageConversations = true;
+      _canManageUsersForFacility = canManageUsers;
       _permissionReason = null;
     });
   }
 
-  @override
-  void dispose() {
-    _messageController.dispose();
-    _conversationTitleController.dispose();
-    _searchController.dispose();
-    _employeeChatScrollController.dispose();
-    super.dispose();
+  Map<String, String> _employeeChatNamesForUi() {
+    return ref.read(employeeChatNamesProvider(widget.facilityId)).maybeWhen(
+          data: (m) => m,
+          orElse: () => <String, String>{},
+        );
+  }
+
+  String _conversationDisplayTitle(ConversationModel conversation) {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    return conversation.displayTitleForViewer(
+      uid,
+      employeeChatNamesByUid: _employeeChatNamesForUi(),
+    );
+  }
+
+  Future<void> _promptEmployeeChatDisplayName({
+    required String targetUserId,
+    required String title,
+    String? subtitle,
+  }) async {
+    if (widget.facilityId.isEmpty || widget.facilityId == 'all') return;
+    final initial = _employeeChatNamesForUi()[targetUserId] ?? '';
+    final controller = TextEditingController(text: initial);
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (subtitle != null && subtitle.isNotEmpty) ...[
+              Text(subtitle, style: Theme.of(ctx).textTheme.bodySmall),
+              const SizedBox(height: 12),
+            ],
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: MessagingService.maxEmployeeChatNameLength,
+              decoration: const InputDecoration(
+                labelText: 'Display name',
+                hintText: 'e.g. Alex (front desk)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(''),
+            child: const Text('Remove'),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    controller.dispose();
+    if (result == null) return;
+
+    final raw = result;
+    try {
+      await MessagingService.setEmployeeChatName(
+        facilityId: widget.facilityId,
+        targetUserId: targetUserId,
+        rawName: raw,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(raw.trim().isEmpty
+              ? 'Chat display name removed.'
+              : 'Chat display name saved.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e'), backgroundColor: AppTheme.error),
+      );
+    }
   }
 
   void _scheduleEmployeeChatScrollToEnd(List<MessageModel> messages) {
@@ -303,19 +406,14 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                                   }
                                   return Row(
                                     children: [
-                                      if (_selectedTab == 0)
-                                        Expanded(
-                                          flex: 1,
-                                          child: TeamNotesPanel(facilityId: widget.facilityId),
-                                        ),
                                       Expanded(
-                                        flex: 1,
+                                        flex: 2,
                                         child: _selectedTab == 0
                                             ? _buildConversationsList()
                                             : _buildSMSConversationsList(),
                                       ),
                                       Expanded(
-                                        flex: 2,
+                                        flex: 5,
                                         child: _selectedTab == 0
                                             ? (_selectedConversationId != null
                                                 ? _buildMessagesPane()
@@ -358,6 +456,58 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  void _openTeamNotesDialog() {
+    if (widget.facilityId.isEmpty || widget.facilityId == 'all') return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        final cs = theme.colorScheme;
+        final tt = theme.textTheme;
+        return Dialog(
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(
+            width: 420,
+            height: 580,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Material(
+                  color: cs.surfaceContainerHighest,
+                  child: ListTile(
+                    leading: Icon(Icons.note_alt_outlined, color: cs.primary),
+                    title: Text(
+                      'Team notes',
+                      style: tt.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      'Shared with everyone at this facility.',
+                      style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, color: cs.outline),
+                Expanded(
+                  child: TeamNotesPanel(
+                    facilityId: widget.facilityId,
+                    compact: true,
+                    showHeader: false,
+                    showTrailingBorder: false,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -410,35 +560,76 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                     ),
                   ),
                 ),
+                IconButton(
+                  tooltip: 'Team notes',
+                  icon: const Icon(Icons.note_alt_outlined),
+                  onPressed: (widget.facilityId.isEmpty || widget.facilityId == 'all')
+                      ? null
+                      : _openTeamNotesDialog,
+                ),
+                IconButton(
+                  tooltip: 'Your chat display name',
+                  icon: const Icon(Icons.badge_outlined),
+                  onPressed: (widget.facilityId.isEmpty || widget.facilityId == 'all')
+                      ? null
+                      : () {
+                          final uid = FirebaseAuth.instance.currentUser?.uid;
+                          if (uid == null) return;
+                          _promptEmployeeChatDisplayName(
+                            targetUserId: uid,
+                            title: 'Your chat display name',
+                            subtitle:
+                                'Teammates see this in employee chat for this facility. Clear the field and tap Remove to use email or a default label.',
+                          );
+                        },
+                ),
               ],
             ),
           ),
           if (_canManageConversations)
             Material(
               color: cs.surfaceContainerLow,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _showNewPrivateMessageDialog,
-                      icon: const Icon(Icons.person_add_alt_1_outlined, size: 20),
-                      label: const Text('Private message to teammate'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AppTheme.primaryBlue,
-                        foregroundColor: AppTheme.textOnDark,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
+              child: LayoutBuilder(
+                builder: (context, box) {
+                  final stackActions = box.maxWidth < 340;
+                  final direct = FilledButton.icon(
+                    onPressed: _showNewPrivateMessageDialog,
+                    icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+                    label: const Text('Direct message'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppTheme.primaryBlue,
+                      foregroundColor: AppTheme.textOnDark,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _showCreateConversationDialog,
-                      icon: const Icon(Icons.group_add_outlined, size: 20),
-                      label: const Text('New group conversation'),
+                  );
+                  final group = OutlinedButton.icon(
+                    onPressed: _showCreateConversationDialog,
+                    icon: const Icon(Icons.group_add_outlined, size: 18),
+                    label: const Text('New group'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
-                  ],
-                ),
+                  );
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    child: stackActions
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              direct,
+                              const SizedBox(height: 8),
+                              group,
+                            ],
+                          )
+                        : Row(
+                            children: [
+                              Expanded(child: direct),
+                              const SizedBox(width: 8),
+                              Expanded(child: group),
+                            ],
+                          ),
+                  );
+                },
               ),
             ),
           Expanded(
@@ -446,6 +637,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
               builder: (context, ref, child) {
                 return ref.watch(conversationsProvider(widget.facilityId)).when(
                   data: (conversations) {
+                    final chatNames = ref
+                        .watch(employeeChatNamesProvider(widget.facilityId))
+                        .maybeWhen(
+                          data: (m) => m,
+                          orElse: () => <String, String>{},
+                        );
                     // On phone, keep conversation list visible first (team notes + pick chat).
                     // Desktop: auto-open first conversation.
                     if (_selectedConversationId == null && conversations.isNotEmpty) {
@@ -465,52 +662,32 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                     if (conversations.isEmpty) {
                       return Center(
                         child: SingleChildScrollView(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(
                                 Icons.chat_bubble_outline,
-                                size: 64,
+                                size: 48,
                                 color: AppTheme.textTertiary,
                               ),
-                              const SizedBox(height: 16),
+                              const SizedBox(height: 12),
                               Text(
                                 'No conversations yet',
-                                style: Theme.of(context).textTheme.titleMedium,
+                                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 6),
                               Text(
                                 _canManageConversations
-                                    ? 'Start a direct message with a teammate, or create a group channel.'
-                                    : 'You can view conversations when you are added to one.',
-                                style: Theme.of(context).textTheme.bodyMedium,
+                                    ? 'Use the buttons above to start a chat.'
+                                    : 'You’ll see chats here when someone adds you.',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    ),
                                 textAlign: TextAlign.center,
                               ),
-                              if (_canManageConversations) ...[
-                                const SizedBox(height: 24),
-                                Wrap(
-                                  spacing: 12,
-                                  runSpacing: 12,
-                                  alignment: WrapAlignment.center,
-                                  children: [
-                                    ElevatedButton.icon(
-                                      onPressed: _showNewPrivateMessageDialog,
-                                      icon: const Icon(Icons.person_add_alt_1_outlined, size: 20),
-                                      label: const Text('Message a teammate'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppTheme.primaryBlue,
-                                        foregroundColor: AppTheme.textOnDark,
-                                      ),
-                                    ),
-                                    OutlinedButton.icon(
-                                      onPressed: _showCreateConversationDialog,
-                                      icon: const Icon(Icons.group_add_outlined, size: 20),
-                                      label: const Text('New group chat'),
-                                    ),
-                                  ],
-                                ),
-                              ],
                             ],
                           ),
                         ),
@@ -524,8 +701,10 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                         final isSelected = conversation.id == _selectedConversationId;
                         final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
                         
-                        // For private conversations, show the other participant's name
-                        String displayTitle = conversation.title;
+                        final displayTitle = conversation.displayTitleForViewer(
+                          currentUserId,
+                          employeeChatNamesByUid: chatNames,
+                        );
                         final cs = Theme.of(context).colorScheme;
                         Widget leadingIcon = CircleAvatar(
                           backgroundColor: isSelected ? cs.primary : cs.outline,
@@ -534,24 +713,22 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                             color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
                           ),
                         );
-                        
+
                         if (conversation.isPrivate) {
-                          final otherParticipantName = conversation.getOtherParticipantName(currentUserId);
-                          if (otherParticipantName != null) {
-                            displayTitle = otherParticipantName;
-                            leadingIcon = CircleAvatar(
-                              backgroundColor: isSelected ? cs.primary : cs.outline,
-                              child: Text(
-                                otherParticipantName.isNotEmpty 
-                                    ? otherParticipantName[0].toUpperCase() 
-                                    : '?',
-                                style: TextStyle(
-                                  color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                          final initial = displayTitle.isEmpty
+                              ? '?'
+                              : String.fromCharCode(displayTitle.runes.first)
+                                  .toUpperCase();
+                          leadingIcon = CircleAvatar(
+                            backgroundColor: isSelected ? cs.primary : cs.outline,
+                            child: Text(
+                              initial,
+                              style: TextStyle(
+                                color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
+                                fontWeight: FontWeight.bold,
                               ),
-                            );
-                          }
+                            ),
+                          );
                         }
                         
                         return ListTile(
@@ -674,11 +851,22 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   }
 
   Widget _buildMessagesPane() {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final chatNames = ref.watch(employeeChatNamesProvider(widget.facilityId)).maybeWhen(
+          data: (m) => m,
+          orElse: () => <String, String>{},
+        );
+
+    ConversationModel? selectedConv;
     final conversationTitle = ref.watch(conversationsProvider(widget.facilityId)).maybeWhen(
           data: (conversations) {
             for (final conversation in conversations) {
               if (conversation.id == _selectedConversationId) {
-                return conversation.title.isNotEmpty ? conversation.title : 'Conversation';
+                selectedConv = conversation;
+                return conversation.displayTitleForViewer(
+                  uid,
+                  employeeChatNamesByUid: chatNames,
+                );
               }
             }
             return 'Conversation';
@@ -686,20 +874,26 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
           orElse: () => 'Conversation',
         );
 
+    final otherUid = selectedConv != null &&
+            selectedConv!.isPrivate &&
+            uid.isNotEmpty
+        ? selectedConv!.getOtherParticipantUid(uid)
+        : null;
+
     return Column(
       children: [
-        // Messages header
+        // Messages header (match conversation list chrome)
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: AppTheme.backgroundSecondary,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             border: Border(
-              bottom: BorderSide(color: AppTheme.borderLight),
+              bottom: BorderSide(color: Theme.of(context).colorScheme.outline),
             ),
           ),
           child: Row(
             children: [
-              const Icon(Icons.chat),
+              Icon(Icons.chat_bubble_outline, color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -709,6 +903,44 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   ),
                 ),
               ),
+              if (_selectedConversationId != null &&
+                  widget.facilityId.isNotEmpty &&
+                  widget.facilityId != 'all')
+                PopupMenuButton<String>(
+                  tooltip: 'Chat display names',
+                  onSelected: (value) async {
+                    if (value == 'self') {
+                      final self = FirebaseAuth.instance.currentUser?.uid;
+                      if (self == null) return;
+                      await _promptEmployeeChatDisplayName(
+                        targetUserId: self,
+                        title: 'Your chat display name',
+                        subtitle:
+                            'Teammates see this in employee chat for this facility.',
+                      );
+                    } else if (value == 'other' && otherUid != null && otherUid.isNotEmpty) {
+                      await _promptEmployeeChatDisplayName(
+                        targetUserId: otherUid,
+                        title: 'Teammate chat display name',
+                        subtitle:
+                            'Shown to everyone at this facility in employee chat.',
+                      );
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'self',
+                      child: Text('Your chat display name…'),
+                    ),
+                    if (otherUid != null &&
+                        otherUid.isNotEmpty &&
+                        _canManageUsersForFacility)
+                      const PopupMenuItem(
+                        value: 'other',
+                        child: Text('Set teammate chat name…'),
+                      ),
+                  ],
+                ),
             ],
           ),
         ),
@@ -798,7 +1030,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             border: Border(
-              top: BorderSide(color: AppTheme.borderLight),
+              top: BorderSide(color: Theme.of(context).colorScheme.outline),
             ),
           ),
           child: Column(
@@ -816,6 +1048,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   Expanded(
                     child: TextField(
                       controller: _messageController,
+                      focusNode: _messageInputFocusNode,
                       decoration: const InputDecoration(
                         hintText: 'Type a message...',
                         border: OutlineInputBorder(),
@@ -877,7 +1110,14 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   Widget _buildMessageBubble(MessageModel message) {
     final authState = ref.read(authStateProvider);
     final isCurrentUser = authState.hasValue && authState.value?.uid == message.senderUid;
-    
+    final chatNames = ref.watch(employeeChatNamesProvider(widget.facilityId)).maybeWhen(
+          data: (m) => m,
+          orElse: () => <String, String>{},
+        );
+    final nick = chatNames[message.senderUid]?.trim();
+    final senderLabel =
+        (nick != null && nick.isNotEmpty) ? nick : message.senderName;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
@@ -888,8 +1128,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
               radius: 16,
               backgroundColor: AppTheme.borderLight,
               child: Text(
-                message.senderName.isNotEmpty 
-                    ? message.senderName[0].toUpperCase()
+                senderLabel.isNotEmpty
+                    ? String.fromCharCode(senderLabel.runes.first).toUpperCase()
                     : '?',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
@@ -908,7 +1148,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                 children: [
                   if (!isCurrentUser)
                     Text(
-                      message.senderName,
+                      senderLabel,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -941,8 +1181,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
               radius: 16,
               backgroundColor: AppTheme.primaryBlue,
               child: Text(
-                message.senderName.isNotEmpty 
-                    ? message.senderName[0].toUpperCase()
+                senderLabel.isNotEmpty
+                    ? String.fromCharCode(senderLabel.runes.first).toUpperCase()
                     : '?',
                 style: const TextStyle(
                   fontSize: 12, 
@@ -1069,6 +1309,13 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
         conversationId: _selectedConversationId!,
         text: text,
       );
+      if (mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _messageInputFocusNode.requestFocus();
+          }
+        });
+      }
     }
   }
 
@@ -1078,7 +1325,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Archive Conversation'),
-        content: Text('Archive "${conversation.title}"?'),
+        content: Text('Archive "${_conversationDisplayTitle(conversation)}"?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1105,7 +1352,9 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Conversation "${conversation.title}" archived')),
+                SnackBar(
+                    content: Text(
+                        'Conversation "${_conversationDisplayTitle(conversation)}" archived')),
       );
     }
   }
@@ -1116,7 +1365,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Conversation'),
-        content: Text('Permanently delete "${conversation.title}" and all its messages?'),
+        content: Text(
+            'Permanently delete "${_conversationDisplayTitle(conversation)}" and all its messages?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1147,7 +1397,9 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Conversation "${conversation.title}" deleted')),
+        SnackBar(
+            content: Text(
+                'Conversation "${_conversationDisplayTitle(conversation)}" deleted')),
       );
     }
   }
@@ -3066,27 +3318,39 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
 
       // Get all facility users
       final userRoles = await PermissionService.getFacilityUsers(widget.facilityId);
-      
+      final chatNames = await MessagingService.getEmployeeChatNamesMap(widget.facilityId);
+
       // Load user profiles and filter out current user
       final usersWithProfiles = <_UserWithProfile>[];
       for (final userRole in userRoles) {
         // Skip current user (can't message yourself)
         if (userRole.userId == currentUser.uid) continue;
-        
+
+        final chatName = chatNames[userRole.userId]?.trim();
         final profile = await PermissionService.getUserProfile(userRole.userId);
-        final email = (profile?['email'] as String?)?.trim().isNotEmpty == true
-            ? (profile!['email'] as String).trim()
-            : 'Unknown email';
-        var displayName = (profile?['displayName'] as String?)?.trim() ?? '';
+        final rawEmail = (profile?['email'] as String?)?.trim() ?? '';
+        final email = rawEmail.contains('@') ? rawEmail : '';
+        var displayName = (chatName != null && chatName.isNotEmpty)
+            ? chatName
+            : (profile?['displayName'] as String?)?.trim() ?? '';
         if (displayName.isEmpty) {
-          final local = email.contains('@') ? email.split('@').first : email;
-          displayName = local.isNotEmpty ? local : 'User';
+          if (email.isNotEmpty) {
+            displayName = email.split('@').first.replaceAll(RegExp(r'[._]+'), ' ').trim();
+            if (displayName.isEmpty) {
+              displayName = email;
+            }
+          } else {
+            final id = userRole.userId;
+            final tail = id.length >= 6 ? id.substring(id.length - 6) : id;
+            displayName = 'Teammate ($tail)';
+          }
         }
 
         usersWithProfiles.add(_UserWithProfile(
           userRole: userRole,
           email: email,
           displayName: displayName,
+          hasVerifiedEmail: email.isNotEmpty,
         ));
       }
 
@@ -3187,12 +3451,10 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
                             final theme = Theme.of(context);
                             final onSurface = theme.colorScheme.onSurface;
                             final onVar = theme.colorScheme.onSurfaceVariant;
-                            final initial = profile.displayName.isNotEmpty
-                                ? profile.displayName[0].toUpperCase()
-                                : (profile.email.isNotEmpty &&
-                                        profile.email != 'Unknown email'
-                                    ? profile.email[0].toUpperCase()
-                                    : '?');
+                            final initial = profile.displayName.isEmpty
+                                ? '?'
+                                : String.fromCharCode(profile.displayName.runes.first)
+                                    .toUpperCase();
 
                             return ListTile(
                               selected: _selectedUserId == user.userId,
@@ -3213,13 +3475,17 @@ class _PrivateMessageUserPickerDialogState extends ConsumerState<_PrivateMessage
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  if (profile.email != 'Unknown email')
-                                    Text(
-                                      profile.email,
-                                      style: theme.textTheme.bodySmall?.copyWith(
-                                        color: onVar,
-                                      ),
+                                  Text(
+                                    profile.hasVerifiedEmail
+                                        ? profile.email
+                                        : 'No email on file',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: onVar,
+                                      fontStyle: profile.hasVerifiedEmail
+                                          ? FontStyle.normal
+                                          : FontStyle.italic,
                                     ),
+                                  ),
                                   const SizedBox(height: 2),
                                   Text(
                                     role?.name ?? user.roleType.name,
@@ -3271,10 +3537,12 @@ class _UserWithProfile {
   final UserRole userRole;
   final String email;
   final String displayName;
+  final bool hasVerifiedEmail;
 
   _UserWithProfile({
     required this.userRole,
     required this.email,
     required this.displayName,
+    this.hasVerifiedEmail = false,
   });
 }

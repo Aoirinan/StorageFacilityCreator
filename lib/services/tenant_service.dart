@@ -2,10 +2,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/tenant_model.dart';
-import 'unit_service.dart';
-import 'facility_limits_service.dart';
 import 'audit_service.dart';
+import 'facility_creator_account_service.dart';
+import 'facility_limits_service.dart';
+import 'facility_service.dart';
 import 'facility_stats_service.dart';
+import 'superadmin_service.dart';
+import 'unit_service.dart';
 
 class TenantService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -724,6 +727,38 @@ class TenantService {
     }
   }
 
+  /// Paid active or non-expired trial at account or per-facility platform sub. Superadmins bypass.
+  static Future<void> _assertFacilityAllowsPermanentTenantDeletion(String facilityId) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('Not signed in');
+    }
+    if (SuperAdminService.isSuperAdmin()) {
+      return;
+    }
+
+    final facility = await FacilityService.getFacility(facilityId);
+    if (facility == null) {
+      throw Exception('Facility not found');
+    }
+    if (facility.hasActivePlatformSubscription) {
+      return;
+    }
+
+    final accountId = facility.facilityCreatorAccountId;
+    if (accountId != null && accountId.isNotEmpty) {
+      final account = await FacilityCreatorAccountService.getAccount(accountId);
+      if (account != null && account.allowsPermanentTenantDeletion) {
+        return;
+      }
+    }
+
+    throw Exception(
+      'Permanent tenant deletion requires an active paid subscription or an active trial. '
+      'Use archive to remove a tenant from day-to-day operations, or subscribe / start a trial to delete.',
+    );
+  }
+
   // Delete tenant permanently.
   // Cascade: unlink all units referencing this tenant, then delete tenant doc, then refresh facility counts.
   static Future<void> deleteTenant({
@@ -735,6 +770,8 @@ class TenantService {
       if (user == null) {
         throw Exception('Not signed in');
       }
+
+      await _assertFacilityAllowsPermanentTenantDeletion(facilityId);
 
       if (kDebugMode) {
         print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
@@ -808,6 +845,8 @@ class TenantService {
       if (kDebugMode) {
         print('🔄 [TenantService] Deleting ${tenantIds.length} tenants (facility: $facilityId)');
       }
+
+      await _assertFacilityAllowsPermanentTenantDeletion(facilityId);
 
       final units = await UnitService.getUnitsForFacility(facilityId);
       final tenantIdSet = tenantIds.toSet();

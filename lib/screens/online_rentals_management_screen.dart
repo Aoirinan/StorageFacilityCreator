@@ -356,6 +356,50 @@ class _OnlineRentalsManagementScreenState
     );
   }
 
+  /// SMS/email-friendly template: facility links are filled in; amount and pay URL
+  /// come from Payment Links (per tenant).
+  String _buildRenterAccountMessage() {
+    final facilityName = _facility?.name ?? 'Our facility';
+    final rentUrl = FacilityPublicService.getPublicRentUrl(
+      _slugPreview,
+      baseUrl: _linkBaseUrl,
+    );
+    final portalUrl = '$_linkBaseUrl/#/tenant-portal';
+    final phone = _facility?.phone?.trim();
+    final phoneBlock = (phone != null && phone.isNotEmpty)
+        ? 'Questions? Call us at $phone.\n\n'
+        : '';
+
+    return '''Hi,
+
+This is $facilityName. Here is what you need for online rentals and your account:
+
+Rent or reserve a unit online:
+$rentUrl
+
+See your balance and sign in to the tenant portal:
+$portalUrl
+
+Amount due: \$[AMOUNT]
+Pay securely (paste the one-time link from our office software):
+[PAYMENT_LINK]
+
+The payment page shows the amount before you check out. After you pay, it updates your account automatically—no need to send a receipt.
+
+$phoneBlock$facilityName''';
+  }
+
+  Future<void> _copyRenterAccountMessage() async {
+    await Clipboard.setData(ClipboardData(text: _buildRenterAccountMessage()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Renter message copied — replace [AMOUNT] and [PAYMENT_LINK]'),
+        backgroundColor: AppTheme.success,
+      ),
+    );
+  }
+
   String _unitTypeLabel(String raw) {
     return raw
         .replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m.group(1)}')
@@ -951,6 +995,71 @@ class _OnlineRentalsManagementScreenState
                     baseUrl: _linkBaseUrl,
                   ),
                   onCopy: _copy,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Message for renters (SMS / email)',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Includes your public rent link, tenant portal (balance), and spots for the amount and secure pay link. Create the pay link under Payment Links, then paste it where shown.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(maxHeight: 168),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      _buildRenterAccountMessage(),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        height: 1.35,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _copyRenterAccountMessage,
+                      icon: const Icon(Icons.copy, size: 18),
+                      label: const Text('Copy message'),
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        context.push(
+                          '/payment-links?facilityId=${widget.facilityId}',
+                        );
+                      },
+                      icon: const Icon(Icons.payment, size: 18),
+                      label: const Text('Payment Links'),
+                    ),
+                  ],
                 ),
               ],
             ),

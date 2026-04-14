@@ -160,15 +160,6 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate('/billing'),
                 ),
                 _SidebarItem(
-                  icon: Icons.calculate_outlined,
-                  activeIcon: Icons.calculate,
-                  label: 'Accounting',
-                  route: '/subscription',
-                  isActive: isActive('/subscription'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/subscription?tab=accounting'),
-                ),
-                _SidebarItem(
                   icon: Icons.calendar_month_outlined,
                   activeIcon: Icons.calendar_month,
                   label: 'Calendar',

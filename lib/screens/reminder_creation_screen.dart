@@ -227,6 +227,11 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
                 ),
               if (_selectedTenantId.isNotEmpty && _selectedType == ReminderType.rentOverdue)
                 const SizedBox(height: 16),
+
+              if (_selectedTenantId.isNotEmpty) ...[
+                _buildRecipientPreview(),
+                const SizedBox(height: 16),
+              ],
               
               // Title
               TextFormField(
@@ -445,6 +450,48 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
     return '${date.month}/${date.day}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
+  Widget _buildRecipientPreview() {
+    return Consumer(
+      builder: (context, ref, child) {
+        return ref.watch(facilityTenantsProvider(widget.facilityId)).when(
+              data: (tenants) {
+                final tenant = tenants.where((t) => t.id == _selectedTenantId).firstOrNull;
+                if (tenant == null) return const SizedBox.shrink();
+                final channels = _selectedChannels.map((c) => c.displayName).join(', ');
+                return Card(
+                  color: AppTheme.backgroundLight,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Reminder recipient',
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Tenant: ${tenant.name}'),
+                        Text('Email: ${tenant.email.isEmpty ? 'N/A' : tenant.email}'),
+                        Text('Phone: ${tenant.phone.isEmpty ? 'N/A' : tenant.phone}'),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Delivery channels: $channels',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+              loading: () => const _InlineLoader(message: 'Loading recipient details...'),
+              error: (_, __) => const SizedBox.shrink(),
+            );
+      },
+    );
+  }
+
   void _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
     
@@ -455,6 +502,9 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
       return;
     }
     
+    final proceed = await _confirmRecipientBeforeSend();
+    if (proceed != true) return;
+
     try {
       await ref.read(reminderOperationsProvider.notifier).createReminder(
         tenantId: _selectedTenantId,
@@ -485,6 +535,40 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
         );
       }
     }
+  }
+
+  Future<bool?> _confirmRecipientBeforeSend() async {
+    final tenants = await ref.read(facilityTenantsProvider(widget.facilityId).future);
+    final tenant = tenants.where((t) => t.id == _selectedTenantId).firstOrNull;
+    if (tenant == null) return false;
+    final channels = _selectedChannels.map((c) => c.displayName).join(', ');
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm reminder recipient'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Tenant: ${tenant.name}'),
+            Text('Email: ${tenant.email.isEmpty ? 'N/A' : tenant.email}'),
+            Text('Phone: ${tenant.phone.isEmpty ? 'N/A' : tenant.phone}'),
+            const SizedBox(height: 8),
+            Text('Channels: $channels'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Send Reminder'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

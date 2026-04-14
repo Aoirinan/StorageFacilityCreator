@@ -170,7 +170,7 @@ async function runQboRequest(
 async function getValidConnection(
   facilityId: string,
   config: QuickBooksConfig,
-): Promise<{ realmId: string; accessToken: string; ref: FirebaseFirestore.DocumentReference }> {
+): Promise<{ realmId: string; accessToken: string; ref: admin.firestore.DocumentReference }> {
   const ref = quickBooksIntegrationRef(facilityId);
   const snap = await ref.get();
   if (!snap.exists) {
@@ -282,7 +282,7 @@ async function ensureQboCustomer(
 async function ensureQboServiceItem(
   config: QuickBooksConfig,
   facilityId: string,
-  connection: { realmId: string; accessToken: string; ref: FirebaseFirestore.DocumentReference },
+  connection: { realmId: string; accessToken: string; ref: admin.firestore.DocumentReference },
 ): Promise<string> {
   const connectionSnap = await connection.ref.get();
   const defaultItemId = connectionSnap.data()?.defaultItemId as string | undefined;
@@ -366,9 +366,18 @@ async function getIncomeAccountId(
   return accountId;
 }
 
+function oauthDebugFields(config: QuickBooksConfig): Record<string, unknown> {
+  return {
+    oauthRedirectUri: config.redirectUri || null,
+    /** Matches `QUICKBOOKS_ENV` — use the same Intuit key tab (Development vs Production). */
+    functionsQuickBooksEnv: config.environment,
+  };
+}
+
 export async function getQuickBooksConnectionStatus(
   data: { facilityId: string },
   context: functions.https.CallableContext,
+  config: QuickBooksConfig,
 ): Promise<Record<string, unknown>> {
   const facilityId = (data?.facilityId || '').trim();
   if (!facilityId) {
@@ -377,7 +386,7 @@ export async function getQuickBooksConnectionStatus(
   await assertFacilityAccountingAccess(context, facilityId);
   const snap = await quickBooksIntegrationRef(facilityId).get();
   if (!snap.exists) {
-    return { connected: false };
+    return { connected: false, ...oauthDebugFields(config) };
   }
   const d = snap.data() || {};
   return {
@@ -390,6 +399,7 @@ export async function getQuickBooksConnectionStatus(
     lastSyncAt: d.lastSyncAt || null,
     lastSyncStatus: d.lastSyncStatus || null,
     lastSyncError: d.lastSyncError || null,
+    ...oauthDebugFields(config),
   };
 }
 
@@ -403,7 +413,16 @@ export async function getQuickBooksConnectUrl(
     throw new functions.https.HttpsError('invalid-argument', 'Missing facilityId');
   }
   if (!config.clientId || !config.clientSecret || !config.redirectUri) {
-    throw new functions.https.HttpsError('failed-precondition', 'QuickBooks secrets are not configured');
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'QuickBooks is not configured: set QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET (Firebase secrets), redeploy getQuickBooksConnectUrl, and ensure this function lists those secrets in runWith.',
+    );
+  }
+  if (config.clientId === 'undefined' || config.clientSecret === 'undefined') {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'QuickBooks Client ID/secret resolved incorrectly. Re-set secrets with firebase functions:secrets:set and redeploy functions that use them.',
+    );
   }
   await assertFacilityAccountingAccess(context, facilityId);
 
@@ -424,11 +443,21 @@ export async function getQuickBooksConnectUrl(
     state,
   });
 
+  functions.logger.info('QuickBooks connect URL', {
+    environment: config.environment,
+    redirectUri: config.redirectUri,
+    redirectUriLength: config.redirectUri.length,
+    clientIdPrefix: config.clientId.slice(0, 6),
+    clientIdLength: config.clientId.length,
+  });
+
   return {
     authUrl: `${getAuthorizeBase()}?${params.toString()}`,
     state,
     expiresAt,
     environment: config.environment,
+    /** Echo for debugging Intuit "redirect_uri invalid" — must match Keys & credentials exactly. */
+    redirectUri: config.redirectUri,
   };
 }
 

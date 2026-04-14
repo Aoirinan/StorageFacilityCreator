@@ -116,6 +116,12 @@ const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
 const AI_SECRETS = [OPENAI_API_KEY];
 const QUICKBOOKS_SECRETS = [QUICKBOOKS_CLIENT_ID, QUICKBOOKS_CLIENT_SECRET];
 
+/** Egress for Intuit OAuth + QBO API must match Cloud NAT static IP (Intuit "where hosted"). */
+const QUICKBOOKS_VPC_CONNECTOR = {
+  vpcConnector: 'sfc-serverless-connector',
+  vpcConnectorEgressSettings: 'ALL_TRAFFIC' as const,
+};
+
 let twilioClient: any = null;
 function isTwilioDryRunEnabled(): boolean {
   return (TWILIO_DRY_RUN.value() || 'false').toLowerCase() === 'true';
@@ -309,7 +315,7 @@ async function upsertSfcLeadFromInboundContact(params: {
   }
 
   const now = admin.firestore.FieldValue.serverTimestamp();
-  let leadRef: FirebaseFirestore.DocumentReference;
+  let leadRef: admin.firestore.DocumentReference;
   let created = false;
 
   if (leadSnap.empty) {
@@ -796,10 +802,12 @@ function getStripeClient(): Stripe {
 
 function getQuickBooksConfig(): quickBooksAccounting.QuickBooksConfig {
   const envRaw = (QUICKBOOKS_ENV.value() || 'sandbox').trim().toLowerCase();
+  const clientId = (QUICKBOOKS_CLIENT_ID.value() ?? '').trim();
+  const clientSecret = (QUICKBOOKS_CLIENT_SECRET.value() ?? '').trim();
   return {
-    clientId: QUICKBOOKS_CLIENT_ID.value(),
-    clientSecret: QUICKBOOKS_CLIENT_SECRET.value(),
-    redirectUri: QUICKBOOKS_REDIRECT_URI.value(),
+    clientId,
+    clientSecret,
+    redirectUri: (QUICKBOOKS_REDIRECT_URI.value() || '').trim(),
     environment: envRaw === 'production' ? 'production' : 'sandbox',
   };
 }
@@ -1397,8 +1405,8 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       if (!userRolesQuery.empty) {
         const userRole = userRolesQuery.docs[0].data();
         const roleType = userRole.roleType as string;
-        // Allow owner, admin, and manager roles to send emails
-        if (roleType === 'owner' || roleType === 'admin' || roleType === 'manager') {
+        // Allow owner and manager roles to send emails (legacy `admin` in DB treated like manager in app)
+        if (roleType === 'owner' || roleType === 'manager') {
           hasPermission = true;
         }
       }
@@ -4405,7 +4413,7 @@ interface TextingOnboardingState {
   a2pStatus: A2PStatus;
   a2pLastError?: string;
   textingPlatformApproved?: boolean;
-  textingPlatformApprovedAt?: FirebaseFirestore.Timestamp;
+  textingPlatformApprovedAt?: admin.firestore.Timestamp;
   twilioMessagingServiceSid?: string;
   twilioTrustProfileSid?: string;
   twilioTrustProductSid?: string;
@@ -4428,7 +4436,7 @@ async function assertTextingOnboardingEnabled(facilityId: string): Promise<void>
 async function getFacilityForTextingMutation(
   facilityId: string,
   uid: string,
-): Promise<{ ref: FirebaseFirestore.DocumentReference; data: Record<string, any> }> {
+): Promise<{ ref: admin.firestore.DocumentReference; data: Record<string, any> }> {
   const ref = admin.firestore().collection('facilities').doc(facilityId);
   const doc = await ref.get();
   const data = doc.data() as Record<string, any> | undefined;
@@ -4454,7 +4462,7 @@ function buildTwilioDryRunSid(prefix: string, facilityId: string): string {
 }
 
 async function ensureMessagingServiceForFacility(
-  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
   requestId: string,
 ): Promise<{ messagingServiceSid: string; created: boolean }> {
@@ -4484,7 +4492,7 @@ async function ensureMessagingServiceForFacility(
 }
 
 async function provisionFacilityPhoneNumber(
-  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
   areaCode: string | undefined,
   requestId: string,
@@ -4589,7 +4597,7 @@ async function resolveTrustHubA2PPolicySids(twilio: any): Promise<{
 }
 
 async function createOrUpdateA2PProfileInternal(
-  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
   businessData: TextingBusinessData,
 ): Promise<{ trustProfileSid: string; trustProductSid: string }> {
@@ -4600,8 +4608,8 @@ async function createOrUpdateA2PProfileInternal(
     };
   }
 
-  let trustProfileSid = '';
-  let trustProductSid = '';
+  let trustProfileSid: string;
+  let trustProductSid: string;
   if (isTwilioDryRunEnabled()) {
     trustProfileSid = buildTwilioDryRunSid('BU', facilityRef.id);
     trustProductSid = buildTwilioDryRunSid('TP', facilityRef.id);
@@ -4670,12 +4678,12 @@ async function createOrUpdateA2PProfileInternal(
 }
 
 async function submitBrandRegistrationInternal(
-  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
 ): Promise<string> {
   if (facilityData.twilioBrandSid) return facilityData.twilioBrandSid as string;
 
-  let sid = '';
+  let sid: string;
   if (isTwilioDryRunEnabled()) {
     sid = buildTwilioDryRunSid('BN', facilityRef.id);
   } else {
@@ -4701,7 +4709,7 @@ async function submitBrandRegistrationInternal(
 }
 
 async function submitCampaignInternal(
-  facilityRef: FirebaseFirestore.DocumentReference,
+  facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
   campaignData: CampaignData,
 ): Promise<string> {
@@ -4713,7 +4721,7 @@ async function submitCampaignInternal(
     );
   }
 
-  let sid = '';
+  let sid: string;
   if (isTwilioDryRunEnabled()) {
     sid = buildTwilioDryRunSid('CP', facilityRef.id);
   } else {
@@ -4758,7 +4766,7 @@ function getTextingOnboardingState(facilityData: Record<string, any>): TextingOn
     a2pStatus: ((facilityData.a2pStatus as string) || 'draft') as A2PStatus,
     a2pLastError: facilityData.a2pLastError as string | undefined,
     textingPlatformApproved: facilityData.textingPlatformApproved === true,
-    textingPlatformApprovedAt: facilityData.textingPlatformApprovedAt as FirebaseFirestore.Timestamp | undefined,
+    textingPlatformApprovedAt: facilityData.textingPlatformApprovedAt as admin.firestore.Timestamp | undefined,
     twilioMessagingServiceSid: facilityData.twilioMessagingServiceSid as string | undefined,
     twilioTrustProfileSid: facilityData.twilioTrustProfileSid as string | undefined,
     twilioTrustProductSid: facilityData.twilioTrustProductSid as string | undefined,
@@ -6282,11 +6290,33 @@ export const detachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }
 
 // ========== QuickBooks Accounting ==========
 /**
+ * HTTP callback target for Intuit OAuth.
+ * Redirects into the Flutter hash route while preserving OAuth params.
+ */
+export const quickBooksOAuthCallback = functions.https.onRequest((req, res) => {
+  const code = typeof req.query.code === 'string' ? req.query.code.trim() : '';
+  const realmId = typeof req.query.realmId === 'string' ? req.query.realmId.trim() : '';
+  const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
+  const error = typeof req.query.error === 'string' ? req.query.error.trim() : '';
+
+  const params = new URLSearchParams();
+  params.set('tab', 'accounting');
+  if (code) params.set('code', code);
+  if (realmId) params.set('realmId', realmId);
+  if (state) params.set('state', state);
+  if (error) params.set('error', error);
+
+  const redirectUrl = `${getPublicAppUrl()}/#/subscription?${params.toString()}`;
+  res.set('Cache-Control', 'no-store');
+  res.redirect(302, redirectUrl);
+});
+
+/**
  * Returns connection status for facility QuickBooks integration.
  */
 export const getQuickBooksConnectionStatus = functions.https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.getQuickBooksConnectionStatus(data, context);
+  return quickBooksAccounting.getQuickBooksConnectionStatus(data, context, getQuickBooksConfig());
 });
 
 /**
@@ -6300,7 +6330,9 @@ export const getQuickBooksConnectUrl = functions.runWith({ secrets: QUICKBOOKS_S
 /**
  * Completes QuickBooks OAuth token exchange and stores connection.
  */
-export const completeQuickBooksConnect = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+export const completeQuickBooksConnect = functions
+  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
+  .https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);
   return quickBooksAccounting.completeQuickBooksConnect(data, context, getQuickBooksConfig());
 });
@@ -6316,7 +6348,9 @@ export const disconnectQuickBooks = functions.https.onCall(async (data: any, con
 /**
  * Manually syncs a facility invoice into QuickBooks.
  */
-export const syncInvoiceToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+export const syncInvoiceToQuickBooks = functions
+  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
+  .https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);
   return quickBooksAccounting.syncInvoiceToQuickBooks(data, context, getQuickBooksConfig());
 });
@@ -6324,7 +6358,9 @@ export const syncInvoiceToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_S
 /**
  * Manually syncs a facility payment into QuickBooks.
  */
-export const syncPaymentToQuickBooks = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
+export const syncPaymentToQuickBooks = functions
+  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
+  .https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);
   return quickBooksAccounting.syncPaymentToQuickBooks(data, context, getQuickBooksConfig());
 });
@@ -6341,7 +6377,12 @@ export const setQuickBooksAutoSync = functions.https.onCall(async (data: any, co
  * Auto-sync invoice changes into QuickBooks when integration is connected.
  */
 export const autoSyncInvoiceToQuickBooks = functions
-  .runWith({ secrets: QUICKBOOKS_SECRETS, timeoutSeconds: 120, memory: '256MB' })
+  .runWith({
+    secrets: QUICKBOOKS_SECRETS,
+    timeoutSeconds: 120,
+    memory: '256MB',
+    ...QUICKBOOKS_VPC_CONNECTOR,
+  })
   .firestore
   .document('facilities/{facilityId}/invoices/{invoiceId}')
   .onWrite(async (change, context) => {
@@ -6377,7 +6418,12 @@ export const autoSyncInvoiceToQuickBooks = functions
  * Auto-sync completed payments into QuickBooks when integration is connected.
  */
 export const autoSyncPaymentToQuickBooks = functions
-  .runWith({ secrets: QUICKBOOKS_SECRETS, timeoutSeconds: 120, memory: '256MB' })
+  .runWith({
+    secrets: QUICKBOOKS_SECRETS,
+    timeoutSeconds: 120,
+    memory: '256MB',
+    ...QUICKBOOKS_VPC_CONNECTOR,
+  })
   .firestore
   .document('facilities/{facilityId}/payments/{paymentId}')
   .onWrite(async (change, context) => {
@@ -7611,6 +7657,62 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 });
 
 /**
+ * Public token lookup for reservation flow.
+ * This keeps unauthenticated move-in working while Firestore blocks anonymous list queries.
+ */
+export const getPublicReservationByToken = functions.https.onCall(async (data: any, _context) => {
+  const token = String(data?.token || '').trim();
+  if (!token || token.length < 16) {
+    throw new functions.https.HttpsError('invalid-argument', 'Valid token is required');
+  }
+
+  const snapshot = await admin.firestore()
+    .collection('publicReservations')
+    .where('moveInToken', '==', token)
+    .where('status', 'in', ['pending', 'confirmed'])
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    return { found: false };
+  }
+
+  const doc = snapshot.docs[0];
+  const reservation = doc.data() as Record<string, any>;
+  const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
+  if (expiresAt && expiresAt.toDate() < new Date()) {
+    await doc.ref.set(
+      {
+        status: 'expired',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+    return { found: false };
+  }
+
+  return {
+    found: true,
+    reservation: {
+      id: doc.id,
+      facilityId: reservation.facilityId || '',
+      unitId: reservation.unitId || null,
+      unitNumber: reservation.unitNumber || null,
+      email: reservation.email || '',
+      phone: reservation.phone || null,
+      name: reservation.name || null,
+      status: reservation.status || 'pending',
+      reservedAt: (reservation.reservedAt as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      expiresAt: expiresAt?.toDate().toISOString() || null,
+      moveInDate: (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      completedAt: (reservation.completedAt as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      moveInToken: reservation.moveInToken || null,
+      metadata: reservation.metadata || null,
+    },
+  };
+});
+
+/**
  * Creates a short-lived public reservation hold for a unit.
  * This reduces obvious double-booking races before move-in completion.
  */
@@ -7904,6 +8006,53 @@ export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_S
   };
 });
 
+/** One-page PDF for online move-in (signature + summary) for facility dashboard review. */
+async function buildPublicMoveInAgreementPdf(params: {
+  facilityName: string;
+  unitNumber: string;
+  tenantName: string;
+  tenantEmail: string;
+  signedAtLabel: string;
+  signaturePngBase64: string;
+}): Promise<Buffer> {
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([612, 792]);
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  let y = 720;
+  const left = 50;
+  const line = (text: string, opts?: { bold?: boolean; size?: number }) => {
+    const font = opts?.bold ? bold : regular;
+    const size = opts?.size ?? 11;
+    page.drawText(text, { x: left, y, size, font, color: rgb(0, 0, 0) });
+    y -= size + 6;
+  };
+  line('Storage Rental Agreement (Online Move-In)', { bold: true, size: 16 });
+  y -= 8;
+  line('This record was completed through self-service online move-in.', { size: 10 });
+  y -= 6;
+  line(`Facility: ${params.facilityName}`);
+  line(`Unit: ${params.unitNumber}`);
+  line(`Tenant: ${params.tenantName}`);
+  line(`Email: ${params.tenantEmail}`);
+  line(`Signed: ${params.signedAtLabel}`);
+  y -= 16;
+  line('Electronic signature', { bold: true });
+  y -= 4;
+  const pngBytes = Buffer.from(params.signaturePngBase64, 'base64');
+  const png = await pdf.embedPng(pngBytes);
+  const sigW = 240;
+  const sigH = 96;
+  page.drawImage(png, { x: left, y: y - sigH, width: sigW, height: sigH });
+  y -= sigH + 20;
+  line(
+    'By signing above, the tenant acknowledges the storage rental agreement associated with this move-in.',
+    { size: 9 },
+  );
+  return Buffer.from(await pdf.save());
+}
+
 /**
  * Complete public move-in flow (no auth)
  * - Validates reservation token
@@ -7913,7 +8062,7 @@ export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_S
  * - Updates unit status and reservation status
  * - Generates gate access code
  */
-export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any) => {
   // App Check enforced for public move-in flows
   if (!(data as any)?._appCheckToken) {
     throw new functions.https.HttpsError(
@@ -7934,9 +8083,39 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
     totalAmount,
     lineItems = [],
     skipPayment = false,
+    signaturePngBase64,
+    signatureSignedAt,
+    addressLine2,
+    city,
+    state,
+    zipCode,
+    country,
+    governmentIdType,
+    governmentIdNumber,
+    governmentIdState,
+    governmentIdCountry,
+    emergencyContactRelationship,
+    emergencyContactEmail,
+    enrollAutopayInterest,
   } = data || {};
 
-  if (!reservationId || !token || !name || !email || !phone) {
+  const enrollAutopay =
+    enrollAutopayInterest === true ||
+    enrollAutopayInterest === 'true' ||
+    (data as any)?.enrollAutopay === true;
+
+  const normalizedSignaturePngBase64 = (signaturePngBase64 || '').toString().trim();
+  const normalizedSignatureSignedAt = (signatureSignedAt || '').toString().trim();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const normalizedCountry = String(country || '').trim().toUpperCase();
+  const normalizedGovernmentIdType = String(governmentIdType || '').trim();
+  const normalizedGovernmentIdNumber = String(governmentIdNumber || '').trim();
+  const normalizedGovernmentIdState = String(governmentIdState || '').trim();
+  const normalizedGovernmentIdCountry = String(governmentIdCountry || '').trim().toUpperCase();
+  const normalizedEmergencyContactRelationship = String(emergencyContactRelationship || '').trim();
+  const normalizedEmergencyContactEmail = String(emergencyContactEmail || '').trim().toLowerCase();
+
+  if (!reservationId || !token || !name || !normalizedEmail || !phone || !normalizedSignaturePngBase64) {
     throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
   }
 
@@ -8052,6 +8231,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
     }
 
+    const facilityDocRef = admin.firestore().collection('facilities').doc(facilityId);
+    const facilitySnap = await tx.get(facilityDocRef);
+    const facilityOwnerUid = (facilitySnap.data() as Record<string, any> | undefined)?.ownerUid || 'publicMoveIn';
+
     // Create tenant
     const tenantRef = admin.firestore()
       .collection('facilities')
@@ -8063,32 +8246,44 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
       facilityId,
       name: name.trim(),
       nameLower: name.trim().toLowerCase(),
-      email: email.trim(),
-      emailLower: email.trim().toLowerCase(),
+      email: normalizedEmail,
+      emailLower: normalizedEmail,
       phone: phone.trim(),
       phoneDigits: phone.replace(/[^\d]/g, ''),
       unitNumber,
       monthlyRate: deriveMonthlyRate(),
-      notes: '',
+      notes: String(data?.notes || '').trim(),
       createdAt: nowTs,
       createdBy: 'publicMoveIn',
       isActive: true,
       isOnDNR: false,
+      leadSource: 'onlineRental',
+      governmentIdType: normalizedGovernmentIdType.length > 0 ? normalizedGovernmentIdType : null,
+      governmentIdNumber: normalizedGovernmentIdNumber.length > 0 ? normalizedGovernmentIdNumber : null,
+      governmentIdState: normalizedGovernmentIdState.length > 0 ? normalizedGovernmentIdState : null,
+      governmentIdCountry: normalizedGovernmentIdCountry.length > 0 ? normalizedGovernmentIdCountry : null,
       emergencyContacts: emergencyContactName
         ? [{
             name: emergencyContactName,
+            relationship: normalizedEmergencyContactRelationship || null,
             phone: emergencyContactPhone || '',
+            email: normalizedEmergencyContactEmail || null,
+            isPrimary: true,
+            isEmergency: true,
           }]
         : [],
       addresses: address
         ? [{
-            street1: address,
-            street2: '',
-            city: '',
-            state: '',
-            postalCode: '',
-            country: '',
+            id: '',
             type: 'mailing',
+            street1: address,
+            street2: String(addressLine2 || '').trim(),
+            city: String(city || '').trim(),
+            state: String(state || '').trim(),
+            zipCode: String(zipCode || '').trim(),
+            country: normalizedCountry,
+            isPrimary: true,
+            notes: '',
           }]
         : [],
       portalEnabled: false,
@@ -8096,14 +8291,22 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
       portalWelcomeMessage: null,
       portalLastAccessAt: null,
       portalVisitCount: 0,
+      ...(enrollAutopay
+        ? {
+          autopay: {
+            requested: true,
+            enabled: false,
+            status: 'REQUESTED',
+            updatedBy: 'PUBLIC_MOVE_IN',
+            updatedAt: nowTs,
+          },
+        }
+        : {}),
     };
 
     tx.set(tenantRef, tenantData);
 
     // Create contract (minimal signed agreement record)
-    const facilitySnap = await tx.get(admin.firestore().collection('facilities').doc(facilityId));
-    const facilityOwnerUid = (facilitySnap.data() as Record<string, any> | undefined)?.ownerUid || 'publicMoveIn';
-
     const contractRef = admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -8128,8 +8331,15 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
       signedAt: nowTs,
       expiresAt: null,
       sentBy: 'publicMoveIn',
-      signedBy: 'publicMoveIn',
-      customFields: null,
+      signedBy: name.trim(),
+      customFields: {
+        publicMoveInSignature: {
+          signaturePngBase64: normalizedSignaturePngBase64,
+          signedAt: normalizedSignatureSignedAt || new Date().toISOString(),
+          signerName: name.trim(),
+          signerEmail: email.trim().toLowerCase(),
+        },
+      },
       notes: null,
       isActive: true,
     });
@@ -8196,6 +8406,67 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
   });
 
   const { tenantId, contractId } = transactionResult;
+
+  // Generate and store a reviewable PDF (dashboard contract detail uses signedFileUrl / fileUrl).
+  try {
+    const facilitySnapForPdf = await admin.firestore().collection('facilities').doc(facilityId).get();
+    const facilityNameForPdf = String(facilitySnapForPdf.data()?.name || 'Storage Facility');
+    const pdfBuf = await buildPublicMoveInAgreementPdf({
+      facilityName: facilityNameForPdf,
+      unitNumber,
+      tenantName: name.trim(),
+      tenantEmail: normalizedEmail,
+      signedAtLabel: normalizedSignatureSignedAt || new Date().toISOString(),
+      signaturePngBase64: normalizedSignaturePngBase64,
+    });
+    const docHash = crypto.createHash('sha256').update(pdfBuf).digest('hex');
+    const storagePathPdf = `facilities/${facilityId}/contracts/${contractId}/signed_move_in_agreement.pdf`;
+    const bucketPdf = admin.storage().bucket();
+    const filePdf = bucketPdf.file(storagePathPdf);
+    const downloadTokenPdf = crypto.randomUUID();
+    await filePdf.save(pdfBuf, {
+      contentType: 'application/pdf',
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: { firebaseStorageDownloadTokens: downloadTokenPdf },
+      },
+    });
+    const signedPdfUrl = await getDownloadURL(filePdf);
+    await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contracts')
+      .doc(contractId)
+      .update({
+        signedFileUrl: signedPdfUrl,
+        fileUrl: signedPdfUrl,
+        storagePath: storagePathPdf,
+        documentSha256: docHash,
+        fileSize: pdfBuf.length,
+        contentType: 'application/pdf',
+        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+  } catch (pdfErr: any) {
+    functions.logger.error('Public move-in: contract PDF upload failed', { message: pdfErr?.message, contractId, facilityId });
+  }
+
+  if (enrollAutopay) {
+    try {
+      await createAutopayNotificationAndEvent(
+        facilityId,
+        tenantId,
+        name.trim(),
+        'AUTOPAY_REQUESTED',
+        'REQUESTED',
+        'SYSTEM',
+        `${name.trim()} requested automatic draft (autopay) during online move-in.`,
+        null,
+      );
+    } catch (apErr: any) {
+      functions.logger.warn('Public move-in: autopay notification failed', { message: apErr?.message });
+    }
+  }
 
   // Best-effort cleanup of active checkout hold.
   if (unitId) {
@@ -8275,6 +8546,52 @@ export const completePublicMoveIn = functions.runWith({ secrets: STRIPE_SECRETS 
     contractId,
     paymentIntentId,
   });
+
+  // Best-effort email confirmation (do not fail move-in if email provider is unavailable).
+  try {
+    const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+    const facilityData = (facilitySnap.data() || {}) as Record<string, any>;
+    const facilityName = String(facilityData.name || 'Storage Facility');
+    const facilityAddress = String(facilityData.address || facilityData.location || '').trim() || null;
+    const facilityPhone = String(facilityData.phone || '').trim() || null;
+    const senderEmail = String(SENDGRID_FROM_EMAIL.value() || '').trim();
+    if (senderEmail) {
+      await sendFacilityEmailWithCompliance(
+        {
+          to: normalizedEmail,
+          from: { email: senderEmail, name: facilityName },
+          subject: `Move-in confirmed for ${facilityName}`,
+        },
+        `<p>Hi ${escapeHtml(name.trim())},</p>
+         <p>Your move-in request has been completed for <strong>${escapeHtml(facilityName)}</strong>.</p>
+         <p><strong>Unit:</strong> ${escapeHtml(unitNumber)}</p>
+         <p><strong>Move-in date:</strong> ${escapeHtml(moveInDate.toISOString().slice(0, 10))}</p>
+         <p>If you need help, reply to this email or contact the facility.</p>`,
+        `Hi ${name.trim()},
+
+Your move-in request has been completed for ${facilityName}.
+Unit: ${unitNumber}
+Move-in date: ${moveInDate.toISOString().slice(0, 10)}
+
+If you need help, contact the facility.`,
+        {
+          facilityId,
+          tenantId,
+          facilityName,
+          facilityAddress,
+          facilityPhone,
+        },
+      );
+    } else {
+      functions.logger.warn('Move-in confirmation email skipped: SENDGRID_SENDER_EMAIL is not configured');
+    }
+  } catch (emailError: any) {
+    functions.logger.error('Failed to send move-in confirmation email', {
+      reservationId,
+      tenantId,
+      error: emailError?.message || String(emailError),
+    });
+  }
 
   return {
     success: true,
@@ -12496,7 +12813,6 @@ async function getFacilityDataForUserOrThrow(
   let hasAccess =
     ownerUid === uid ||
     roles[uid] === 'owner' ||
-    roles[uid] === 'admin' ||
     roles[uid] === 'manager' ||
     roles[uid] === 'employee' ||
     managersMap[uid] === true;

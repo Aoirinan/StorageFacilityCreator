@@ -415,54 +415,125 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
 
   Widget _buildRolesTab() {
     final roles = PermissionService.getPredefinedRoles();
-    
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: roles.length,
-      itemBuilder: (context, index) {
-        final role = roles[index];
-        
-        return Card(
-          margin: const EdgeInsets.only(bottom: 16),
-          child: ExpansionTile(
-            leading: CircleAvatar(
-              backgroundColor: role.color.withOpacity(0.1),
-              child: Icon(_getRoleIcon(role.type), color: role.color),
-            ),
-            title: Text(
-              role.name,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(role.description),
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    final fid = _selectedFacilityId;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: fid == null
+              ? Text(
+                  'Select a facility above to see your role for that site.',
+                  style: TextStyle(color: AppTheme.textSecondary),
+                )
+              : FutureBuilder<CurrentFacilityRoleSummary?>(
+                  future: PermissionService.getCurrentUserRoleSummary(fid),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const LinearProgressIndicator(minHeight: 3);
+                    }
+                    final s = snapshot.data;
+                    if (s == null) {
+                      return const SizedBox.shrink();
+                    }
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.badge_outlined, color: AppTheme.primaryBlue),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Your role (this facility)',
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            SelectableText(
+                              'Account: ${s.email}',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Role: ${s.roleTypeLabel}',
+                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              s.canDeleteTenants
+                                  ? 'Permanent tenant delete: allowed for your role (typically Owner or Manager).'
+                                  : 'Permanent tenant delete: not allowed for your role. You can still archive tenants where the app allows it, or ask an owner/manager to remove a record.',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: roles.length,
+            itemBuilder: (context, index) {
+              final role = roles[index];
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 16),
+                child: ExpansionTile(
+                  leading: CircleAvatar(
+                    backgroundColor: role.color.withOpacity(0.1),
+                    child: Icon(_getRoleIcon(role.type), color: role.color),
+                  ),
+                  title: Text(
+                    role.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(role.description),
                   children: [
-                    Text(
-                      'Permissions (${role.permissions.length}):',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: role.permissions.map((permission) {
-                        return Chip(
-                          label: Text(permission.displayName),
-                          backgroundColor: role.color.withOpacity(0.1),
-                          labelStyle: TextStyle(color: role.color),
-                        );
-                      }).toList(),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Permissions (${role.permissions.length}):',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: role.permissions.map((permission) {
+                              return Chip(
+                                label: Text(permission.displayName),
+                                backgroundColor: role.color.withOpacity(0.1),
+                                labelStyle: TextStyle(color: role.color),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
-              ),
-            ],
+              );
+            },
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 
@@ -529,8 +600,6 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
         return Icons.person;
       case RoleType.viewer:
         return Icons.visibility;
-      case RoleType.admin:
-        return Icons.admin_panel_settings;
     }
   }
 
@@ -717,7 +786,7 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
     String? errorMessage;
     bool isSubmitting = false;
 
-    final roles = PermissionService.getPredefinedRoles()
+    final roles = PermissionService.getAssignableRoles()
         .where((role) => role.type != RoleType.owner) // Prevent granting owner via UI
         .toList();
 
@@ -936,7 +1005,7 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
       return;
     }
     
-    final roles = PermissionService.getPredefinedRoles();
+    final roles = PermissionService.getAssignableRoles();
     
     showDialog(
       context: context,

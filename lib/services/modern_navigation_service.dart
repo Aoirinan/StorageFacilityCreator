@@ -79,6 +79,8 @@ class ModernNavigationService {
           context.go('/tenants');
           break;
         case '/units':
+          context.go('/units');
+          break;
         case '/units/map':
           _navigateToMapWithFacilitySelection(context);
           break;

@@ -28,7 +28,7 @@ interface ClearOverlockByFilterRequest {
   confirmToken: string;
 }
 
-/** Ensure caller is manager or admin (not just employee) for the facility. */
+/** Ensure caller is owner/manager/admin (not just employee) for the facility. */
 async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{ facilityData: Record<string, any>; userName: string }> {
   const facilityDoc = await db.collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
@@ -39,12 +39,22 @@ async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{
   const roles = (facilityData.roles as Record<string, string>) || {};
   const managersMap = (facilityData.managers as Record<string, any>) || {};
 
+  const managerEntry = managersMap[uid];
+  const managerFromMap =
+    managerEntry === true ||
+    (typeof managerEntry === 'object' &&
+      managerEntry !== null &&
+      (managerEntry.active === true ||
+        managerEntry.isActive === true ||
+        managerEntry.role === 'manager' ||
+        managerEntry.roleType === 'manager'));
+
   const isManagerOrAdmin =
     ownerUid === uid ||
     roles[uid] === 'owner' ||
-    roles[uid] === 'admin' ||
     roles[uid] === 'manager' ||
-    managersMap[uid] === true;
+    roles[uid] === 'admin' ||
+    managerFromMap;
 
   if (!isManagerOrAdmin) {
     const userRolesSnap = await db
@@ -56,11 +66,12 @@ async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{
       .get();
     const roleDoc = userRolesSnap.docs[0];
     const roleType = roleDoc?.data()?.roleType as string | undefined;
-    const allowedRole = roleType === 'owner' || roleType === 'admin' || roleType === 'manager';
+    const allowedRole =
+      roleType === 'owner' || roleType === 'manager' || roleType === 'admin';
     if (!allowedRole) {
       throw new functions.https.HttpsError(
         'permission-denied',
-        'Only managers or admins can perform overlock actions.',
+        'Only owners, managers, or admins can perform overlock actions.',
       );
     }
   }

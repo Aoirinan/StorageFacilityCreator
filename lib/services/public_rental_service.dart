@@ -156,6 +156,51 @@ class PublicRentalService {
   /// Get reservation by token
   static Future<Reservation?> getReservationByToken(String token) async {
     try {
+      // Preferred path: token-gated Cloud Function lookup.
+      // Firestore rules intentionally block anonymous collection queries.
+      try {
+        final callable =
+            FirebaseFunctions.instance.httpsCallable('getPublicReservationByToken');
+        final response =
+            await callable.call(<String, dynamic>{'token': token.trim()});
+        final payload = Map<String, dynamic>.from(response.data as Map);
+        if (payload['found'] == true && payload['reservation'] is Map) {
+          final reservationMap =
+              Map<String, dynamic>.from(payload['reservation'] as Map);
+          final statusRaw = reservationMap['status']?.toString() ?? 'pending';
+          final status = ReservationStatus.values.firstWhere(
+            (s) => s.name == statusRaw,
+            orElse: () => ReservationStatus.pending,
+          );
+          return Reservation(
+            id: reservationMap['id']?.toString() ?? '',
+            facilityId: reservationMap['facilityId']?.toString() ?? '',
+            unitId: reservationMap['unitId']?.toString(),
+            unitNumber: reservationMap['unitNumber']?.toString(),
+            email: reservationMap['email']?.toString() ?? '',
+            phone: reservationMap['phone']?.toString(),
+            name: reservationMap['name']?.toString(),
+            status: status,
+            reservedAt: DateTime.tryParse(
+                    reservationMap['reservedAt']?.toString() ?? '') ??
+                DateTime.now(),
+            expiresAt: DateTime.tryParse(
+                reservationMap['expiresAt']?.toString() ?? ''),
+            moveInDate: DateTime.tryParse(
+                reservationMap['moveInDate']?.toString() ?? ''),
+            completedAt: DateTime.tryParse(
+                reservationMap['completedAt']?.toString() ?? ''),
+            moveInToken: reservationMap['moveInToken']?.toString(),
+            metadata: reservationMap['metadata'] is Map
+                ? Map<String, dynamic>.from(reservationMap['metadata'] as Map)
+                : null,
+          );
+        }
+        if (payload['found'] == false) return null;
+      } catch (_) {
+        // Fallback to legacy direct query path for older deployments.
+      }
+
       final snapshot = await _firestore
           .collection('publicReservations')
           .where('moveInToken', isEqualTo: token)
@@ -283,6 +328,21 @@ class PublicRentalService {
     double? totalAmount,
     List<Map<String, dynamic>>? lineItems, // Move-in charges breakdown
     bool skipPayment = false,
+    String? signaturePngBase64,
+    String? signatureSignedAt,
+    String? addressLine2,
+    String? city,
+    String? state,
+    String? zipCode,
+    String? country,
+    String? governmentIdType,
+    String? governmentIdNumber,
+    String? governmentIdState,
+    String? governmentIdCountry,
+    String? emergencyContactRelationship,
+    String? emergencyContactEmail,
+    String? notes,
+    bool enrollAutopayInterest = false,
   }) async {
     try {
       // Call Cloud Function: completePublicMoveIn
@@ -310,6 +370,21 @@ class PublicRentalService {
         'totalAmount': totalAmount,
         'lineItems': lineItems,
         'skipPayment': skipPayment,
+        'signaturePngBase64': signaturePngBase64,
+        'signatureSignedAt': signatureSignedAt,
+        'addressLine2': addressLine2,
+        'city': city,
+        'state': state,
+        'zipCode': zipCode,
+        'country': country,
+        'governmentIdType': governmentIdType,
+        'governmentIdNumber': governmentIdNumber,
+        'governmentIdState': governmentIdState,
+        'governmentIdCountry': governmentIdCountry,
+        'emergencyContactRelationship': emergencyContactRelationship,
+        'emergencyContactEmail': emergencyContactEmail,
+        'notes': notes,
+        'enrollAutopayInterest': enrollAutopayInterest,
         '_appCheckToken': 'public-move-in',
       }).timeout(
         const Duration(seconds: 60),
@@ -329,40 +404,7 @@ class PublicRentalService {
       if (kDebugMode) {
         print('❌ [PublicRental] Error completing public move-in: $e');
       }
-
-      // Fallback: Mark reservation as completed with submitted data
-      // This allows the system to work even if Cloud Function isn't deployed yet
-      try {
-        await updateReservationStatus(
-          reservationId: reservationId,
-          status: ReservationStatus.completed,
-          additionalData: {
-            'completedData': {
-              'name': name,
-              'email': email,
-              'phone': phone,
-              'address': address,
-              'emergencyContactName': emergencyContactName,
-              'emergencyContactPhone': emergencyContactPhone,
-              'paymentIntentId': paymentIntentId,
-              'totalAmount': totalAmount,
-              'completedAt': DateTime.now().toIso8601String(),
-            },
-          },
-        );
-
-        return {
-          'success': true,
-          'message':
-              'Move-in request submitted. Our team will process it shortly.',
-          'note': 'Cloud Function not available - using fallback method',
-        };
-      } catch (fallbackError) {
-        if (kDebugMode) {
-          print('❌ [PublicRental] Fallback also failed: $fallbackError');
-        }
-        rethrow;
-      }
+      rethrow;
     }
   }
 

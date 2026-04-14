@@ -23,12 +23,19 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'config/app_check_public.dart';
 import 'services/app_check_service.dart';
+import 'services/quickbooks_oauth_handoff_stub.dart'
+    if (dart.library.html) 'services/quickbooks_oauth_handoff_web.dart'
+    as quickbooks_oauth_handoff;
 
 // Static flag to ensure App Check is activated exactly once (DEPRECATED - use AppCheckService.isActivated instead)
 bool _appCheckActivated = false;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kIsWeb) {
+    // Preserve Intuit OAuth payload even if auth guards redirect before Accounting loads.
+    quickbooks_oauth_handoff.captureQuickBooksOAuthFromCurrentUrl();
+  }
   // #region agent log
   DebugLogger.log(
     hypothesisId: 'H0',

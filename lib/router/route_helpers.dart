@@ -395,6 +395,11 @@ class UnitsLandingScreen extends StatelessWidget {
               },
               child: const Text('Open Map Editor'),
             ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () => context.go(AppRoute.units),
+              child: const Text('Open Unit List'),
+            ),
           ],
         ),
       ),

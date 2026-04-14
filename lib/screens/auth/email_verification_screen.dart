@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
 import '../../services/auth_service.dart';
-import '../subscription_test_screen.dart';
 import '../../router/app_route.dart';
 import '../../theme/app_theme.dart';
 
@@ -87,14 +86,10 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
       }
 
       if (mounted) {
-        context.go(
-          AppRoute.subscription,
-          extra: const SubscriptionTestScreen(
-            requireSubscriptionChoice: true,
-            message:
-                'Welcome! Please choose a subscription option to get started.',
-          ),
-        );
+        // Let route guards/subscription checks send the user to the correct
+        // destination (dashboard, pending approval, or subscription) without
+        // duplicating routing rules here.
+        context.go(AppRoute.dashboard);
       }
     } catch (e) {
       if (kDebugMode) {

@@ -346,7 +346,9 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       }
     } catch (e) {
       // Continue if error getting delinquent tenants for one facility
-      print('Error getting delinquent tenants for facility ${facility.id}: $e');
+      if (kDebugMode) {
+        print('Error getting delinquent tenants for facility ${facility.id}: $e');
+      }
     }
   }
 

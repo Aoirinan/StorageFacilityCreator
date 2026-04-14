@@ -10,6 +10,12 @@ final conversationsProvider = StreamProvider.family<List<ConversationModel>, Str
   return MessagingService.streamConversations(facilityId);
 });
 
+/// Facility-scoped chat display names for employee messaging (`employeeChatNames`).
+final employeeChatNamesProvider = StreamProvider.family<Map<String, String>, String>((ref, facilityId) {
+  if (facilityId.isEmpty || facilityId == 'all') return Stream.value({});
+  return MessagingService.streamEmployeeChatNames(facilityId);
+});
+
 // Messages provider (real-time stream)
 final messagesProvider = StreamProvider.family<List<MessageModel>, (String facilityId, String conversationId)>((ref, params) {
   final facilityId = params.$1;

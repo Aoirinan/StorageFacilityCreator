@@ -72,7 +72,6 @@ enum RoleType {
   manager,
   employee,
   viewer,
-  admin,
 }
 
 class Permission {
@@ -231,6 +230,19 @@ class PermissionCheck {
   }
 }
 
+/// Snapshot of the signed-in user's facility role (for Roles tab / help text).
+class CurrentFacilityRoleSummary {
+  final String email;
+  final String roleTypeLabel;
+  final bool canDeleteTenants;
+
+  const CurrentFacilityRoleSummary({
+    required this.email,
+    required this.roleTypeLabel,
+    required this.canDeleteTenants,
+  });
+}
+
 // Extensions for display names
 extension PermissionTypeExtension on PermissionType {
   String get displayName {
@@ -325,8 +337,6 @@ extension PermissionTypeExtension on PermissionType {
         return 'View Audit Logs';
       case PermissionType.systemAdmin:
         return 'System Admin';
-      case PermissionType.manageOverlock:
-        return 'Manager Overlock';
     }
   }
 }
@@ -342,8 +352,6 @@ extension RoleTypeExtension on RoleType {
         return 'Employee';
       case RoleType.viewer:
         return 'Viewer';
-      case RoleType.admin:
-        return 'Admin';
     }
   }
 }

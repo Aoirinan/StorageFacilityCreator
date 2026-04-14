@@ -54,7 +54,7 @@ class _SignatureFieldConfiguratorState extends State<SignatureFieldConfigurator>
               height: p.height,
               label: p.label,
               tooltip: p.tooltip,
-              placed: p.page >= 1 && (p.x.abs() + p.y.abs()) > 0.01,
+              placed: p.page >= 1,
             ))
         .toList();
     _nextId = _placeholders.isEmpty ? 0 : _placeholders.map((e) => int.tryParse(e.id.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0).reduce((a, b) => a > b ? a : b) + 1;
@@ -233,13 +233,12 @@ class _SignatureFieldConfiguratorState extends State<SignatureFieldConfigurator>
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (!p.placed)
-                      TextButton(
-                        onPressed: _loading || _loadError != null
-                            ? null
-                            : () => _showPlacePicker(i),
-                        child: const Text('Place'),
-                      ),
+                    TextButton(
+                      onPressed: _loading || _loadError != null
+                          ? null
+                          : () => _showPlacePicker(i),
+                      child: Text(p.placed ? 'Reposition' : 'Place'),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.edit, size: 20),
                       onPressed: () => _showEditDialog(i),

@@ -180,7 +180,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                   ElevatedButton.icon(
                     onPressed: () {
                       if (_selectedFacilityId != null) {
-                        context.push('${AppRoute.unitsMap}?facilityId=$_selectedFacilityId');
+                        final facilityId = _selectedFacilityId!;
+                        ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(facilityId);
+                        context.push(
+                          '${AppRoute.unitsMap}?facilityId=${Uri.encodeComponent(facilityId)}',
+                        );
                       }
                     },
                     icon: const Icon(Icons.map),
