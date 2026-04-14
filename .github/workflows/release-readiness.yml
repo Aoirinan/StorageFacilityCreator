@@ -7,6 +7,16 @@ on:
     branches: [main]
 
 jobs:
+  email-limits-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check email monthly limits (Dart vs Functions)
+        run: node scripts/check_email_monthly_limits_parity.js
+
   marketing:
     runs-on: ubuntu-latest
     defaults:

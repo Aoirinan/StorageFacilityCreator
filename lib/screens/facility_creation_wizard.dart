@@ -11,6 +11,7 @@ import '../services/permission_service.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/email_usage_service.dart';
+import 'package:sfcapp/constants/email_monthly_limits.dart';
 import '../theme/app_theme.dart';
 import '../screens/subscription_test_screen.dart';
 import '../router/app_router.dart';
@@ -614,9 +615,8 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             facilityId: facilityId!,
           );
           
-          // Set email limit based on subscription status
-          // Trial users: 200 emails/month, Active subscribers: 1000 emails/month
-          final emailLimit = account.hasTrial ? 200 : 1000;
+          final emailLimit =
+              emailMonthlyLimitForAccount(isTrialing: account.hasTrial);
           await EmailUsageService.setEmailLimit(facilityId!, emailLimit);
           
           if (kDebugMode) {

@@ -1,14 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+
+import 'package:sfcapp/constants/email_monthly_limits.dart';
 import 'facility_creator_account_service.dart';
 
 /// Service for tracking email usage and limits per facility
 class EmailUsageService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
-  /// Get email limit based on subscription status
-  /// Trial users: 200 emails/month
-  /// Active subscribers: 1000 emails/month
+  /// Default monthly cap when Firestore has no `emailMonthlyLimit` yet.
   static Future<int> _getEmailLimitForFacility(String facilityId) async {
     try {
       // Check if facility has email limit set
@@ -36,18 +36,18 @@ class EmailUsageService {
         if (ownerUid != null) {
           final account = await FacilityCreatorAccountService.getAccountByOwnerUid(ownerUid);
           
-          if (account != null && account.hasTrial) {
-            return 200; // Trial limit
+          if (account != null) {
+            return emailMonthlyLimitForAccount(isTrialing: account.hasTrial);
           }
         }
       }
-      
-      return 1000; // Default limit for active subscribers
+
+      return kEmailMonthlyLimitPaid;
     } catch (e) {
       if (kDebugMode) {
         print('⚠️ [EmailUsageService] Error getting email limit, using default: $e');
       }
-      return 1000; // Default on error
+      return kEmailMonthlyLimitPaid;
     }
   }
 

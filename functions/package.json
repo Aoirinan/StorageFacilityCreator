@@ -11,7 +11,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "test": "npm run build && node --test \"lib/test/**/*.test.js\"",
-    "check:quickbooks": "node scripts/quickbooks-readiness-check.mjs"
+    "check:quickbooks": "node scripts/quickbooks-readiness-check.mjs",
+    "migrate:email-limits": "node scripts/migrate_email_monthly_limits.js"
   },
   "engines": {
     "node": "22"

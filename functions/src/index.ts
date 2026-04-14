@@ -17,6 +17,7 @@ import {
   isStopKeyword,
 } from './texting_onboarding_helpers';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
+import { emailMonthlyLimitForAccount } from './constants/emailMonthlyLimits';
 
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
@@ -2297,16 +2298,11 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
     .collection('emailUsage')
     .doc(monthKey);
 
-  // First, check if we need to determine the limit
-  // Limits are sized to support a fully-active 200-tenant facility:
-  //   ~1,184 emails/month at max usage (payment reminders + digests + delinquency + misc)
-  // Paid: 5,000/month gives comfortable headroom up to ~800-tenant facilities
-  // Trial: 500/month allows meaningful testing without incurring significant cost
-  let defaultLimit = 5000; // Default for active subscribers
+  // Default cap when usage doc has no limit yet (see `./constants/emailMonthlyLimits.ts`).
+  let defaultLimit = emailMonthlyLimitForAccount(false);
   const usageDoc = await usageRef.get();
-  
+
   if (!usageDoc.exists || !usageDoc.data()?.emailMonthlyLimit) {
-    // Check if facility owner is on trial to set appropriate limit
     const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
     if (facilityDoc.exists) {
       const ownerUid = facilityDoc.data()?.ownerUid;
@@ -2316,12 +2312,12 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
           .where('ownerUid', '==', ownerUid)
           .limit(1)
           .get();
-        
+
         if (!accountSnapshot.empty) {
           const accountData = accountSnapshot.docs[0].data();
-          if (accountData.subscriptionStatus === 'trialing') {
-            defaultLimit = 500; // Trial limit — enough for real testing
-          }
+          defaultLimit = emailMonthlyLimitForAccount(
+            accountData.subscriptionStatus === 'trialing',
+          );
         }
       }
     }
