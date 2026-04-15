@@ -182,18 +182,25 @@ class InventoryService {
     }
   }
 
-  /// Get all products for a facility
+  static int _compareProductName(ProductModel a, ProductModel b) {
+    return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  }
+
+  /// Active products only. Sorted by name in memory so we do not require a
+  /// Firestore composite index on `isActive` + `name` (see failed-precondition in console).
   static Stream<List<ProductModel>> getProductsForFacilityStream(String facilityId) {
     return _firestore
         .collection('facilities')
         .doc(facilityId)
         .collection('products')
         .where('isActive', isEqualTo: true)
-        .orderBy('name')
         .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => ProductModel.fromFirestore(doc))
-            .toList());
+        .map((snapshot) {
+      final list =
+          snapshot.docs.map((doc) => ProductModel.fromFirestore(doc)).toList();
+      list.sort(_compareProductName);
+      return list;
+    });
   }
 
   /// Get products for a facility (list)
@@ -204,12 +211,12 @@ class InventoryService {
           .doc(facilityId)
           .collection('products')
           .where('isActive', isEqualTo: true)
-          .orderBy('name')
           .get();
 
-      return snapshot.docs
-          .map((doc) => ProductModel.fromFirestore(doc))
-          .toList();
+      final list =
+          snapshot.docs.map((doc) => ProductModel.fromFirestore(doc)).toList();
+      list.sort(_compareProductName);
+      return list;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [Inventory] Error getting products: $e');
