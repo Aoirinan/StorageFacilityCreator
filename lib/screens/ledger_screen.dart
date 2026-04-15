@@ -226,7 +226,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                _formatCurrency(_runningBalance),
+                                _formatLedgerBalance(_runningBalance),
                                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                                   color: _runningBalance >= 0 ? AppTheme.error : AppTheme.success,
                                   fontWeight: FontWeight.bold,
@@ -650,9 +650,15 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     }
   }
 
-  String _formatCurrency(double amount) {
-    final formatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
-    return formatter.format(amount);
+  /// Matches [LedgerEntry.formattedAmount]: owed (positive) as $X.XX, credits (negative) as ($X.XX).
+  String _formatLedgerBalance(double balance) {
+    if (balance > 0) {
+      return '\$${balance.toStringAsFixed(2)}';
+    }
+    if (balance < 0) {
+      return '(\$${balance.abs().toStringAsFixed(2)})';
+    }
+    return '\$0.00';
   }
 
   Future<void> _showPrintStatementDialog(BuildContext context) async {

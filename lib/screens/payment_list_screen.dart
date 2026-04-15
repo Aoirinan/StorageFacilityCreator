@@ -1330,53 +1330,71 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       builder: (context, ref, child) {
         return ref.watch(paymentListProvider(_selectedFacilityId)).when(
           data: (payments) {
-            final stats = ref.watch(paymentStatsProvider(_selectedFacilityId));
-            
-            return stats.when(
-              data: (statsData) => Container(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: _buildStatCard(
-                        'Total',
-                        '\$${statsData['total']?.toString() ?? '0'}',
-                        AppTheme.primaryBlue,
-                        statsData['total'] ?? 0,
-                      ),
+            // Same list as the table — dollar totals, not payment counts with a "$" prefix.
+            final active = payments.where((p) => p.isActive).toList();
+            final fmt = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+
+            final totalAmount =
+                active.fold<double>(0, (acc, p) => acc + p.amount);
+
+            final paidList = active.where((p) => p.isPaid).toList();
+            final paidAmount =
+                paidList.fold<double>(0, (acc, p) => acc + p.amount);
+
+            final pendingList = active
+                .where(
+                  (p) =>
+                      p.status == PaymentStatus.pending && !p.isOverdue,
+                )
+                .toList();
+            final pendingAmount =
+                pendingList.fold<double>(0, (acc, p) => acc + p.amount);
+
+            final overdueList = active.where((p) => p.isOverdue).toList();
+            final overdueAmount =
+                overdueList.fold<double>(0, (acc, p) => acc + p.amount);
+
+            return Container(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildStatCard(
+                      'Total',
+                      fmt.format(totalAmount),
+                      AppTheme.primaryBlue,
+                      active.length,
                     ),
-                                const SizedBox(width: AppConstants.spacingS),
-                    Expanded(
-                      child: _buildStatCard(
-                        'Paid',
-                        '\$${statsData['paid']?.toString() ?? '0'}',
-                        AppTheme.success,
-                        statsData['paid'] ?? 0,
-                      ),
+                  ),
+                  const SizedBox(width: AppConstants.spacingS),
+                  Expanded(
+                    child: _buildStatCard(
+                      'Paid',
+                      fmt.format(paidAmount),
+                      AppTheme.success,
+                      paidList.length,
                     ),
-                                const SizedBox(width: AppConstants.spacingS),
-                    Expanded(
-                      child: _buildStatCard(
-                        'Pending',
-                        '\$${statsData['pending']?.toString() ?? '0'}',
-                        AppTheme.warning,
-                        statsData['pending'] ?? 0,
-                      ),
+                  ),
+                  const SizedBox(width: AppConstants.spacingS),
+                  Expanded(
+                    child: _buildStatCard(
+                      'Pending',
+                      fmt.format(pendingAmount),
+                      AppTheme.warning,
+                      pendingList.length,
                     ),
-                                const SizedBox(width: AppConstants.spacingS),
-                    Expanded(
-                      child: _buildStatCard(
-                        'Overdue',
-                        '\$${statsData['overdue']?.toString() ?? '0'}',
-                        AppTheme.error,
-                        statsData['overdue'] ?? 0,
-                      ),
+                  ),
+                  const SizedBox(width: AppConstants.spacingS),
+                  Expanded(
+                    child: _buildStatCard(
+                      'Overdue',
+                      fmt.format(overdueAmount),
+                      AppTheme.error,
+                      overdueList.length,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (_, __) => const Center(child: Text('Error loading stats')),
             );
           },
           loading: () => const SizedBox.shrink(),
