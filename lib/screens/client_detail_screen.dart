@@ -30,7 +30,6 @@ import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
 import '../services/autopay_service.dart';
 import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../constants/location_options.dart';
@@ -1146,6 +1145,22 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                               foregroundColor: AppTheme.textOnDark,
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                             ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () {
+                              context.push(
+                                Uri(
+                                  path: AppRoute.pos,
+                                  queryParameters: {
+                                    'facilityId': tenant.facilityId,
+                                    'tenantId': tenant.id,
+                                  },
+                                ).toString(),
+                                extra: tenant,
+                              );
+                            },
+                            icon: const Icon(Icons.point_of_sale_outlined, size: 20),
+                            label: const Text('Store sale'),
                           ),
                         ],
                       ),

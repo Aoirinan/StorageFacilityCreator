@@ -572,7 +572,12 @@ class _PaymentReceiptDialog extends StatelessWidget {
         if (kIsWeb)
           OutlinedButton.icon(
             onPressed: () {
-              printWindow();
+              printPaymentReceipt(
+                tenantName: tenantName,
+                amountFormatted: '\$${amount.toStringAsFixed(2)}',
+                dateFormatted: _formatDate(DateTime.now()),
+                transactionId: transactionId,
+              );
             },
             icon: const Icon(Icons.print, size: 18),
             label: const Text('Print receipt'),

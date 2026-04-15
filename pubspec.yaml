@@ -2,7 +2,7 @@ name: sfcapp
 description: Storage Facility Creator - A comprehensive facility management app
 publish_to: 'none'
 
-version: 2.10.18+20260414
+version: 2.10.19+20260415
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

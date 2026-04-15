@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../constants/app_version.dart';
+import '../router/app_route.dart';
 import 'bug_report_dialog.dart';
 
 /// Modern sidebar navigation inspired by Storable's design
@@ -131,6 +132,16 @@ class ModernSidebar extends StatelessWidget {
                   isActive: isActive('/payments'),
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/payments'),
+                ),
+                _SidebarItem(
+                  icon: Icons.point_of_sale_outlined,
+                  activeIcon: Icons.point_of_sale,
+                  label: 'Retail',
+                  route: AppRoute.retail,
+                  isActive:
+                      isActive(AppRoute.pos) || isActive(AppRoute.inventory),
+                  isCollapsed: isCollapsed,
+                  onTap: () => onNavigate(AppRoute.retail),
                 ),
                 _SidebarItem(
                   icon: Icons.storefront_outlined,

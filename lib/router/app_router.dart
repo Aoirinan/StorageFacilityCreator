@@ -1487,7 +1487,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.inventory,
             name: 'inventory',
-            builder: (context, state) => const InventoryListScreen(),
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'];
+              return InventoryListScreen(initialFacilityId: facilityId);
+            },
           ),
           GoRoute(
             path: AppRoute.pos,

@@ -4,18 +4,13 @@ import 'package:go_router/go_router.dart';
 import '../models/product_model.dart';
 import '../models/sale_model.dart';
 import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
-import '../providers/facility_provider.dart';
-import '../providers/auth_provider.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/inventory_service.dart';
 import '../services/sale_service.dart';
 import '../providers/inventory_provider.dart';
 import '../services/tenant_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
+import '../router/app_route.dart';
 
 class POSScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -175,10 +170,22 @@ class _POSScreenState extends ConsumerState<POSScreen> {
   Widget build(BuildContext context) {
     return ModernPageWrapper(
       currentRoute: '/pos',
-      title: 'Point of Sale',
+      title: 'Retail (POS)',
       onNavigate: (route) {
         ModernNavigationService.navigateToRoute(context, route);
       },
+      actions: [
+        TextButton.icon(
+          onPressed: () => context.go(
+            Uri(
+              path: AppRoute.inventory,
+              queryParameters: {'facilityId': widget.facilityId},
+            ).toString(),
+          ),
+          icon: const Icon(Icons.inventory_2_outlined, size: 20),
+          label: const Text('Products & stock'),
+        ),
+      ],
       child: Row(
         children: [
           // Product Selection

@@ -42,6 +42,9 @@ class PaymentModel {
   final String? receiptUrl;
   final String? depositId; // Link to deposit if included in a deposit
   final Map<String, dynamic>? metadata;
+  /// Denormalized from tenant at payment time (`tenantName` / `unitNumber` in Firestore).
+  final String? snapshotTenantName;
+  final String? snapshotUnitNumber;
   final DateTime createdAt;
   final DateTime updatedAt;
   final String createdBy;
@@ -63,6 +66,8 @@ class PaymentModel {
     this.receiptUrl,
     this.depositId,
     this.metadata,
+    this.snapshotTenantName,
+    this.snapshotUnitNumber,
     required this.createdAt,
     required this.updatedAt,
     required this.createdBy,
@@ -85,6 +90,15 @@ class PaymentModel {
         DateTime.now();
     final createdAtValue = _readTimestamp(data['createdAt']) ?? DateTime.now();
     final updatedAtValue = _readTimestamp(data['updatedAt']) ?? createdAtValue;
+
+    String? readTrimmed(dynamic v) {
+      if (v == null) return null;
+      final s = v.toString().trim();
+      return s.isEmpty ? null : s;
+    }
+
+    final snapName = readTrimmed(data['tenantName']) ?? readTrimmed(data['payerName']);
+    final snapUnit = readTrimmed(data['unitNumber']) ?? readTrimmed(data['payerUnit']);
 
     return PaymentModel(
       id: doc.id,
@@ -110,6 +124,8 @@ class PaymentModel {
       metadata: data['metadata'] != null 
           ? Map<String, dynamic>.from(data['metadata'])
           : null,
+      snapshotTenantName: snapName,
+      snapshotUnitNumber: snapUnit,
       createdAt: createdAtValue,
       updatedAt: updatedAtValue,
       createdBy: data['createdBy'] ?? data['createdByUid'] ?? '',
@@ -133,6 +149,10 @@ class PaymentModel {
       'receiptUrl': receiptUrl,
       if (depositId != null && depositId!.isNotEmpty) 'depositId': depositId,
       'metadata': metadata,
+      if (snapshotTenantName != null && snapshotTenantName!.trim().isNotEmpty)
+        'tenantName': snapshotTenantName!.trim(),
+      if (snapshotUnitNumber != null && snapshotUnitNumber!.trim().isNotEmpty)
+        'unitNumber': snapshotUnitNumber!.trim(),
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
       'createdBy': createdBy,
@@ -156,6 +176,8 @@ class PaymentModel {
     String? receiptUrl,
     String? depositId,
     Map<String, dynamic>? metadata,
+    String? snapshotTenantName,
+    String? snapshotUnitNumber,
     DateTime? createdAt,
     DateTime? updatedAt,
     String? createdBy,
@@ -177,6 +199,8 @@ class PaymentModel {
       receiptUrl: receiptUrl ?? this.receiptUrl,
       depositId: depositId ?? this.depositId,
       metadata: metadata ?? this.metadata,
+      snapshotTenantName: snapshotTenantName ?? this.snapshotTenantName,
+      snapshotUnitNumber: snapshotUnitNumber ?? this.snapshotUnitNumber,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       createdBy: createdBy ?? this.createdBy,
@@ -186,6 +210,15 @@ class PaymentModel {
 
   // Helper getters
   String get formattedAmount => '\$${amount.toStringAsFixed(2)}';
+
+  /// Name and unit as recorded on the payment (preferred for display).
+  String? get snapshotPayerLine {
+    final n = snapshotTenantName?.trim();
+    if (n == null || n.isEmpty) return null;
+    final u = snapshotUnitNumber?.trim();
+    if (u != null && u.isNotEmpty) return '$n · Unit $u';
+    return n;
+  }
   
   bool get isOverdue => 
       status == PaymentStatus.pending && 

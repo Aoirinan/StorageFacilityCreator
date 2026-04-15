@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../providers/active_facility_provider.dart';
+import '../router/app_route.dart';
 import '../services/facility_service.dart';
 import '../screens/home_screen_modern_helper.dart';
 import 'debug_logger.dart';
@@ -119,6 +122,9 @@ class ModernNavigationService {
           break;
         case '/messaging':
           _navigateToCommsWithFacilitySelection(context);
+          break;
+        case AppRoute.retail:
+          _navigateToRetailPosWithFacilitySelection(context);
           break;
         case '/reminders':
           context.go('/reminders');
@@ -394,6 +400,67 @@ class ModernNavigationService {
       // #endregion
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error accessing messaging: $e')),
+      );
+    }
+  }
+
+  /// Opens POS: uses active facility when valid, else single facility, else picker.
+  static Future<void> _navigateToRetailPosWithFacilitySelection(
+      BuildContext context) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please sign in to use retail / POS')),
+        );
+        return;
+      }
+
+      final facilities = await FacilityService.getUserFacilities();
+      if (facilities.isEmpty) {
+        _showNoFacilitiesDialog(context, featureName: 'retail / point of sale');
+        return;
+      }
+
+      final facilityIds = facilities.map((f) => f.id).toSet();
+      String? chosenId;
+
+      try {
+        final container = ProviderScope.containerOf(context, listen: false);
+        final activeId =
+            container.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+        if (activeId != null &&
+            activeId.isNotEmpty &&
+            facilityIds.contains(activeId)) {
+          chosenId = activeId;
+        }
+      } catch (_) {
+        // No ProviderScope in context — fall through to picker / single facility
+      }
+
+      chosenId ??= facilities.length == 1 ? facilities.first.id : null;
+
+      if (chosenId == null) {
+        final selected = await showModalBottomSheet<FacilitySelectResult>(
+          context: context,
+          builder: (context) => FacilityPickerSheet(facilities: facilities),
+        );
+        chosenId = selected?.id;
+      }
+
+      if (chosenId != null &&
+          chosenId.isNotEmpty &&
+          context.mounted) {
+        context.go(
+          Uri(
+            path: AppRoute.pos,
+            queryParameters: {'facilityId': chosenId},
+          ).toString(),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error opening retail / POS: $e')),
       );
     }
   }

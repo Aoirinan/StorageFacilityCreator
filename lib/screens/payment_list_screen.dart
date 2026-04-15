@@ -1417,8 +1417,30 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   Widget _buildPaymentsList() {
     return Consumer(
       builder: (context, ref, child) {
-        return ref.watch(paymentListProvider(_selectedFacilityId)).when(
+        final paymentsAsync = ref.watch(paymentListProvider(_selectedFacilityId));
+        final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId));
+        return paymentsAsync.when(
           data: (payments) {
+            final tenantById = <String, TenantModel>{};
+            final tenants = tenantsAsync.valueOrNull;
+            if (tenants != null) {
+              for (final t in tenants) {
+                tenantById[t.id] = t;
+              }
+            }
+
+            String? tenantSubtitle(PaymentModel payment) {
+              final snap = payment.snapshotPayerLine;
+              if (snap != null) return snap;
+              final t = tenantById[payment.tenantId];
+              if (t != null) {
+                final u = t.unitNumber.trim();
+                return u.isNotEmpty ? '${t.name} · Unit $u' : t.name;
+              }
+              if (payment.tenantId.isEmpty) return null;
+              return 'Tenant ID: ${payment.tenantId}';
+            }
+
             // Apply filters
             final filteredPayments = payments.where((payment) {
               if (_selectedTenantIdFilter != null && payment.tenantId != _selectedTenantIdFilter) return false;
@@ -1428,13 +1450,24 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
               if (_methodFilter != null && payment.method != _methodFilter) return false;
               if (_searchQuery.isNotEmpty) {
                 final q = _searchQuery.toLowerCase();
+                final t = tenantById[payment.tenantId];
+                final tenantSearch = t == null
+                    ? ''
+                    : '${t.name} ${t.unitNumber}'.toLowerCase();
+                final snapSearch =
+                    '${payment.snapshotTenantName ?? ''} ${payment.snapshotUnitNumber ?? ''}'
+                        .toLowerCase();
                 if (!payment.formattedAmount.toLowerCase().contains(q) &&
                     !(payment.notes?.toLowerCase() ?? '').contains(q) &&
-                    !payment.tenantId.toLowerCase().contains(q)) return false;
+                    !payment.tenantId.toLowerCase().contains(q) &&
+                    !tenantSearch.contains(q) &&
+                    !snapSearch.contains(q)) {
+                  return false;
+                }
               }
               return true;
             }).toList();
-            
+
             if (filteredPayments.isEmpty) {
               return Center(
                 child: Column(
@@ -1459,12 +1492,12 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                 ),
               );
             }
-            
+
             return ListView.builder(
               itemCount: filteredPayments.length,
               itemBuilder: (context, index) {
                 final payment = filteredPayments[index];
-                return _buildPaymentCard(payment);
+                return _buildPaymentCard(payment, tenantSubtitle(payment));
               },
             );
           },
@@ -1504,7 +1537,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
     );
   }
 
-  Widget _buildPaymentCard(PaymentModel payment) {
+  Widget _buildPaymentCard(PaymentModel payment, String? tenantLine) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ListTile(
@@ -1524,6 +1557,15 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (tenantLine != null) ...[
+              Text(
+                tenantLine,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 4),
+            ],
             Text('Due: ${_formatDate(payment.dueDate)}'),
             if (payment.isOverdue)
               Text(
@@ -1531,7 +1573,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                 style: TextStyle(color: AppTheme.error),
               ),
             Text('Method: ${payment.methodDisplayName}'),
-            if (payment.notes != null)
+            if (payment.notes != null && payment.notes!.trim().isNotEmpty)
               Text('Notes: ${payment.notes}'),
           ],
         ),

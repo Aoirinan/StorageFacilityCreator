@@ -10,7 +10,7 @@ import '../services/inventory_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
+import '../router/app_route.dart';
 import '../widgets/product_dialog.dart';
 
 /// Provider for products stream (by facility)
@@ -19,7 +19,10 @@ final productsForFacilityProvider = StreamProvider.family<List<ProductModel>, St
 });
 
 class InventoryListScreen extends ConsumerStatefulWidget {
-  const InventoryListScreen({super.key});
+  /// When set (e.g. deep link from POS), selects this facility if the user has access.
+  final String? initialFacilityId;
+
+  const InventoryListScreen({super.key, this.initialFacilityId});
 
   @override
   ConsumerState<InventoryListScreen> createState() => _InventoryListScreenState();
@@ -62,7 +65,14 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
         if (facilities.isNotEmpty) {
           setState(() {
-            _selectedFacilityId = facilities.first.id;
+            final initial = widget.initialFacilityId;
+            if (initial != null &&
+                initial.isNotEmpty &&
+                facilities.any((f) => f.id == initial)) {
+              _selectedFacilityId = initial;
+            } else {
+              _selectedFacilityId = facilities.first.id;
+            }
           });
         }
       }
@@ -87,6 +97,18 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
         ModernNavigationService.navigateToRoute(context, route);
       },
       actions: [
+        IconButton(
+          icon: const Icon(Icons.point_of_sale_outlined),
+          onPressed: _selectedFacilityId.isEmpty
+              ? null
+              : () => context.go(
+                    Uri(
+                      path: AppRoute.pos,
+                      queryParameters: {'facilityId': _selectedFacilityId},
+                    ).toString(),
+                  ),
+          tooltip: 'Open POS',
+        ),
         IconButton(
           icon: const Icon(Icons.add),
           onPressed: () => _showAddProductDialog(),

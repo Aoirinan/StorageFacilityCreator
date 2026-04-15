@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/payment_model.dart';
+import '../models/tenant_model.dart';
 import '../providers/payment_provider.dart';
+import '../providers/tenant_provider.dart';
 import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
@@ -50,6 +52,23 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     );
   }
 
+  String _paymentHeaderTitle() {
+    final tenants = ref.watch(facilityTenantsProvider(widget.payment.facilityId)).valueOrNull;
+    var line = widget.payment.snapshotPayerLine;
+    if (line == null && tenants != null && widget.payment.tenantId.isNotEmpty) {
+      for (final t in tenants) {
+        if (t.id == widget.payment.tenantId) {
+          final u = t.unitNumber.trim();
+          line = u.isNotEmpty ? '${t.name} · Unit $u' : t.name;
+          break;
+        }
+      }
+    }
+    final base = 'Payment ${widget.payment.formattedAmount}';
+    if (line == null || line.isEmpty) return base;
+    return '$base · $line';
+  }
+
   Widget _buildHeader() {
     final cs = Theme.of(context).colorScheme;
     return Container(
@@ -71,7 +90,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Payment ${widget.payment.formattedAmount}',
+              _paymentHeaderTitle(),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
@@ -207,6 +228,23 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     final transactionId = widget.payment.transactionId ??
         widget.payment.externalPaymentId ??
         '—';
+    final tenants = ref.watch(facilityTenantsProvider(widget.payment.facilityId)).valueOrNull;
+    TenantModel? tenant;
+    if (tenants != null) {
+      for (final t in tenants) {
+        if (t.id == widget.payment.tenantId) {
+          tenant = t;
+          break;
+        }
+      }
+    }
+    final snapName = widget.payment.snapshotTenantName?.trim();
+    final tenantLabel = (snapName != null && snapName.isNotEmpty)
+        ? snapName
+        : (tenant?.name ??
+            (widget.payment.tenantId.isEmpty ? '—' : 'Unknown tenant (${widget.payment.tenantId})'));
+    final unitVal = (widget.payment.snapshotUnitNumber ?? tenant?.unitNumber ?? '').trim();
+    final metadataPurpose = _paymentMetadataPurpose(widget.payment.metadata);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -233,6 +271,11 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
             ),
           ),
           const SizedBox(height: 20),
+          _buildInfoRow('Tenant', tenantLabel),
+          if (unitVal.isNotEmpty) _buildInfoRow('Unit', unitVal),
+          if (widget.payment.contractId.trim().isNotEmpty)
+            _buildInfoRow('Contract', widget.payment.contractId.trim()),
+          if (metadataPurpose != null) _buildInfoRow('Details', metadataPurpose),
           _buildInfoRow('Amount', widget.payment.formattedAmount),
           _buildInfoRow('Method', widget.payment.methodDisplayName),
           _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),
@@ -257,6 +300,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
               style: TextStyle(
                 fontSize: 14,
                 color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
+          if (metadataPurpose == null &&
+              (widget.payment.notes == null || widget.payment.notes!.trim().isEmpty)) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Without a linked invoice line item, this amount is credited to the tenant’s account. '
+              'Open the tenant’s ledger to see how it was applied to charges.',
+              style: TextStyle(
+                fontSize: 13,
+                color: cs.onSurfaceVariant,
+                height: 1.35,
               ),
             ),
           ],
@@ -529,6 +585,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.cancelled:
         return Icons.cancel_outlined;
     }
+  }
+
+  /// Optional invoice / description fields sometimes stored on payment metadata.
+  String? _paymentMetadataPurpose(Map<String, dynamic>? metadata) {
+    if (metadata == null || metadata.isEmpty) return null;
+    const keys = ['invoiceNumber', 'invoiceId', 'statementDescription', 'description', 'purpose'];
+    for (final k in keys) {
+      final v = metadata[k];
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return null;
   }
 
   String _formatDate(DateTime date) {

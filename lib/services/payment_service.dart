@@ -515,6 +515,8 @@ class PaymentService {
 
       final tenantData = tenantDoc.data()!;
       final contractId = tenantData['contractId'] as String? ?? '';
+      final snapshotName = (tenantData['name'] as String?)?.trim() ?? '';
+      final snapshotUnit = (tenantData['unitNumber'] as String?)?.trim() ?? '';
       final now = DateTime.now();
       final nowTimestamp = Timestamp.fromDate(now);
 
@@ -527,6 +529,8 @@ class PaymentService {
         'tenantId': tenantId,
         'facilityId': facilityId,
         'contractId': contractId,
+        if (snapshotName.isNotEmpty) 'tenantName': snapshotName,
+        if (snapshotUnit.isNotEmpty) 'unitNumber': snapshotUnit,
         'amount': amount,
         'status': 'completed',
         'method': method.name,
