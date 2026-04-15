@@ -160,13 +160,13 @@ void printPaymentReceipt({
 
   iframe.onLoad.listen((_) {
     final cw = iframe.contentWindow;
-    if (cw == null) {
+    if (cw is! html.Window) {
       cleanup();
       return;
     }
-    cw.onAfterPrint.listen((_) => cleanup());
     cw.print();
-    // Some browsers omit afterPrint; avoid leaking the iframe if it never fires.
+    // dart:html does not expose onAfterPrint on Window; clean up shortly after the dialog closes.
+    Future<void>.delayed(const Duration(seconds: 1), cleanup);
     Future<void>.delayed(const Duration(seconds: 60), cleanup);
   });
 }

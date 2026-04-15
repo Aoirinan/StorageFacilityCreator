@@ -1422,7 +1422,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         return paymentsAsync.when(
           data: (payments) {
             final tenantById = <String, TenantModel>{};
-            final tenants = tenantsAsync.valueOrNull;
+            final tenants = tenantsAsync.whenOrNull(data: (v) => v);
             if (tenants != null) {
               for (final t in tenants) {
                 tenantById[t.id] = t;

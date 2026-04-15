@@ -53,7 +53,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   String _paymentHeaderTitle() {
-    final tenants = ref.watch(facilityTenantsProvider(widget.payment.facilityId)).valueOrNull;
+    final tenants = ref
+        .watch(facilityTenantsProvider(widget.payment.facilityId))
+        .whenOrNull(data: (v) => v);
     var line = widget.payment.snapshotPayerLine;
     if (line == null && tenants != null && widget.payment.tenantId.isNotEmpty) {
       for (final t in tenants) {
@@ -228,7 +230,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     final transactionId = widget.payment.transactionId ??
         widget.payment.externalPaymentId ??
         '—';
-    final tenants = ref.watch(facilityTenantsProvider(widget.payment.facilityId)).valueOrNull;
+    final tenants = ref
+        .watch(facilityTenantsProvider(widget.payment.facilityId))
+        .whenOrNull(data: (v) => v);
     TenantModel? tenant;
     if (tenants != null) {
       for (final t in tenants) {
