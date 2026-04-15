@@ -8,8 +8,6 @@ import '../providers/auth_provider.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/inventory_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
 import '../widgets/product_dialog.dart';
 
@@ -90,42 +88,59 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/inventory',
-      title: 'Inventory',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.point_of_sale_outlined),
-          onPressed: _selectedFacilityId.isEmpty
-              ? null
-              : () => context.go(
-                    Uri(
-                      path: AppRoute.pos,
-                      queryParameters: {'facilityId': _selectedFacilityId},
-                    ).toString(),
-                  ),
-          tooltip: 'Open POS',
-        ),
-        IconButton(
-          icon: const Icon(Icons.add),
-          onPressed: () => _showAddProductDialog(),
-          tooltip: 'Add Product',
-        ),
-      ],
-      child: _selectedFacilityId.isEmpty
-          ? _buildNoFacilitiesMessage()
-          : Column(
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Material(
+          color: cs.surface,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            child: Row(
               children: [
-                _buildFilters(),
-                _buildStats(),
-                Expanded(
-                  child: _buildProductsList(),
+                Text(
+                  'Inventory',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                      ),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.point_of_sale_outlined),
+                  onPressed: _selectedFacilityId.isEmpty
+                      ? null
+                      : () => context.go(
+                            Uri(
+                              path: AppRoute.pos,
+                              queryParameters: {'facilityId': _selectedFacilityId},
+                            ).toString(),
+                          ),
+                  tooltip: 'Open POS',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add),
+                  onPressed: () => _showAddProductDialog(),
+                  tooltip: 'Add Product',
                 ),
               ],
             ),
+          ),
+        ),
+        Divider(height: 1, color: Theme.of(context).dividerColor),
+        Expanded(
+          child: _selectedFacilityId.isEmpty
+              ? _buildNoFacilitiesMessage()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildFilters(),
+                    _buildStats(),
+                    Expanded(child: _buildProductsList()),
+                  ],
+                ),
+        ),
+      ],
     );
   }
 

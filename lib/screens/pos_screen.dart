@@ -8,8 +8,6 @@ import '../services/sale_service.dart';
 import '../providers/inventory_provider.dart';
 import '../services/tenant_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
 
 class POSScreen extends ConsumerStatefulWidget {
@@ -168,38 +166,51 @@ class _POSScreenState extends ConsumerState<POSScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ModernPageWrapper(
-      currentRoute: '/pos',
-      title: 'Retail (POS)',
-      onNavigate: (route) {
-        ModernNavigationService.navigateToRoute(context, route);
-      },
-      actions: [
-        TextButton.icon(
-          onPressed: () => context.go(
-            Uri(
-              path: AppRoute.inventory,
-              queryParameters: {'facilityId': widget.facilityId},
-            ).toString(),
+    // AppShell (ShellRoute) already provides sidebar + global top bar. Do not nest
+    // ModernPageWrapper/Scaffold here — it collapses the body to a blank area.
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Material(
+          color: cs.surface,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            child: Row(
+              children: [
+                Text(
+                  'Retail (POS)',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                      ),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => context.go(
+                    Uri(
+                      path: AppRoute.inventory,
+                      queryParameters: {'facilityId': widget.facilityId},
+                    ).toString(),
+                  ),
+                  icon: const Icon(Icons.inventory_2_outlined, size: 20),
+                  label: const Text('Products & stock'),
+                ),
+              ],
+            ),
           ),
-          icon: const Icon(Icons.inventory_2_outlined, size: 20),
-          label: const Text('Products & stock'),
+        ),
+        Divider(height: 1, color: Theme.of(context).dividerColor),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(flex: 2, child: _buildProductSelection()),
+              Expanded(flex: 1, child: _buildCart()),
+            ],
+          ),
         ),
       ],
-      child: Row(
-        children: [
-          // Product Selection
-          Expanded(
-            flex: 2,
-            child: _buildProductSelection(),
-          ),
-          // Cart and Checkout
-          Expanded(
-            flex: 1,
-            child: _buildCart(),
-          ),
-        ],
-      ),
     );
   }
 
@@ -253,18 +264,42 @@ class _POSScreenState extends ConsumerState<POSScreen> {
             data: (products) {
               if (products.isEmpty) {
                 return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.inventory_2, size: 64, color: AppTheme.textTertiary),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No products available',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: AppTheme.textSecondary,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.inventory_2, size: 64, color: AppTheme.textTertiary),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No products yet',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                color: AppTheme.textSecondary,
+                                fontWeight: FontWeight.w600,
+                              ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          'Add locks, boxes, and other retail SKUs under Products & stock.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: AppTheme.textTertiary,
+                              ),
+                        ),
+                        const SizedBox(height: 20),
+                        FilledButton.icon(
+                          onPressed: () => context.go(
+                            Uri(
+                              path: AppRoute.inventory,
+                              queryParameters: {'facilityId': widget.facilityId},
+                            ).toString(),
+                          ),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add products'),
+                        ),
+                      ],
+                    ),
                   ),
                 );
               }
