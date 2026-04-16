@@ -247,6 +247,7 @@ class ReminderService {
     String? title,
     String? message,
     DateTime? scheduledFor,
+    DateTime? readAt,
     List<ReminderChannel>? channels,
     Map<String, dynamic>? metadata,
   }) async {
@@ -267,6 +268,7 @@ class ReminderService {
       if (title != null) updateData['title'] = title;
       if (message != null) updateData['message'] = message;
       if (scheduledFor != null) updateData['scheduledFor'] = Timestamp.fromDate(scheduledFor);
+      if (readAt != null) updateData['readAt'] = Timestamp.fromDate(readAt);
       if (channels != null) updateData['channels'] = channels.map((c) => c.name).toList();
       if (metadata != null) updateData['metadata'] = metadata;
 

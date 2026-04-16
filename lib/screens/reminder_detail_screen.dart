@@ -1,15 +1,16 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../models/permission_model.dart';
 import '../models/reminder_model.dart';
 import '../providers/reminder_provider.dart';
+import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
 
 class ReminderDetailScreen extends ConsumerStatefulWidget {
   final ReminderModel reminder;
-  
+
   const ReminderDetailScreen({
     super.key,
     required this.reminder,
@@ -20,25 +21,88 @@ class ReminderDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
+  bool _permissionsLoaded = false;
+  bool _canDeleteReminder = false;
+  bool _canMutateReminder = false;
+  String _creatorLabel = '…';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCreatorAndPermissions();
+  }
+
+  Future<void> _loadCreatorAndPermissions() async {
+    final facilityId = widget.reminder.facilityId;
+    final deleteCheck = await PermissionService.hasPermission(
+      permission: PermissionType.deleteReminder,
+      facilityId: facilityId,
+    );
+    final editCheck = await PermissionService.hasPermission(
+      permission: PermissionType.editReminder,
+      facilityId: facilityId,
+    );
+    final createCheck = await PermissionService.hasPermission(
+      permission: PermissionType.createReminder,
+      facilityId: facilityId,
+    );
+
+    String creatorLabel = 'Not recorded';
+    final uid = widget.reminder.createdBy.trim();
+    if (uid.isNotEmpty) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+        final data = doc.data();
+        if (data != null) {
+          final name = (data['displayName'] as String?)?.trim() ??
+              (data['name'] as String?)?.trim() ??
+              (data['email'] as String?)?.trim();
+          if (name != null && name.isNotEmpty) {
+            creatorLabel = name;
+          } else {
+            creatorLabel = _shortUid(uid);
+          }
+        } else {
+          creatorLabel = _shortUid(uid);
+        }
+      } catch (_) {
+        creatorLabel = _shortUid(uid);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _permissionsLoaded = true;
+      _canDeleteReminder = deleteCheck.hasPermission;
+      _canMutateReminder = editCheck.hasPermission || createCheck.hasPermission;
+      _creatorLabel = creatorLabel;
+    });
+  }
+
+  String _shortUid(String uid) {
+    if (uid.length <= 8) return uid;
+    return 'User …${uid.substring(uid.length - 6)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildStatusCard(),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildStatusCard(),
+          const SizedBox(height: 16),
+          _buildReminderInfo(),
+          const SizedBox(height: 16),
+          _buildTimeline(),
+          if (widget.reminder.metadata != null) ...[
             const SizedBox(height: 16),
-            _buildReminderInfo(),
-            const SizedBox(height: 16),
-            _buildTimeline(),
-            if (widget.reminder.metadata != null) ...[
-              const SizedBox(height: 16),
-              _buildMetadataSection(),
-            ],
+            _buildMetadataSection(),
           ],
-        ),
-      );
+        ],
+      ),
+    );
   }
 
   Widget _buildStatusCard() {
@@ -47,6 +111,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             CircleAvatar(
               backgroundColor: _getStatusColor(widget.reminder.status),
@@ -63,15 +128,15 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                   Text(
                     widget.reminder.statusDisplayName,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: _getStatusColor(widget.reminder.status),
-                      fontWeight: FontWeight.bold,
-                    ),
+                          color: _getStatusColor(widget.reminder.status),
+                          fontWeight: FontWeight.bold,
+                        ),
                   ),
                   Text(
                     widget.reminder.title,
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                          fontWeight: FontWeight.bold,
+                        ),
                   ),
                   if (widget.reminder.isOverdue)
                     Text(
@@ -84,9 +149,116 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                 ],
               ),
             ),
+            _buildReminderActionsMenu(),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildReminderActionsMenu() {
+    if (!_permissionsLoaded) {
+      return const Padding(
+        padding: EdgeInsets.only(left: 4),
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Center(
+            child: SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final items = <PopupMenuEntry<String>>[];
+    final r = widget.reminder;
+
+    if (_canMutateReminder && r.status == ReminderStatus.pending) {
+      items.add(
+        const PopupMenuItem(
+          value: 'send',
+          child: Row(
+            children: [
+              Icon(Icons.send, size: 20),
+              SizedBox(width: 12),
+              Text('Send now'),
+            ],
+          ),
+        ),
+      );
+      items.add(
+        const PopupMenuItem(
+          value: 'mark_sent',
+          child: Row(
+            children: [
+              Icon(Icons.mark_email_read_outlined, size: 20),
+              SizedBox(width: 12),
+              Text('Mark as sent'),
+            ],
+          ),
+        ),
+      );
+      items.add(
+        const PopupMenuItem(
+          value: 'cancel',
+          child: Row(
+            children: [
+              Icon(Icons.cancel_outlined, size: 20),
+              SizedBox(width: 12),
+              Text('Cancel reminder'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_canMutateReminder &&
+        r.status == ReminderStatus.sent &&
+        r.readAt == null) {
+      items.add(
+        const PopupMenuItem(
+          value: 'mark_read',
+          child: Row(
+            children: [
+              Icon(Icons.done_all, size: 20),
+              SizedBox(width: 12),
+              Text('Mark as read'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_canDeleteReminder) {
+      if (items.isNotEmpty) {
+        items.add(const PopupMenuDivider());
+      }
+      items.add(
+        const PopupMenuItem(
+          value: 'delete',
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline, size: 20, color: AppTheme.error),
+              SizedBox(width: 12),
+              Text('Delete', style: TextStyle(color: AppTheme.error)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      onSelected: _handleMenuAction,
+      itemBuilder: (context) => items,
     );
   }
 
@@ -100,8 +272,8 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             Text(
               'Reminder Information',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
             const SizedBox(height: 16),
             _buildInfoRow('Type', widget.reminder.type.displayName),
@@ -113,13 +285,14 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             if (widget.reminder.readAt != null)
               _buildInfoRow('Read At', _formatDateTime(widget.reminder.readAt!)),
             _buildInfoRow('Created', _formatDateTime(widget.reminder.createdAt)),
+            _buildInfoRow('Created by', _creatorLabel),
             _buildInfoRow('Updated', _formatDateTime(widget.reminder.updatedAt)),
             const SizedBox(height: 16),
             Text(
               'Message',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
             const SizedBox(height: 8),
             Container(
@@ -152,8 +325,8 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             child: Text(
               '$label:',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w500,
-              ),
+                    fontWeight: FontWeight.w500,
+                  ),
             ),
           ),
           Expanded(
@@ -177,8 +350,8 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             Text(
               'Timeline',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
             const SizedBox(height: 16),
             _buildTimelineItem(
@@ -227,14 +400,14 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                 Text(
                   title,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500,
-                  ),
+                        fontWeight: FontWeight.w500,
+                      ),
                 ),
                 Text(
                   date,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppTheme.textSecondary,
-                  ),
+                        color: AppTheme.textSecondary,
+                      ),
                 ),
               ],
             ),
@@ -254,8 +427,8 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
             Text(
               'Metadata',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
             const SizedBox(height: 16),
             Container(
@@ -269,8 +442,8 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
               child: Text(
                 widget.reminder.metadata.toString(),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
-                ),
+                      fontFamily: 'monospace',
+                    ),
               ),
             ),
           ],
@@ -309,6 +482,36 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
     return '${date.month}/${date.day}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
+  void _handleMenuAction(String action) {
+    switch (action) {
+      case 'send':
+        _sendReminder();
+        break;
+      case 'mark_sent':
+        _markAsSent();
+        break;
+      case 'mark_read':
+        _markAsRead();
+        break;
+      case 'cancel':
+        _cancelReminder();
+        break;
+      case 'delete':
+        _deleteReminder();
+        break;
+    }
+  }
+
+  void _showError(Object e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Something went wrong: $e'),
+        backgroundColor: AppTheme.error,
+      ),
+    );
+  }
+
   void _sendReminder() {
     showDialog(
       context: context,
@@ -323,19 +526,22 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(reminderOperationsProvider.notifier).sendReminder(
-                facilityId: widget.reminder.facilityId,
-                reminderId: widget.reminder.id,
-                tenantEmail: widget.reminder.tenantEmail ?? '',
-                tenantPhone: widget.reminder.tenantPhone ?? '',
-                message: widget.reminder.message,
-                channels: widget.reminder.channels,
-              );
-              if (mounted) {
-                Navigator.of(context).pop();
+              try {
+                await ref.read(reminderOperationsProvider.notifier).sendReminder(
+                      facilityId: widget.reminder.facilityId,
+                      reminderId: widget.reminder.id,
+                      tenantEmail: widget.reminder.tenantEmail ?? '',
+                      tenantPhone: widget.reminder.tenantPhone ?? '',
+                      message: widget.reminder.message,
+                      channels: widget.reminder.channels,
+                    );
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Reminder sent successfully')),
                 );
+                context.pop();
+              } catch (e) {
+                _showError(e);
               }
             },
             child: const Text('Send'),
@@ -343,23 +549,6 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
         ],
       ),
     );
-  }
-
-  void _handleMenuAction(String action) {
-    switch (action) {
-      case 'mark_sent':
-        _markAsSent();
-        break;
-      case 'mark_read':
-        _markAsRead();
-        break;
-      case 'cancel':
-        _cancelReminder();
-        break;
-      case 'delete':
-        _deleteReminder();
-        break;
-    }
   }
 
   void _markAsSent() {
@@ -376,12 +565,18 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(reminderOperationsProvider.notifier).markAsSent(widget.reminder.facilityId, widget.reminder.id);
-              if (mounted) {
-                Navigator.of(context).pop();
+              try {
+                await ref.read(reminderOperationsProvider.notifier).markAsSent(
+                      widget.reminder.facilityId,
+                      widget.reminder.id,
+                    );
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Reminder marked as sent')),
                 );
+                context.pop();
+              } catch (e) {
+                _showError(e);
               }
             },
             child: const Text('Mark as Sent'),
@@ -405,12 +600,18 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(reminderOperationsProvider.notifier).markAsRead(widget.reminder.facilityId, widget.reminder.id);
-              if (mounted) {
-                Navigator.of(context).pop();
+              try {
+                await ref.read(reminderOperationsProvider.notifier).markAsRead(
+                      widget.reminder.facilityId,
+                      widget.reminder.id,
+                    );
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Reminder marked as read')),
                 );
+                context.pop();
+              } catch (e) {
+                _showError(e);
               }
             },
             child: const Text('Mark as Read'),
@@ -434,12 +635,18 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(reminderOperationsProvider.notifier).cancelReminder(widget.reminder.facilityId, widget.reminder.id);
-              if (mounted) {
-                Navigator.of(context).pop();
+              try {
+                await ref.read(reminderOperationsProvider.notifier).cancelReminder(
+                      widget.reminder.facilityId,
+                      widget.reminder.id,
+                    );
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Reminder cancelled')),
                 );
+                context.pop();
+              } catch (e) {
+                _showError(e);
               }
             },
             child: const Text('Yes'),
@@ -463,12 +670,18 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(reminderOperationsProvider.notifier).deleteReminder(widget.reminder.facilityId, widget.reminder.id);
-              if (mounted) {
-                Navigator.of(context).pop();
+              try {
+                await ref.read(reminderOperationsProvider.notifier).deleteReminder(
+                      widget.reminder.facilityId,
+                      widget.reminder.id,
+                    );
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Reminder deleted')),
                 );
+                context.pop();
+              } catch (e) {
+                _showError(e);
               }
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),

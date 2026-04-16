@@ -2,22 +2,22 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.21';
+  static const String version = '2.10.22';
 
   // Build number (YYYYMMDD format for easy identification)
-  static const String buildNumber = '20260417';
+  static const String buildNumber = '20260418';
 
   // Full version string
   static const String fullVersion = '$version+$buildNumber';
 
   // Deployment date/time (update on each deploy)
-  static const String deploymentDate = '2026-04-16';
+  static const String deploymentDate = '2026-04-18';
   static const String deploymentTime =
-      'Platform-wide Global DNR: screening merges global_dnr_entries; copy and rules comments; build 20260417';
+      'Reminders: detail actions wired to Firestore (send, mark sent/read, cancel); readAt on update; permissions and creator label; build 20260418';
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Global DNR is platform-wide across all SFC operators; contract and DNR screening include global_dnr_entries';
+      'Reminder detail screen revisions: real mark-as-sent/read/cancel, readAt persistence, permission-gated menu, creator resolution, error handling';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';

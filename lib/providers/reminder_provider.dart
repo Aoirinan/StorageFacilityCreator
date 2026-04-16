@@ -92,9 +92,11 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   Future<void> updateReminder({
     required String facilityId,
     required String reminderId,
+    ReminderStatus? status,
     String? title,
     String? message,
     DateTime? scheduledFor,
+    DateTime? readAt,
     List<ReminderChannel>? channels,
     Map<String, dynamic>? metadata,
   }) async {
@@ -103,9 +105,11 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       await ReminderService.updateReminder(
         facilityId: facilityId,
         reminderId: reminderId,
+        status: status,
         title: title,
         message: message,
         scheduledFor: scheduledFor,
+        readAt: readAt,
         channels: channels,
         metadata: metadata,
       );
@@ -178,7 +182,10 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   Future<void> markAsSent(String facilityId, String reminderId) async {
     state = const AsyncValue.loading();
     try {
-      // Mark as sent logic here - would need to implement in service
+      await ReminderService.markReminderAsSent(
+        facilityId: facilityId,
+        reminderId: reminderId,
+      );
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
@@ -188,7 +195,11 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   Future<void> markAsRead(String facilityId, String reminderId) async {
     state = const AsyncValue.loading();
     try {
-      // Mark as read logic here - would need to implement in service
+      await ReminderService.updateReminder(
+        facilityId: facilityId,
+        reminderId: reminderId,
+        readAt: DateTime.now(),
+      );
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
@@ -198,7 +209,11 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   Future<void> cancelReminder(String facilityId, String reminderId) async {
     state = const AsyncValue.loading();
     try {
-      // Cancel reminder logic here - would need to implement in service
+      await ReminderService.updateReminder(
+        facilityId: facilityId,
+        reminderId: reminderId,
+        status: ReminderStatus.cancelled,
+      );
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
