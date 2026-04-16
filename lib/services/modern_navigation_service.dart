@@ -135,6 +135,9 @@ class ModernNavigationService {
         case '/calendar':
           context.go('/calendar');
           break;
+        case AppRoute.managerOverlock:
+          context.go(AppRoute.managerOverlock);
+          break;
         case '/ai-assistant':
           context.go('/ai-assistant');
           break;
