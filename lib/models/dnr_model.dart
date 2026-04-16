@@ -1,6 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'package:sfcapp/models/global_dnr_model.dart';
+
 class DNRModel {
+  /// Synthetic [facilityId] for rows sourced from Firestore `global_dnr_entries`.
+  static const String platformWideDnrFacilityId = 'platform_dnr';
+
   final String id;
   final String name;
   final String nameLower;
@@ -50,6 +55,41 @@ class DNRModel {
     this.linkedTenantId,
     this.linkedTenantName,
   });
+
+  /// Map a platform-wide global DNR row into the shared [DNRModel] shape for screening UI.
+  factory DNRModel.fromGlobalDnrEntry(GlobalDNREntryModel e) {
+    final fn = e.fullName.trim();
+    final em = e.email.trim();
+    final phoneDigits = e.phone.replaceAll(RegExp(r'[^\d]'), '');
+    final reporting = e.createdByFacilityName?.trim();
+    return DNRModel(
+      id: e.id,
+      name: fn,
+      nameLower: fn.toLowerCase(),
+      email: em,
+      emailLower: em.toLowerCase(),
+      phone: e.phone,
+      phoneDigits: phoneDigits,
+      reason: e.reason,
+      active: e.isActive,
+      expiresAt: null,
+      evidenceUrls: null,
+      addedAt: e.createdAt,
+      addedByUid: e.createdByUserId,
+      addedByEmail: null,
+      addedByName: null,
+      facilityId: platformWideDnrFacilityId,
+      facilityName: reporting != null && reporting.isNotEmpty
+          ? 'SFC platform-wide · reported by $reporting'
+          : 'SFC platform-wide',
+      ownerEmail: null,
+      facilityPhone: null,
+      updatedAt: e.updatedAt,
+      updatedByUid: null,
+      linkedTenantId: null,
+      linkedTenantName: null,
+    );
+  }
 
   factory DNRModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
@@ -176,4 +216,6 @@ class DNRModel {
   }
   
   bool get isActive => active && !isExpired;
+
+  bool get isPlatformWideDnr => facilityId == platformWideDnrFacilityId;
 }

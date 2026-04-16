@@ -2120,7 +2120,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This tenant matches ${matches.length} active DNR entr${matches.length == 1 ? 'y' : 'ies'} from ${matches.map((m) => m.facilityName ?? 'Unknown Facility').toSet().length} different facilit${matches.map((m) => m.facilityName ?? 'Unknown Facility').toSet().length == 1 ? 'y' : 'ies'}:',
+                  "This tenant matches ${matches.length} active DNR entr${matches.length == 1 ? 'y' : 'ies'} (your organization's facility list and/or the SFC platform-wide list):",
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 16),

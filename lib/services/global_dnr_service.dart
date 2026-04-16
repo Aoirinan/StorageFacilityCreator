@@ -7,7 +7,7 @@ import '../models/global_dnr_model.dart';
 import 'facility_service.dart';
 
 /// Service for the global DNR collection (global_dnr_entries).
-/// Shared across all facilities; does not replace facility-scoped DNR.
+/// Shared across every authenticated SFC operator (single Firestore collection); does not replace facility-scoped DNR.
 class GlobalDNRService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -39,6 +39,54 @@ class GlobalDNRService {
     if (dob != null && dob.isNotEmpty) tokens.add(dob.trim());
     if (last4 != null && last4.length >= 4) tokens.add(last4.trim());
     return tokens.toList()..sort();
+  }
+
+  /// Same fuzzy name/email/phone rules as facility DNR screening (`findDNRMatches`).
+  static bool globalEntryMatchesTenantSearch({
+    required GlobalDNREntryModel entry,
+    String? name,
+    String? email,
+    String? phone,
+  }) {
+    if (!entry.isActive) return false;
+    var isMatch = false;
+    if (name != null && name.isNotEmpty) {
+      final nameLower = name.toLowerCase();
+      final entryNameLower = entry.fullName.toLowerCase();
+      if (entryNameLower.contains(nameLower) || nameLower.contains(entryNameLower)) {
+        isMatch = true;
+      }
+    }
+    if (email != null && email.isNotEmpty) {
+      final emailLower = email.toLowerCase();
+      final entryEmail = entry.email.toLowerCase();
+      if (entryEmail.contains(emailLower) || emailLower.contains(entryEmail)) {
+        isMatch = true;
+      }
+    }
+    if (phone != null && phone.isNotEmpty) {
+      final phoneDigits = phone.replaceAll(RegExp(r'[^\d]'), '');
+      if (phoneDigits.isNotEmpty) {
+        final entryDigits = entry.phone.replaceAll(RegExp(r'[^\d]'), '');
+        if (entryDigits.endsWith(phoneDigits) || phoneDigits.endsWith(entryDigits)) {
+          isMatch = true;
+        }
+      }
+    }
+    return isMatch;
+  }
+
+  /// Active platform-wide DNR rows that match the given tenant fields (client-side filter).
+  static Future<List<GlobalDNREntryModel>> findActiveMatchingEntries({
+    String? name,
+    String? email,
+    String? phone,
+    int fetchLimit = 500,
+  }) async {
+    final all = await getGlobalDNREntries(limit: fetchLimit, status: GlobalDnrStatus.active);
+    return all
+        .where((e) => globalEntryMatchesTenantSearch(entry: e, name: name, email: email, phone: phone))
+        .toList();
   }
 
   /// Create a global DNR entry. Caller must be owner/manager of createdByFacilityId (enforced by rules).

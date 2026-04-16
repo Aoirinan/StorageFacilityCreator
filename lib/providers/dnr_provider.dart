@@ -6,7 +6,7 @@ import '../models/global_dnr_model.dart';
 import '../services/dnr_service.dart';
 import '../services/global_dnr_service.dart';
 
-// ----- Global DNR (global_dnr_entries collection) - shared across facilities -----
+// ----- Global DNR (global_dnr_entries) - platform-wide across all SFC operators -----
 
 /// Global DNR list from the dedicated global collection (fixes permission-denied).
 /// Use this when "All Facilities" is selected in the DNR screen.

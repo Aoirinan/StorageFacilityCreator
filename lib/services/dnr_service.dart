@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/dnr_model.dart';
 import 'facility_service.dart';
+import 'global_dnr_service.dart';
 import 'audit_service.dart';
 import 'email_service.dart';
 
@@ -277,7 +278,7 @@ class DNRService {
     }
   }
 
-  // Check DNR screening for a person (GLOBAL SEARCH across all facilities)
+  // Check DNR screening for a person (facility DNR via collectionGroup + platform-wide global_dnr_entries)
   static Future<List<DNRModel>> checkDNRScreening({
     required String facilityId, // Kept for context/logging, but search is global
     required String name,
@@ -343,11 +344,28 @@ class DNRService {
         return true;
       }).toList();
 
-      if (kDebugMode) {
-        print('🔍 [GLOBAL DNR] Found ${activeMatches.length} active DNR matches across all facilities');
+      List<DNRModel> combined = activeMatches;
+      try {
+        final platformGlobals = await GlobalDNRService.findActiveMatchingEntries(
+          name: name,
+          email: email,
+          phone: phone,
+        );
+        combined = [
+          ...activeMatches,
+          ...platformGlobals.map(DNRModel.fromGlobalDnrEntry),
+        ];
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Error checking platform-wide DNR screening: $e');
+        }
       }
 
-      return activeMatches;
+      if (kDebugMode) {
+        print('🔍 [GLOBAL DNR] Found ${combined.length} active DNR matches (facilities + platform-wide)');
+      }
+
+      return combined;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error checking DNR screening: $e');
@@ -570,7 +588,7 @@ class DNRService {
     return await getDNREntriesForFacility(facilityId: facilityId);
   }
 
-  // Find DNR matches for enforcement (GLOBAL SEARCH across all facilities)
+  // Find DNR matches for enforcement (collectionGroup dnr + platform-wide global_dnr_entries)
   static Future<List<DNRModel>> findDNRMatches({
     required String facilityId, // Kept for context/logging, but search is global
     String? name,
@@ -640,8 +658,23 @@ class DNRService {
         }
       }
 
+      try {
+        final platformGlobals = await GlobalDNRService.findActiveMatchingEntries(
+          name: name,
+          email: email,
+          phone: phone,
+        );
+        for (final g in platformGlobals) {
+          matches.add(DNRModel.fromGlobalDnrEntry(g));
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('⚠️ Error finding platform-wide DNR matches: $e');
+        }
+      }
+
       if (kDebugMode) {
-        print('🔍 [GLOBAL DNR] Found ${matches.length} DNR matches across all facilities');
+        print('🔍 [GLOBAL DNR] Found ${matches.length} DNR matches (facilities + platform-wide)');
         for (final match in matches) {
           print('   - ${match.name} (${match.facilityName ?? match.facilityId})');
         }

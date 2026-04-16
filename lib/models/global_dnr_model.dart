@@ -103,7 +103,7 @@ class GlobalDNREvidenceModel {
 }
 
 /// Global DNR entry (collection global_dnr_entries).
-/// Shared across all facilities; any facility can read, only owner/manager can create/update.
+/// Shared across every SFC operator account; any signed-in user can read; only owner/manager of the reporting facility can create/update (per rules).
 class GlobalDNREntryModel {
   final String id;
   final String fullName;

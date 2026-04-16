@@ -1138,9 +1138,9 @@ service cloud.firestore {
     // See account-scoped security rules below
     
     // -------------------------------------------------------------------------
-    // Global DNR (Do Not Rent) - shared across all facilities
+    // Global DNR (Do Not Rent) - platform-wide across all SFC operator accounts
     // ADDITIVE: New collection only; does not change facility-scoped DNR rules.
-    // Read: any authenticated user (so any facility can see global list).
+    // Read: any authenticated user (entire platform shares one list).
     // Write: facility owner/manager/admin only (enforced via createdByFacilityId).
     // -------------------------------------------------------------------------
     function isCreatorOrCreatorFacilityStaff(entryData) {

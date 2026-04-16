@@ -8,7 +8,7 @@ import '../services/global_dnr_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 
-/// Form to add a new entry to the Global DNR collection (shared across all facilities).
+/// Form to add a new entry to the Global DNR collection (shared platform-wide across all SFC operators).
 class GlobalDNREntryScreen extends ConsumerStatefulWidget {
   const GlobalDNREntryScreen({super.key});
 
@@ -132,7 +132,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Text(
-                    'This entry will be visible to all facilities. Only add individuals who should not be rented to across the network.',
+                    'This entry is visible to every Storage Facility Creator subscriber, not only your sites. Only add individuals who should not be rented to anywhere on the platform.',
                     style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                   ),
                   const SizedBox(height: 16),

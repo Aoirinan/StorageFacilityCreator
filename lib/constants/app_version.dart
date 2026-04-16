@@ -2,21 +2,22 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.20';
+  static const String version = '2.10.21';
 
   // Build number (YYYYMMDD format for easy identification)
-  static const String buildNumber = '20260416';
+  static const String buildNumber = '20260417';
 
   // Full version string
   static const String fullVersion = '$version+$buildNumber';
 
   // Deployment date/time (update on each deploy)
-  static const String deploymentDate = '2026-04-15';
-  static const String deploymentTime = 'map editor filter fix; full stack deploy (build id 20260416)';
+  static const String deploymentDate = '2026-04-16';
+  static const String deploymentTime =
+      'Platform-wide Global DNR: screening merges global_dnr_entries; copy and rules comments; build 20260417';
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Map editor: unit-linked shapes stay visible when status filters are cleared; version bump for QA';
+      'Global DNR is platform-wide across all SFC operators; contract and DNR screening include global_dnr_entries';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';

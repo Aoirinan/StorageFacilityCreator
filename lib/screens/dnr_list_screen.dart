@@ -578,7 +578,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                     const SizedBox(height: 8),
                     Text(_showArchived
                         ? 'All DNR entries are active'
-                        : 'Add a Global DNR entry to share across all facilities'),
+                        : 'Add a Global DNR entry to share with every Storage Facility Creator operator'),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
                       onPressed: _navigateToAddGlobalDNR,
