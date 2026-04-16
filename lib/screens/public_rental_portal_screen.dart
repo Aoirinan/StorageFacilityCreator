@@ -158,6 +158,31 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     return FacilityMapV2Service.getPublicSlugForFacility(facilityId);
   }
 
+  /// Re-read `publicFacilityMaps` so the list matches what Cloud Functions enforce.
+  Future<void> _reloadInventoryFromPublishedSnapshot() async {
+    final slug = _facilitySlug;
+    if (slug == null || slug.trim().isEmpty) return;
+    try {
+      final snapshot =
+          await FacilityMapV2Service.getPublicSnapshotBySlug(slug.trim());
+      if (!mounted || snapshot == null) return;
+      final publicUnits = snapshot.units
+          .map((raw) => _PublicUnitView.fromMap(raw))
+          .where((u) => u.unitId.isNotEmpty)
+          .toList();
+      setState(() {
+        _units = publicUnits;
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [PublicRentalPortal] Inventory refresh failed: $e');
+      }
+    }
+  }
+
+  bool _unitStillRentableOnline(_PublicUnitView u) =>
+      (u.status == 'available' || u.status == 'reserved') && u.isRentable;
+
   List<_UnitTypeGroup> get _groups {
     final filteredUnits = _units.where((u) {
       if (_enabledPublicUnitTypes.isNotEmpty &&
@@ -260,18 +285,22 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           Expanded(
             child: groups.isEmpty
                 ? _buildEmptyState()
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                    itemCount: groups.length + 2,
-                    itemBuilder: (context, index) {
-                      if (index == groups.length) {
-                        return _buildWhyRentSection();
-                      }
-                      if (index == groups.length + 1) {
-                        return _buildFaqSection();
-                      }
-                      return _buildGroupCard(groups[index]);
-                    },
+                : RefreshIndicator(
+                    onRefresh: _reloadInventoryFromPublishedSnapshot,
+                    child: ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      itemCount: groups.length + 2,
+                      itemBuilder: (context, index) {
+                        if (index == groups.length) {
+                          return _buildWhyRentSection();
+                        }
+                        if (index == groups.length + 1) {
+                          return _buildFaqSection();
+                        }
+                        return _buildGroupCard(groups[index]);
+                      },
+                    ),
                   ),
           ),
         ],
@@ -645,19 +674,37 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   Future<void> _handleRentNow(_UnitTypeGroup group) async {
     if (group.availableUnits.isEmpty || _facilityId == null) return;
 
+    await _reloadInventoryFromPublishedSnapshot();
+    if (!mounted) return;
+
+    final refreshed = _groups.where((g) => g.key == group.key).toList();
+    if (refreshed.isEmpty || refreshed.first.availableUnits.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Availability just changed for this size. Pull down to refresh, then try again.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    final currentGroup = refreshed.first;
+
     _PublicUnitView? selectedUnit;
     if (_allowAutoAssign && !_allowUnitSelection) {
-      selectedUnit = group.availableUnits.first;
+      selectedUnit = currentGroup.availableUnits.first;
     } else if (!_allowAutoAssign && _allowUnitSelection) {
-      selectedUnit = await _showUnitPicker(group.availableUnits);
+      selectedUnit = await _showUnitPicker(currentGroup.availableUnits);
       if (selectedUnit == null) return;
     } else {
       final choice = await _showAssignChoice();
       if (choice == null) return;
       if (choice == _AssignChoice.autoAssign) {
-        selectedUnit = group.availableUnits.first;
+        selectedUnit = currentGroup.availableUnits.first;
       } else {
-        selectedUnit = await _showUnitPicker(group.availableUnits);
+        selectedUnit = await _showUnitPicker(currentGroup.availableUnits);
         if (selectedUnit == null) return;
       }
     }
@@ -677,6 +724,22 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     );
 
     if (reservationPayload == null) return;
+
+    await _reloadInventoryFromPublishedSnapshot();
+    if (!mounted) return;
+    if (!_unitStillRentableOnline(selected)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'That unit is no longer available. Pull down to refresh the list and choose another unit.',
+            ),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+      return;
+    }
 
     try {
       final reservation = await PublicRentalService.createReservation(

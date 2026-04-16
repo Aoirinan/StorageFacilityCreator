@@ -15,12 +15,15 @@ class StripeDialogResult {
   final String? paymentMethodId;
   /// When mode is 'setup' and succeeded, the SetupIntent ID (seti_xxx) for verification
   final String? setupIntentId;
+  /// When mode is 'payment' and succeeded, the PaymentIntent ID (pi_xxx)
+  final String? paymentIntentId;
 
   const StripeDialogResult({
     required this.succeeded,
     this.error,
     this.paymentMethodId,
     this.setupIntentId,
+    this.paymentIntentId,
   });
 }
 

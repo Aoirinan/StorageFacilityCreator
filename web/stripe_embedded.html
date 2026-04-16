@@ -38,7 +38,7 @@
       window.parent.postMessage({ type: 'STRIPE_EMBED_READY' }, '*');
     }
 
-    function postResult(succeeded, error, paymentMethodId, setupIntentId) {
+    function postResult(succeeded, error, paymentMethodId, setupIntentId, paymentIntentId) {
       if (window.parent && window.parent !== window) {
         var payload = {
           type: 'STRIPE_EMBED_RESULT',
@@ -47,6 +47,7 @@
         };
         if (paymentMethodId) payload.paymentMethodId = paymentMethodId;
         if (setupIntentId) payload.setupIntentId = setupIntentId;
+        if (paymentIntentId) payload.paymentIntentId = paymentIntentId;
         window.parent.postMessage(payload, '*');
       }
     }
@@ -139,7 +140,9 @@
             errEl.textContent = error.message || 'Payment failed';
             postResult(false, error.message);
           } else {
-            postResult(true);
+            var pi = result && result.paymentIntent;
+            var piId = (pi && pi.id) ? pi.id : null;
+            postResult(true, null, null, null, piId);
           }
         }
       } catch (e) {

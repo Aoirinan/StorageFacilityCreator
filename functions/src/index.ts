@@ -18,6 +18,10 @@ import {
 } from './texting_onboarding_helpers';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { emailMonthlyLimitForAccount } from './constants/emailMonthlyLimits';
+export {
+  syncPublicFacilityMapInventoryOnTenantWrite,
+  syncPublicFacilityMapInventoryOnUnitWrite,
+} from './publicFacilityMapInventorySync';
 
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
@@ -8164,7 +8168,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
 
     const unitData = unitSnap.data() as Record<string, any>;
-    if (unitData.status && unitData.status !== 'available' && unitData.status !== 'reserved') {
+    const unitStatus = String(unitData.status || '').toLowerCase();
+    if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
     }
   }
@@ -13756,6 +13761,230 @@ export const createOneTimePaymentIntentOnConnectedAccount = functions.runWith({ 
     clientSecret: paymentIntent.client_secret,
     publishableKey: getPlatformPublishableKey(),
     connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * Staff POS: PaymentIntent for retail card sales on the facility's connected account.
+ * Card data is collected only in Stripe.js (Payment Element), not in Flutter.
+ */
+export const createPosRetailPaymentIntent = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  const { facilityId, amountCents, tenantId } = data;
+  if (!facilityId || amountCents == null || typeof amountCents !== 'number' || amountCents < 50) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId and amountCents (min 50) are required');
+  }
+  const paymentsAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!paymentsAllowed) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Card payments require Stripe Connect with charges enabled. Complete Connect onboarding in Payments settings.',
+    );
+  }
+  const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+  const stripe = getStripeClient();
+  const metadata: Record<string, string> = {
+    facilityId,
+    chargeType: 'pos_retail',
+    staffUid: context.auth.uid,
+  };
+  if (tenantId && typeof tenantId === 'string' && tenantId.length > 0) {
+    metadata.tenantId = tenantId;
+  }
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: Math.round(amountCents),
+    currency: 'usd',
+    automatic_payment_methods: { enabled: true },
+    description: 'Retail / POS purchase',
+    metadata,
+  }, {
+    stripeAccount: connectAccountId,
+  });
+  return {
+    clientSecret: paymentIntent.client_secret,
+    publishableKey: getPlatformPublishableKey(),
+    connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * Staff POS: list Stripe Terminal readers for the facility's connected account.
+ * Uses server-driven Terminal API to avoid client/network coupling issues.
+ */
+export const listPosTerminalReaders = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const { facilityId } = data || {};
+  if (!facilityId || typeof facilityId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+
+  const paymentsAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!paymentsAllowed) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Card payments require Stripe Connect with charges enabled. Complete Connect onboarding in Payments settings.',
+    );
+  }
+
+  const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+
+  const stripe = getStripeClient();
+  const readers = await stripe.terminal.readers.list(
+    {
+      limit: 100,
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  return {
+    readers: readers.data.map((reader) => ({
+      id: reader.id,
+      label: reader.label ?? 'Unnamed reader',
+      deviceType: reader.device_type ?? null,
+      serialNumber: reader.serial_number ?? null,
+      status: reader.status ?? 'unknown',
+      location: typeof reader.location === 'string' ? reader.location : reader.location?.id ?? null,
+    })),
+    connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * Staff POS: process payment on a specific Stripe Terminal reader.
+ * Creates a card_present PaymentIntent on connected account and triggers reader processing.
+ */
+export const processPosTerminalPayment = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const { facilityId, amountCents, readerId, tenantId } = data || {};
+  if (!facilityId || typeof facilityId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+  if (!readerId || typeof readerId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'readerId is required');
+  }
+  if (amountCents == null || typeof amountCents !== 'number' || amountCents < 50) {
+    throw new functions.https.HttpsError('invalid-argument', 'amountCents (min 50) is required');
+  }
+
+  const paymentsAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!paymentsAllowed) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Card payments require Stripe Connect with charges enabled. Complete Connect onboarding in Payments settings.',
+    );
+  }
+
+  const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+
+  const stripe = getStripeClient();
+  const metadata: Record<string, string> = {
+    facilityId,
+    chargeType: 'pos_terminal',
+    staffUid: context.auth.uid,
+    readerId,
+  };
+  if (tenantId && typeof tenantId === 'string' && tenantId.length > 0) {
+    metadata.tenantId = tenantId;
+  }
+
+  const paymentIntent = await stripe.paymentIntents.create(
+    {
+      amount: Math.round(amountCents),
+      currency: 'usd',
+      payment_method_types: ['card_present'],
+      capture_method: 'automatic',
+      description: 'Retail / POS purchase (Terminal reader)',
+      metadata,
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  await stripe.terminal.readers.processPaymentIntent(
+    readerId,
+    {
+      payment_intent: paymentIntent.id,
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  return {
+    paymentIntentId: paymentIntent.id,
+    status: paymentIntent.status,
+    connectedAccountId: connectAccountId,
+  };
+});
+
+/**
+ * Staff POS: check status of a Stripe Terminal payment intent.
+ * Client uses this to poll until reader flow completes.
+ */
+export const getPosTerminalPaymentStatus = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  rejectClientSuppliedStripeKeys(data || {});
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const { facilityId, paymentIntentId } = data || {};
+  if (!facilityId || typeof facilityId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+  }
+  if (!paymentIntentId || typeof paymentIntentId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'paymentIntentId is required');
+  }
+
+  const paymentsAllowed = await isTenantAutopayAllowedForFacility(facilityId);
+  if (!paymentsAllowed) {
+    throw new functions.https.HttpsError('failed-precondition', 'Payments are not enabled for this facility');
+  }
+
+  const facilityData = await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+  const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+  if (!connectAccountId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');
+  }
+
+  const stripe = getStripeClient();
+  const paymentIntent = await stripe.paymentIntents.retrieve(
+    paymentIntentId,
+    { expand: ['latest_charge'] },
+    { stripeAccount: connectAccountId },
+  );
+
+  return {
+    paymentIntentId: paymentIntent.id,
+    status: paymentIntent.status,
+    succeeded: paymentIntent.status === 'succeeded' || paymentIntent.status === 'requires_capture',
+    amount: paymentIntent.amount,
+    currency: paymentIntent.currency,
   };
 });
 

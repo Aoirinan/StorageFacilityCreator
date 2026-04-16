@@ -75,12 +75,14 @@ class _StripeEmbeddedDialogState extends State<_StripeEmbeddedDialog> {
         final error = d['error'] as String?;
         final paymentMethodId = d['paymentMethodId'] as String?;
         final setupIntentId = d['setupIntentId'] as String?;
+        final paymentIntentId = d['paymentIntentId'] as String?;
         if (mounted) {
           Navigator.of(context).pop(StripeDialogResult(
             succeeded: succeeded,
             error: error,
             paymentMethodId: paymentMethodId,
             setupIntentId: setupIntentId,
+            paymentIntentId: paymentIntentId,
           ));
         }
       }

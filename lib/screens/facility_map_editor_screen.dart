@@ -662,7 +662,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             selectedStatuses: _statusFilters,
             onStatusFilterChanged: (statuses) {
               setState(() {
-                _statusFilters = statuses;
+                // Empty set would hide every unit-linked shape (starter row, etc.).
+                _statusFilters =
+                    statuses.isEmpty ? UnitStatus.values.toSet() : statuses;
               });
             },
             showLegend: _showLegend,

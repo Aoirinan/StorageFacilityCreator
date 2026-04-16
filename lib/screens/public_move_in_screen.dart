@@ -17,6 +17,7 @@ import '../models/invoice_line_item_model.dart';
 import '../theme/app_theme.dart';
 import '../router/app_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 /// Public-facing move-in wizard for completing reservations
 class PublicMoveInScreen extends ConsumerStatefulWidget {
@@ -625,12 +626,28 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error completing move-in: $e'),
+            content: Text(_moveInSubmitErrorMessage(e)),
             backgroundColor: AppTheme.error,
           ),
         );
       }
     }
+  }
+
+  String _moveInSubmitErrorMessage(Object e) {
+    if (e is FirebaseFunctionsException) {
+      final msg = (e.message ?? '').toLowerCase();
+      if (e.code == 'failed-precondition' &&
+          (msg.contains('no longer available') ||
+              msg.contains('not currently available'))) {
+        return 'That unit is no longer available for online move-in. '
+            'Return to the facility rental page, refresh, and choose another unit, or call the facility for help.';
+      }
+      if (e.message != null && e.message!.trim().isNotEmpty) {
+        return e.message!;
+      }
+    }
+    return 'Error completing move-in: $e';
   }
 
   @override

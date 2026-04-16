@@ -87,6 +87,7 @@ import '../screens/lien_detail_screen.dart';
 import '../models/lien_model.dart';
 import '../screens/inventory_list_screen.dart';
 import '../screens/pos_screen.dart';
+import '../screens/retail_sales_history_screen.dart';
 import '../screens/reports_consolidated_screen.dart';
 import '../screens/contact_logs_screen.dart';
 import '../screens/audit_log_screen.dart';
@@ -1505,6 +1506,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 facilityId: facilityId,
                 tenantId: tenantId,
               );
+            },
+          ),
+          GoRoute(
+            path: AppRoute.retailSales,
+            name: 'retail-sales',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return RetailSalesHistoryScreen(facilityId: facilityId);
             },
           ),
           GoRoute(

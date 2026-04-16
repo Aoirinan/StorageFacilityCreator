@@ -119,6 +119,18 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
                   tooltip: 'Open POS',
                 ),
                 IconButton(
+                  icon: const Icon(Icons.receipt_long_outlined),
+                  onPressed: _selectedFacilityId.isEmpty
+                      ? null
+                      : () => context.go(
+                            Uri(
+                              path: AppRoute.retailSales,
+                              queryParameters: {'facilityId': _selectedFacilityId},
+                            ).toString(),
+                          ),
+                  tooltip: 'View Sales History',
+                ),
+                IconButton(
                   icon: const Icon(Icons.add),
                   onPressed: () => _showAddProductDialog(),
                   tooltip: 'Add Product',

@@ -40,7 +40,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   Future<void> _loadFacilities() async {
     final facilities = await FacilityService.getUserFacilities();
     if (facilities.isNotEmpty && mounted) {
-      final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+      final activeId =
+          ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
       final id = (activeId != null && facilities.any((f) => f.id == activeId))
           ? activeId
           : facilities.first.id;
@@ -144,16 +145,20 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                         labelText: 'Facility',
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.business),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 12),
                       ),
                       selectedItemBuilder: (context) {
                         final colorScheme = Theme.of(context).colorScheme;
-                        return facilities.map((f) => Text(
-                          f.name,
-                          style: AppTheme.dropdownItemTextStyle.copyWith(color: colorScheme.onSurface),
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                        )).toList();
+                        return facilities
+                            .map((f) => Text(
+                                  f.name,
+                                  style: AppTheme.dropdownItemTextStyle
+                                      .copyWith(color: colorScheme.onSurface),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ))
+                            .toList();
                       },
                       items: facilities.map((facility) {
                         return DropdownMenuItem(
@@ -171,7 +176,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                             _selectedFacilityId = value;
                             _selectedUnitIds.clear();
                           });
-                          ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
+                          ref
+                              .read(activeFacilityIdProvider.notifier)
+                              .setActiveFacilityId(value);
                         }
                       },
                     ),
@@ -181,7 +188,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                     onPressed: () {
                       if (_selectedFacilityId != null) {
                         final facilityId = _selectedFacilityId!;
-                        ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(facilityId);
+                        ref
+                            .read(activeFacilityIdProvider.notifier)
+                            .setActiveFacilityId(facilityId);
                         context.push(
                           '${AppRoute.unitsMap}?facilityId=${Uri.encodeComponent(facilityId)}',
                         );
@@ -212,7 +221,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
+        border:
+            Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: Row(
         children: [
@@ -224,7 +234,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 filled: true,
                 fillColor: Theme.of(context).colorScheme.surface,
               ),
@@ -255,8 +266,12 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 child: Row(
                   children: [
                     Icon(
-                      isSelected ? Icons.check_box : Icons.check_box_outline_blank,
-                      color: isSelected ? AppTheme.primaryBlue : AppTheme.textSecondary,
+                      isSelected
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      color: isSelected
+                          ? AppTheme.primaryBlue
+                          : AppTheme.textSecondary,
                     ),
                     const SizedBox(width: 8),
                     Text(status.name),
@@ -299,11 +314,15 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     );
   }
 
-  Widget _buildSelectionBar(int selectedCount, List<UnitModel> filteredUnits, Map<String, TenantModel> tenantMap) {
+  Widget _buildSelectionBar(int selectedCount, List<UnitModel> filteredUnits,
+      Map<String, TenantModel> tenantMap) {
     if (selectedCount == 0) return const SizedBox.shrink();
     final canDeleteIds = filteredUnits
         .where((u) => _selectedUnitIds.contains(u.id))
-        .where((u) => u.tenantId == null || u.tenantId!.isEmpty || !tenantMap.containsKey(u.tenantId))
+        .where((u) =>
+            u.tenantId == null ||
+            u.tenantId!.isEmpty ||
+            !tenantMap.containsKey(u.tenantId))
         .map((u) => u.id)
         .toList();
     final skipCount = selectedCount - canDeleteIds.length;
@@ -311,7 +330,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5),
-        border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
+        border:
+            Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: Row(
         children: [
@@ -331,9 +351,12 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           const SizedBox(width: 8),
           if (canDeleteIds.isNotEmpty) ...[
             FilledButton.icon(
-              onPressed: () => _handleBulkDelete(canDeleteIds, skipCount, filteredUnits),
+              onPressed: () =>
+                  _handleBulkDelete(canDeleteIds, skipCount, filteredUnits),
               icon: const Icon(Icons.archive_outlined, size: 18),
-              label: Text(skipCount > 0 ? 'Archive ${canDeleteIds.length} (${skipCount} have tenants)' : 'Archive ${canDeleteIds.length}'),
+              label: Text(skipCount > 0
+                  ? 'Archive ${canDeleteIds.length} (${skipCount} have tenants)'
+                  : 'Archive ${canDeleteIds.length}'),
               style: FilledButton.styleFrom(
                 backgroundColor: AppTheme.error,
                 foregroundColor: Colors.white,
@@ -341,7 +364,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             ),
             const SizedBox(width: 8),
             OutlinedButton.icon(
-              onPressed: () => _handleBulkPermanentDelete(canDeleteIds, skipCount),
+              onPressed: () =>
+                  _handleBulkPermanentDelete(canDeleteIds, skipCount),
               icon: const Icon(Icons.delete_forever, size: 18),
               label: Text('Delete ${canDeleteIds.length} permanently'),
               style: OutlinedButton.styleFrom(
@@ -349,8 +373,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 side: const BorderSide(color: AppTheme.error),
               ),
             ),
-          ]
-          else
+          ] else
             Text(
               'Selected units have tenants; remove tenants first to archive.',
               style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
@@ -366,24 +389,30 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     }
 
     final unitsAsync = ref.watch(facilityUnitsProvider(_selectedFacilityId!));
-    final tenantsAsync = ref.watch(facilityTenantsProvider(_selectedFacilityId!));
-    
+    final tenantsAsync =
+        ref.watch(facilityTenantsProvider(_selectedFacilityId!));
+
     return unitsAsync.when(
       data: (units) {
-        final tenants = tenantsAsync.whenOrNull(data: (d) => d) ?? <TenantModel>[];
+        final tenants =
+            tenantsAsync.whenOrNull(data: (d) => d) ?? <TenantModel>[];
         final tenantMap = {for (final t in tenants) t.id: t};
-        bool isGhostUnit(unit) => unit.tenantId != null && unit.tenantId!.isNotEmpty && !tenantMap.containsKey(unit.tenantId);
+        bool isGhostUnit(unit) =>
+            unit.tenantId != null &&
+            unit.tenantId!.isNotEmpty &&
+            !tenantMap.containsKey(unit.tenantId);
         String tenantDisplayName(unit) {
           if (unit.tenantId == null) return unit.tenantName ?? '—';
           final t = tenantMap[unit.tenantId];
           return t?.name ?? unit.tenantName ?? '—';
         }
+
         final unitsWithoutGhosts = units.where((u) => !isGhostUnit(u)).toList();
         final filteredUnits = unitsWithoutGhosts.where((unit) {
           if (!_statusFilters.contains(unit.status)) return false;
           if (_searchQuery.isNotEmpty) {
             return unit.unitNumber.toLowerCase().contains(_searchQuery) ||
-                   (tenantDisplayName(unit).toLowerCase().contains(_searchQuery));
+                (tenantDisplayName(unit).toLowerCase().contains(_searchQuery));
           }
           return true;
         }).toList();
@@ -401,7 +430,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _searchQuery.isEmpty ? 'Create your first unit to get started' : 'No units match your search',
+                  _searchQuery.isEmpty
+                      ? 'Create your first unit to get started'
+                      : 'No units match your search',
                   style: TextStyle(color: AppTheme.textSecondary),
                 ),
               ],
@@ -410,23 +441,39 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         }
 
         final tenantIds = tenantMap.keys.toSet();
-        final occupiedCount = filteredUnits.where((u) =>
-          u.status == UnitStatus.occupied && u.tenantId != null && tenantIds.contains(u.tenantId),
-        ).length;
-        final selectedCountInFiltered = filteredUnits.where((u) => _selectedUnitIds.contains(u.id)).length;
+        final occupiedCount = filteredUnits
+            .where(
+              (u) =>
+                  u.status == UnitStatus.occupied &&
+                  u.tenantId != null &&
+                  tenantIds.contains(u.tenantId),
+            )
+            .length;
+        final selectedCountInFiltered =
+            filteredUnits.where((u) => _selectedUnitIds.contains(u.id)).length;
         final allFilteredSelected = filteredUnits.isEmpty
             ? false
             : selectedCountInFiltered == filteredUnits.length;
         final someSelected = selectedCountInFiltered > 0;
-        final selectAllValue = allFilteredSelected ? true : (someSelected ? null : false);
+        final selectAllValue =
+            allFilteredSelected ? true : (someSelected ? null : false);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildSelectionBar(_selectedUnitIds.length, filteredUnits, tenantMap),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              clipBehavior: Clip.hardEdge,
+              child: _buildSelectionBar(
+                  _selectedUnitIds.length, filteredUnits, tenantMap),
+            ),
             FutureBuilder<({int totalCapacity, int occupied})>(
-              future: _getUnitCountsForFacility(_selectedFacilityId!, unitsWithoutGhosts.length, occupiedCount),
+              future: _getUnitCountsForFacility(_selectedFacilityId!,
+                  unitsWithoutGhosts.length, occupiedCount),
               builder: (context, snap) {
-                final total = snap.data?.totalCapacity ?? unitsWithoutGhosts.length;
+                final total =
+                    snap.data?.totalCapacity ?? unitsWithoutGhosts.length;
                 final occupied = snap.data?.occupied ?? occupiedCount;
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -447,7 +494,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: DataTable(
-                    headingRowColor: WidgetStateProperty.all(Theme.of(context).colorScheme.surfaceContainerHighest),
+                    headingRowColor: WidgetStateProperty.all(
+                        Theme.of(context).colorScheme.surfaceContainerHighest),
                     columns: [
                       DataColumn(
                         label: Checkbox(
@@ -468,15 +516,31 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                           },
                         ),
                       ),
-                      const DataColumn(label: Text('Unit #', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Type', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Status', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Tenant', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Monthly Rate', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Size', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataColumn(label: Text('Actions', style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Unit #',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Type',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Status',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Tenant',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Monthly Rate',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Size',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataColumn(
+                          label: Text('Actions',
+                              style: TextStyle(fontWeight: FontWeight.bold))),
                     ],
-                    rows: filteredUnits.map((unit) => _buildUnitRow(unit, tenantMap)).toList(),
+                    rows: filteredUnits
+                        .map((unit) => _buildUnitRow(unit, tenantMap))
+                        .toList(),
                   ),
                 ),
               ),
@@ -501,7 +565,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   }
 
   DataRow _buildUnitRow(UnitModel unit, Map<String, TenantModel> tenantMap) {
-    final tenantName = unit.tenantId != null ? (tenantMap[unit.tenantId]?.name ?? unit.tenantName ?? '—') : (unit.tenantName ?? '—');
+    final tenantName = unit.tenantId != null
+        ? (tenantMap[unit.tenantId]?.name ?? unit.tenantName ?? '—')
+        : (unit.tenantName ?? '—');
     final isSelected = _selectedUnitIds.contains(unit.id);
     return DataRow(
       cells: [
@@ -534,13 +600,18 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
               if (unit.isOverlocked) ...[
                 const SizedBox(width: 6),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppTheme.error.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(color: AppTheme.error),
                   ),
-                  child: const Text('OVERLOCKED', style: TextStyle(color: AppTheme.error, fontSize: 10, fontWeight: FontWeight.w600)),
+                  child: const Text('OVERLOCKED',
+                      style: TextStyle(
+                          color: AppTheme.error,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600)),
                 ),
               ],
             ],
@@ -563,7 +634,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 icon: const Icon(Icons.visibility, size: 18),
                 tooltip: 'View Details',
                 onPressed: () {
-                  context.push('${AppRoute.unitDetail}?unitId=${unit.id}&facilityId=${unit.facilityId}');
+                  context.push(
+                      '${AppRoute.unitDetail}?unitId=${unit.id}&facilityId=${unit.facilityId}');
                 },
               ),
               IconButton(
@@ -597,9 +669,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                   PopupMenuItem(
                     value: 'delete',
                     child: ListTile(
-                      leading: Icon(Icons.delete_forever, size: 20, color: AppTheme.error),
+                      leading: Icon(Icons.delete_forever,
+                          size: 20, color: AppTheme.error),
                       title: const Text('Delete permanently'),
-                      subtitle: const Text('Remove from database; cannot be undone'),
+                      subtitle:
+                          const Text('Remove from database; cannot be undone'),
                       contentPadding: EdgeInsets.zero,
                       visualDensity: VisualDensity.compact,
                     ),
@@ -612,7 +686,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       ],
     );
   }
-  
+
   Future<void> _handleBulkDelete(
     List<String> unitIds,
     int skippedCount,
@@ -648,7 +722,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(backgroundColor: AppTheme.error, foregroundColor: Colors.white),
+            style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.error, foregroundColor: Colors.white),
             child: const Text('Archive'),
           ),
         ],
@@ -685,7 +760,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     }
   }
 
-  Future<void> _handleBulkPermanentDelete(List<String> unitIds, int skippedCount) async {
+  Future<void> _handleBulkPermanentDelete(
+      List<String> unitIds, int skippedCount) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -711,7 +787,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                   Expanded(
                     child: Text(
                       'Units will be removed from the database. This action cannot be undone.',
-                      style: TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      style:
+                          TextStyle(fontSize: 13, color: AppTheme.textPrimary),
                     ),
                   ),
                 ],
@@ -733,7 +810,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(backgroundColor: AppTheme.error, foregroundColor: Colors.white),
+            style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.error, foregroundColor: Colors.white),
             child: const Text('Delete permanently'),
           ),
         ],
@@ -770,7 +848,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     }
   }
 
-  Future<void> _handleArchiveUnit(UnitModel unit, Map<String, TenantModel> tenantMap) async {
+  Future<void> _handleArchiveUnit(
+      UnitModel unit, Map<String, TenantModel> tenantMap) async {
     final hasActiveTenant = unit.tenantId != null &&
         unit.tenantId!.isNotEmpty &&
         tenantMap.containsKey(unit.tenantId);
@@ -805,7 +884,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              const Text('Please remove the tenant first before archiving this unit.'),
+              const Text(
+                  'Please remove the tenant first before archiving this unit.'),
             ] else ...[
               Text('Archive unit ${unit.unitNumber}?'),
               const SizedBox(height: 12),
@@ -837,9 +917,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     if (shouldArchive == true) {
       try {
         await ref.read(unitOperationsProvider.notifier).archiveUnit(
-          _selectedFacilityId!,
-          unit.id,
-        );
+              _selectedFacilityId!,
+              unit.id,
+            );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -861,7 +941,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     }
   }
 
-  Future<void> _handlePermanentDeleteUnit(UnitModel unit, Map<String, TenantModel> tenantMap) async {
+  Future<void> _handlePermanentDeleteUnit(
+      UnitModel unit, Map<String, TenantModel> tenantMap) async {
     final hasActiveTenant = unit.tenantId != null &&
         unit.tenantId!.isNotEmpty &&
         tenantMap.containsKey(unit.tenantId);
@@ -905,7 +986,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                   Expanded(
                     child: Text(
                       'This permanently removes the unit from the database. This action cannot be undone.',
-                      style: TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      style:
+                          TextStyle(fontSize: 13, color: AppTheme.textPrimary),
                     ),
                   ),
                 ],
@@ -933,9 +1015,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     if (shouldDelete == true) {
       try {
         await ref.read(unitOperationsProvider.notifier).deleteUnit(
-          _selectedFacilityId!,
-          unit.id,
-        );
+              _selectedFacilityId!,
+              unit.id,
+            );
         if (mounted) {
           setState(() => _selectedUnitIds.remove(unit.id));
           ScaffoldMessenger.of(context).showSnackBar(

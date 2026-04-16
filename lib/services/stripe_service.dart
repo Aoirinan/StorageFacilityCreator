@@ -36,8 +36,10 @@ class StripeService {
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
         'customerEmail': customerEmail,
-        'successUrl': successUrl ?? 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        'cancelUrl': cancelUrl ?? 'https://app.storagefacilitycreator.com/subscription/cancel',
+        'successUrl': successUrl ??
+            'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+        'cancelUrl': cancelUrl ??
+            'https://app.storagefacilitycreator.com/subscription/cancel',
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () {
@@ -54,7 +56,8 @@ class StripeService {
         if (kDebugMode) {
           print('✅ Subscription updated (no checkout): $message');
         }
-        return SubscriptionCheckoutResult(subscriptionUpdated: true, message: message);
+        return SubscriptionCheckoutResult(
+            subscriptionUpdated: true, message: message);
       }
 
       if (checkoutUrl == null || checkoutUrl.isEmpty) {
@@ -94,7 +97,8 @@ class StripeService {
       if (kDebugMode) {
         print('🔄 Creating facility subscription checkout: $facilityId');
       }
-      final callable = _functions.httpsCallable('createFacilitySubscriptionCheckout');
+      final callable =
+          _functions.httpsCallable('createFacilitySubscriptionCheckout');
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
         'facilityId': facilityId,
@@ -103,14 +107,16 @@ class StripeService {
         'cancelUrl': cancelUrl,
       }).timeout(
         const Duration(seconds: 60),
-        onTimeout: () => throw Exception('Request timed out. Please try again.'),
+        onTimeout: () =>
+            throw Exception('Request timed out. Please try again.'),
       );
       final data = result.data as Map<String, dynamic>? ?? {};
       final subscriptionUpdated = data['subscriptionUpdated'] as bool? ?? false;
       final message = data['message'] as String?;
       final checkoutUrl = data['checkoutUrl'] as String?;
       if (subscriptionUpdated) {
-        return SubscriptionCheckoutResult(subscriptionUpdated: true, message: message);
+        return SubscriptionCheckoutResult(
+            subscriptionUpdated: true, message: message);
       }
       if (checkoutUrl == null || checkoutUrl.isEmpty) {
         throw Exception('Failed to create checkout session');
@@ -123,12 +129,14 @@ class StripeService {
   }
 
   /// Cancel one facility's platform subscription at period end.
-  static Future<void> cancelFacilitySubscription({required String facilityId}) async {
+  static Future<void> cancelFacilitySubscription(
+      {required String facilityId}) async {
     try {
       if (kDebugMode) print('🔄 Cancelling facility subscription: $facilityId');
       final callable = _functions.httpsCallable('cancelFacilitySubscription');
       await callable.call(<String, dynamic>{'facilityId': facilityId});
-      if (kDebugMode) print('✅ Facility subscription set to cancel at period end');
+      if (kDebugMode)
+        print('✅ Facility subscription set to cancel at period end');
     } catch (e) {
       if (kDebugMode) print('❌ Error cancelling facility subscription: $e');
       rethrow;
@@ -168,7 +176,8 @@ class StripeService {
       final callable = _functions.httpsCallable('createCustomerPortalSession');
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
-        'returnUrl': returnUrl ?? 'https://app.storagefacilitycreator.com/subscription/manage',
+        'returnUrl': returnUrl ??
+            'https://app.storagefacilitycreator.com/subscription/manage',
       });
 
       final portalUrl = result.data['portalUrl'] as String?;
@@ -190,7 +199,8 @@ class StripeService {
   }
 
   /// Get subscription status for an account
-  static Future<Map<String, dynamic>> getSubscriptionStatus(String accountId) async {
+  static Future<Map<String, dynamic>> getSubscriptionStatus(
+      String accountId) async {
     try {
       if (kDebugMode) {
         print('🔄 Getting subscription status for account: $accountId');
@@ -260,7 +270,8 @@ class StripeService {
         print('🔄 Creating tenant portal payment checkout: \$$amount');
       }
 
-      final callable = _functions.httpsCallable('createTenantPortalPaymentCheckout');
+      final callable =
+          _functions.httpsCallable('createTenantPortalPaymentCheckout');
       final result = await callable.call(<String, dynamic>{
         'email': email.trim().toLowerCase(),
         'accessCode': accessCode.trim(),
@@ -300,7 +311,8 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Creating tenant payment checkout: $facilityId, $tenantId, \$$amount');
+        print(
+            '🔄 Creating tenant payment checkout: $facilityId, $tenantId, \$$amount');
       }
 
       final callable = _functions.httpsCallable('createTenantPaymentCheckout');
@@ -373,10 +385,12 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Creating Stripe Connect account link for facility: $facilityId');
+        print(
+            '🔄 Creating Stripe Connect account link for facility: $facilityId');
       }
 
-      final callable = _functions.httpsCallable('createStripeConnectAccountLink');
+      final callable =
+          _functions.httpsCallable('createStripeConnectAccountLink');
       final result = await callable.call(<String, dynamic>{
         'facilityId': facilityId,
       }).timeout(
@@ -437,10 +451,12 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Getting Stripe Connect account status for facility: $facilityId');
+        print(
+            '🔄 Getting Stripe Connect account status for facility: $facilityId');
       }
 
-      final callable = _functions.httpsCallable('getStripeConnectAccountStatus');
+      final callable =
+          _functions.httpsCallable('getStripeConnectAccountStatus');
       final result = await callable.call(<String, dynamic>{
         'facilityId': facilityId,
       }).timeout(
@@ -466,7 +482,8 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Creating Stripe Connect login link for facility: $facilityId');
+        print(
+            '🔄 Creating Stripe Connect login link for facility: $facilityId');
       }
 
       final callable = _functions.httpsCallable('createStripeConnectLoginLink');
@@ -501,7 +518,8 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Creating tenant SetupIntent on connected account: $facilityId, $tenantId');
+        print(
+            '🔄 Creating tenant SetupIntent on connected account: $facilityId, $tenantId');
       }
 
       final callable = _functions.httpsCallable('createTenantSetupIntent');
@@ -547,7 +565,8 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Attaching tenant payment method on connected account: $paymentMethodId');
+        print(
+            '🔄 Attaching tenant payment method on connected account: $paymentMethodId');
       }
 
       final callable = _functions.httpsCallable('attachTenantPaymentMethod');
@@ -592,9 +611,11 @@ class StripeService {
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Attaching tenant payment method from redirect: $setupIntentId');
+        print(
+            '🔄 Attaching tenant payment method from redirect: $setupIntentId');
       }
-      final callable = _functions.httpsCallable('attachTenantPaymentMethodFromRedirect');
+      final callable =
+          _functions.httpsCallable('attachTenantPaymentMethodFromRedirect');
       final result = await callable.call(<String, dynamic>{
         'facilityId': facilityId,
         'tenantId': tenantId,
@@ -618,7 +639,9 @@ class StripeService {
     required String email,
     required String accessCode,
   }) async {
-    final result = await _functions.httpsCallable('createTenantSetupIntentFromPortal').call({
+    final result = await _functions
+        .httpsCallable('createTenantSetupIntentFromPortal')
+        .call({
       'email': email.trim().toLowerCase(),
       'accessCode': accessCode.trim(),
     });
@@ -648,16 +671,19 @@ class StripeService {
 
   /// Create a one-time PaymentIntent on connected account for paying with a NEW card.
   /// Returns clientSecret, publishableKey, connectedAccountId for embedded Payment Element.
-  static Future<Map<String, dynamic>> createOneTimePaymentIntentOnConnectedAccount({
+  static Future<Map<String, dynamic>>
+      createOneTimePaymentIntentOnConnectedAccount({
     required String facilityId,
     required String tenantId,
     required int amountCents,
   }) async {
     try {
       if (kDebugMode) {
-        print('🔄 Creating one-time PaymentIntent on connected account: \$${amountCents / 100}');
+        print(
+            '🔄 Creating one-time PaymentIntent on connected account: \$${amountCents / 100}');
       }
-      final callable = _functions.httpsCallable('createOneTimePaymentIntentOnConnectedAccount');
+      final callable = _functions
+          .httpsCallable('createOneTimePaymentIntentOnConnectedAccount');
       final result = await callable.call(<String, dynamic>{
         'facilityId': facilityId,
         'tenantId': tenantId,
@@ -729,6 +755,111 @@ class StripeService {
     }
   }
 
+  /// Staff POS: card payment for retail (locks, etc.) on the connected account.
+  /// Opens Stripe Payment Element; on success record the sale in-app with [stripePaymentIntentId].
+  static Future<Map<String, dynamic>> createPosRetailPaymentIntent({
+    required String facilityId,
+    required int amountCents,
+    String? tenantId,
+  }) async {
+    try {
+      if (kDebugMode) {
+        print('🔄 Creating POS retail PaymentIntent: \$${amountCents / 100}');
+      }
+      final callable = _functions.httpsCallable('createPosRetailPaymentIntent');
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+        'amountCents': amountCents,
+        if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
+      });
+      final data = result.data as Map<String, dynamic>? ?? {};
+      if (kDebugMode) {
+        print('✅ POS retail PaymentIntent created');
+      }
+      return data;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error creating POS retail PaymentIntent: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Staff POS: list available Stripe Terminal readers for the facility.
+  static Future<List<Map<String, dynamic>>> listPosTerminalReaders({
+    required String facilityId,
+  }) async {
+    try {
+      if (kDebugMode) {
+        print('🔄 Listing POS terminal readers for facility: $facilityId');
+      }
+      final callable = _functions.httpsCallable('listPosTerminalReaders');
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+      });
+      final data = result.data as Map<String, dynamic>? ?? {};
+      final readersRaw = (data['readers'] as List<dynamic>? ?? const []);
+      final readers = readersRaw
+          .whereType<Map>()
+          .map((r) => Map<String, dynamic>.from(r))
+          .toList(growable: false);
+      return readers;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error listing POS terminal readers: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Staff POS: start a Stripe Terminal reader payment.
+  static Future<Map<String, dynamic>> processPosTerminalPayment({
+    required String facilityId,
+    required int amountCents,
+    required String readerId,
+    String? tenantId,
+  }) async {
+    try {
+      if (kDebugMode) {
+        print(
+            '🔄 Starting POS terminal payment: \$${amountCents / 100} on reader $readerId');
+      }
+      final callable = _functions.httpsCallable('processPosTerminalPayment');
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+        'amountCents': amountCents,
+        'readerId': readerId,
+        if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
+      });
+      return Map<String, dynamic>.from(result.data as Map);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error processing POS terminal payment: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// Staff POS: poll terminal payment intent status.
+  static Future<Map<String, dynamic>> getPosTerminalPaymentStatus({
+    required String facilityId,
+    required String paymentIntentId,
+  }) async {
+    try {
+      final callable = _functions.httpsCallable('getPosTerminalPaymentStatus');
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+        'paymentIntentId': paymentIntentId,
+      });
+      return Map<String, dynamic>.from(result.data as Map);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error getting POS terminal payment status: $e');
+      }
+      rethrow;
+    }
+  }
+
   /// Create a one-time PaymentIntent for store checkout (locks/boxes) on connected account
   /// Feature-flagged: Requires storeEnabledGlobal OR facilityId in allowlist
   static Future<Map<String, dynamic>> createStoreCheckout({
@@ -777,4 +908,3 @@ class StripeService {
     }
   }
 }
-

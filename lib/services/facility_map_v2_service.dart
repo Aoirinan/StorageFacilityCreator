@@ -4,10 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
-import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
 
 class FacilityMapV2Service {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -116,7 +117,7 @@ class FacilityMapV2Service {
         await _firestore.collection('facilities').doc(facilityId).get();
     final facilityData = facilitySnap.data() ?? const <String, dynamic>{};
     final draftShapes = await MapLayoutService.getMapShapes(facilityId);
-    final units = await UnitService.getUnitsForFacility(facilityId);
+    final units = await _fetchActiveUnitsOrdered(facilityId);
     final existingVersions = await _versionsRef(facilityId)
         .orderBy('versionNumber', descending: true)
         .limit(1)
@@ -174,6 +175,8 @@ class FacilityMapV2Service {
 
     final publicSettings =
         await FacilityPublicService.getPublicSettings(facilityId);
+    final tenants = await TenantService.getTenantsForFacility(facilityId);
+    final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
       slug: meta.publicSlug,
@@ -186,6 +189,7 @@ class FacilityMapV2Service {
       units: units,
       publicSettingsModel: publicSettings,
       mapSettings: version.mapSettings,
+      tenantClaimedUnitNumbers: claimedUnits,
     );
     final publicRef =
         _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
@@ -306,6 +310,160 @@ class FacilityMapV2Service {
         mapSettings: const <String, dynamic>{'migratedFromLegacy': true});
   }
 
+  static Future<List<UnitModel>> _fetchActiveUnitsOrdered(
+      String facilityId) async {
+    try {
+      QuerySnapshot<Map<String, dynamic>> snapshot;
+      try {
+        snapshot = await _firestore
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('units')
+            .orderBy('unitNumber')
+            .limit(400)
+            .get();
+      } catch (orderingError) {
+        final msg = orderingError.toString();
+        if (msg.contains('failed-precondition') && msg.contains('index')) {
+          snapshot = await _firestore
+              .collection('facilities')
+              .doc(facilityId)
+              .collection('units')
+              .limit(400)
+              .get();
+        } else {
+          rethrow;
+        }
+      }
+      final activeDocs = snapshot.docs.where((doc) {
+        final archived = doc.data()['archived'] ?? false;
+        return archived == false;
+      }).toList();
+      final units =
+          activeDocs.map((doc) => UnitModel.fromFirestore(doc)).toList();
+      units.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
+      return units;
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error fetching units for public map: $e');
+      }
+      return [];
+    }
+  }
+
+  /// Normalized unit numbers (trim + lower case) for active tenants — catches
+  /// dashboard tenants whose unit doc was never set to occupied.
+  static Set<String> claimedUnitNumbersFromActiveTenants(
+      Iterable<TenantModel> tenants) {
+    final out = <String>{};
+    for (final t in tenants) {
+      if (!t.isActive) continue;
+      final n = t.unitNumber.trim().toLowerCase();
+      if (n.isNotEmpty) out.add(n);
+    }
+    return out;
+  }
+
+  /// Builds the anonymous-safe `units` payload for [publicFacilityMaps] documents.
+  static List<Map<String, dynamic>> buildPublicUnitInventoryMaps({
+    required List<UnitModel> units,
+    required FacilityPublicSettings? publicSettings,
+    Set<String> tenantClaimedUnitNumbers = const <String>{},
+  }) {
+    final showPublicPricing = publicSettings?.publicPricingEnabled ?? true;
+    final showUnitNumbers = publicSettings?.publicUnitNumbersEnabled ?? true;
+    final enabledPublicUnitTypes =
+        (publicSettings?.enabledPublicUnitTypes ?? const <String>[])
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+
+    return units.map((unit) {
+      final dims = unit.dimensions ?? const <String, dynamic>{};
+      final width = (dims['width'] as num?)?.toDouble();
+      final depth = (dims['depth'] as num?)?.toDouble();
+      String? size;
+      if (width != null && depth != null) {
+        size = '${width.toStringAsFixed(0)}x${depth.toStringAsFixed(0)}';
+      }
+
+      final unitType = unit.unitType;
+      final categorySlug = _slugify(unitType);
+      final isPubliclyEnabledType = enabledPublicUnitTypes.isEmpty ||
+          enabledPublicUnitTypes.contains(unitType);
+
+      final unitNumNorm = unit.unitNumber.trim().toLowerCase();
+      final hasTenantLink =
+          unit.tenantId != null && unit.tenantId!.trim().isNotEmpty;
+      final claimedByActiveTenant =
+          tenantClaimedUnitNumbers.contains(unitNumNorm);
+      final statusAllowsRental = unit.status == UnitStatus.available ||
+          unit.status == UnitStatus.reserved;
+      final isRentable = statusAllowsRental &&
+          !hasTenantLink &&
+          !claimedByActiveTenant &&
+          isPubliclyEnabledType;
+
+      final publicStatus = (hasTenantLink || claimedByActiveTenant)
+          ? 'rented'
+          : statusToPublicStatus(unit.status);
+
+      return <String, dynamic>{
+        'unitId': unit.id,
+        'unitNumber': showUnitNumbers ? unit.unitNumber : null,
+        'unitLabel': showUnitNumbers ? unit.unitNumber : null,
+        'displayName':
+            showUnitNumbers ? 'Unit ${unit.unitNumber}' : 'Available Unit',
+        'status': publicStatus,
+        'internalStatus': unit.status.name,
+        'unitType': unitType,
+        'categorySlug': categorySlug,
+        'size': size,
+        'description': unit.description,
+        'monthlyRate': showPublicPricing ? unit.monthlyRate : null,
+        'isRentable': isRentable,
+      };
+    }).toList();
+  }
+
+  /// Updates [publicFacilityMaps] inventory from live units (no full republish).
+  static Future<void> refreshPublicMapInventoryFromLiveUnits(
+      String facilityId) async {
+    try {
+      final meta = await getMeta(facilityId);
+      if (meta == null || meta.publicSlug.trim().isEmpty) {
+        return;
+      }
+
+      final publicRef =
+          _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
+      final publicSnap = await publicRef.get();
+      if (!publicSnap.exists) {
+        return;
+      }
+
+      final publicSettings =
+          await FacilityPublicService.getPublicSettings(facilityId);
+      final units = await _fetchActiveUnitsOrdered(facilityId);
+      final tenants = await TenantService.getTenantsForFacility(facilityId);
+      final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
+      final unitMaps = buildPublicUnitInventoryMaps(
+        units: units,
+        publicSettings: publicSettings,
+        tenantClaimedUnitNumbers: claimedUnits,
+      );
+
+      await publicRef.update({
+        'units': unitMaps,
+        'inventorySyncedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [FacilityMapV2] refreshPublicMapInventory failed: $e');
+      }
+    }
+  }
+
   static PublicFacilityMapSnapshot _buildPublicSnapshot({
     required String facilityId,
     required String slug,
@@ -318,6 +476,7 @@ class FacilityMapV2Service {
     required List<UnitModel> units,
     required FacilityPublicSettings? publicSettingsModel,
     required Map<String, dynamic> mapSettings,
+    Set<String> tenantClaimedUnitNumbers = const <String>{},
   }) {
     final showPublicPricing = publicSettingsModel?.publicPricingEnabled ?? true;
     final allowReservation = publicSettingsModel?.publicRentalsEnabled ?? false;
@@ -345,38 +504,11 @@ class FacilityMapV2Service {
             .toList();
 
     final visibleElements = elements.where((e) => e.visiblePublic).toList();
-    final safeUnits = units.map((unit) {
-      final dims = unit.dimensions ?? const <String, dynamic>{};
-      final width = (dims['width'] as num?)?.toDouble();
-      final depth = (dims['depth'] as num?)?.toDouble();
-      String? size;
-      if (width != null && depth != null) {
-        size = '${width.toStringAsFixed(0)}x${depth.toStringAsFixed(0)}';
-      }
-
-      final unitType = unit.unitType;
-      final categorySlug = _slugify(unitType);
-      final isPubliclyEnabledType = enabledPublicUnitTypes.isEmpty ||
-          enabledPublicUnitTypes.contains(unitType);
-
-      return <String, dynamic>{
-        'unitId': unit.id,
-        'unitNumber': showUnitNumbers ? unit.unitNumber : null,
-        'unitLabel': showUnitNumbers ? unit.unitNumber : null,
-        'displayName':
-            showUnitNumbers ? 'Unit ${unit.unitNumber}' : 'Available Unit',
-        'status': statusToPublicStatus(unit.status),
-        'internalStatus': unit.status.name,
-        'unitType': unitType,
-        'categorySlug': categorySlug,
-        'size': size,
-        'description': unit.description,
-        'monthlyRate': showPublicPricing ? unit.monthlyRate : null,
-        'isRentable': (unit.status == UnitStatus.available ||
-                unit.status == UnitStatus.reserved) &&
-            isPubliclyEnabledType,
-      };
-    }).toList();
+    final safeUnits = buildPublicUnitInventoryMaps(
+      units: units,
+      publicSettings: publicSettingsModel,
+      tenantClaimedUnitNumbers: tenantClaimedUnitNumbers,
+    );
 
     final publicDescription =
         publicSettingsModel?.marketingContent?.trim().isNotEmpty == true

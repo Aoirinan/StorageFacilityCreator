@@ -60,7 +60,8 @@ class MapFilterToolbar extends StatelessWidget {
         if (selected) {
           onStatusFilterChanged(statuses);
         } else {
-          onStatusFilterChanged({});
+          // Deselecting "All" must not mean "hide every unit" (empty filter).
+          onStatusFilterChanged(UnitStatus.values.toSet());
         }
       },
       selectedColor: AppTheme.primaryBlue.withOpacity(0.2),

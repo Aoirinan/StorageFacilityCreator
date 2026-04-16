@@ -303,6 +303,7 @@ class AppShell extends ConsumerWidget {
   Widget _buildTopBar(BuildContext context, bool isMobile, String currentRoute) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final canNavigateBack = _canNavigateBack(context, currentRoute);
     return Container(
       height: 64,
       decoration: BoxDecoration(
@@ -324,6 +325,14 @@ class AppShell extends ConsumerWidget {
                 onPressed: () => Scaffold.of(context).openDrawer(),
               ),
             ),
+          IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
+            color: colorScheme.onSurfaceVariant,
+            onPressed: canNavigateBack
+                ? () => _goBack(context, currentRoute)
+                : null,
+          ),
           FacilitySwitcher(compact: isMobile),
           const SizedBox(width: 16),
           const Spacer(),
@@ -336,6 +345,27 @@ class AppShell extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  bool _canNavigateBack(BuildContext context, String currentRoute) {
+    if (GoRouter.of(context).canPop()) {
+      return true;
+    }
+    return !_isDashboardRoute(currentRoute);
+  }
+
+  bool _isDashboardRoute(String route) {
+    return route == AppRoute.dashboard || route.startsWith('${AppRoute.dashboard}?');
+  }
+
+  void _goBack(BuildContext context, String currentRoute) {
+    if (GoRouter.of(context).canPop()) {
+      context.pop();
+      return;
+    }
+    if (!_isDashboardRoute(currentRoute)) {
+      context.go(AppRoute.dashboard);
+    }
   }
 
   void _showLogoutDialog(BuildContext context) {

@@ -86,6 +86,7 @@ class AppRoute {
   static const documents = '/documents';
   static const inventory = '/inventory';
   static const pos = '/pos';
+  static const retailSales = '/retail-sales';
   /// Sidebar target only — resolves to [pos] with a facility (not a registered page path).
   static const retail = '/retail';
   static const recurringCharges = '/recurring-charges';

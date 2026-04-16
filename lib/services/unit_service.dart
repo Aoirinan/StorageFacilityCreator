@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import '../models/unit_model.dart';
 import 'audit_service.dart';
 import 'facility_limits_service.dart';
+import 'facility_map_v2_service.dart';
 import 'facility_stats_service.dart';
 
 class UnitService {
@@ -85,6 +86,8 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Unit created successfully: ${ref.id}');
       }
+
+      _schedulePublicMapInventorySync(facilityId);
 
       return ref.id;
     } catch (e) {
@@ -386,6 +389,19 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Unit updated successfully: $unitId');
       }
+
+      final shouldSyncPublicInventory = unitNumber != null ||
+          unitType != null ||
+          status != null ||
+          tenantId != null ||
+          tenantName != null ||
+          monthlyRate != null ||
+          description != null ||
+          dimensions != null ||
+          features != null;
+      if (shouldSyncPublicInventory) {
+        _schedulePublicMapInventorySync(facilityId);
+      }
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error updating unit: $e');
@@ -473,6 +489,7 @@ class UnitService {
         print('✅ Tenant removed from unit successfully');
       }
       await FacilityStatsService.updateFacilityStats(facilityId);
+      _schedulePublicMapInventorySync(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error removing tenant from unit: $e');
@@ -511,6 +528,7 @@ class UnitService {
     if (kDebugMode) {
       print('✅ [UnitService] Cleared tenant from ${unitIds.length} unit(s) (heal batch)');
     }
+    _schedulePublicMapInventorySync(facilityId);
   }
 
   // Archive unit (soft delete)
@@ -541,12 +559,22 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Unit archived successfully: $unitId');
       }
+      _schedulePublicMapInventorySync(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error archiving unit: $e');
       }
       rethrow;
     }
+  }
+
+  static void _schedulePublicMapInventorySync(String facilityId) {
+    FacilityMapV2Service.refreshPublicMapInventoryFromLiveUnits(facilityId)
+        .catchError((Object e) {
+      if (kDebugMode) {
+        print('⚠️ [UnitService] public map inventory sync: $e');
+      }
+    });
   }
 
   // Delete unit (hard delete)

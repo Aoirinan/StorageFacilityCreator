@@ -54,6 +54,8 @@ class SaleModel {
   final String id;
   final String facilityId;
   final String? tenantId; // If sold to a tenant, link to ledger
+  /// Denormalized at checkout for receipts/history (e.g. "Walk-in customer" or "Name - Unit").
+  final String? buyerDisplayName;
   final String saleNumber; // Auto-generated (e.g., "SALE-2025-001")
   final SaleStatus status;
   final PaymentMethod paymentMethod;
@@ -74,6 +76,7 @@ class SaleModel {
     required this.id,
     required this.facilityId,
     this.tenantId,
+    this.buyerDisplayName,
     required this.saleNumber,
     required this.status,
     required this.paymentMethod,
@@ -106,6 +109,7 @@ class SaleModel {
       id: doc.id,
       facilityId: data['facilityId'] ?? '',
       tenantId: data['tenantId'],
+      buyerDisplayName: data['buyerDisplayName'] as String?,
       saleNumber: data['saleNumber'] ?? '',
       status: SaleStatus.values.firstWhere(
         (e) => e.name == data['status'],
@@ -136,6 +140,8 @@ class SaleModel {
     return {
       'facilityId': facilityId,
       if (tenantId != null && tenantId!.isNotEmpty) 'tenantId': tenantId,
+      if (buyerDisplayName != null && buyerDisplayName!.trim().isNotEmpty)
+        'buyerDisplayName': buyerDisplayName!.trim(),
       'saleNumber': saleNumber,
       'status': status.name,
       'paymentMethod': paymentMethod.name,
@@ -158,6 +164,7 @@ class SaleModel {
     String? id,
     String? facilityId,
     String? tenantId,
+    String? buyerDisplayName,
     String? saleNumber,
     SaleStatus? status,
     PaymentMethod? paymentMethod,
@@ -178,6 +185,7 @@ class SaleModel {
       id: id ?? this.id,
       facilityId: facilityId ?? this.facilityId,
       tenantId: tenantId ?? this.tenantId,
+      buyerDisplayName: buyerDisplayName ?? this.buyerDisplayName,
       saleNumber: saleNumber ?? this.saleNumber,
       status: status ?? this.status,
       paymentMethod: paymentMethod ?? this.paymentMethod,
@@ -225,5 +233,15 @@ class SaleModel {
   String get formattedTotal => '\$${total.toStringAsFixed(2)}';
   String get formattedSubtotal => '\$${subtotal.toStringAsFixed(2)}';
   String? get formattedTax => tax != null ? '\$${tax!.toStringAsFixed(2)}' : null;
+
+  /// Label for POS history and similar UIs when [buyerDisplayName] was not stored yet.
+  String get buyerSummary {
+    final stored = buyerDisplayName?.trim();
+    if (stored != null && stored.isNotEmpty) return stored;
+    if (tenantId != null && tenantId!.isNotEmpty) {
+      return 'Tenant sale';
+    }
+    return 'Walk-in customer';
+  }
 }
 

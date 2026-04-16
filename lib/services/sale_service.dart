@@ -48,10 +48,13 @@ class SaleService {
   static Future<SaleModel> createSale({
     required String facilityId,
     String? tenantId,
+    String? buyerDisplayName,
     required List<SaleLineItem> lineItems,
     required PaymentMethod paymentMethod,
     double? tax,
     String? notes,
+    /// When card was collected via Stripe Payment Element (audit trail).
+    String? stripePaymentIntentId,
     bool updateInventory = true,
     bool createLedgerEntry = true, // If sold to tenant, create ledger entry
   }) async {
@@ -85,10 +88,18 @@ class SaleService {
 
       final saleNumber = await _generateSaleNumber(facilityId);
 
+      final noteParts = <String>[];
+      if (notes != null && notes!.trim().isNotEmpty) noteParts.add(notes!.trim());
+      if (stripePaymentIntentId != null && stripePaymentIntentId!.trim().isNotEmpty) {
+        noteParts.add('Stripe PaymentIntent: ${stripePaymentIntentId!.trim()}');
+      }
+      final combinedNotes = noteParts.isEmpty ? null : noteParts.join(' | ');
+
       final sale = SaleModel(
         id: '',
         facilityId: facilityId,
         tenantId: tenantId,
+        buyerDisplayName: buyerDisplayName,
         saleNumber: saleNumber,
         status: SaleStatus.completed,
         paymentMethod: paymentMethod,
@@ -97,7 +108,7 @@ class SaleService {
         tax: tax,
         total: total,
         saleDate: DateTime.now(),
-        notes: notes,
+        notes: combinedNotes,
         createdAt: DateTime.now(),
         createdBy: user.uid,
       );
@@ -170,12 +181,15 @@ class SaleService {
         .collection('facilities')
         .doc(facilityId)
         .collection('sales')
-        .where('isActive', isEqualTo: true)
-        .orderBy('saleDate', descending: true)
         .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => SaleModel.fromFirestore(doc))
-            .toList());
+        .map((snapshot) {
+          final sales = snapshot.docs
+              .map((doc) => SaleModel.fromFirestore(doc))
+              .where((sale) => sale.isActive)
+              .toList();
+          sales.sort((a, b) => b.saleDate.compareTo(a.saleDate));
+          return sales;
+        });
   }
 
   /// Get sale by ID
