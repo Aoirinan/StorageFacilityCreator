@@ -27,6 +27,7 @@ import 'package:go_router/go_router.dart';
 import '../models/facility_model.dart';
 import '../router/app_route.dart';
 import '../utils/breakpoints.dart';
+import '../utils/renter_account_message.dart';
 import 'bulk_messaging_screen.dart';
 import '../widgets/email_composition_widget.dart';
 import '../widgets/team_notes_panel.dart';
@@ -2749,6 +2750,15 @@ String _interpolateSmsTemplate(String template, TenantModel t) {
       .replaceAll('{{phone}}', t.phone);
 }
 
+String _personalizeRenterGreeting(String body, TenantModel tenant) {
+  final n = tenant.name.trim();
+  final first = n.isEmpty ? 'there' : n.split(RegExp(r'\s+')).first;
+  if (body.startsWith('Hi,\n\n')) {
+    return body.replaceFirst('Hi,\n\n', 'Hi $first,\n\n');
+  }
+  return body;
+}
+
 /// Dialog for sending SMS to a tenant
 class _SendSMSDialog extends ConsumerStatefulWidget {
   final String facilityId;
@@ -2770,6 +2780,7 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
   List<TenantModel> _allTenants = [];
   List<TenantModel> _filteredTenants = [];
   bool _isSending = false;
+  bool _loadingRenterTemplate = false;
 
   @override
   void initState() {
@@ -2880,6 +2891,73 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
     setState(() {
       _messageController.text = _interpolateSmsTemplate(template.body, resolved);
     });
+  }
+
+  Future<void> _applyRenterLinksTemplate() async {
+    if (_selectedTenantId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a tenant first'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    TenantModel? tenant;
+    for (final t in _allTenants) {
+      if (t.id == _selectedTenantId) {
+        tenant = t;
+        break;
+      }
+    }
+
+    if (tenant == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not load tenant'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    final resolved = tenant;
+    setState(() {
+      _loadingRenterTemplate = true;
+    });
+    try {
+      var body =
+          await buildRenterAccountMessageForFacilityId(widget.facilityId);
+      body = _personalizeRenterGreeting(body, resolved);
+      if (!mounted) return;
+      setState(() {
+        _messageController.text = body;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Replace [AMOUNT] and [PAYMENT_LINK] (create pay link under Payment Links).',
+          ),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not load rent links: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingRenterTemplate = false;
+        });
+      }
+    }
   }
 
   Future<void> _sendSMS() async {
@@ -3191,7 +3269,8 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Tap to fill the box below. Name and unit come from the selected tenant.',
+              'Tap to fill the box below. Short templates use the selected tenant. '
+              'Rent & portal loads your online rent URL and tenant portal for this facility.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: AppTheme.textSecondary,
                   ),
@@ -3200,12 +3279,29 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: _kQuickSmsTemplates.map((t) {
-                return ActionChip(
-                  label: Text(t.label),
-                  onPressed: _isSending ? null : () => _applyQuickSmsTemplate(t),
-                );
-              }).toList(),
+              children: [
+                ..._kQuickSmsTemplates.map((t) {
+                  return ActionChip(
+                    label: Text(t.label),
+                    onPressed: (_isSending || _loadingRenterTemplate)
+                        ? null
+                        : () => _applyQuickSmsTemplate(t),
+                  );
+                }),
+                ActionChip(
+                  avatar: _loadingRenterTemplate
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.link, size: 18),
+                  label: const Text('Rent & portal'),
+                  onPressed: (_isSending || _loadingRenterTemplate)
+                      ? null
+                      : _applyRenterLinksTemplate,
+                ),
+              ],
             ),
             
             const SizedBox(height: 16),
@@ -3220,7 +3316,8 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
             const SizedBox(height: 8),
             TextField(
               controller: _messageController,
-              maxLines: 4,
+              maxLines: 10,
+              minLines: 4,
               decoration: InputDecoration(
                 hintText: 'Type your message...',
                 border: OutlineInputBorder(

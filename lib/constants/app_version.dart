@@ -2,22 +2,22 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.22';
+  static const String version = '2.10.23';
 
   // Build number (YYYYMMDD format for easy identification)
-  static const String buildNumber = '20260418';
+  static const String buildNumber = '20260419';
 
   // Full version string
   static const String fullVersion = '$version+$buildNumber';
 
   // Deployment date/time (update on each deploy)
-  static const String deploymentDate = '2026-04-18';
+  static const String deploymentDate = '2026-04-16';
   static const String deploymentTime =
-      'Reminders: detail actions wired to Firestore (send, mark sent/read, cancel); readAt on update; permissions and creator label; build 20260418';
+      'Two-step permanent unit delete confirmations; renter SMS template helper; shared public-rental slug/domain normalization; build 20260419';
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Reminder detail screen revisions: real mark-as-sent/read/cancel, readAt persistence, permission-gated menu, creator resolution, error handling';
+      'Unit list: double confirmation before permanent delete with clearer impact copy. Messaging: renter portal links template + greeting personalization. Online rentals: slug/domain helpers centralized.';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';

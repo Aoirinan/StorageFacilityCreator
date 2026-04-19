@@ -13,6 +13,7 @@ import '../services/facility_public_service.dart';
 import '../services/facility_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/renter_account_message.dart';
 
 class OnlineRentalsManagementScreen extends StatefulWidget {
   final String facilityId;
@@ -155,8 +156,8 @@ class _OnlineRentalsManagementScreenState
   }
 
   Future<void> _save() async {
-    final slug = _normalizedSlug(_slugController.text);
-    final customDomain = _normalizedDomain(_customDomainController.text);
+    final slug = normalizePublicRentalSlug(_slugController.text);
+    final customDomain = normalizeCustomDomain(_customDomainController.text);
     final marketingContent = _marketingContentController.text.trim();
     final logoUrl = _logoUrlController.text.trim();
     final insuranceAmount =
@@ -233,33 +234,12 @@ class _OnlineRentalsManagementScreenState
     }
   }
 
-  String _normalizedSlug(String value) {
-    return value
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9-]'), '-')
-        .replaceAll(RegExp(r'-{2,}'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
-  }
-
-  String _normalizedDomain(String value) {
-    var cleaned = value.trim().toLowerCase();
-    cleaned = cleaned.replaceFirst(RegExp(r'^https?://'), '');
-    cleaned = cleaned.replaceFirst(RegExp(r'^www\.'), '');
-    cleaned = cleaned.split('/').first;
-    return cleaned;
-  }
-
   String get _linkBaseUrl {
-    final domain = _normalizedDomain(_customDomainController.text);
-    if (domain.isNotEmpty) {
-      return 'https://$domain';
-    }
-    return 'https://app.storagefacilitycreator.com';
+    return linkBaseUrlFromCustomDomainField(_customDomainController.text);
   }
 
   Future<void> _checkDomainStatus({bool showSnackBar = false}) async {
-    final domain = _normalizedDomain(_customDomainController.text);
+    final domain = normalizeCustomDomain(_customDomainController.text);
     if (domain.isEmpty) {
       setState(() {
         _domainConnected = null;
@@ -341,7 +321,7 @@ class _OnlineRentalsManagementScreenState
   }
 
   String get _slugPreview {
-    final slug = _normalizedSlug(_slugController.text);
+    final slug = normalizePublicRentalSlug(_slugController.text);
     return slug.isEmpty ? widget.facilityId.toLowerCase() : slug;
   }
 
@@ -356,37 +336,12 @@ class _OnlineRentalsManagementScreenState
     );
   }
 
-  /// SMS/email-friendly template: facility links are filled in; amount and pay URL
-  /// come from Payment Links (per tenant).
   String _buildRenterAccountMessage() {
-    final facilityName = _facility?.name ?? 'Our facility';
-    final rentUrl = FacilityPublicService.getPublicRentUrl(
-      _slugPreview,
-      baseUrl: _linkBaseUrl,
+    return buildRenterAccountMessage(
+      facility: _facility,
+      slug: _slugPreview,
+      linkBaseUrl: _linkBaseUrl,
     );
-    final portalUrl = '$_linkBaseUrl/#/tenant-portal';
-    final phone = _facility?.phone?.trim();
-    final phoneBlock = (phone != null && phone.isNotEmpty)
-        ? 'Questions? Call us at $phone.\n\n'
-        : '';
-
-    return '''Hi,
-
-This is $facilityName. Here is what you need for online rentals and your account:
-
-Rent or reserve a unit online:
-$rentUrl
-
-See your balance and sign in to the tenant portal:
-$portalUrl
-
-Amount due: \$[AMOUNT]
-Pay securely (paste the one-time link from our office software):
-[PAYMENT_LINK]
-
-The payment page shows the amount before you check out. After you pay, it updates your account automatically—no need to send a receipt.
-
-$phoneBlock$facilityName''';
   }
 
   Future<void> _copyRenterAccountMessage() async {

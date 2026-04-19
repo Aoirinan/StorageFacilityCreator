@@ -762,46 +762,89 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
 
   Future<void> _handleBulkPermanentDelete(
       List<String> unitIds, int skippedCount) async {
-    final confirmed = await showDialog<bool>(
+    final acknowledged = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('Delete units permanently?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Permanently delete ${unitIds.length} unit(s)?'),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.error.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.error),
+        title: const Text('Before you permanently delete'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'You are about to permanently delete ${unitIds.length} unit(s).',
+                style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary),
               ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.warning_amber, color: AppTheme.error, size: 22),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Units will be removed from the database. This action cannot be undone.',
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.error.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.error),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.warning_amber, color: AppTheme.error, size: 22),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This cannot be undone. Those unit records are removed from this facility everywhere they appear—the unit list, map editor, occupancy, and other workflows that depend on that unit.',
+                            style: TextStyle(
+                                fontSize: 13, color: AppTheme.textPrimary),
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 10),
+                    Text(
+                      'Tenant customer profiles are not deleted by this action, but anything that still pointed at these units (history, notes, or mismatched data) can become inconsistent or harder to interpret.',
                       style:
                           TextStyle(fontSize: 13, color: AppTheme.textPrimary),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            if (skippedCount > 0) ...[
-              const SizedBox(height: 12),
-              Text(
-                '$skippedCount selected unit(s) have tenants and were not included.',
-                style: TextStyle(fontSize: 13, color: AppTheme.warning),
-              ),
+              if (skippedCount > 0) ...[
+                const SizedBox(height: 12),
+                Text(
+                  '$skippedCount selected unit(s) have tenants and were not included.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.warning),
+                ),
+              ],
             ],
-          ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (acknowledged != true || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm permanent deletion'),
+        content: Text(
+          'Permanently delete ${unitIds.length} unit(s) now? You will not be able to restore them.',
+          style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary),
         ),
         actions: [
           TextButton(
@@ -961,39 +1004,82 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       return;
     }
 
-    final shouldDelete = await showDialog<bool>(
+    final acknowledged = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('Delete unit permanently?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Delete unit ${unit.unitNumber}?'),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.error.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.error),
+        title: const Text('Before you permanently delete'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'You are about to permanently delete unit ${unit.unitNumber}.',
+                style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary),
               ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.warning_amber, color: AppTheme.error, size: 22),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'This permanently removes the unit from the database. This action cannot be undone.',
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.error.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.error),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.warning_amber, color: AppTheme.error, size: 22),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This cannot be undone. The unit record is removed from this facility everywhere it appears—the unit list, map editor, occupancy, and other workflows that depend on that unit.',
+                            style: TextStyle(
+                                fontSize: 13, color: AppTheme.textPrimary),
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 10),
+                    Text(
+                      'Tenant customer profiles are not deleted by this action, but anything that still pointed at this unit can become inconsistent or harder to interpret.',
                       style:
                           TextStyle(fontSize: 13, color: AppTheme.textPrimary),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (acknowledged != true || !mounted) return;
+
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm permanent deletion'),
+        content: Text(
+          'Permanently delete unit ${unit.unitNumber} now? You will not be able to restore it.',
+          style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary),
         ),
         actions: [
           TextButton(
