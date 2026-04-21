@@ -29,7 +29,7 @@ export default function WhySfcPage() {
         <span className="eyebrow">Positioning</span>
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Why operators choose SFC</h1>
         <p className="mt-2 text-lg text-slate-600 max-w-3xl">
-          SFC is built for teams that want modern operations software without bloated enterprise overhead.
+          SFC is built for teams that want modern, focused operations software — not an enterprise suite with more modules than they need.
         </p>
       </Section>
 

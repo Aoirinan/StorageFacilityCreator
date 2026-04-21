@@ -45,7 +45,7 @@ export const EXTRA_DEMO_IMAGES: { src: string; alt: string }[] = [
 
 export const HERO_HEADLINE = 'Modern self-storage management software built for operators.';
 export const HERO_SUBHEADLINE =
-  'Run operations, billing, delinquency workflows, messaging, reporting, and integrations from one reliable platform without bloated enterprise overhead.';
+  'Run operations, billing, delinquency workflows, messaging, reporting, and integrations from one modern, focused platform — not an enterprise suite you have to grow into.';
 
 export const PRICE_MONTHLY = 75;
 export const PRICE_UNIT = 'per facility';
