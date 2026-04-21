@@ -70,7 +70,9 @@ function runChecks() {
   const homePage = read('src/app/page.tsx');
   assertIncludes(homePage, "'@type': 'Organization'", 'Organization JSON-LD missing on homepage.', failures);
   assertIncludes(homePage, "'@type': 'SoftwareApplication'", 'SoftwareApplication JSON-LD missing on homepage.', failures);
-  assertIncludes(homePage, 'DemoFrame src={HERO_IMAGE_PATH} alt=', 'Homepage hero alt text missing.', failures);
+  // Homepage hero moved from DemoFrame to HeroShowcase; keep an accessibility guard
+  // by requiring at least one DemoFrame usage to pass an explicit alt prop.
+  assertIncludes(homePage, 'DemoFrame src={src} alt={alt}', 'Homepage screenshot alt text binding missing.', failures);
 
   const faqPage = read('src/app/faq/page.tsx');
   assertIncludes(faqPage, "'@type': 'FAQPage'", 'FAQPage JSON-LD missing.', failures);

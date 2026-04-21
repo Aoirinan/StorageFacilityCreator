@@ -2,22 +2,22 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.23';
+  static const String version = '2.10.24';
 
   // Build number (YYYYMMDD format for easy identification)
-  static const String buildNumber = '20260419';
+  static const String buildNumber = '20260421';
 
   // Full version string
   static const String fullVersion = '$version+$buildNumber';
 
   // Deployment date/time (update on each deploy)
-  static const String deploymentDate = '2026-04-16';
+  static const String deploymentDate = '2026-04-21';
   static const String deploymentTime =
-      'Two-step permanent unit delete confirmations; renter SMS template helper; shared public-rental slug/domain normalization; build 20260419';
+      'Map editor V2: web toolbar zoom icons; resize handles no longer removed on pointer down; build 20260421';
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Unit list: double confirmation before permanent delete with clearer impact copy. Messaging: renter portal links template + greeting personalization. Online rentals: slug/domain helpers centralized.';
+      'Map editor: reliable zoom controls on web (Material icon tree-shake). Resizing unit boxes works again (Listener scoped to body, handles stay mounted while resizing).';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';

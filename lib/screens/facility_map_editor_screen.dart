@@ -273,6 +273,22 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     setState(() {});
   }
 
+  void _zoomBy(double factor) {
+    final vs = _interactiveViewerViewportSize();
+    if (vs.width <= 0 || vs.height <= 0) return;
+    final focal = Offset(vs.width / 2, vs.height / 2);
+    final currentScale = _transformationController.value.getMaxScaleOnAxis();
+    final targetScale = (currentScale * factor).clamp(0.02, 4.0);
+    final scaleChange = targetScale / currentScale;
+
+    final next = _transformationController.value.clone()
+      ..translate(focal.dx, focal.dy)
+      ..scale(scaleChange)
+      ..translate(-focal.dx, -focal.dy);
+    _transformationController.value = next;
+    setState(() {});
+  }
+
   /// Same bounds logic as [_buildCanvas] (all shapes, unfiltered) for placement and clamping.
   _MapWorkspaceBounds _computeWorkspaceBounds(List<MapShapeModel> shapes) {
     double minX = 0;
@@ -900,6 +916,19 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPressed: _resetView,
           ),
           IconButton(
+            // zoom_out / zoom_in can be stripped from tree-shaken MaterialIcons on web
+            icon: const Icon(Icons.remove),
+            tooltip: 'Zoom Out',
+            color: cs.onSurface,
+            onPressed: () => _zoomBy(0.85),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Zoom In',
+            color: cs.onSurface,
+            onPressed: () => _zoomBy(1.15),
+          ),
+          IconButton(
             icon: const Icon(Icons.list_alt),
             tooltip: 'Shape Manager',
             onPressed: _openShapeManager,
@@ -1151,71 +1180,74 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     return Positioned(
       left: displayX,
       top: displayY,
-      child: Listener(
-          behavior: HitTestBehavior.opaque,
-          onPointerDown: (event) {
-            if (_isDisposed || !mounted) return;
-            if (_isResizing) return;
-            _shapePointerActive = true;
-            if (kDebugMode) {
-              debugPrint('[MapEditor] pointer down (shape) shape=${shape.id}');
-            }
-            _selectShape(shape.id);
-            setState(() {
-              _draggingShapeId = shape.id;
-              _dragOffset = Offset.zero;
-              _isResizing = false;
-            });
-          },
-        onPointerMove: (event) {
-          if (_isDisposed || !mounted) return;
-          if (_draggingShapeId != shape.id || _isResizing) return;
-          final matrix = _transformationController.value;
-          final scale = matrix.getMaxScaleOnAxis();
-          setState(() {
-            _dragOffset = Offset(
-              (_dragOffset?.dx ?? 0) + event.delta.dx / scale,
-              (_dragOffset?.dy ?? 0) + event.delta.dy / scale,
-            );
-          });
-        },
-        onPointerUp: (event) {
-          if (_isDisposed || !mounted) return;
-          _shapePointerActive = false;
-          if (_draggingShapeId != shape.id || _dragOffset == null || _isResizing) {
-            _clearDragState();
-            return;
-          }
-          final dx = _dragOffset!.dx;
-          final dy = _dragOffset!.dy;
-          if (dx.abs() < 0.5 && dy.abs() < 0.5) {
-            _clearDragState();
-            return;
-          }
-          final newX = (shape.x + dx).clamp(0.0, double.infinity);
-          final newY = (shape.y + dy).clamp(0.0, double.infinity);
-          final snappedX = _snapToGrid
-              ? _snapToGridValue(newX)
-              : newX;
-          final snappedY = _snapToGrid
-              ? _snapToGridValue(newY)
-              : newY;
-          MapLayoutService.updateMapShape(
-            facilityId: widget.facilityId,
-            shapeId: shape.id,
-            x: snappedX.clamp(0.0, double.infinity),
-            y: snappedY.clamp(0.0, double.infinity),
-          );
-          _clearDragState();
-        },
-        onPointerCancel: (_) {
-          _shapePointerActive = false;
-          _clearDragState();
-        },
-            child: Stack(
-              clipBehavior: Clip.none, // Allow resize handles outside bounds
-              children: [
-                GestureDetector(
+      child: Stack(
+        clipBehavior: Clip.none, // Allow resize handles outside bounds
+        children: [
+          // Listener only on the unit body — not handles. Wrapping handles caused
+          // onPointerDown to set _draggingShapeId and remove handles from the tree
+          // before the handle's pan gesture could start (resize appeared broken).
+          Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (event) {
+              if (_isDisposed || !mounted) return;
+              if (_isResizing) return;
+              _shapePointerActive = true;
+              if (kDebugMode) {
+                debugPrint('[MapEditor] pointer down (shape) shape=${shape.id}');
+              }
+              _selectShape(shape.id);
+              setState(() {
+                _draggingShapeId = shape.id;
+                _dragOffset = Offset.zero;
+                _isResizing = false;
+              });
+            },
+            onPointerMove: (event) {
+              if (_isDisposed || !mounted) return;
+              if (_draggingShapeId != shape.id || _isResizing) return;
+              final matrix = _transformationController.value;
+              final scale = matrix.getMaxScaleOnAxis();
+              setState(() {
+                _dragOffset = Offset(
+                  (_dragOffset?.dx ?? 0) + event.delta.dx / scale,
+                  (_dragOffset?.dy ?? 0) + event.delta.dy / scale,
+                );
+              });
+            },
+            onPointerUp: (event) {
+              if (_isDisposed || !mounted) return;
+              _shapePointerActive = false;
+              if (_draggingShapeId != shape.id || _dragOffset == null || _isResizing) {
+                _clearDragState();
+                return;
+              }
+              final dx = _dragOffset!.dx;
+              final dy = _dragOffset!.dy;
+              if (dx.abs() < 0.5 && dy.abs() < 0.5) {
+                _clearDragState();
+                return;
+              }
+              final newX = (shape.x + dx).clamp(0.0, double.infinity);
+              final newY = (shape.y + dy).clamp(0.0, double.infinity);
+              final snappedX = _snapToGrid
+                  ? _snapToGridValue(newX)
+                  : newX;
+              final snappedY = _snapToGrid
+                  ? _snapToGridValue(newY)
+                  : newY;
+              MapLayoutService.updateMapShape(
+                facilityId: widget.facilityId,
+                shapeId: shape.id,
+                x: snappedX.clamp(0.0, double.infinity),
+                y: snappedY.clamp(0.0, double.infinity),
+              );
+              _clearDragState();
+            },
+            onPointerCancel: (_) {
+              _shapePointerActive = false;
+              _clearDragState();
+            },
+            child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
                 if (_isDisposed || !mounted) return;
@@ -1263,9 +1295,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 },
                 child: SizedBox(
                   width: renderShape.width,
-                  height: unit != null
-                      ? renderShape.height + 160
-                      : renderShape.height,
+                  height: renderShape.height,
                   child: Stack(
                     clipBehavior: Clip.none,
                     alignment: Alignment.bottomCenter,
@@ -1362,7 +1392,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                     ),
                     if (_hoveredUnitId == unit?.id && unit != null)
                       Positioned(
-                        top: 0,
+                        top: -148,
                         left: 0,
                         right: 0,
                         child: Center(
@@ -1387,10 +1417,13 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 ),
               ),
             ),
-            // Resize handles - only show when selected and not dragging
-            if (isSelected && _draggingShapeId == null) ..._buildResizeHandles(renderShape),
-          ],
-        ),
+          ),
+          // Keep handles mounted while resizing so the pan gesture is not torn down.
+          if (isSelected &&
+              (_draggingShapeId == null ||
+                  (_isResizing && _draggingShapeId == shape.id)))
+            ..._buildResizeHandles(renderShape),
+        ],
       ),
     );
   }
@@ -1403,7 +1436,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       // Top-left
       Positioned(
         left: -handleSize / 2,
-        top: -handleSize / 2,
+        bottom: shape.height - handleSize / 2,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
@@ -1472,7 +1505,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       // Top-right
       Positioned(
         right: -handleSize / 2,
-        top: -handleSize / 2,
+        bottom: shape.height - handleSize / 2,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
