@@ -509,32 +509,6 @@ export default function HomePage() {
         </ul>
       </Section>
 
-      {/* Compare teaser */}
-      <Section className="bg-white">
-        <Reveal>
-          <div className="mx-auto max-w-4xl rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50/60 p-6 sm:p-8 shadow-sm">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
-              <div className="flex-1">
-                <span className="eyebrow">How we compare</span>
-                <h3 className="font-display mt-2 text-xl sm:text-2xl font-extrabold text-slate-900">
-                  How does SFC stack up against the incumbents?
-                </h3>
-                <p className="mt-2 text-slate-600">
-                  Side-by-side look at SFC vs Sitelink, storEDGE, and Easy Storage Solutions — features, pricing model, and what's included.
-                </p>
-              </div>
-              <Link
-                href="/compare"
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 transition-colors shrink-0"
-              >
-                See comparison
-                <span aria-hidden>→</span>
-              </Link>
-            </div>
-          </div>
-        </Reveal>
-      </Section>
-
       {/* Global DNR */}
       <Section className="bg-gradient-to-b from-white to-emerald-50/50">
         <Reveal>

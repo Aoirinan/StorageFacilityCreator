@@ -11,7 +11,7 @@ const ITEMS: Item[] = [
     a: 'Flat monthly pricing starting at $75/month. No onboarding fee. A 30-day trial + first month free is available so you can evaluate with real data before committing.',
   },
   {
-    q: 'Can we migrate from Sitelink, storEDGE, or spreadsheets?',
+    q: 'Can we migrate from our current software or from spreadsheets?',
     a: 'Yes. Migration support is available based on your existing data and workflow complexity. Most operators can import units, tenants, and balances in a guided flow.',
   },
   {
