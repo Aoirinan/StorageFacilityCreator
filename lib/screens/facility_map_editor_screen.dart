@@ -84,6 +84,9 @@ int compareUnitNumbersNatural(String a, String b) {
   return pa.length.compareTo(pb.length);
 }
 
+/// Corner resize handles for [FacilityMapEditorScreen] (axis-aligned rects).
+enum _MapResizeCorner { topLeft, topRight, bottomLeft, bottomRight }
+
 /// Interactive facility map editor
 class FacilityMapEditorScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -145,6 +148,12 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   bool _isSeedingBottomRow = false;
   bool _isDeletingAllShapes = false;
 
+  /// When true, [InteractiveViewer] pan/scale are off so shape drags/resizes are not
+  /// stolen by the viewport (sync updates — avoids waiting for [setState]).
+  final ValueNotifier<bool> _viewerPointerLock = ValueNotifier<bool>(false);
+  /// Pointer id driving an active corner resize (raw [Listener], not gesture arena).
+  int? _resizePointerId;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -154,6 +163,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       debugPrint('[MapEditor] dispose for facility ${widget.facilityId}');
     }
     _isDisposed = true;
+    _viewerPointerLock.dispose();
     _transformationController.dispose();
     super.dispose();
   }
@@ -205,6 +215,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _dragOffset = null;
       _selectedUnitIds.clear();
       _isResizing = false;
+      _viewerPointerLock.value = false;
+      _resizePointerId = null;
       _transformationController.value = Matrix4.identity();
       _didAutoSeedBottomRow = false;
       _isSeedingBottomRow = false;
@@ -213,6 +225,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
   void _clearDragState() {
     if (!mounted) return;
+    _viewerPointerLock.value = false;
+    _resizePointerId = null;
     setState(() {
       _dragOffset = null;
       _draggingShapeId = null;
@@ -644,6 +658,63 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     }
   }
 
+  Future<void> _swapShapeWidthHeight(MapShapeModel shape) async {
+    try {
+      await MapLayoutService.updateMapShape(
+        facilityId: widget.facilityId,
+        shapeId: shape.id,
+        width: shape.height,
+        height: shape.width,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Swapped width and height'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not swap: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _rotateShape90Clockwise(MapShapeModel shape) async {
+    try {
+      await MapLayoutService.updateMapShape(
+        facilityId: widget.facilityId,
+        shapeId: shape.id,
+        width: shape.height,
+        height: shape.width,
+        rotation: (shape.rotation + 90.0) % 360.0,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Rotated 90° (size swapped)'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not rotate: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _duplicateSelectedShape() async {
     if (_selectedShapeId == null) return;
     final shapesAsync = ref.read(facilityMapShapesProvider(widget.facilityId));
@@ -1056,20 +1127,25 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       
       print('[MapEditor] Canvas size: ${canvasWidth}x${canvasHeight}, offset: ($minX, $minY)');
 
-      return InteractiveViewer(
-        key: _interactiveViewerKey,
-        transformationController: _transformationController,
-        // Map canvas is often larger than the viewport; default constrained:true
-        // prevents correct layout (see InteractiveViewer.constrained docs).
-        constrained: false,
-        minScale: 0.02,
-        maxScale: 4.0,
-        boundaryMargin: const EdgeInsets.all(double.infinity),
-        // While dragging/resizing a shape, disable viewport pan to avoid the
-        // canvas moving opposite the shape drag.
-        panEnabled: !_isResizing && _draggingShapeId == null,
-        scaleEnabled: true,
-        child: GestureDetector(
+      return ValueListenableBuilder<bool>(
+        valueListenable: _viewerPointerLock,
+        builder: (context, pointerLocked, _) {
+          final blockViewer =
+              pointerLocked || _isResizing || _draggingShapeId != null;
+          return InteractiveViewer(
+            key: _interactiveViewerKey,
+            transformationController: _transformationController,
+            // Map canvas is often larger than the viewport; default constrained:true
+            // prevents correct layout (see InteractiveViewer.constrained docs).
+            constrained: false,
+            minScale: 0.02,
+            maxScale: 4.0,
+            boundaryMargin: const EdgeInsets.all(double.infinity),
+            // While dragging/resizing a shape, disable viewport pan/zoom so child
+            // gestures and raw pointer drags are not stolen (esp. on web).
+            panEnabled: !blockViewer,
+            scaleEnabled: !blockViewer,
+            child: GestureDetector(
           behavior: HitTestBehavior.translucent, // Allow clicks to pass through to shapes
           // Handle clicks on empty canvas to deselect
           onTapDown: (details) {
@@ -1109,6 +1185,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             },
           ),
         ),
+      );
+        },
       );
     } catch (e, stack) {
       if (kDebugMode) {
@@ -1191,6 +1269,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPointerDown: (event) {
               if (_isDisposed || !mounted) return;
               if (_isResizing) return;
+              // Lock before setState so InteractiveViewer disables pan on this frame.
+              _viewerPointerLock.value = true;
               _shapePointerActive = true;
               if (kDebugMode) {
                 debugPrint('[MapEditor] pointer down (shape) shape=${shape.id}');
@@ -1428,274 +1508,150 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     );
   }
 
-  List<Widget> _buildResizeHandles(MapShapeModel shape) {
-    const handleSize = 16.0; // Increased size for better visibility
+  MapShapeModel _shapeAfterCornerResize(
+    MapShapeModel current,
+    _MapResizeCorner corner,
+    double ddx,
+    double ddy,
+  ) {
+    switch (corner) {
+      case _MapResizeCorner.topLeft:
+        final newWidth = (current.width - ddx).clamp(20.0, 2000.0);
+        final newHeight = (current.height - ddy).clamp(20.0, 1500.0);
+        final newX = (current.x + ddx).clamp(0.0, 2000.0 - newWidth);
+        final newY = (current.y + ddy).clamp(0.0, 1500.0 - newHeight);
+        return current.copyWith(
+            x: newX, y: newY, width: newWidth, height: newHeight);
+      case _MapResizeCorner.topRight:
+        final newWidth = (current.width + ddx).clamp(20.0, 2000.0 - current.x);
+        final newHeight = (current.height - ddy).clamp(20.0, 1500.0);
+        final newY = (current.y + ddy).clamp(0.0, 1500.0 - newHeight);
+        return current.copyWith(y: newY, width: newWidth, height: newHeight);
+      case _MapResizeCorner.bottomLeft:
+        final newWidth = (current.width - ddx).clamp(20.0, 2000.0);
+        final newHeight = (current.height + ddy).clamp(20.0, 1500.0 - current.y);
+        final newX = (current.x + ddx).clamp(0.0, 2000.0 - newWidth);
+        return current.copyWith(x: newX, width: newWidth, height: newHeight);
+      case _MapResizeCorner.bottomRight:
+        final newWidth = (current.width + ddx).clamp(20.0, 2000.0 - current.x);
+        final newHeight = (current.height + ddy).clamp(20.0, 1500.0 - current.y);
+        return current.copyWith(width: newWidth, height: newHeight);
+    }
+  }
+
+  void _commitResizeToFirestore(MapShapeModel shape) {
+    final preview = _activeResizeShape;
+    if (preview != null && preview.id == shape.id) {
+      MapLayoutService.updateMapShape(
+        facilityId: widget.facilityId,
+        shapeId: shape.id,
+        x: preview.x,
+        y: preview.y,
+        width: preview.width,
+        height: preview.height,
+      );
+    }
+    _clearDragState();
+  }
+
+  /// Raw pointer resize so [InteractiveViewer] scale/pan recognizers do not win the arena (web).
+  Widget _resizeCornerPointer(
+    MapShapeModel shape,
+    _MapResizeCorner corner, {
+    double? left,
+    double? right,
+    required double bottom,
+    required MouseCursor cursor,
+  }) {
+    assert((left == null) != (right == null));
+    const handleSize = 24.0;
     const handleColor = AppTheme.primaryBlue;
-    
+    final h2 = handleSize / 2;
+
+    final handle = Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (e) {
+        _viewerPointerLock.value = true;
+        if (kDebugMode) {
+          debugPrint('[MapEditor] resize down $corner shape=${shape.id}');
+        }
+        setState(() {
+          _resizePointerId = e.pointer;
+          _isResizing = true;
+          _draggingShapeId = shape.id;
+          _dragOffset = null;
+          _activeResizeShape = shape;
+        });
+      },
+      onPointerMove: (e) {
+        if (_resizePointerId != e.pointer) return;
+        if (!_isResizing || _draggingShapeId != shape.id) return;
+        final current = _activeResizeShape ?? shape;
+        final matrix = _transformationController.value;
+        final scale = matrix.getMaxScaleOnAxis();
+        final ddx = e.delta.dx / scale;
+        final ddy = e.delta.dy / scale;
+        setState(() {
+          _activeResizeShape =
+              _shapeAfterCornerResize(current, corner, ddx, ddy);
+        });
+      },
+      onPointerUp: (e) {
+        if (_resizePointerId != e.pointer) return;
+        _commitResizeToFirestore(shape);
+      },
+      onPointerCancel: (_) => _clearDragState(),
+      child: MouseRegion(
+        cursor: cursor,
+        child: Container(
+          width: handleSize,
+          height: handleSize,
+          decoration: BoxDecoration(
+            color: handleColor,
+            border: Border.all(color: Colors.white, width: 2),
+            borderRadius: BorderRadius.circular(h2),
+          ),
+        ),
+      ),
+    );
+
+    if (left != null) {
+      return Positioned(left: left, bottom: bottom, child: handle);
+    }
+    return Positioned(right: right!, bottom: bottom, child: handle);
+  }
+
+  List<Widget> _buildResizeHandles(MapShapeModel shape) {
+    const handleSize = 24.0;
+    final half = handleSize / 2;
     return [
-      // Top-left
-      Positioned(
-        left: -handleSize / 2,
-        bottom: shape.height - handleSize / 2,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (details) {
-            if (kDebugMode) {
-              debugPrint('[MapEditor] resize start (top-left) shape=${shape.id}');
-            }
-            setState(() {
-              _isResizing = true;
-              _draggingShapeId = shape.id;
-              _dragOffset = null;
-              _activeResizeShape = shape;
-            });
-          },
-          onPanUpdate: (details) {
-            if (_isResizing && _draggingShapeId == shape.id) {
-              final current = _activeResizeShape ?? shape;
-              final matrix = _transformationController.value;
-              final scale = matrix.getMaxScaleOnAxis();
-              final deltaX = details.delta.dx / scale;
-              final deltaY = details.delta.dy / scale;
-              
-              final newWidth = (current.width - deltaX).clamp(20.0, 2000.0);
-              final newHeight = (current.height - deltaY).clamp(20.0, 1500.0);
-              final newX = (current.x + deltaX).clamp(0.0, 2000.0 - newWidth);
-              final newY = (current.y + deltaY).clamp(0.0, 1500.0 - newHeight);
-
-              setState(() {
-                _activeResizeShape = current.copyWith(
-                  x: newX,
-                  y: newY,
-                  width: newWidth,
-                  height: newHeight,
-                );
-              });
-            }
-          },
-          onPanEnd: (details) {
-            final finalShape = _activeResizeShape;
-            if (finalShape != null) {
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                x: finalShape.x,
-                y: finalShape.y,
-                width: finalShape.width,
-                height: finalShape.height,
-              );
-            }
-            _clearDragState();
-          },
-          onPanCancel: _clearDragState,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeUpLeftDownRight,
-            child: Container(
-              width: handleSize,
-              height: handleSize,
-              decoration: BoxDecoration(
-                color: handleColor,
-                border: Border.all(color: Colors.white, width: 2),
-                borderRadius: BorderRadius.circular(handleSize / 2),
-              ),
-            ),
-          ),
-        ),
+      _resizeCornerPointer(
+        shape,
+        _MapResizeCorner.topLeft,
+        left: -half,
+        bottom: shape.height - half,
+        cursor: SystemMouseCursors.resizeUpLeftDownRight,
       ),
-      // Top-right
-      Positioned(
-        right: -handleSize / 2,
-        bottom: shape.height - handleSize / 2,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (details) {
-            if (kDebugMode) {
-              debugPrint('[MapEditor] resize start (top-right) shape=${shape.id}');
-            }
-            setState(() {
-              _isResizing = true;
-              _draggingShapeId = shape.id;
-              _dragOffset = null;
-              _activeResizeShape = shape;
-            });
-          },
-          onPanUpdate: (details) {
-            if (_isResizing && _draggingShapeId == shape.id) {
-              final current = _activeResizeShape ?? shape;
-              final matrix = _transformationController.value;
-              final scale = matrix.getMaxScaleOnAxis();
-              final deltaX = details.delta.dx / scale;
-              final deltaY = details.delta.dy / scale;
-              
-              final newWidth = (current.width + deltaX).clamp(20.0, 2000.0 - current.x);
-              final newHeight = (current.height - deltaY).clamp(20.0, 1500.0);
-              final newY = (current.y + deltaY).clamp(0.0, 1500.0 - newHeight);
-
-              setState(() {
-                _activeResizeShape = current.copyWith(
-                  y: newY,
-                  width: newWidth,
-                  height: newHeight,
-                );
-              });
-            }
-          },
-          onPanEnd: (details) {
-            final finalShape = _activeResizeShape;
-            if (finalShape != null) {
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                y: finalShape.y,
-                width: finalShape.width,
-                height: finalShape.height,
-              );
-            }
-            _clearDragState();
-          },
-          onPanCancel: _clearDragState,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeUpRightDownLeft,
-            child: Container(
-              width: handleSize,
-              height: handleSize,
-              decoration: BoxDecoration(
-                color: handleColor,
-                border: Border.all(color: Colors.white, width: 2),
-                borderRadius: BorderRadius.circular(handleSize / 2),
-              ),
-            ),
-          ),
-        ),
+      _resizeCornerPointer(
+        shape,
+        _MapResizeCorner.topRight,
+        right: -half,
+        bottom: shape.height - half,
+        cursor: SystemMouseCursors.resizeUpRightDownLeft,
       ),
-      // Bottom-left
-      Positioned(
-        left: -handleSize / 2,
-        bottom: -handleSize / 2,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (details) {
-            if (kDebugMode) {
-              debugPrint('[MapEditor] resize start (bottom-left) shape=${shape.id}');
-            }
-            setState(() {
-              _isResizing = true;
-              _draggingShapeId = shape.id;
-              _dragOffset = null;
-              _activeResizeShape = shape;
-            });
-          },
-          onPanUpdate: (details) {
-            if (_isResizing && _draggingShapeId == shape.id) {
-              final current = _activeResizeShape ?? shape;
-              final matrix = _transformationController.value;
-              final scale = matrix.getMaxScaleOnAxis();
-              final deltaX = details.delta.dx / scale;
-              final deltaY = details.delta.dy / scale;
-              
-              final newWidth = (current.width - deltaX).clamp(20.0, 2000.0);
-              final newHeight = (current.height + deltaY).clamp(20.0, 1500.0 - current.y);
-              final newX = (current.x + deltaX).clamp(0.0, 2000.0 - newWidth);
-
-              setState(() {
-                _activeResizeShape = current.copyWith(
-                  x: newX,
-                  width: newWidth,
-                  height: newHeight,
-                );
-              });
-            }
-          },
-          onPanEnd: (details) {
-            final finalShape = _activeResizeShape;
-            if (finalShape != null) {
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                x: finalShape.x,
-                width: finalShape.width,
-                height: finalShape.height,
-              );
-            }
-            _clearDragState();
-          },
-          onPanCancel: _clearDragState,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeUpRightDownLeft,
-            child: Container(
-              width: handleSize,
-              height: handleSize,
-              decoration: BoxDecoration(
-                color: handleColor,
-                border: Border.all(color: Colors.white, width: 2),
-                borderRadius: BorderRadius.circular(handleSize / 2),
-              ),
-            ),
-          ),
-        ),
+      _resizeCornerPointer(
+        shape,
+        _MapResizeCorner.bottomLeft,
+        left: -half,
+        bottom: -half,
+        cursor: SystemMouseCursors.resizeUpRightDownLeft,
       ),
-      // Bottom-right
-      Positioned(
-        right: -handleSize / 2,
-        bottom: -handleSize / 2,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (details) {
-            if (kDebugMode) {
-              debugPrint('[MapEditor] resize start (bottom-right) shape=${shape.id}');
-            }
-            setState(() {
-              _isResizing = true;
-              _draggingShapeId = shape.id;
-              _dragOffset = null;
-              _activeResizeShape = shape;
-            });
-          },
-          onPanUpdate: (details) {
-            if (_isResizing && _draggingShapeId == shape.id) {
-              final current = _activeResizeShape ?? shape;
-              final matrix = _transformationController.value;
-              final scale = matrix.getMaxScaleOnAxis();
-              final deltaX = details.delta.dx / scale;
-              final deltaY = details.delta.dy / scale;
-              
-              final newWidth = (current.width + deltaX).clamp(20.0, 2000.0 - current.x);
-              final newHeight = (current.height + deltaY).clamp(20.0, 1500.0 - current.y);
-
-              setState(() {
-                _activeResizeShape = current.copyWith(
-                  width: newWidth,
-                  height: newHeight,
-                );
-              });
-            }
-          },
-          onPanEnd: (details) {
-            final finalShape = _activeResizeShape;
-            if (finalShape != null) {
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                width: finalShape.width,
-                height: finalShape.height,
-              );
-            }
-            _clearDragState();
-          },
-          onPanCancel: _clearDragState,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeUpLeftDownRight,
-            child: Container(
-              width: handleSize,
-              height: handleSize,
-              decoration: BoxDecoration(
-                color: handleColor,
-                border: Border.all(color: Colors.white, width: 2),
-                borderRadius: BorderRadius.circular(handleSize / 2),
-              ),
-            ),
-          ),
-        ),
+      _resizeCornerPointer(
+        shape,
+        _MapResizeCorner.bottomRight,
+        right: -half,
+        bottom: -half,
+        cursor: SystemMouseCursors.resizeUpLeftDownRight,
       ),
     ];
   }
@@ -1797,6 +1753,28 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 Navigator.of(context).pop();
                 _selectShape(shape.id);
                 _duplicateSelectedShape();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('Swap width & height'),
+              subtitle: Text(
+                '${shape.width.toStringAsFixed(0)} × ${shape.height.toStringAsFixed(0)}',
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                _selectShape(shape.id);
+                _swapShapeWidthHeight(shape);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.rotate_90_degrees_cw),
+              title: const Text('Rotate 90° (swap size)'),
+              subtitle: const Text('Updates stored rotation for maps that use it'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _selectShape(shape.id);
+                _rotateShape90Clockwise(shape);
               },
             ),
             if (unit != null) ...[
