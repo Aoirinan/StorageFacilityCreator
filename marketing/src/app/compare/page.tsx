@@ -96,10 +96,10 @@ const COMPARE_ROWS: Row[] = [
   },
   {
     area: 'Accounting integration',
-    sfc: 'QuickBooks',
-    sitelink: 'Multiple integrations via ecosystem',
-    storedge: 'Multiple integrations',
-    ess: 'Integrations available',
+    sfc: 'QuickBooks (primary); additional accounting integrations on roadmap',
+    sitelink: 'QuickBooks plus additional accounting partners',
+    storedge: 'QuickBooks plus additional accounting partners',
+    ess: 'QuickBooks via partner options',
   },
   {
     area: 'Global Do Not Rent network',
