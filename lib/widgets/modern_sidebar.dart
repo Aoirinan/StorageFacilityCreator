@@ -479,6 +479,11 @@ class _UnitsSection extends StatelessWidget {
     }
 
     final expanded = currentRoute.startsWith('/units');
+    final unitsPath = currentRoute.split('?').first;
+    final unitListActive = unitsPath == '/units' ||
+        unitsPath == AppRoute.unitCreate ||
+        unitsPath == AppRoute.unitEdit ||
+        unitsPath == AppRoute.unitDetail;
 
     final colorScheme = Theme.of(context).colorScheme;
     final itemColor =
@@ -505,7 +510,7 @@ class _UnitsSection extends StatelessWidget {
           activeIcon: Icons.list_alt,
           label: 'Unit List',
           route: '/units',
-          isActive: currentRoute == '/units',
+          isActive: unitListActive,
           isCollapsed: false,
           onTap: () => onNavigate('/units'),
         ),

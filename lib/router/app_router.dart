@@ -655,6 +655,20 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             },
           ),
           GoRoute(
+            path: AppRoute.unitCreate,
+            name: 'unit-create',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return UnitCreationScreen(
+                facilityId: facilityId,
+                unit: null,
+              );
+            },
+          ),
+          GoRoute(
             path: AppRoute.unitEdit,
             name: 'unit-edit',
             builder: (context, state) {

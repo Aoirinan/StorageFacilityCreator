@@ -15,8 +15,6 @@ import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-
 /// Unit List Screen - Table/List view of all units for selected facility
 class UnitListScreen extends ConsumerStatefulWidget {
   const UnitListScreen({super.key});
@@ -293,14 +291,14 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           const SizedBox(width: 8),
           ElevatedButton.icon(
             onPressed: () {
-              if (_selectedFacilityId != null) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Unit creation is available via Map Editor'),
-                    backgroundColor: AppTheme.info,
-                  ),
-                );
-              }
+              final fid = _selectedFacilityId;
+              if (fid == null) return;
+              ref
+                  .read(activeFacilityIdProvider.notifier)
+                  .setActiveFacilityId(fid);
+              context.push(
+                '${AppRoute.unitCreate}?facilityId=${Uri.encodeComponent(fid)}',
+              );
             },
             icon: const Icon(Icons.add),
             label: const Text('New Unit'),

@@ -31,6 +31,7 @@ class AppRoute {
   static const units = '/units';
   static const unitsMap = '/units/map';
   static const unitDetail = '/units/detail';
+  static const unitCreate = '/units/create';
   static const unitEdit = '/units/edit';
   static const managerOverlock = '/manager-overlock';
   static const contracts = '/contracts';

@@ -24,11 +24,21 @@ class ModernNavigationService {
     final currentLocation =
         GoRouter.of(context).routeInformationProvider.value.uri.toString();
 
-    // Normalize paths (ignore query) to avoid re-navigating to the same page
-    final currentPath = Uri.tryParse(currentLocation)?.path ?? currentLocation;
-    final targetPath = Uri.tryParse(route)?.path ?? route;
-    final isSameOrChild =
-        currentPath == targetPath || currentPath.startsWith(targetPath);
+    // Normalize paths (ignore query) to avoid re-navigating to the same page.
+    // Use exact path equality only: `/units/map` must not be treated as `/units`
+    // (prefix matching would block sidebar navigation from map to unit list).
+    String normalizePath(String p) {
+      if (p.length > 1 && p.endsWith('/')) {
+        return p.substring(0, p.length - 1);
+      }
+      return p;
+    }
+
+    final currentPath = normalizePath(
+        Uri.tryParse(currentLocation)?.path ?? currentLocation);
+    final targetPath =
+        normalizePath(Uri.tryParse(route)?.path ?? route);
+    final isSameLocation = currentPath == targetPath;
 
     // #region agent log
     DebugLogger.log(
@@ -38,7 +48,7 @@ class ModernNavigationService {
       data: {
         'currentPath': currentPath,
         'targetPath': targetPath,
-        'isSameOrChild': isSameOrChild
+        'isSameLocation': isSameLocation
       },
     );
     // #endregion
@@ -49,7 +59,7 @@ class ModernNavigationService {
         route == '/units/map' ||
         route == '/online-rentals';
 
-    if (isSameOrChild && !needsFacilitySelection) {
+    if (isSameLocation && !needsFacilitySelection) {
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H2',
