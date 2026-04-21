@@ -286,13 +286,35 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     return box.size;
   }
 
-  void _focusShapeOnCanvas(MapShapeModel shape) {
+  void _focusShapeOnCanvas(MapShapeModel shape, {int attempt = 0}) {
+    final vs = _interactiveViewerViewportSize();
+    if (vs.width <= 0 || vs.height <= 0) {
+      if (attempt < 12) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_isDisposed && mounted) {
+            _focusShapeOnCanvas(shape, attempt: attempt + 1);
+          }
+        });
+        return;
+      }
+      if (kDebugMode) {
+        debugPrint(
+          '[MapEditor] focus: viewport still 0×0 after retries; identity transform',
+        );
+      }
+      _transformationController.value = Matrix4.identity();
+      setState(() {
+        _selectedShapeId = shape.id;
+        _pendingFocusShapeId = null;
+      });
+      return;
+    }
+
     final centerX = shape.x + shape.width / 2;
     final centerY = shape.y + shape.height / 2;
     const scale = 1.4;
-    final vs = _interactiveViewerViewportSize();
-    final vw = vs.width > 0 ? vs.width : MediaQuery.sizeOf(context).width;
-    final vh = vs.height > 0 ? vs.height : MediaQuery.sizeOf(context).height;
+    final vw = vs.width;
+    final vh = vs.height;
     _transformationController.value = Matrix4.identity()
       ..translate(-(centerX * scale) + (vw / 2), -(centerY * scale) + (vh / 2))
       ..scale(scale);
@@ -979,6 +1001,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       return InteractiveViewer(
         key: _interactiveViewerKey,
         transformationController: _transformationController,
+        // Map canvas is often larger than the viewport; default constrained:true
+        // prevents correct layout (see InteractiveViewer.constrained docs).
+        constrained: false,
         minScale: 0.1,
         maxScale: 4.0,
         boundaryMargin: const EdgeInsets.all(200),

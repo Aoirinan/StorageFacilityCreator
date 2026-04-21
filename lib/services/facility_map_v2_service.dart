@@ -87,22 +87,6 @@ class FacilityMapV2Service {
     });
   }
 
-  static Future<void> setFacilityV2Enabled({
-    required String facilityId,
-    required bool enabled,
-  }) async {
-    final user = _auth.currentUser;
-    if (user == null) {
-      throw Exception('Not signed in');
-    }
-    await _metaRef(facilityId).set({
-      'facilityId': facilityId,
-      'enabledForFacility': enabled,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'updatedBy': user.uid,
-    }, SetOptions(merge: true));
-  }
-
   static Future<String> publishCurrentDraft({
     required String facilityId,
     Map<String, dynamic>? mapSettings,

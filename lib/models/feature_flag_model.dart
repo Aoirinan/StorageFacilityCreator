@@ -85,14 +85,6 @@ class FeatureFlagModel {
 /// Default flag definitions — used to seed Firestore and as fallback when doc is missing.
 final List<FeatureFlagModel> kDefaultFeatureFlags = [
   const FeatureFlagModel(
-    key: 'mapEngineV2',
-    label: 'Facility Map Engine V2',
-    description:
-        'Enables the versioned map builder, published snapshots, and public map route.',
-    enabled: false,
-    riskLevel: FlagRiskLevel.high,
-  ),
-  const FeatureFlagModel(
     key: 'TEXTING_ONBOARDING_V1',
     label: 'Texting Onboarding V1',
     description: 'Enables self-serve Twilio A2P 10DLC texting setup wizard.',

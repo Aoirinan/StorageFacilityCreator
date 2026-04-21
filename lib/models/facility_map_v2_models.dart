@@ -10,7 +10,6 @@ class FacilityMapMeta {
   final String publicSlug;
   final String? activePublishedVersionId;
   final String activeDraftSource;
-  final bool enabledForFacility;
   final Map<String, String> statusColorConfig;
   final DateTime? updatedAt;
   final String? updatedBy;
@@ -20,7 +19,6 @@ class FacilityMapMeta {
     required this.publicSlug,
     this.activePublishedVersionId,
     this.activeDraftSource = 'legacyMapShapes',
-    this.enabledForFacility = false,
     this.statusColorConfig = const {
       'available': '#2E7D32',
       'reserved': '#ED6C02',
@@ -42,7 +40,6 @@ class FacilityMapMeta {
       publicSlug: map['publicSlug'] as String? ?? facilityId,
       activePublishedVersionId: map['activePublishedVersionId'] as String?,
       activeDraftSource: map['activeDraftSource'] as String? ?? 'legacyMapShapes',
-      enabledForFacility: map['enabledForFacility'] == true,
       statusColorConfig: rawColors.map((k, v) => MapEntry(k, v.toString())),
       updatedAt: (map['updatedAt'] as Timestamp?)?.toDate(),
       updatedBy: map['updatedBy'] as String?,
@@ -55,7 +52,6 @@ class FacilityMapMeta {
       'publicSlug': publicSlug,
       'activePublishedVersionId': activePublishedVersionId,
       'activeDraftSource': activeDraftSource,
-      'enabledForFacility': enabledForFacility,
       'statusColorConfig': statusColorConfig,
       'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : FieldValue.serverTimestamp(),
       'updatedBy': updatedBy,

@@ -147,14 +147,6 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-          TextButton(
-            onPressed: () => FacilityMapV2Service.setFacilityV2Enabled(
-              facilityId: widget.facilityId,
-              enabled: false,
-            ),
-            child: const Text('Use Legacy'),
-          ),
-          const SizedBox(width: 8),
           ElevatedButton.icon(
             onPressed: _publishing ? null : _publish,
             icon: _publishing

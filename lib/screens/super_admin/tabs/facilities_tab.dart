@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
@@ -185,8 +184,6 @@ class _FacilityRow extends StatelessWidget {
           const SizedBox(height: 8),
           Row(
             children: [
-              _FacilityMapV2Toggle(facilityId: f.id),
-              const SizedBox(width: 12),
               TextButton.icon(
                 icon: const Icon(Icons.copy, size: 14),
                 label: const Text('Copy ID'),
@@ -215,97 +212,6 @@ class _FacilityRow extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _FacilityMapV2Toggle extends StatefulWidget {
-  final String facilityId;
-  const _FacilityMapV2Toggle({required this.facilityId});
-
-  @override
-  State<_FacilityMapV2Toggle> createState() => _FacilityMapV2ToggleState();
-}
-
-class _FacilityMapV2ToggleState extends State<_FacilityMapV2Toggle> {
-  bool _loading = true;
-  bool _enabled = false;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final meta = await FacilityMapV2Service.getMeta(widget.facilityId);
-      if (!mounted) return;
-      setState(() {
-        _enabled = meta?.enabledForFacility ?? false;
-        _loading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _toggle(bool value) async {
-    setState(() => _saving = true);
-    try {
-      await FacilityMapV2Service.setFacilityV2Enabled(
-        facilityId: widget.facilityId,
-        enabled: value,
-      );
-      if (!mounted) return;
-      setState(() => _enabled = value);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(value ? 'Map V2 enabled for facility' : 'Map V2 disabled for facility'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to update Map V2: $e'),
-          backgroundColor: AppTheme.error,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const SizedBox(
-        width: 24,
-        height: 24,
-        child: CircularProgressIndicator(strokeWidth: 2),
-      );
-    }
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Text('Map V2', style: TextStyle(fontSize: 12)),
-        const SizedBox(width: 6),
-        _saving
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : Switch(
-                value: _enabled,
-                onChanged: _toggle,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-      ],
     );
   }
 }
