@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../services/auth_service.dart';
 import '../../router/app_route.dart';
 import '../../theme/app_theme.dart';
+import 'widgets/auth_shell.dart';
 
 class EmailVerificationScreen extends ConsumerStatefulWidget {
   final String email;
@@ -170,206 +171,230 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = MediaQuery.of(context).size.width < 600;
-
-    return Scaffold(
-      backgroundColor: AppTheme.primaryBlueDark,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: EdgeInsets.all(isMobile ? 24.0 : 32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SizedBox(height: isMobile ? 40 : 80),
-              Container(
-                padding: EdgeInsets.all(isMobile ? 20 : 24),
-                decoration: BoxDecoration(
-                  color: AppTheme.textOnDark.withOpacity(0.1),
-                  shape: BoxShape.circle,
+    return AuthShell(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [AppTheme.primaryBlue, AppTheme.primaryBlueLight],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                child: Icon(
-                  Icons.mark_email_read,
-                  size: isMobile ? 64 : 80,
-                  color: AppTheme.textOnDark,
-                ),
-              ),
-              SizedBox(height: isMobile ? 32 : 48),
-              Text(
-                'Verify Your Email',
-                style: TextStyle(
-                  fontSize: isMobile ? 28 : 32,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textOnDark,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'We sent a verification email to:',
-                style: TextStyle(
-                  fontSize: isMobile ? 14 : 16,
-                  color: AppTheme.textOnDark.withOpacity(0.7),
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppTheme.textOnDark.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  widget.email,
-                  style: TextStyle(
-                    fontSize: isMobile ? 14 : 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textOnDark,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppTheme.primaryBlue.withOpacity(0.3),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
                   ),
-                  textAlign: TextAlign.center,
-                ),
+                ],
               ),
-              const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppTheme.textOnDark.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppTheme.textOnDark.withOpacity(0.2),
-                  ),
+              child: const Icon(
+                Icons.mark_email_read,
+                size: 36,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Verify your email',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w800,
+              color: AppTheme.textPrimary,
+              letterSpacing: -0.5,
+              height: 1.15,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'We sent a verification link to:',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              color: AppTheme.textSecondary,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: AppTheme.primaryBlue.withOpacity(0.15),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.email_outlined,
+                  size: 16,
+                  color: AppTheme.primaryBlue,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.info_outline,
-                            size: 18, color: AppTheme.textOnDark),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Tips',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: AppTheme.textOnDark,
-                          ),
-                        ),
-                      ],
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    widget.email,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary,
                     ),
-                    const SizedBox(height: 10),
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFBEB),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFFFDE68A),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.lightbulb_outline,
+                      size: 16,
+                      color: Color(0xFFB45309),
+                    ),
+                    const SizedBox(width: 8),
                     Text(
-                      '• Check Spam or Promotions in Gmail. Tap “Report not spam” so future messages land in your inbox.\n'
-                      '• If you tap Resend, only the newest email’s link works; older links show “expired or already used.”\n'
-                      '• Open the verification link once; wait until you see success from Firebase, then return here.',
+                      'Tips',
                       style: TextStyle(
                         fontSize: 13,
-                        height: 1.45,
-                        color: AppTheme.textOnDark.withOpacity(0.85),
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF92400E),
+                        letterSpacing: 0.3,
                       ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Please check your inbox and click the verification link to continue.',
-                style: TextStyle(
-                  fontSize: isMobile ? 14 : 16,
-                  color: AppTheme.textOnDark.withOpacity(0.7),
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              if (_manualCheckBusy)
-                Column(
-                  children: [
-                    CircularProgressIndicator(
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(AppTheme.textOnDark),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Checking…',
-                      style: TextStyle(
-                        color: AppTheme.textOnDark.withOpacity(0.7),
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                )
-              else
-                Text(
-                  _lastSilentCheck == null
-                      ? 'We also check automatically every 15 seconds (this page stays still — no need to refresh).'
-                      : 'Last automatic check: ${_formatTime(_lastSilentCheck!)} · next in the background.',
-                  textAlign: TextAlign.center,
+                const SizedBox(height: 8),
+                const Text(
+                  '• Check Spam or Promotions in Gmail. Tap “Report not spam” so future messages land in your inbox.\n'
+                  '• If you tap Resend, only the newest link works; older links show “expired or already used.”\n'
+                  '• Open the link once and wait for the Firebase success page, then come back here.',
                   style: TextStyle(
-                    fontSize: 12,
-                    color: AppTheme.textOnDark.withOpacity(0.55),
+                    fontSize: 12.5,
+                    height: 1.5,
+                    color: Color(0xFF713F12),
                   ),
                 ),
-              const SizedBox(height: 28),
-              OutlinedButton.icon(
-                onPressed: _resendCooldown > 0 || _isResending
-                    ? null
-                    : _resendVerificationEmail,
-                icon: _isResending
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.refresh),
-                label: Text(
-                  _resendCooldown > 0
-                      ? 'Resend in ${_resendCooldown}s'
-                      : 'Resend Verification Email',
-                ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textOnDark,
-                  side: BorderSide(color: AppTheme.textOnDark),
-                  padding: EdgeInsets.symmetric(
-                    vertical: isMobile ? 12 : 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: _manualCheckBusy
-                    ? null
-                    : () => _checkVerification(showLoadingUi: true),
-                icon: _manualCheckBusy
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.check_circle),
-                label: const Text('I\'ve Verified My Email'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.surface,
-                  foregroundColor: AppTheme.primaryBlueDark,
-                  padding: EdgeInsets.symmetric(
-                    vertical: isMobile ? 12 : 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-              SizedBox(height: isMobile ? 40 : 80),
-            ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 18),
+          _StatusRow(
+            busy: _manualCheckBusy,
+            lastCheck: _lastSilentCheck,
+          ),
+          const SizedBox(height: 20),
+          AuthGradientButton(
+            isLoading: _manualCheckBusy,
+            onPressed: () => _checkVerification(showLoadingUi: true),
+            label: "I've verified my email",
+          ),
+          const SizedBox(height: 12),
+          AuthOutlinedButton(
+            onPressed: _resendCooldown > 0 || _isResending
+                ? null
+                : _resendVerificationEmail,
+            icon: _isResending ? null : Icons.refresh,
+            label: _isResending
+                ? 'Sending…'
+                : (_resendCooldown > 0
+                    ? 'Resend in ${_resendCooldown}s'
+                    : 'Resend verification email'),
+          ),
+        ],
       ),
     );
   }
+}
 
-  String _formatTime(DateTime t) {
+class _StatusRow extends StatelessWidget {
+  final bool busy;
+  final DateTime? lastCheck;
+
+  const _StatusRow({required this.busy, required this.lastCheck});
+
+  @override
+  Widget build(BuildContext context) {
+    if (busy) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryBlue),
+            ),
+          ),
+          SizedBox(width: 10),
+          Text(
+            'Checking…',
+            style: TextStyle(
+              fontSize: 12.5,
+              color: AppTheme.textSecondary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      );
+    }
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: AppTheme.primaryBlue.withOpacity(0.5),
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            lastCheck == null
+                ? 'We check automatically every 15 seconds — no need to refresh.'
+                : 'Last check: ${_formatTime(lastCheck!)} · next in the background.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppTheme.textTertiary,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _formatTime(DateTime t) {
     final h = t.hour > 12 ? t.hour - 12 : (t.hour == 0 ? 12 : t.hour);
     final am = t.hour >= 12 ? 'PM' : 'AM';
     return '$h:${t.minute.toString().padLeft(2, '0')} $am';

@@ -365,7 +365,7 @@ class AuthGradientButton extends StatelessWidget {
 /// Outlined pill button shown on the white card (used for secondary actions
 /// like "Resend reset email" or "Back to Sign In").
 class AuthOutlinedButton extends StatelessWidget {
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final String label;
   final IconData? icon;
 
