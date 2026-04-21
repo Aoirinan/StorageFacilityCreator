@@ -96,7 +96,7 @@ const COMPARE_ROWS: Row[] = [
   },
   {
     area: 'Accounting integration',
-    sfc: 'QuickBooks (primary); additional accounting integrations on roadmap',
+    sfc: 'QuickBooks',
     sitelink: 'QuickBooks plus additional accounting partners',
     storedge: 'QuickBooks plus additional accounting partners',
     ess: 'QuickBooks via partner options',
@@ -297,7 +297,8 @@ export default function ComparePage() {
             quotes; always confirm with the vendor before signing.
           </p>
         </Reveal>
-        <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 shadow-xs">
+        {/* Desktop: full comparison table */}
+        <div className="mt-6 hidden md:block overflow-x-auto rounded-xl border border-slate-200 shadow-xs">
           <table className="w-full min-w-[820px] text-sm">
             <thead className="bg-slate-50 text-slate-700">
               <tr>
@@ -333,6 +334,49 @@ export default function ComparePage() {
             </tbody>
           </table>
         </div>
+
+        {/* Mobile: stacked cards per row */}
+        <ul role="list" className="mt-6 md:hidden space-y-4">
+          {COMPARE_ROWS.map((row) => (
+            <li
+              key={row.area}
+              className="rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden"
+            >
+              <div className="bg-slate-50 px-4 py-3 border-b border-slate-200">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Area
+                </p>
+                <h3 className="mt-0.5 text-sm font-semibold text-slate-900">{row.area}</h3>
+              </div>
+              <dl className="divide-y divide-slate-100">
+                <div className="px-4 py-3 bg-blue-50/40">
+                  <dt className="text-xs font-semibold uppercase tracking-wider text-primary">
+                    SFC
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-900">{row.sfc}</dd>
+                </div>
+                <div className="px-4 py-3">
+                  <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    SiteLink
+                  </dt>
+                  <dd className="mt-1 text-sm text-slate-700">{row.sitelink}</dd>
+                </div>
+                <div className="px-4 py-3">
+                  <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    storEDGE
+                  </dt>
+                  <dd className="mt-1 text-sm text-slate-700">{row.storedge}</dd>
+                </div>
+                <div className="px-4 py-3">
+                  <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Easy Storage Solutions
+                  </dt>
+                  <dd className="mt-1 text-sm text-slate-700">{row.ess}</dd>
+                </div>
+              </dl>
+            </li>
+          ))}
+        </ul>
         <p className="mt-4 text-xs text-slate-500">
           Product names are trademarks of their respective owners and are used here only for factual
           comparison purposes. {SITE_NAME} is not affiliated with, endorsed by, or sponsored by SiteLink,

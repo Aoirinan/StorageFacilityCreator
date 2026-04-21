@@ -69,12 +69,32 @@ export default function IntegrationsPage() {
           communications. If you need a specific integration, discuss requirements during demo and onboarding planning.
         </p>
         <p className="mt-3 text-sm text-slate-600">
-          Need a side-by-side fit check? See <Link href="/compare" className="text-primary hover:underline">Compare Options</Link>{' '}
-          or review workflow coverage on <Link href="/product-tour" className="text-primary hover:underline">Product Tour</Link>.
+          Need a side-by-side fit check against other platforms? See{' '}
+          <Link href="/compare" className="text-primary hover:underline font-medium">the full comparison</Link>{' '}
+          or review workflow coverage on{' '}
+          <Link href="/product-tour" className="text-primary hover:underline">Product Tour</Link>.
         </p>
       </Section>
 
       <Section tint>
+        <div className="mx-auto max-w-3xl text-center">
+          <h2 className="text-2xl font-bold text-slate-900">How does this compare?</h2>
+          <p className="mt-3 text-slate-600">
+            See how SFC&rsquo;s integration set stacks up against the other major self-storage management
+            platforms — factual, side-by-side, and kept up to date.
+          </p>
+          <div className="mt-5">
+            <Link
+              href="/compare"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              See how SFC compares →
+            </Link>
+          </div>
+        </div>
+      </Section>
+
+      <Section>
         <PageCtaBand title="Want to confirm integration fit?" subtitle="Book a demo and we can walk through your current tools and workflow needs." />
       </Section>
     </>

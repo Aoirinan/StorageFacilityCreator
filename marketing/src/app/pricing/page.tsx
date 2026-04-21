@@ -110,6 +110,24 @@ export default function PricingPage() {
           coverage, see <Link href="/features" className="text-primary hover:underline">Features</Link>.
         </p>
       </Section>
+
+      <Section tint>
+        <div className="mx-auto max-w-3xl text-center">
+          <h2 className="text-2xl font-bold text-slate-900">Evaluating your options?</h2>
+          <p className="mt-3 text-slate-600">
+            See a factual side-by-side comparison of SFC against the other major self-storage management platforms —
+            pricing model, packaging, and operator fit in one place.
+          </p>
+          <div className="mt-5">
+            <Link
+              href="/compare"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              See how SFC compares →
+            </Link>
+          </div>
+        </div>
+      </Section>
     </>
   );
 }

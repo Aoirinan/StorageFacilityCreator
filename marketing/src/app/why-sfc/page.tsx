@@ -77,6 +77,24 @@ export default function WhySfcPage() {
       </Section>
 
       <Section tint>
+        <div className="mx-auto max-w-3xl text-center">
+          <h2 className="text-2xl font-bold text-slate-900">Comparing to another platform?</h2>
+          <p className="mt-3 text-slate-600">
+            We keep a factual side-by-side view of how SFC stacks up against the other major self-storage
+            management platforms — no spin, no attack language.
+          </p>
+          <div className="mt-5">
+            <Link
+              href="/compare"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              See the comparison →
+            </Link>
+          </div>
+        </div>
+      </Section>
+
+      <Section>
         <PageCtaBand title="Compare with your current stack" subtitle="Use a live demo to evaluate fit against your existing workflows and priorities." />
       </Section>
     </>
