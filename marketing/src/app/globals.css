@@ -4,6 +4,9 @@
   --color-primary: #2563eb;
   --color-primary-dark: #1d4ed8;
 
+  --color-accent: #f59e0b;
+  --color-accent-dark: #d97706;
+
   --color-surface-light: #f8fafc;
   --color-surface: #f1f5f9;
 
@@ -38,6 +41,8 @@
     --background: #ffffff;
     --primary: #2563eb;
     --primary-dark: #1d4ed8;
+    --accent: #f59e0b;
+    --accent-dark: #d97706;
     --surface: #f8fafc;
     --surface-tint: #f1f5f9;
   }

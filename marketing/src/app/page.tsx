@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Link from 'next/link';
 import Script from 'next/script';
 import {
@@ -20,37 +21,50 @@ import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
 import { DemoFrame } from '@/components/DemoFrame';
 import { A2pSnippet } from '@/components/A2pSnippet';
+import {
+  FeatureIcon,
+  FeatureVisual,
+  getFeatureTheme,
+  type FeatureIconKey,
+} from '@/components/FeatureIcon';
+import { IntegrationLogos } from '@/components/IntegrationLogos';
 
-const KEY_FEATURES = [
+type KeyFeature = {
+  title: string;
+  description: string;
+  featureKey: FeatureIconKey;
+};
+
+const KEY_FEATURES: KeyFeature[] = [
   {
     title: 'Tenant management',
     description: 'Centralized tenant records with billing history, communication context, and account status.',
-    icon: 'TM',
+    featureKey: 'tenants',
   },
   {
     title: 'Unit management',
     description: 'Track occupancy, status, and availability by facility with clear operational visibility.',
-    icon: 'UM',
+    featureKey: 'units',
   },
   {
     title: 'Billing and ledgers',
     description: 'Recurring charges, one-time fees, and full ledger transparency by tenant.',
-    icon: 'BL',
+    featureKey: 'billing',
   },
   {
     title: 'Payments and autopay',
     description: 'Stripe-powered payments and autopay controls to reduce collections friction.',
-    icon: 'PA',
+    featureKey: 'payments',
   },
   {
     title: 'Delinquency workflows',
     description: 'Past-due workflows, notices, and overlock/lien support for practical collections operations.',
-    icon: 'DW',
+    featureKey: 'delinquency',
   },
   {
     title: 'Messaging and reporting',
     description: 'Opt-in SMS/email reminders, activity logs, and operator-focused reporting.',
-    icon: 'MR',
+    featureKey: 'messaging',
   },
 ];
 
@@ -104,13 +118,60 @@ const HOW_IT_WORKS_SCREENSHOTS = [
   },
 ];
 
-const TOUR_CARDS = [
-  { title: 'Dashboard overview', description: 'Monitor occupancy, balances, and action items quickly.' },
-  { title: 'Tenant records', description: 'View account, payment, and communication history in context.' },
-  { title: 'Billing and ledger', description: 'Track invoices, payments, and account-level balances.' },
-  { title: 'Facility map and units', description: 'Manage visual unit layout and status by location.' },
-  { title: 'Contracts and e-sign', description: 'Support digital document workflows and disclosures.' },
-  { title: 'Integrations', description: 'Use practical integrations like Stripe, Twilio, SendGrid, and QuickBooks.' },
+type TourCard = {
+  title: string;
+  description: string;
+  featureKey: FeatureIconKey;
+  image?: { src: string; alt: string };
+};
+
+const TOUR_CARDS: TourCard[] = [
+  {
+    title: 'Dashboard overview',
+    description: 'Monitor occupancy, balances, and action items quickly.',
+    featureKey: 'dashboard',
+    image: {
+      src: '/sfc_dashboard_hero_clean.png',
+      alt: 'Storage Facility Creator dashboard overview screen',
+    },
+  },
+  {
+    title: 'Tenant records',
+    description: 'View account, payment, and communication history in context.',
+    featureKey: 'tenants',
+    image: {
+      src: '/how-it-works-tenants.png',
+      alt: 'Storage Facility Creator tenants list screen',
+    },
+  },
+  {
+    title: 'Billing and ledger',
+    description: 'Track invoices, payments, and account-level balances.',
+    featureKey: 'billing',
+    image: {
+      src: '/how-it-works-autopay.png',
+      alt: 'Storage Facility Creator autopay and billing screen',
+    },
+  },
+  {
+    title: 'Facility map and units',
+    description: 'Manage visual unit layout and status by location.',
+    featureKey: 'map',
+    image: {
+      src: '/how-it-works-facility-setup.png',
+      alt: 'Storage Facility Creator facility setup screen',
+    },
+  },
+  {
+    title: 'Contracts and e-sign',
+    description: 'Support digital document workflows and disclosures.',
+    featureKey: 'contracts',
+  },
+  {
+    title: 'Integrations',
+    description: 'Use practical integrations like Stripe, Twilio, SendGrid, and QuickBooks.',
+    featureKey: 'integrations',
+  },
 ];
 
 const DIFFERENTIATORS = [
@@ -197,9 +258,9 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* Trust strip */}
-      <div className="border-y border-blue-100 bg-blue-50/70">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4">
+      {/* Trust strip + integrations */}
+      <div className="border-y border-blue-100 bg-gradient-to-r from-blue-50/80 via-indigo-50/60 to-blue-50/80">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-6">
           <ul className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-sm text-slate-700" role="list">
             {TRUST_STRIP_ITEMS.map((item) => (
               <li key={item} className="flex items-center gap-2">
@@ -208,6 +269,7 @@ export default function HomePage() {
               </li>
             ))}
           </ul>
+          <IntegrationLogos />
         </div>
       </div>
 
@@ -218,18 +280,23 @@ export default function HomePage() {
           Tenant and unit management, billing, late notices, autopay, and reporting—built for independent and multi-site operators.
         </p>
         <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-6" role="list">
-          {KEY_FEATURES.map((f) => (
-            <li key={f.title} className="rounded-xl bg-white p-6 shadow-sm border border-blue-100">
-              <span
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-xs font-semibold text-primary"
-                aria-hidden
+          {KEY_FEATURES.map((f) => {
+            const theme = getFeatureTheme(f.featureKey);
+            return (
+              <li
+                key={f.title}
+                className={`group relative overflow-hidden rounded-xl bg-white p-6 shadow-sm border ${theme.border} transition-all hover:-translate-y-0.5 hover:shadow-md`}
               >
-                {f.icon}
-              </span>
-              <h3 className="mt-3 font-semibold text-slate-900">{f.title}</h3>
-              <p className="mt-2 text-sm text-slate-600">{f.description}</p>
-            </li>
-          ))}
+                <span
+                  className={`pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full ${theme.bg} opacity-50 blur-2xl transition-opacity group-hover:opacity-80`}
+                  aria-hidden
+                />
+                <FeatureIcon featureKey={f.featureKey} size="md" />
+                <h3 className="mt-4 font-semibold text-slate-900">{f.title}</h3>
+                <p className="mt-2 text-sm text-slate-600">{f.description}</p>
+              </li>
+            );
+          })}
         </ul>
         <div className="mt-10 text-center">
           <Link href="/features" className="text-primary font-medium hover:underline">
@@ -245,12 +312,36 @@ export default function HomePage() {
           A guided look at the workflows operators use most.
         </p>
         <div className="mt-10 grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {TOUR_CARDS.map(({ title, description }) => (
-            <article key={title} className="rounded-xl border border-indigo-100 bg-gradient-to-br from-white to-indigo-50/40 p-5 shadow-xs">
-              <h3 className="font-semibold text-slate-900">{title}</h3>
-              <p className="mt-2 text-sm text-slate-600">{description}</p>
-            </article>
-          ))}
+          {TOUR_CARDS.map(({ title, description, featureKey, image }) => {
+            const theme = getFeatureTheme(featureKey);
+            return (
+              <article
+                key={title}
+                className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs transition-all hover:-translate-y-0.5 hover:shadow-md"
+              >
+                {image ? (
+                  <div className={`relative aspect-4/3 w-full overflow-hidden ${theme.panel}`}>
+                    <Image
+                      src={image.src}
+                      alt={image.alt}
+                      fill
+                      className="object-contain p-3 transition-transform duration-300 group-hover:scale-[1.02]"
+                      sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                    />
+                  </div>
+                ) : (
+                  <FeatureVisual featureKey={featureKey} className="rounded-none border-0" />
+                )}
+                <div className="p-5">
+                  <div className="flex items-center gap-3">
+                    <FeatureIcon featureKey={featureKey} size="sm" />
+                    <h3 className="font-semibold text-slate-900">{title}</h3>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-600">{description}</p>
+                </div>
+              </article>
+            );
+          })}
         </div>
         <div className="mt-8 text-center">
           <Link href="/product-tour" className="text-primary font-medium hover:underline">
@@ -357,47 +448,115 @@ export default function HomePage() {
       </Section>
 
       {/* Security and compliance */}
-      <Section>
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Security and compliance transparency</h2>
-        <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          Role-based access, secure cloud infrastructure, and published policy pages to support clear operations.
-        </p>
-        <ul className="mt-8 max-w-4xl mx-auto grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {COMPLIANCE_LINKS.map(({ href, label }) => (
-            <li key={href} className="rounded-lg border border-emerald-100 bg-white p-4 text-center">
-              <Link href={href} className="text-sm font-medium text-slate-700 hover:text-primary">
-                {label}
+      <Section className="bg-gradient-to-b from-white via-emerald-50/40 to-white">
+        <div className="grid lg:grid-cols-2 gap-10 lg:gap-14 items-center">
+          <div className="relative mx-auto w-full max-w-md lg:max-w-none">
+            <div className="absolute inset-0 -z-10 rounded-[2rem] bg-gradient-to-br from-emerald-200/40 via-emerald-100/30 to-transparent blur-2xl" aria-hidden />
+            <div className="relative rounded-2xl border border-emerald-100 bg-white/90 p-6 shadow-sm backdrop-blur">
+              <div className="relative aspect-square w-full">
+                <Image
+                  src="/Storage unit shield with checkmark.png"
+                  alt="Shield with checkmark representing secure storage facility operations"
+                  fill
+                  className="object-contain"
+                  sizes="(max-width: 1024px) 60vw, 480px"
+                />
+              </div>
+              <ul className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-600" role="list">
+                <li className="flex items-center gap-1.5">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+                  Role-based access
+                </li>
+                <li className="flex items-center gap-1.5">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+                  Secure cloud infrastructure
+                </li>
+                <li className="flex items-center gap-1.5">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+                  Published policy pages
+                </li>
+                <li className="flex items-center gap-1.5">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+                  Stripe-handled card data
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div>
+            <span className="eyebrow">Security &amp; compliance</span>
+            <h2 className="mt-3 text-2xl sm:text-3xl font-bold text-slate-900">
+              Security and compliance transparency
+            </h2>
+            <p className="mt-3 text-slate-600">
+              Role-based access, secure cloud infrastructure, and published policy pages to support clear operations.
+              Payments are processed by Stripe — we never see or store full card numbers or CVV codes.
+            </p>
+            <ul className="mt-6 grid sm:grid-cols-2 gap-3" role="list">
+              {COMPLIANCE_LINKS.map(({ href, label }) => (
+                <li key={href}>
+                  <Link
+                    href={href}
+                    className="flex items-center justify-between rounded-lg border border-emerald-100 bg-white px-4 py-3 text-sm font-medium text-slate-700 shadow-xs transition-all hover:-translate-y-0.5 hover:border-emerald-300 hover:text-primary hover:shadow-sm"
+                  >
+                    <span>{label}</span>
+                    <span className="text-emerald-500" aria-hidden>
+                      →
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-6">
+              <Link href="/security" className="text-primary font-medium hover:underline">
+                Explore security overview →
               </Link>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-8 text-center">
-          <Link href="/security" className="text-primary font-medium hover:underline">
-            Explore security overview →
-          </Link>
+            </div>
+          </div>
         </div>
       </Section>
 
       {/* Final CTA */}
-      <Section className="bg-primary text-white">
-        <div className="text-center max-w-2xl mx-auto">
-          <h2 className="text-2xl sm:text-3xl font-bold">Ready to simplify operations?</h2>
-          <p className="mt-2 text-blue-100">
-            Start your trial or book a guided demo. No onboarding fee. Flat monthly pricing.
+      <section className="relative overflow-hidden bg-gradient-to-br from-indigo-700 via-primary to-blue-600 text-white">
+        <div
+          className="pointer-events-none absolute -left-20 -top-24 h-80 w-80 rounded-full bg-white/10 blur-3xl"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute -right-24 bottom-0 h-96 w-96 rounded-full bg-amber-300/20 blur-3xl"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute inset-0 opacity-30 [background-image:radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.25)_1px,transparent_0)] [background-size:22px_22px]"
+          aria-hidden
+        />
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20 text-center">
+          <span className="inline-flex items-center rounded-full border border-white/25 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/90 backdrop-blur">
+            Flat monthly pricing
+          </span>
+          <h2 className="mt-4 text-2xl sm:text-3xl lg:text-4xl font-bold">
+            Ready to simplify operations?
+          </h2>
+          <p className="mt-3 max-w-2xl mx-auto text-blue-100">
+            Start your trial or book a guided demo. No onboarding fee.
           </p>
           <div className="mt-8 flex flex-wrap gap-3 justify-center">
-            <Link href={PRIMARY_CTA_HREF} className="inline-flex items-center justify-center rounded-lg bg-white px-5 py-2.5 text-sm font-medium text-primary hover:bg-blue-50 transition-colors">
+            <Link
+              href={PRIMARY_CTA_HREF}
+              className="inline-flex items-center justify-center rounded-lg bg-white px-6 py-3 text-sm font-semibold text-primary shadow-lg shadow-indigo-950/20 hover:bg-blue-50 transition-colors"
+            >
               {PRIMARY_CTA_LABEL}
             </Link>
-            <Link href={SECONDARY_CTA_HREF} className="inline-flex items-center justify-center rounded-lg border border-blue-200 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors">
+            <Link
+              href={SECONDARY_CTA_HREF}
+              className="inline-flex items-center justify-center rounded-lg border border-white/40 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15 transition-colors backdrop-blur"
+            >
               {SECONDARY_CTA_LABEL}
             </Link>
           </div>
-          <div className="mt-4 text-blue-100 text-sm">
-            <A2pSnippet brief />
-          </div>
+          <A2pSnippet brief className="mt-6 text-sm text-blue-100" />
         </div>
-      </Section>
+      </section>
     </>
   );
 }
