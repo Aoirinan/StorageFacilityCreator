@@ -137,6 +137,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   bool _isBulkSelectMode = false; // Toggle for bulk selection mode
   double? _lastCanvasMinX;
   double? _lastCanvasMinY;
+  double? _lastCanvasWidth;
+  double? _lastCanvasHeight;
   bool _shapePointerActive = false;
   String? _pendingFocusShapeId;
   bool _didAutoSeedBottomRow = false;
@@ -242,7 +244,32 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   void _resetView() {
-    _transformationController.value = Matrix4.identity();
+    final vs = _interactiveViewerViewportSize();
+    final canvasW = _lastCanvasWidth;
+    final canvasH = _lastCanvasHeight;
+
+    if (vs.width <= 0 ||
+        vs.height <= 0 ||
+        canvasW == null ||
+        canvasH == null ||
+        canvasW <= 0 ||
+        canvasH <= 0) {
+      _transformationController.value = Matrix4.identity();
+      setState(() {});
+      return;
+    }
+
+    // Fit the entire canvas into the visible viewport and center it.
+    final fitScale = (vs.width / canvasW < vs.height / canvasH
+            ? vs.width / canvasW
+            : vs.height / canvasH)
+        .clamp(0.02, 4.0);
+    final translateX = (vs.width - (canvasW * fitScale)) / 2;
+    final translateY = (vs.height - (canvasH * fitScale)) / 2;
+
+    _transformationController.value = Matrix4.identity()
+      ..translate(translateX, translateY)
+      ..scale(fitScale);
     setState(() {});
   }
 
@@ -995,6 +1022,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
       _lastCanvasMinX = minX;
       _lastCanvasMinY = minY;
+      _lastCanvasWidth = canvasWidth;
+      _lastCanvasHeight = canvasHeight;
       
       print('[MapEditor] Canvas size: ${canvasWidth}x${canvasHeight}, offset: ($minX, $minY)');
 
@@ -1004,10 +1033,12 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         // Map canvas is often larger than the viewport; default constrained:true
         // prevents correct layout (see InteractiveViewer.constrained docs).
         constrained: false,
-        minScale: 0.1,
+        minScale: 0.02,
         maxScale: 4.0,
-        boundaryMargin: const EdgeInsets.all(200),
-        panEnabled: !_isResizing,
+        boundaryMargin: const EdgeInsets.all(double.infinity),
+        // While dragging/resizing a shape, disable viewport pan to avoid the
+        // canvas moving opposite the shape drag.
+        panEnabled: !_isResizing && _draggingShapeId == null,
         scaleEnabled: true,
         child: GestureDetector(
           behavior: HitTestBehavior.translucent, // Allow clicks to pass through to shapes
