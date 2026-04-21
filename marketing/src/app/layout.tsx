@@ -1,12 +1,19 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { Inter, Plus_Jakarta_Sans } from 'next/font/google';
 import { Analytics } from '@vercel/analytics/next';
 import './globals.css';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
+import { StickyMobileCta } from '@/components/StickyMobileCta';
 import { DEFAULT_OG_IMAGE, LOGO_PATH, SITE_DOMAIN, SITE_NAME } from '@/config/site';
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
+const jakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap',
+  weight: ['600', '700', '800'],
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_DOMAIN),
@@ -41,7 +48,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en" className={`${inter.variable} ${jakarta.variable}`}>
       <body className="min-h-screen flex flex-col antialiased font-sans">
         <a href="#main-content" className="skip-link">
           Skip to content
@@ -51,6 +58,7 @@ export default function RootLayout({
           {children}
         </main>
         <Footer />
+        <StickyMobileCta />
         <Analytics />
       </body>
     </html>

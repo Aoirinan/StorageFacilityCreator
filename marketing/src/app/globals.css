@@ -11,6 +11,7 @@
   --color-surface: #f1f5f9;
 
   --font-sans: var(--font-sans), system-ui, sans-serif;
+  --font-display: var(--font-display), var(--font-sans), system-ui, sans-serif;
 }
 
 /*
@@ -104,4 +105,49 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
   @apply outline-2 outline-offset-2 outline-primary;
+}
+
+/* Display font utility for marketing headings */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+/* Reveal-on-scroll */
+.reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 600ms ease-out, transform 600ms ease-out;
+  will-change: opacity, transform;
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal.is-visible {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Hero screenshot crossfade */
+.hero-slide {
+  opacity: 0;
+  transition: opacity 900ms ease-in-out;
+}
+
+.hero-slide[data-active='true'] {
+  opacity: 1;
+}
+
+/* Bottom padding for mobile sticky CTA so content doesn't hide behind it */
+@media (max-width: 640px) {
+  body.has-sticky-cta {
+    padding-bottom: 4.25rem;
+  }
 }

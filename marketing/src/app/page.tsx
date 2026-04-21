@@ -2,8 +2,6 @@ import Image from 'next/image';
 import Link from 'next/link';
 import Script from 'next/script';
 import {
-  HERO_IMAGE_PATH,
-  HERO_HEADLINE,
   HERO_SUBHEADLINE,
   MICROCOPY_POINTS,
   TRUST_STRIP_ITEMS,
@@ -16,6 +14,8 @@ import {
   SITE_DOMAIN,
   SITE_NAME,
   SUPPORT_EMAIL,
+  PRICE_MONTHLY,
+  TRIAL_LINE,
 } from '@/config/site';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
@@ -28,6 +28,9 @@ import {
   type FeatureIconKey,
 } from '@/components/FeatureIcon';
 import { IntegrationLogos } from '@/components/IntegrationLogos';
+import { HeroShowcase } from '@/components/HeroShowcase';
+import { HomeFaq } from '@/components/HomeFaq';
+import { Reveal } from '@/components/Reveal';
 
 type KeyFeature = {
   title: string;
@@ -228,10 +231,18 @@ export default function HomePage() {
         <div className="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center">
           <div>
             <span className="eyebrow">Self-Storage SaaS</span>
-            <h1 className="mt-3 text-3xl sm:text-4xl lg:text-5xl font-bold text-slate-900 tracking-tight">
-              {HERO_HEADLINE}
+            <h1 className="font-display mt-3 text-4xl sm:text-5xl lg:text-6xl font-extrabold text-slate-900 leading-[1.05] text-balance">
+              Stop running your facility on{' '}
+              <span className="relative inline-block">
+                <span className="relative z-10 text-primary">spreadsheets</span>
+                <span
+                  aria-hidden
+                  className="absolute inset-x-0 bottom-1 -z-0 h-3 bg-amber-200/70"
+                />
+              </span>
+              .
             </h1>
-            <p className="mt-4 text-lg text-slate-600 max-w-xl">
+            <p className="mt-5 text-lg text-slate-600 max-w-xl">
               {HERO_SUBHEADLINE}
             </p>
             <ul className="mt-4 text-sm text-slate-600 flex flex-wrap gap-x-4 gap-y-1" role="list">
@@ -248,12 +259,36 @@ export default function HomePage() {
                 {TERTIARY_CTA_LABEL}
               </CtaButton>
             </div>
-            <p className="mt-4 text-sm text-slate-500">
-              Practical onboarding, transparent policy pages, and production integrations for serious operators.
+            <p className="mt-4 text-sm font-medium text-slate-700">
+              <span className="text-slate-900 font-semibold">${PRICE_MONTHLY}/month</span>
+              <span className="mx-2 text-slate-300" aria-hidden>·</span>
+              <span>Flat rate</span>
+              <span className="mx-2 text-slate-300" aria-hidden>·</span>
+              <span>{TRIAL_LINE}</span>
             </p>
+
+            {/* Hero stats ribbon */}
+            <dl className="mt-8 grid max-w-lg grid-cols-3 gap-3 border-t border-slate-200 pt-6">
+              <div>
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Facilities</dt>
+                <dd className="font-display text-2xl font-extrabold text-slate-900">Unlimited</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Integrations</dt>
+                <dd className="font-display text-2xl font-extrabold text-slate-900">
+                  5<span className="text-primary">+</span>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Setup time</dt>
+                <dd className="font-display text-2xl font-extrabold text-slate-900">
+                  &lt;1<span className="text-slate-500 text-base font-semibold"> day</span>
+                </dd>
+              </div>
+            </dl>
           </div>
           <div className="order-first lg:order-0">
-            <DemoFrame src={HERO_IMAGE_PATH} alt="Storage Facility Creator dashboard screenshot" priority />
+            <HeroShowcase />
           </div>
         </div>
       </Section>
@@ -275,10 +310,12 @@ export default function HomePage() {
 
       {/* Key Features */}
       <Section tint id="features" className="bg-gradient-to-b from-sky-50 to-blue-50/60">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Everything you need to run your facility</h2>
-        <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          Tenant and unit management, billing, late notices, autopay, and reporting—built for independent and multi-site operators.
-        </p>
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Everything you need to run your facility</h2>
+          <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
+            Tenant and unit management, billing, late notices, autopay, and reporting—built for independent and multi-site operators.
+          </p>
+        </Reveal>
         <ul className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-6" role="list">
           {KEY_FEATURES.map((f) => {
             const theme = getFeatureTheme(f.featureKey);
@@ -307,10 +344,12 @@ export default function HomePage() {
 
       {/* Product tour */}
       <Section className="bg-white">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Product tour highlights</h2>
-        <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          A guided look at the workflows operators use most.
-        </p>
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Product tour highlights</h2>
+          <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
+            A guided look at the workflows operators use most.
+          </p>
+        </Reveal>
         <div className="mt-10 grid md:grid-cols-2 lg:grid-cols-3 gap-6">
           {TOUR_CARDS.map(({ title, description, featureKey, image }) => {
             const theme = getFeatureTheme(featureKey);
@@ -352,10 +391,12 @@ export default function HomePage() {
 
       {/* How it works */}
       <Section tint className="bg-gradient-to-b from-indigo-50/80 to-blue-50/60">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">How it works</h2>
-        <p className="mt-2 text-slate-600 text-center max-w-2xl mx-auto">
-          A straightforward workflow from setup to daily operations, shown with real in-app screens.
-        </p>
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">How it works</h2>
+          <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
+            A straightforward workflow from setup to daily operations, shown with real in-app screens.
+          </p>
+        </Reveal>
         <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
           {HOW_IT_WORKS.map(({ step, title, description }) => (
             <div key={step} className="rounded-xl bg-white border border-indigo-100 p-5 shadow-xs">
@@ -378,9 +419,84 @@ export default function HomePage() {
         </div>
       </Section>
 
+      {/* Built for operators */}
+      <Section className="bg-gradient-to-b from-white to-amber-50/40">
+        <div className="grid lg:grid-cols-5 gap-10 items-center">
+          <Reveal className="lg:col-span-2">
+            <span className="eyebrow">Built for operators</span>
+            <h2 className="font-display mt-3 text-3xl sm:text-4xl font-extrabold text-slate-900">
+              Designed around real storage operations.
+            </h2>
+            <p className="mt-4 text-slate-600 leading-relaxed">
+              SFC is built around the day-to-day problems independent and multi-facility operators actually have:
+              late payments, messy ledgers, lien timelines, scattered tenant communication. Every workflow is shaped
+              by the operational reality of running a facility — not by enterprise software committee.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-2 text-xs font-medium text-slate-600">
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Independent operators</span>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Multi-site portfolios</span>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Self-service rentals</span>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Manager-assisted move-ins</span>
+            </div>
+          </Reveal>
+
+          <Reveal className="lg:col-span-3" delay={80}>
+            <ul role="list" className="grid sm:grid-cols-2 gap-4">
+              {[
+                {
+                  key: 'delinquency' as FeatureIconKey,
+                  problem: 'Chasing late payments across 3 tabs',
+                  solution: 'Stage-based delinquency workflow with notices, overlocks, and lien timelines built in.',
+                },
+                {
+                  key: 'billing' as FeatureIconKey,
+                  problem: 'Reconciling ledgers by hand each month',
+                  solution: 'Per-tenant ledger with recurring charges, fees, and payments — always in sync.',
+                },
+                {
+                  key: 'messaging' as FeatureIconKey,
+                  problem: 'Forgetting to send payment reminders',
+                  solution: 'Opt-in SMS/email reminders with delivery status and carrier-compliant STOP/HELP handling.',
+                },
+                {
+                  key: 'units' as FeatureIconKey,
+                  problem: 'Not knowing what is actually empty',
+                  solution: 'Visual unit map with live status, holds, and maintenance flags across facilities.',
+                },
+              ].map(({ key, problem, solution }) => {
+                const theme = getFeatureTheme(key);
+                return (
+                  <li
+                    key={problem}
+                    className={`relative overflow-hidden rounded-xl border ${theme.border} bg-white p-5 shadow-xs`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-10 -top-10 h-24 w-24 rounded-full ${theme.bg} opacity-60 blur-2xl`}
+                    />
+                    <div className="flex items-start gap-3">
+                      <FeatureIcon featureKey={key} size="sm" />
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Instead of
+                        </p>
+                        <p className="text-sm font-semibold text-slate-900">{problem}</p>
+                        <p className="mt-2 text-sm text-slate-600 leading-relaxed">{solution}</p>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </Reveal>
+        </div>
+      </Section>
+
       {/* Why choose SFC */}
       <Section className="bg-gradient-to-b from-white to-sky-50/70">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Why operators choose SFC</h2>
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Why operators choose SFC</h2>
+        </Reveal>
         <ul className="mt-8 max-w-3xl mx-auto space-y-3 text-slate-700 rounded-2xl border border-blue-100 bg-white/90 p-6 shadow-sm">
           {DIFFERENTIATORS.map((item) => (
             <li key={item} className="flex gap-2">
@@ -391,16 +507,39 @@ export default function HomePage() {
             </li>
           ))}
         </ul>
-        <div className="mt-8 text-center">
-          <Link href="/compare" className="text-primary font-medium hover:underline">
-            Compare options →
-          </Link>
-        </div>
+      </Section>
+
+      {/* Compare teaser */}
+      <Section className="bg-white">
+        <Reveal>
+          <div className="mx-auto max-w-4xl rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50/60 p-6 sm:p-8 shadow-sm">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
+              <div className="flex-1">
+                <span className="eyebrow">How we compare</span>
+                <h3 className="font-display mt-2 text-xl sm:text-2xl font-extrabold text-slate-900">
+                  How does SFC stack up against the incumbents?
+                </h3>
+                <p className="mt-2 text-slate-600">
+                  Side-by-side look at SFC vs Sitelink, storEDGE, and Easy Storage Solutions — features, pricing model, and what's included.
+                </p>
+              </div>
+              <Link
+                href="/compare"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 transition-colors shrink-0"
+              >
+                See comparison
+                <span aria-hidden>→</span>
+              </Link>
+            </div>
+          </div>
+        </Reveal>
       </Section>
 
       {/* Global DNR */}
       <Section className="bg-gradient-to-b from-white to-emerald-50/50">
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 text-center">Global Do Not Rent List</h2>
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Global Do Not Rent List</h2>
+        </Reveal>
         <p className="mt-2 text-slate-600 text-center max-w-3xl mx-auto">
           SFC includes a Global Do Not Rent workflow that helps operators share documented, operationally relevant risk
           signals with other participating facilities before approving a new renter.
@@ -455,7 +594,7 @@ export default function HomePage() {
             <div className="relative rounded-2xl border border-emerald-100 bg-white/90 p-6 shadow-sm backdrop-blur">
               <div className="relative aspect-square w-full">
                 <Image
-                  src="/Storage unit shield with checkmark.png"
+                  src="/shield-secure.png"
                   alt="Shield with checkmark representing secure storage facility operations"
                   fill
                   className="object-contain"
@@ -485,7 +624,7 @@ export default function HomePage() {
 
           <div>
             <span className="eyebrow">Security &amp; compliance</span>
-            <h2 className="mt-3 text-2xl sm:text-3xl font-bold text-slate-900">
+            <h2 className="font-display mt-3 text-3xl sm:text-4xl font-extrabold text-slate-900">
               Security and compliance transparency
             </h2>
             <p className="mt-3 text-slate-600">
@@ -516,6 +655,55 @@ export default function HomePage() {
         </div>
       </Section>
 
+      {/* Pricing teaser */}
+      <Section className="bg-gradient-to-b from-white via-blue-50/40 to-white">
+        <Reveal>
+          <div className="mx-auto max-w-3xl rounded-3xl border border-blue-200/70 bg-white p-8 sm:p-10 shadow-lg shadow-blue-900/5 relative overflow-hidden">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-gradient-to-br from-amber-200/60 to-primary/20 blur-3xl"
+            />
+            <div className="relative text-center">
+              <span className="eyebrow">Simple pricing</span>
+              <h2 className="font-display mt-3 text-3xl sm:text-4xl font-extrabold text-slate-900">
+                One flat rate. No surprises.
+              </h2>
+              <div className="mt-6 inline-flex items-baseline gap-1">
+                <span className="font-display text-6xl sm:text-7xl font-extrabold text-slate-900">
+                  ${PRICE_MONTHLY}
+                </span>
+                <span className="text-lg text-slate-500 font-medium">/month</span>
+              </div>
+              <p className="mt-3 text-slate-600">
+                Unlimited facilities. Unlimited users. All features included. No onboarding fee.
+              </p>
+              <p className="mt-2 text-sm font-semibold text-emerald-700">
+                {TRIAL_LINE}
+              </p>
+              <div className="mt-8 flex flex-wrap justify-center gap-3">
+                <CtaButton href={PRIMARY_CTA_HREF}>{PRIMARY_CTA_LABEL}</CtaButton>
+                <Link href="/pricing" className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                  See full pricing
+                </Link>
+              </div>
+            </div>
+          </div>
+        </Reveal>
+      </Section>
+
+      {/* Home FAQ */}
+      <Section tint className="bg-gradient-to-b from-slate-50 to-white">
+        <Reveal>
+          <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">
+            Questions operators ask us
+          </h2>
+          <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
+            Quick answers to what buyers ask most. Full FAQ covers SMS, migration, security, and integrations in depth.
+          </p>
+        </Reveal>
+        <HomeFaq />
+      </Section>
+
       {/* Final CTA */}
       <section className="relative overflow-hidden bg-gradient-to-br from-indigo-700 via-primary to-blue-600 text-white">
         <div
@@ -532,9 +720,9 @@ export default function HomePage() {
         />
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20 text-center">
           <span className="inline-flex items-center rounded-full border border-white/25 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/90 backdrop-blur">
-            Flat monthly pricing
+            ${PRICE_MONTHLY}/month · flat rate
           </span>
-          <h2 className="mt-4 text-2xl sm:text-3xl lg:text-4xl font-bold">
+          <h2 className="font-display mt-4 text-3xl sm:text-4xl lg:text-5xl font-extrabold">
             Ready to simplify operations?
           </h2>
           <p className="mt-3 max-w-2xl mx-auto text-blue-100">
