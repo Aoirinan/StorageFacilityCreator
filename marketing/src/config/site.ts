@@ -48,25 +48,28 @@ export const HERO_SUBHEADLINE =
   'Run operations, billing, delinquency workflows, messaging, reporting, and integrations from one reliable platform without bloated enterprise overhead.';
 
 export const PRICE_MONTHLY = 75;
+export const PRICE_UNIT = 'per facility';
+export const PRICE_LINE_SHORT = `$${PRICE_MONTHLY}/month per facility`;
+export const PRICE_LINE_LONG = `$${PRICE_MONTHLY} per facility, per month — unlimited users, all features included`;
 export const TRIAL_DAYS = 30;
 export const TRIAL_LINE = '30-day trial + first month free';
 
 export const MICROCOPY_POINTS = [
   'No onboarding fee',
-  'Flat monthly pricing',
-  'Built for self-storage operators',
+  'Published per-facility pricing',
+  'Unlimited users per facility',
   'QuickBooks integration',
 ] as const;
 
 export const TRUST_STRIP_ITEMS = [
-  'Flat-rate pricing',
+  'Per-facility published pricing',
+  'Unlimited users per facility',
   'Stripe payments',
   'Twilio messaging',
   'QuickBooks integration',
   'E-sign ready',
   'Published legal/compliance pages',
   'Role-based access',
-  'Secure cloud infrastructure',
 ] as const;
 
 export const NAV_LINKS = [

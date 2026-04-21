@@ -94,7 +94,7 @@ export default function ContactPage() {
       <Section tint>
         <div className="max-w-xl mx-auto">
           <h2 className="text-2xl font-bold text-slate-900 mb-2">{heading}</h2>
-          <p className="mb-6 text-sm text-slate-600">No onboarding fee. Flat monthly pricing.</p>
+          <p className="mb-6 text-sm text-slate-600">No onboarding fee. $75 per facility, per month. Unlimited users per facility.</p>
 
           {status === 'success' && (
             <div className="mb-6 p-4 rounded-lg bg-green-50 text-green-800 border border-green-200" role="status">

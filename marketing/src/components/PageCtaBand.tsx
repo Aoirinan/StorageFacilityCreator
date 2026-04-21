@@ -19,7 +19,7 @@ export function PageCtaBand({
         <CtaButton href={PRIMARY_CTA_HREF} />
         <CtaButton href={SECONDARY_CTA_HREF} variant="secondary" />
       </div>
-      <p className="mt-4 text-xs text-slate-500">No onboarding fee. Flat monthly pricing. Built for self-storage operators.</p>
+      <p className="mt-4 text-xs text-slate-500">No onboarding fee. $75 per facility, per month. Built for self-storage operators.</p>
     </div>
   );
 }

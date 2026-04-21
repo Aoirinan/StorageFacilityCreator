@@ -27,8 +27,8 @@ const FAQ_ITEMS = [
   {
     category: 'Billing and pricing',
     qas: [
-      { q: 'Is SFC priced per facility, per user, or per unit?', a: 'Public pricing is positioned as flat monthly pricing. See the pricing page for current terms and details.' },
-      { q: 'Is there an onboarding fee?', a: 'No onboarding fee is included in current public pricing language.' },
+      { q: 'Is SFC priced per facility, per user, or per unit?', a: 'Per facility. SFC is $75 per facility, per month, with unlimited users per facility and no per-unit fees. Two facilities bill at $150/month, three at $225/month, and so on.' },
+      { q: 'Is there an onboarding fee?', a: 'No onboarding fee. Setup is included in the standard subscription.' },
       { q: 'Does SFC support autopay?', a: 'Yes. Stripe-backed autopay workflows are supported in product billing flows.' },
       { q: 'Can I manage multiple facilities?', a: 'Yes. Multi-facility workflows are supported and surfaced in product operations and reporting paths.' },
     ],

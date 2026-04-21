@@ -6,7 +6,7 @@ import { PAGE_OG_IMAGES, PRICE_MONTHLY, PRIMARY_CTA_HREF, SECONDARY_CTA_HREF, TR
 
 export const metadata: Metadata = {
   title: 'Pricing',
-  description: `Flat-rate $${PRICE_MONTHLY}/month self-storage software pricing. No onboarding fee, 30-day trial, and practical operator-focused workflows.`,
+  description: `$${PRICE_MONTHLY} per facility, per month. Unlimited users per facility, all features included, no onboarding fee, and a 30-day trial. Transparent self-storage software pricing.`,
   openGraph: { images: [PAGE_OG_IMAGES.pricing] },
   twitter: { images: [PAGE_OG_IMAGES.pricing] },
 };
@@ -15,13 +15,14 @@ export default function PricingPage() {
   const trustNotes = ['Stripe payments', 'Twilio messaging', 'QuickBooks integration', 'Published legal pages'];
   const pricingFaqs = [
     ['Is there an onboarding fee?', 'No. SFC is designed for straightforward onboarding without an onboarding fee.'],
-    ['Is pricing per unit?', 'No. Pricing is flat monthly pricing, not per-unit pricing.'],
+    ['Is pricing per unit or per user?', `No to both. Pricing is $${PRICE_MONTHLY} per facility, per month, with unlimited users per facility. Your bill scales with facility count, not with units or seats.`],
+    ['How does pricing work if I have multiple facilities?', `Each facility is $${PRICE_MONTHLY}/month. Two facilities bill at $${PRICE_MONTHLY * 2}/month, three at $${PRICE_MONTHLY * 3}/month, and so on. All features and unlimited users are included at every site.`],
     ['Is there a contract?', 'Subscription terms are month-to-month unless otherwise agreed in writing.'],
-    ['What is included?', 'Core operations, billing workflows, messaging support, reporting, and integrations in one platform.'],
+    ['What is included?', 'All core operations, billing workflows, messaging, reporting, e-sign, Stripe payments, Twilio SMS, SendGrid email, and QuickBooks integration — no add-on modules or feature-gated tiers.'],
     ['Does SFC support payments?', 'Yes. Stripe-backed payment workflows are supported in the product.'],
     ['Does SFC support SMS reminders?', 'Yes. Opt-in SMS messaging flows are supported with STOP/HELP handling.'],
     ['Does SFC integrate with QuickBooks?', 'Yes. QuickBooks integration paths are available for accounting sync workflows.'],
-    ['Can I manage multiple facilities?', 'Yes. SFC supports multi-facility operational workflows.'],
+    ['Can I manage multiple facilities?', 'Yes. Multi-facility workflows are first-class. Each facility bills at the published per-facility rate.'],
     ['Is setup assistance available?', 'Yes. Use demo/contact channels to coordinate setup guidance.'],
     ['Do you offer migration help?', 'Migration support is available based on your data and timeline requirements.'],
     ['Are legal and compliance pages available?', 'Yes. SFC publishes legal, privacy, SMS, subprocessors, and DPA information.'],
@@ -40,12 +41,21 @@ export default function PricingPage() {
 
       <Section tint>
         <div className="max-w-md mx-auto rounded-2xl bg-white border border-slate-200 shadow-lg p-6 sm:p-8">
-          <h2 className="text-2xl font-bold text-slate-900">Flat rate</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Per-facility pricing</h2>
           <p className="mt-4">
             <span className="text-4xl font-bold text-slate-900">${PRICE_MONTHLY}</span>
             <span className="text-slate-600">/month</span>
+            <span className="block mt-1 text-sm font-medium text-slate-500">per facility</span>
           </p>
           <ul className="mt-6 space-y-3 text-slate-700" role="list">
+            <li className="flex gap-2">
+              <span className="text-primary" aria-hidden>✓</span>
+              Unlimited users per facility
+            </li>
+            <li className="flex gap-2">
+              <span className="text-primary" aria-hidden>✓</span>
+              All features included — no add-on modules
+            </li>
             <li className="flex gap-2">
               <span className="text-primary" aria-hidden>✓</span>
               No onboarding fee
@@ -56,16 +66,20 @@ export default function PricingPage() {
             </li>
             <li className="flex gap-2">
               <span className="text-primary" aria-hidden>✓</span>
-              All features included
-            </li>
-            <li className="flex gap-2">
-              <span className="text-primary" aria-hidden>✓</span>
-              Built for self-storage operators
+              Month-to-month — cancel anytime
             </li>
           </ul>
-          <p className="mt-6 text-sm text-slate-600">
-            Unlike per-unit pricing models, this pricing model stays predictable as you grow.
-          </p>
+          <div className="mt-6 rounded-lg bg-slate-50 border border-slate-200 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Simple math</p>
+            <p className="mt-2 text-sm text-slate-700">
+              1 facility = <strong className="text-slate-900">${PRICE_MONTHLY}/mo</strong> · 2 facilities ={' '}
+              <strong className="text-slate-900">${PRICE_MONTHLY * 2}/mo</strong> · 3 facilities ={' '}
+              <strong className="text-slate-900">${PRICE_MONTHLY * 3}/mo</strong>
+            </p>
+            <p className="mt-2 text-xs text-slate-500">
+              No per-unit fees. No per-user fees. No tiered modules.
+            </p>
+          </div>
           <div className="mt-8 flex flex-wrap gap-3">
             <CtaButton href={PRIMARY_CTA_HREF} />
             <CtaButton href={SECONDARY_CTA_HREF} variant="secondary" />

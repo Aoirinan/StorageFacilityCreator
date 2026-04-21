@@ -178,7 +178,8 @@ const TOUR_CARDS: TourCard[] = [
 ];
 
 const DIFFERENTIATORS = [
-  'Flat monthly pricing without bloated enterprise packaging.',
+  'Published per-facility pricing — no quote-gating, no tiered module upsells.',
+  'Unlimited users per facility included in the base rate.',
   'Operator-first workflows built for real storage operations.',
   'Compliance transparency with published legal/compliance pages.',
   'Practical integrations supporting day-to-day billing and communications.',
@@ -217,8 +218,16 @@ export default function HomePage() {
     description: HERO_SUBHEADLINE,
     offers: {
       '@type': 'Offer',
-      price: '75',
+      price: String(PRICE_MONTHLY),
       priceCurrency: 'USD',
+      description: `$${PRICE_MONTHLY} per facility, per month. Unlimited users per facility. All features included.`,
+      priceSpecification: {
+        '@type': 'UnitPriceSpecification',
+        price: String(PRICE_MONTHLY),
+        priceCurrency: 'USD',
+        unitText: 'facility per month',
+        billingIncrement: 1,
+      },
     },
   };
 
@@ -262,7 +271,7 @@ export default function HomePage() {
             <p className="mt-4 text-sm font-medium text-slate-700">
               <span className="text-slate-900 font-semibold">${PRICE_MONTHLY}/month</span>
               <span className="mx-2 text-slate-300" aria-hidden>·</span>
-              <span>Flat rate</span>
+              <span>per facility</span>
               <span className="mx-2 text-slate-300" aria-hidden>·</span>
               <span>{TRIAL_LINE}</span>
             </p>
@@ -270,7 +279,7 @@ export default function HomePage() {
             {/* Hero stats ribbon */}
             <dl className="mt-8 grid max-w-lg grid-cols-3 gap-3 border-t border-slate-200 pt-6">
               <div>
-                <dt className="text-xs uppercase tracking-wider text-slate-500">Facilities</dt>
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Users / facility</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">Unlimited</dd>
               </div>
               <div>
@@ -640,7 +649,7 @@ export default function HomePage() {
             <div className="relative text-center">
               <span className="eyebrow">Simple pricing</span>
               <h2 className="font-display mt-3 text-3xl sm:text-4xl font-extrabold text-slate-900">
-                One flat rate. No surprises.
+                Published per-facility pricing. No surprises.
               </h2>
               <div className="mt-6 inline-flex items-baseline gap-1">
                 <span className="font-display text-6xl sm:text-7xl font-extrabold text-slate-900">
@@ -648,8 +657,9 @@ export default function HomePage() {
                 </span>
                 <span className="text-lg text-slate-500 font-medium">/month</span>
               </div>
-              <p className="mt-3 text-slate-600">
-                Unlimited facilities. Unlimited users. All features included. No onboarding fee.
+              <p className="mt-1 text-sm font-medium text-slate-500">per facility</p>
+              <p className="mt-4 text-slate-600">
+                Unlimited users per facility. All features included. No onboarding fee.
               </p>
               <p className="mt-2 text-sm font-semibold text-emerald-700">
                 {TRIAL_LINE}
@@ -694,7 +704,7 @@ export default function HomePage() {
         />
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20 text-center">
           <span className="inline-flex items-center rounded-full border border-white/25 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/90 backdrop-blur">
-            ${PRICE_MONTHLY}/month · flat rate
+            ${PRICE_MONTHLY}/month per facility
           </span>
           <h2 className="font-display mt-4 text-3xl sm:text-4xl lg:text-5xl font-extrabold">
             Ready to simplify operations?

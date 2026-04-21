@@ -24,7 +24,11 @@ export default function BillingPage() {
 
           <h2 className="text-xl font-bold text-slate-900">Subscription Pricing</h2>
           <p className="text-slate-600 mt-2">
-            {SITE_NAME} is billed at a flat rate of <strong>${PRICE_MONTHLY}/month</strong> per account. There are no per-unit fees, onboarding fees, or hidden charges. Pricing is displayed on our{' '}
+            {SITE_NAME} is billed at <strong>${PRICE_MONTHLY}/month per facility</strong>. An account with multiple
+            facilities is charged ${PRICE_MONTHLY} per facility, per month (for example, two facilities bill at
+            ${PRICE_MONTHLY * 2}/month, three at ${PRICE_MONTHLY * 3}/month, and so on). Users are unlimited per
+            facility. There are no per-unit fees, no per-user fees, no onboarding fees, and no hidden charges.
+            Pricing is displayed on our{' '}
             <Link href="/pricing" className="text-primary hover:underline">Pricing page</Link> and confirmed at signup.
           </p>
 

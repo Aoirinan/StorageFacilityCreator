@@ -40,24 +40,24 @@ type Row = {
 const COMPARE_ROWS: Row[] = [
   {
     area: 'Pricing model',
-    sfc: `Flat $${PRICE_MONTHLY}/month`,
+    sfc: `$${PRICE_MONTHLY}/facility/month — published rate`,
     sitelink: 'Per-facility, quote-based',
     storedge: 'Per-facility, quote-based',
     ess: 'Per-facility, tiered',
   },
   {
-    area: 'Facilities included',
-    sfc: 'Unlimited',
-    sitelink: 'Priced per facility',
-    storedge: 'Priced per facility',
-    ess: 'Priced per facility',
-  },
-  {
-    area: 'Users included',
+    area: 'Users per facility',
     sfc: 'Unlimited',
     sitelink: 'Varies by plan',
     storedge: 'Varies by plan',
     ess: 'Varies by plan',
+  },
+  {
+    area: 'Feature packaging',
+    sfc: 'All features in the base rate',
+    sitelink: 'Core plan + add-on modules',
+    storedge: 'Core plan + add-ons across the Storable suite',
+    ess: 'Tiered plans with feature gating',
   },
   {
     area: 'Onboarding fee',
@@ -117,7 +117,7 @@ const COMPARE_ROWS: Row[] = [
   },
   {
     area: 'Typical buyer fit',
-    sfc: 'Independents & multi-site operators wanting flat pricing',
+    sfc: 'Operators wanting transparent per-facility pricing with all features included',
     sitelink: 'Mid-to-large operators needing deep ecosystem',
     storedge: 'Operators wanting a modern UI within a large-vendor portfolio',
     ess: 'Smaller independents wanting simplicity',
@@ -146,16 +146,17 @@ const PROFILES: Profile[] = [
       'Large installed base means plenty of third-party consultants and trainers',
     ],
     sfcFit: [
-      'Flat monthly pricing instead of per-facility billing — especially relevant if you manage multiple sites',
+      `Published per-facility pricing ($${PRICE_MONTHLY}/facility/month) instead of quote-based negotiation`,
       'Single modern cloud codebase without a legacy desktop lineage to carry',
-      'Unlimited users included so manager turnover and multi-site teams do not trigger add-on costs',
+      'Unlimited users per facility — manager turnover and multi-site teams do not trigger per-seat add-ons',
+      'All features in the base rate — no separate modules for messaging, e-sign, autopay, or reporting',
       'Built-in Global Do Not Rent network for cross-facility operator risk-sharing',
     ],
     pick: {
       them:
         'Pick SiteLink if you need deep integrations with specific gate, kiosk, or call-center partners today, or if you are running a large portfolio already deeply tied into the Storable ecosystem.',
       sfc:
-        'Pick SFC if you want predictable flat pricing, a modern interface, and the Global DNR network — and you are comfortable trading some legacy ecosystem breadth for a tighter, newer platform.',
+        'Pick SFC if you want a published per-facility rate, a modern interface, unlimited users per site, and the Global DNR network — and you are comfortable trading some legacy ecosystem breadth for a tighter, newer platform.',
     },
   },
   {
@@ -170,16 +171,17 @@ const PROFILES: Profile[] = [
       'Established across many independent and mid-size portfolios',
     ],
     sfcFit: [
-      'Flat monthly pricing instead of per-facility cost stacking',
+      `Published $${PRICE_MONTHLY}/facility/month rate — no suite-level quote stacking`,
       'Independent vendor — not a bundled entry point into a larger portfolio of add-on products',
-      'All core features included rather than distributed across tiered packages and add-ons',
+      'All core features included rather than distributed across tiered packages and add-on modules',
+      'Unlimited users per facility instead of per-seat pricing',
       'Global Do Not Rent network built into the core product, not a separate upsell',
     ],
     pick: {
       them:
         'Pick storEDGE if you want a polished cloud platform and you are interested in buying into the broader Storable portfolio of adjacent products (marketing, websites, insurance, etc.).',
       sfc:
-        'Pick SFC if you want a modern cloud platform without the portfolio-upsell dynamic, and you prefer predictable flat pricing over per-facility billing.',
+        'Pick SFC if you want a modern cloud platform without the portfolio-upsell dynamic, and you prefer a published per-facility rate with all features in the base price.',
     },
   },
   {
@@ -194,8 +196,9 @@ const PROFILES: Profile[] = [
       'Straightforward product for single-site operators',
     ],
     sfcFit: [
-      'Flat pricing across unlimited facilities scales better as you add sites',
-      'Unlimited users included rather than user-based pricing',
+      `Published $${PRICE_MONTHLY}/facility/month rate — what you see on the pricing page is what you pay, regardless of facility count`,
+      'Unlimited users per facility rather than per-seat pricing',
+      'All features in the base rate — no tiered plan to outgrow as your operation matures',
       'Built-in Global Do Not Rent network for cross-facility risk visibility',
       'Published legal and compliance pages (SMS terms, e-sign, DPA, subprocessors) in one place for buyer review',
     ],
@@ -203,7 +206,7 @@ const PROFILES: Profile[] = [
       them:
         'Pick Easy Storage Solutions if you are a single-site operator who values their established customer-service reputation and prefers a product explicitly shaped around smaller independents.',
       sfc:
-        'Pick SFC if you expect to add facilities and want pricing that does not scale with site count, or if the Global DNR network and flat-rate model matter to how you plan to grow.',
+        'Pick SFC if you want transparent published pricing, all features included without tier gating, and the Global DNR network — especially if you plan to add facilities and want the math to stay simple and predictable.',
     },
   },
 ];
@@ -211,15 +214,19 @@ const PROFILES: Profile[] = [
 const FAQS: { q: string; a: string }[] = [
   {
     q: 'How is Storage Facility Creator different from SiteLink, storEDGE, and Easy Storage Solutions?',
-    a: `The biggest structural differences are pricing model and feature packaging. SFC is a flat $${PRICE_MONTHLY}/month for unlimited facilities and unlimited users, with all core features included and no onboarding fee. SiteLink, storEDGE, and Easy Storage Solutions each price per facility and typically layer add-on modules or tiers. SFC also includes a built-in Global Do Not Rent network, which is not a feature of those products.`,
+    a: `The biggest structural differences are pricing transparency, feature packaging, and user licensing. SFC publishes a flat $${PRICE_MONTHLY} per facility, per month — the same rate for everyone, visible on the pricing page, with all features and unlimited users included. SiteLink, storEDGE, and Easy Storage Solutions also price per facility, but typically via quotes that vary by plan, with feature tiers or add-on modules layered on top. SFC also includes a built-in Global Do Not Rent network, which is not a feature of those products.`,
   },
   {
     q: 'Is SFC cheaper than SiteLink or storEDGE?',
-    a: 'It depends on facility count. Because SFC is a single flat monthly rate regardless of facility count, the multi-site math tends to favor SFC as you add locations. For a single-site operator, per-facility pricing from SiteLink or storEDGE may land close to or below SFC depending on plan and add-ons. The honest answer: compare apples-to-apples by requesting a quote that includes all modules you actually use.',
+    a: `Sometimes, and sometimes not — but it is predictable. SFC is $${PRICE_MONTHLY} per facility per month, period, with all features included. SiteLink and storEDGE pricing varies by plan, modules, processing volume, and negotiation, which makes raw dollar comparisons difficult without a full quote from each vendor. The honest framing: SFC trades quote-based flexibility for a published, predictable rate. Get an itemized quote from competing vendors (including every module you actually need) and compare line-by-line.`,
+  },
+  {
+    q: 'Do I pay more per facility as I add sites?',
+    a: `No. The per-facility rate is the same at your first site and your twentieth — $${PRICE_MONTHLY}/month each. Two facilities bill at $${PRICE_MONTHLY * 2}/month, three at $${PRICE_MONTHLY * 3}/month, and so on. There are no volume surcharges and no tier jumps as you grow. All features and unlimited users come with every facility.`,
   },
   {
     q: 'Should I switch from Easy Storage Solutions to SFC?',
-    a: 'If you are a single-site operator satisfied with Easy Storage Solutions, there is no urgent reason to switch. The case for SFC gets stronger if you are planning to add facilities (flat pricing scales better), want a built-in Global Do Not Rent network, or want unlimited users included rather than priced per seat.',
+    a: 'If you are a single-site operator satisfied with Easy Storage Solutions, there is no urgent reason to switch. The case for SFC gets stronger if you want all features included without tier gating, unlimited users per facility instead of per-seat pricing, or the built-in Global Do Not Rent network.',
   },
   {
     q: 'Can I migrate data from SiteLink, storEDGE, or Easy Storage Solutions?',
@@ -231,7 +238,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'What does SFC include that SiteLink, storEDGE, and Easy Storage Solutions do not?',
-    a: 'The most distinctive SFC-only items are the built-in Global Do Not Rent operator network, flat pricing with unlimited facilities and users, and all core features included without module upsells. Everything else is table stakes overlap — the real comparison is pricing structure, packaging, and operator fit.',
+    a: 'The most distinctive SFC-only items are the built-in Global Do Not Rent operator network, published per-facility pricing (no quote negotiation), unlimited users per facility, and all core features included without module upsells. Everything else is table-stakes overlap — the real comparison is pricing transparency, packaging, and operator fit.',
   },
 ];
 

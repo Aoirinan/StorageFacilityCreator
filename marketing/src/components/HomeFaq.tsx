@@ -8,7 +8,7 @@ type Item = { q: string; a: string };
 const ITEMS: Item[] = [
   {
     q: 'What does SFC cost?',
-    a: 'Flat monthly pricing starting at $75/month. No onboarding fee. A 30-day trial + first month free is available so you can evaluate with real data before committing.',
+    a: '$75 per facility, per month. Each facility is a flat $75/month with unlimited users per facility and all features included — no add-on modules, no per-seat pricing, no onboarding fee. A 30-day trial + first month free is available so you can evaluate with real data before committing.',
   },
   {
     q: 'Can we migrate from our current software or from spreadsheets?',

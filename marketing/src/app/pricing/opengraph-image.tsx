@@ -8,8 +8,8 @@ export const contentType = OG_CONTENT_TYPE;
 export default function Image() {
   return renderOgImage({
     eyebrow: 'Pricing',
-    title: `$${PRICE_MONTHLY}/month. Flat rate. No surprises.`,
-    subtitle: `Unlimited facilities and users. All features included. ${TRIAL_LINE}.`,
+    title: `$${PRICE_MONTHLY}/month per facility.`,
+    subtitle: `Unlimited users. All features included. ${TRIAL_LINE}.`,
     accent: 'amber',
   });
 }

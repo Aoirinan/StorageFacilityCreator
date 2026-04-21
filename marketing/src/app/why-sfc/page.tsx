@@ -7,17 +7,18 @@ import { PAGE_OG_IMAGES } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Why SFC',
   description:
-    'See why storage operators choose SFC for flat pricing, practical workflows, compliance transparency, and real-world integrations.',
+    'See why storage operators choose SFC for published per-facility pricing, unlimited users, practical workflows, compliance transparency, and real-world integrations.',
   openGraph: { images: [PAGE_OG_IMAGES['why-sfc']] },
   twitter: { images: [PAGE_OG_IMAGES['why-sfc']] },
 };
 
 const rows = [
-  ['Pricing model', 'Flat monthly pricing', 'Often tiered or complex packaging'],
+  ['Pricing model', '$75/facility/month, published', 'Often quote-based with tiered modules'],
+  ['User seats', 'Unlimited users per facility', 'Often per-seat or plan-limited'],
+  ['Feature packaging', 'All features in the base rate', 'Often distributed across add-on modules'],
   ['Compliance transparency', 'Published legal and compliance pages', 'Varies by vendor'],
   ['Operational focus', 'Built for practical storage workflows', 'May include broader, less focused suites'],
-  ['Onboarding complexity', 'Lightweight onboarding path', 'Can involve heavier implementation overhead'],
-  ['Independent operator fit', 'Operator-friendly structure', 'Varies by product and package'],
+  ['Onboarding complexity', 'No onboarding fee, lightweight setup', 'Can involve heavier implementation overhead'],
   ['Practical integrations', 'Stripe, Twilio, SendGrid, QuickBooks', 'Varies by vendor and plan'],
 ];
 
@@ -35,7 +36,9 @@ export default function WhySfcPage() {
       <Section tint>
         <h2 className="text-2xl font-bold text-slate-900">Positioning overview</h2>
         <ul className="mt-5 space-y-2.5 text-slate-700 leading-relaxed">
-          <li>• Flat pricing simplicity for predictable budgeting</li>
+          <li>• Published per-facility pricing for predictable budgeting as you add sites</li>
+          <li>• Unlimited users per facility — no per-seat scaling costs</li>
+          <li>• All features included in the base rate — no add-on modules</li>
           <li>• Operational workflows designed for real storage teams</li>
           <li>• Clear legal/compliance documentation for buyer trust</li>
           <li>• Practical integrations for billing and communications</li>
