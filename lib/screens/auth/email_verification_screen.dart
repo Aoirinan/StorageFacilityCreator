@@ -169,9 +169,28 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
     }
   }
 
+  Future<void> _backToSignIn() async {
+    _pollingTimer?.cancel();
+    try {
+      await AuthService().signOut();
+    } catch (_) {
+      // If sign-out fails, still try to navigate away so the user isn't stuck.
+    }
+    if (!mounted) return;
+    context.go(AppRoute.login);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AuthShell(
+      backButton: AuthShellBackButton(onPressed: _backToSignIn),
+      belowCard: Center(
+        child: AuthSecondaryLink(
+          icon: Icons.arrow_back,
+          label: 'Back to sign in',
+          onPressed: _backToSignIn,
+        ),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
