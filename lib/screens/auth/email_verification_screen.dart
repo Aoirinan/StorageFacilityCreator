@@ -31,6 +31,14 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
   bool _pollInFlight = false;
   DateTime? _lastSilentCheck;
 
+  /// Falls back to the currently signed-in Firebase user's email when
+  /// `widget.email` is empty (e.g. user landed on /verify-email directly
+  /// via the browser URL instead of coming from signup/login).
+  String get _effectiveEmail {
+    if (widget.email.trim().isNotEmpty) return widget.email.trim();
+    return FirebaseAuth.instance.currentUser?.email ?? '';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -71,7 +79,7 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
       final authService = AuthService();
       try {
         await authService.completeSignupAfterVerification(
-          email: widget.email,
+          email: _effectiveEmail,
           tosAccepted: true,
         );
       } catch (e) {
@@ -234,49 +242,53 @@ class _EmailVerificationScreenState extends ConsumerState<EmailVerificationScree
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'We sent a verification link to:',
+          Text(
+            _effectiveEmail.isEmpty
+                ? 'A verification link was sent to your inbox.'
+                : 'We sent a verification link to:',
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 14,
               color: AppTheme.textSecondary,
               height: 1.5,
             ),
           ),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F5F9),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: AppTheme.primaryBlue.withOpacity(0.15),
+          if (_effectiveEmail.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: AppTheme.primaryBlue.withOpacity(0.15),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.email_outlined,
+                    size: 16,
+                    color: AppTheme.primaryBlue,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      _effectiveEmail,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary,
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(
-                  Icons.email_outlined,
-                  size: 16,
-                  color: AppTheme.primaryBlue,
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    widget.email,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary,
-                    ),
-                    textAlign: TextAlign.center,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          ],
           const SizedBox(height: 18),
           Container(
             padding: const EdgeInsets.all(14),
