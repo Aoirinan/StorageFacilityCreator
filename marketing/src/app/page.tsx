@@ -277,16 +277,10 @@ export default function HomePage() {
             </p>
 
             {/* Hero stats ribbon */}
-            <dl className="mt-8 grid max-w-lg grid-cols-3 gap-3 border-t border-slate-200 pt-6">
+            <dl className="mt-8 grid max-w-lg grid-cols-2 gap-6 border-t border-slate-200 pt-6">
               <div>
                 <dt className="text-xs uppercase tracking-wider text-slate-500">Users / facility</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">Unlimited</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wider text-slate-500">Integrations</dt>
-                <dd className="font-display text-2xl font-extrabold text-slate-900">
-                  5<span className="text-primary">+</span>
-                </dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wider text-slate-500">Setup time</dt>
