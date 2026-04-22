@@ -15,11 +15,13 @@ import 'package:sfcapp/providers/tenant_portal_provider.dart';
 import 'package:sfcapp/services/autopay_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/services/public_rental_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/ui/payments/stripe_embedded_payment_dialog.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/auth/widgets/auth_shell.dart';
+import 'package:sfcapp/models/unit_model.dart';
 
 class TenantPortalScreen extends ConsumerStatefulWidget {
   final TenantPortalLookup lookup;
@@ -138,6 +140,30 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     _showSnack('$label copied to clipboard');
   }
 
+  /// Match staff Insurance screen behavior: allow `www.example.com` without a scheme.
+  String _normalizePortalWebUrl(String raw) {
+    var t = raw.trim();
+    if (t.isEmpty) return t;
+    if (!t.contains('://') && t.contains('.')) {
+      t = 'https://$t';
+    }
+    return t;
+  }
+
+  Future<void> _openInsuranceReferralUrl(String raw) async {
+    final normalized = _normalizePortalWebUrl(raw);
+    final uri = Uri.tryParse(normalized);
+    if (uri == null) {
+      _showSnack('Invalid link. Ask your facility for an updated URL.', isError: true);
+      return;
+    }
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      _showSnack('Could not open link.', isError: true);
+    }
+  }
+
   void _showSnack(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -178,7 +204,59 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     );
   }
 
-  Future<void> _initiatePayment(TenantPortalData data, double amount) async {
+  Future<void> _startAdditionalUnitRental(TenantPortalData data) async {
+    final facilityId = data.facility.id;
+
+    try {
+      final units = await PublicRentalService.getAvailableUnits(facilityId);
+      if (!mounted) return;
+      if (units.isEmpty) {
+        _showSnack('No units are currently available to rent.', isError: true);
+        return;
+      }
+
+      final selected = await showModalBottomSheet<UnitModel>(
+        context: context,
+        useSafeArea: true,
+        isScrollControlled: true,
+        builder: (ctx) => _AvailableUnitsSheet(units: units),
+      );
+
+      if (selected == null || !mounted) return;
+
+      final reservation = await TenantPortalService.createAdditionalUnitReservation(
+        email: widget.lookup.email,
+        accessCode: widget.lookup.accessCode,
+        facilityId: facilityId,
+        unitId: selected.id,
+        unitNumber: selected.unitNumber,
+      );
+
+      final token = reservation.moveInToken;
+      if (token == null || token.isEmpty) {
+        _showSnack(
+          'Unable to start move-in for this unit. Please try again.',
+          isError: true,
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      context.go('${AppRoute.publicMoveIn}?token=$token');
+    } catch (_) {
+      if (!mounted) return;
+      _showSnack(
+        'Could not start unit rental. Please try again or contact your facility.',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _initiatePayment(
+    TenantPortalData data,
+    double amount, {
+    String? tenantId,
+  }) async {
     setState(() {
       _isProcessingPayment = true;
     });
@@ -189,6 +267,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         email: widget.lookup.email,
         accessCode: widget.lookup.accessCode,
         amount: amount,
+        tenantId: tenantId,
       );
 
       // Open checkout
@@ -434,6 +513,8 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       if (data.tenant.overlockIsActive) _buildOverlockBanner(context),
       _buildSummaryCard(context, data),
       const SizedBox(height: 16),
+      _buildUnitAccountsCard(context, data),
+      const SizedBox(height: 16),
       _buildStatsSection(context, data),
       const SizedBox(height: 16),
       _buildUpcomingCard(context, data),
@@ -450,6 +531,10 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       const SizedBox(height: 16),
       _buildAutopayCard(context, data),
       const SizedBox(height: 16),
+      if (data.facility.insuranceReferral?.hasLink == true) ...[
+        _buildInsuranceReferralCard(context, data),
+        const SizedBox(height: 16),
+      ],
       _buildHelpCard(context, data),
       const SizedBox(height: 16),
       Text(
@@ -645,6 +730,8 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
               children: [
                 _infoChip(Icons.storefront_outlined, 'Unit ${tenant.unitNumber}'),
                 _infoChip(Icons.payments_outlined, '${_formatCurrency(tenant.monthlyRate)} / month'),
+                if (data.units.length > 1)
+                  _infoChip(Icons.meeting_room_outlined, '${data.units.length} units'),
                 _statusChip(isDelinquent, outstanding),
               ],
             ),
@@ -684,7 +771,11 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
               const SizedBox(height: 16),
               AuthGradientButton(
                 isLoading: _isProcessingPayment,
-                onPressed: () => _initiatePayment(data, outstanding),
+                onPressed: () => _initiatePayment(
+                  data,
+                  outstanding,
+                  tenantId: tenant.id,
+                ),
                 label: 'Pay now',
               ),
             ],
@@ -1056,6 +1147,83 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
               .toList(),
         );
       },
+    );
+  }
+
+  Widget _buildUnitAccountsCard(BuildContext context, TenantPortalData data) {
+    final theme = Theme.of(context);
+    if (data.units.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('My Units', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            ...data.units.map((unit) {
+              final canPay = unit.outstandingBalance > 0;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.borderLight),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Unit ${unit.unitNumber}',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _statusChip(unit.isDelinquent, unit.outstandingBalance),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Balance: ${_formatCurrency(unit.outstandingBalance)}',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                    Text(
+                      'Next due: ${unit.nextDueDate != null ? _formatDate(unit.nextDueDate) : 'No upcoming payment'}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                    if (canPay) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: _isProcessingPayment
+                              ? null
+                              : () => _initiatePayment(
+                                    data,
+                                    unit.outstandingBalance,
+                                    tenantId: unit.tenantId,
+                                  ),
+                          icon: const Icon(Icons.payments_outlined, size: 18),
+                          label: const Text('Pay this unit'),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1530,6 +1698,9 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                             Text('Paid on ${_formatDate(payment.paidAt)}'),
                           if (payment.method != null && payment.method!.isNotEmpty)
                             Text('Method: ${_formatMethod(payment.method)}'),
+                          if (payment.unitNumber != null &&
+                              payment.unitNumber!.isNotEmpty)
+                            Text('Unit: ${payment.unitNumber}'),
                         ],
                       ),
                       trailing: Text(
@@ -1730,6 +1901,67 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     );
   }
 
+  Widget _buildInsuranceReferralCard(BuildContext context, TenantPortalData data) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final ref = data.facility.insuranceReferral!;
+    final title = (ref.referralName != null && ref.referralName!.isNotEmpty)
+        ? ref.referralName!
+        : 'Recommended insurance';
+    final urlRaw = ref.referralUrl!.trim();
+    final urlForOpen = _normalizePortalWebUrl(urlRaw);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.shield_outlined, color: cs.primary, size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            if (ref.referralNotes != null && ref.referralNotes!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(ref.referralNotes!, style: theme.textTheme.bodyMedium),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              '${data.facility.name} suggests this provider for your storage insurance needs. '
+              'Storage Facility Creator does not sell insurance; any policy is between you and the provider.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => _openInsuranceReferralUrl(urlRaw),
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('Open link'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _copyToClipboard(urlForOpen, 'Insurance link'),
+                  icon: const Icon(Icons.copy, size: 18),
+                  label: const Text('Copy link'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildHelpCard(BuildContext context, TenantPortalData data) {
     final theme = Theme.of(context);
     final facility = data.facility;
@@ -1743,13 +1975,18 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
             Text('Need Assistance?', style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
             const Text(
-              'This portal provides a read-only view of your account. Reach out to your facility manager if you need to update contact information, change your billing details, or have questions about your balance.',
+              'Use this portal to review your account, make payments, and start a new rental for another available unit. Reach out to your facility manager for account or billing questions.',
             ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 12,
               runSpacing: 12,
               children: [
+                FilledButton.icon(
+                  onPressed: () => _startAdditionalUnitRental(data),
+                  icon: const Icon(Icons.add_business_outlined),
+                  label: const Text('Rent Another Unit'),
+                ),
                 if (facility.email != null && facility.email!.isNotEmpty)
                   OutlinedButton.icon(
                     onPressed: () => _copyToClipboard(facility.email!, 'Facility email'),
@@ -1787,6 +2024,61 @@ class _TenantPortalOrb extends StatelessWidget {
           shape: BoxShape.circle,
           color: color,
         ),
+      ),
+    );
+  }
+}
+
+class _AvailableUnitsSheet extends StatelessWidget {
+  final List<UnitModel> units;
+
+  const _AvailableUnitsSheet({required this.units});
+
+  String _formatCurrency(double amount) => '\$${amount.toStringAsFixed(2)}';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Select a Unit', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          Text(
+            'Choose an available unit to continue to move-in.',
+            style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: units.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                final unit = units[index];
+                return ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: const BorderSide(color: AppTheme.borderLight),
+                  ),
+                  tileColor: const Color(0xFFF8FAFC),
+                  title: Text(
+                    'Unit ${unit.unitNumber}',
+                    style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(
+                    '${unit.unitType} • ${_formatCurrency(unit.monthlyRate)}/month',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).pop(unit),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

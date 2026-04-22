@@ -3053,7 +3053,6 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
         .where('emailLower', '==', email)
         .where('portalEnabled', '==', true)
         .where('portalAccessCode', '==', accessCode)
-        .limit(1)
         .get();
     } catch (indexError: any) {
       if (indexError.code === 9 || (indexError.message ?? '').includes('indexes') || (indexError.message ?? '').includes('index')) {
@@ -3077,9 +3076,9 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       throw new functions.https.HttpsError('not-found', 'Portal access not found. Verify your email and access code.');
     }
 
-    const tenantDoc = tenantSnapshot.docs[0];
-    const tenantData = tenantDoc.data() as Record<string, any>;
-    const facilityRef = tenantDoc.ref.parent.parent;
+    const primaryTenantDoc = tenantSnapshot.docs[0];
+    const primaryTenantData = primaryTenantDoc.data() as Record<string, any>;
+    const facilityRef = primaryTenantDoc.ref.parent.parent;
 
     if (!facilityRef) {
       throw new functions.https.HttpsError('failed-precondition', 'Facility reference missing for tenant');
@@ -3090,31 +3089,87 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       throw new functions.https.HttpsError('not-found', 'Facility not found for tenant');
     }
 
-    const paymentsCollection = facilityRef.collection('payments');
-    let paymentsSnapshot;
+    let insuranceReferral: { referralUrl: string | null; referralName: string | null; referralNotes: string | null } = {
+      referralUrl: null,
+      referralName: null,
+      referralNotes: null,
+    };
     try {
-      paymentsSnapshot = await paymentsCollection
-        .where('tenantId', '==', tenantDoc.id)
-        .orderBy('dueDate', 'desc')
-        .limit(20)
-        .get();
-    } catch (error: any) {
-      if (error.code === 9 || (error.message ?? '').includes('indexes')) {
-        functions.logger.warn('Missing index for portal payment query. Falling back to unordered query.', error);
-        paymentsSnapshot = await paymentsCollection
-          .where('tenantId', '==', tenantDoc.id)
-          .limit(20)
-          .get();
-      } else {
-        throw error;
+      const insuranceSnap = await facilityRef.collection('settings').doc('insurance').get();
+      if (insuranceSnap.exists) {
+        const ins = insuranceSnap.data() as Record<string, any> | undefined;
+        const u = (ins?.referralUrl ?? '').toString().trim();
+        const n = (ins?.referralName ?? '').toString().trim();
+        const note = (ins?.referralNotes ?? '').toString().trim();
+        insuranceReferral = {
+          referralUrl: u.length ? u : null,
+          referralName: n.length ? n : null,
+          referralNotes: note.length ? note : null,
+        };
       }
+    } catch (insErr: unknown) {
+      functions.logger.warn('tenantPortalFetch: insurance settings read failed', insErr);
     }
 
-    let outstandingBalance = 0;
-    let nextDueDate: admin.firestore.Timestamp | null = null;
-    let nextAmountDue: number | null = null;
+    const allMatchingDocs = tenantSnapshot.docs.filter((d) => d.ref.parent.parent?.id === facilityRef.id);
+    const portalAccountId = (primaryTenantData.portalAccountId || '').toString().trim();
 
-    const payments = paymentsSnapshot.docs.map((doc) => {
+    let linkedTenantDocs = allMatchingDocs;
+    if (portalAccountId) {
+      try {
+        const linkedSnapshot = await facilityRef
+          .collection('tenants')
+          .where('portalAccountId', '==', portalAccountId)
+          .get();
+        if (!linkedSnapshot.empty) {
+          linkedTenantDocs = linkedSnapshot.docs.filter((d) => {
+            const t = d.data() as Record<string, any>;
+            return t.portalEnabled === true;
+          });
+        }
+      } catch (linkedErr: unknown) {
+        functions.logger.warn('tenantPortalFetch: linked tenant query failed, falling back to matched docs', linkedErr);
+      }
+    }
+    if (!linkedTenantDocs.some((d) => d.id === primaryTenantDoc.id)) {
+      linkedTenantDocs = [primaryTenantDoc, ...linkedTenantDocs];
+    }
+
+    const tenantIdToUnit = new Map<string, string>();
+    const unitSummaries = linkedTenantDocs.map((doc) => {
+      const t = doc.data() as Record<string, any>;
+      const unitNumber = (t.unitNumber ?? '').toString();
+      tenantIdToUnit.set(doc.id, unitNumber);
+      return {
+        tenantId: doc.id,
+        tenantName: (t.name ?? 'Tenant').toString(),
+        unitNumber,
+        monthlyRate: Number(t.monthlyRate ?? 0) || 0,
+        autopay: (t.autopay as Record<string, unknown> | undefined) ?? { requested: false, enabled: false, status: 'OFF', updatedBy: 'SYSTEM', updatedAt: null },
+        stripe: (t.stripe as Record<string, unknown> | undefined) ?? { customerId: null, defaultPaymentMethodId: null, paymentMethodSummary: null },
+      };
+    });
+
+    const tenantIds = linkedTenantDocs.map((d) => d.id);
+    const paymentsCollection = facilityRef.collection('payments');
+    const paymentDocs: admin.firestore.QueryDocumentSnapshot[] = [];
+    for (let i = 0; i < tenantIds.length; i += 10) {
+      const chunk = tenantIds.slice(i, i + 10);
+      if (chunk.length === 0) continue;
+      const snap = await paymentsCollection.where('tenantId', 'in', chunk).limit(100).get();
+      paymentDocs.push(...snap.docs);
+    }
+
+    const perTenantStats = new Map<string, { outstandingBalance: number; nextDueDate: admin.firestore.Timestamp | null; nextAmountDue: number | null }>();
+    for (const tenantId of tenantIds) {
+      perTenantStats.set(tenantId, {
+        outstandingBalance: 0,
+        nextDueDate: null,
+        nextAmountDue: null,
+      });
+    }
+
+    const mappedPayments = paymentDocs.map((doc) => {
       const paymentData = doc.data() as Record<string, any>;
       const amountRaw = paymentData.amount ?? 0;
       const amount = typeof amountRaw === 'number' ? amountRaw : Number(amountRaw) || 0;
@@ -3127,18 +3182,22 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       const paidAtRaw = paymentData.paidAt;
       const paidAt = paidAtRaw instanceof admin.firestore.Timestamp ? paidAtRaw : null;
       const method = paymentData.method ? String(paymentData.method) : null;
+      const paymentTenantId = (paymentData.tenantId ?? '').toString();
 
       const isPaid = status === 'paid' || status === 'completed';
-      if (!isPaid) {
-        outstandingBalance += amount;
-        if (!nextDueDate || dueDate.toMillis() < nextDueDate.toMillis()) {
-          nextDueDate = dueDate;
-          nextAmountDue = amount;
+      if (!isPaid && perTenantStats.has(paymentTenantId)) {
+        const stat = perTenantStats.get(paymentTenantId)!;
+        stat.outstandingBalance += amount;
+        if (!stat.nextDueDate || dueDate.toMillis() < stat.nextDueDate.toMillis()) {
+          stat.nextDueDate = dueDate;
+          stat.nextAmountDue = amount;
         }
       }
 
       return {
         id: doc.id,
+        tenantId: paymentTenantId,
+        unitNumber: tenantIdToUnit.get(paymentTenantId) ?? null,
         amount,
         status,
         dueDate,
@@ -3147,15 +3206,45 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       };
     });
 
-    await tenantDoc.ref.update({
+    const units = unitSummaries.map((unit) => {
+      const stat = perTenantStats.get(unit.tenantId) ?? {
+        outstandingBalance: 0,
+        nextDueDate: null,
+        nextAmountDue: null,
+      };
+      return {
+        ...unit,
+        outstandingBalance: stat.outstandingBalance,
+        nextAmountDue: stat.nextAmountDue,
+        nextDueDate: stat.nextDueDate,
+        isDelinquent: stat.outstandingBalance > 0,
+      };
+    });
+
+    let outstandingBalance = 0;
+    let nextDueDate: admin.firestore.Timestamp | null = null;
+    let nextAmountDue: number | null = null;
+    for (const unit of units) {
+      outstandingBalance += unit.outstandingBalance;
+      if (unit.nextDueDate && (!nextDueDate || unit.nextDueDate.toMillis() < nextDueDate.toMillis())) {
+        nextDueDate = unit.nextDueDate;
+        nextAmountDue = unit.nextAmountDue;
+      }
+    }
+
+    const payments = mappedPayments
+      .sort((a, b) => b.dueDate.toMillis() - a.dueDate.toMillis())
+      .slice(0, 20);
+
+    await primaryTenantDoc.ref.update({
       portalLastAccessAt: admin.firestore.FieldValue.serverTimestamp(),
       portalVisitCount: admin.firestore.FieldValue.increment(1),
     });
 
     const facilityData = facilityDoc.data() as Record<string, any> | undefined;
     const stripeStatus = facilityData?.stripeStatus as { state?: string } | undefined;
-    const autopay = tenantData.autopay as Record<string, unknown> | undefined;
-    const stripe = tenantData.stripe as Record<string, unknown> | undefined;
+    const autopay = primaryTenantData.autopay as Record<string, unknown> | undefined;
+    const stripe = primaryTenantData.stripe as Record<string, unknown> | undefined;
 
     return {
       facility: {
@@ -3166,23 +3255,25 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
         address: facilityData?.address ?? null,
         logoUrl: facilityData?.logoUrl ?? null,
         stripeStatus: stripeStatus ?? { state: 'DISCONNECTED' },
+        insuranceReferral,
       },
       tenant: {
-        id: tenantDoc.id,
-        name: tenantData.name ?? 'Tenant',
-        email: tenantData.email ?? null,
-        phone: tenantData.phone ?? null,
-        unitNumber: tenantData.unitNumber ?? '',
-        monthlyRate: tenantData.monthlyRate ?? 0,
-        paidThrough: tenantData.paidThrough ?? null,
-        isDelinquent: outstandingBalance > 0,
-        welcomeMessage: tenantData.portalWelcomeMessage ?? null,
-        contacts: tenantData.emergencyContacts ?? [],
-        vehicles: tenantData.vehicles ?? [],
+        id: primaryTenantDoc.id,
+        name: primaryTenantData.name ?? 'Tenant',
+        email: primaryTenantData.email ?? null,
+        phone: primaryTenantData.phone ?? null,
+        unitNumber: primaryTenantData.unitNumber ?? '',
+        monthlyRate: primaryTenantData.monthlyRate ?? 0,
+        paidThrough: primaryTenantData.paidThrough ?? null,
+        isDelinquent: units.some((u) => u.isDelinquent === true),
+        welcomeMessage: primaryTenantData.portalWelcomeMessage ?? null,
+        contacts: primaryTenantData.emergencyContacts ?? [],
+        vehicles: primaryTenantData.vehicles ?? [],
         autopay: autopay ?? { requested: false, enabled: false, status: 'OFF', updatedBy: 'SYSTEM', updatedAt: null },
         stripe: stripe ?? { customerId: null, defaultPaymentMethodId: null, paymentMethodSummary: null },
-        overlockIsActive: tenantData.overlockIsActive === true,
+        overlockIsActive: primaryTenantData.overlockIsActive === true,
       },
+      units,
       payments,
       stats: {
         outstandingBalance,
@@ -3301,6 +3392,7 @@ export const tenantUpdateProfile = functions.https.onCall(async (data: any) => {
 export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
+  const requestedTenantId = (data.tenantId || '').toString().trim();
   const amount = data.amount as number;
 
   if (!email || !accessCode || !amount || amount <= 0) {
@@ -3322,8 +3414,9 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
       throw new functions.https.HttpsError('not-found', 'Portal access not found');
     }
 
-    const tenantDoc = tenantSnapshot.docs[0];
-    const facilityRef = tenantDoc.ref.parent.parent;
+    const authTenantDoc = tenantSnapshot.docs[0];
+    const authTenantData = authTenantDoc.data() as Record<string, any>;
+    const facilityRef = authTenantDoc.ref.parent.parent;
 
     if (!facilityRef) {
       throw new functions.https.HttpsError('failed-precondition', 'Facility reference missing');
@@ -3335,9 +3428,31 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
     }
 
     const facilityId = facilityRef.id;
-    const tenantId = tenantDoc.id;
+    const portalAccountId = (authTenantData.portalAccountId || '').toString().trim();
+    let tenantId = authTenantDoc.id;
+    let tenantData = authTenantData;
+    if (requestedTenantId && requestedTenantId !== authTenantDoc.id) {
+      const requestedRef = facilityRef.collection('tenants').doc(requestedTenantId);
+      const requestedSnap = await requestedRef.get();
+      if (!requestedSnap.exists) {
+        throw new functions.https.HttpsError('not-found', 'Requested tenant account not found');
+      }
+      const requestedData = requestedSnap.data() as Record<string, any>;
+      const requestedPortalAccountId = (requestedData.portalAccountId || '').toString().trim();
+      const sameAccount = portalAccountId && requestedPortalAccountId
+        ? requestedPortalAccountId === portalAccountId
+        : (
+          requestedData.emailLower === email &&
+          requestedData.portalEnabled === true &&
+          requestedData.portalAccessCode === accessCode
+        );
+      if (!sameAccount) {
+        throw new functions.https.HttpsError('permission-denied', 'Requested unit is not linked to this portal account');
+      }
+      tenantId = requestedSnap.id;
+      tenantData = requestedData;
+    }
     const facilityData = facilityDoc.data()!;
-    const tenantData = tenantDoc.data()!;
 
     // Log portal access audit event
     await writeAuditLog(facilityId, {
@@ -3391,6 +3506,7 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,
+        unitNumber: (tenantData['unitNumber'] || '').toString(),
         type: 'tenant_portal_payment',
         portalEmail: email,
       },
@@ -7827,6 +7943,139 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
 });
 
 /**
+ * Creates a reservation hold for a logged-in tenant-portal user renting an additional unit.
+ * Authenticates via tenant portal email + access code and stamps trusted linking metadata.
+ */
+export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async (data: any) => {
+  const email = (data?.email || '').toString().trim().toLowerCase();
+  const accessCode = (data?.accessCode || '').toString().trim();
+  const facilityId = (data?.facilityId || '').toString().trim();
+  const unitId = (data?.unitId || '').toString().trim();
+  const unitNumber = (data?.unitNumber || '').toString().trim();
+  const moveInDate = data?.moveInDate;
+  const holdMinutesRaw = Number(data?.holdMinutes);
+  const holdMinutes = Math.max(1, Math.min(Number.isFinite(holdMinutesRaw) ? holdMinutesRaw : 10, 60));
+
+  if (!email || !accessCode || !facilityId || !unitId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'email, accessCode, facilityId, and unitId are required',
+    );
+  }
+
+  // Authenticate against tenant portal credentials.
+  const tenantSnapshot = await admin
+    .firestore()
+    .collectionGroup('tenants')
+    .where('emailLower', '==', email)
+    .where('portalEnabled', '==', true)
+    .where('portalAccessCode', '==', accessCode)
+    .limit(1)
+    .get();
+
+  if (tenantSnapshot.empty) {
+    throw new functions.https.HttpsError('not-found', 'Portal access not found');
+  }
+
+  const sourceTenantDoc = tenantSnapshot.docs[0];
+  const sourceTenantData = sourceTenantDoc.data() as Record<string, any>;
+  const sourceFacilityRef = sourceTenantDoc.ref.parent.parent;
+  if (!sourceFacilityRef || sourceFacilityRef.id !== facilityId) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Unit facility does not match this portal account',
+    );
+  }
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + holdMinutes * 60 * 1000);
+  const moveInToken = crypto.randomBytes(24).toString('hex');
+  const portalAccountId = (sourceTenantData.portalAccountId || '').toString().trim() || sourceTenantDoc.id;
+
+  const unitRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units')
+    .doc(unitId);
+  const holdRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('mapEngine')
+    .doc('activeHolds')
+    .collection('items')
+    .doc(unitId);
+  const reservationRef = admin.firestore().collection('publicReservations').doc();
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const unitSnap = await tx.get(unitRef);
+    if (!unitSnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Unit not found');
+    }
+    const unitData = unitSnap.data() as Record<string, any>;
+    const unitStatus = String(unitData.status || '').toLowerCase();
+    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+
+    const holdSnap = await tx.get(holdRef);
+    if (holdSnap.exists) {
+      const holdData = holdSnap.data() as Record<string, any>;
+      const holdExpiresAt = holdData.expiresAt as admin.firestore.Timestamp | undefined;
+      if (holdExpiresAt && holdExpiresAt.toDate() > now) {
+        throw new functions.https.HttpsError('already-exists', 'Unit is currently in checkout');
+      }
+    }
+
+    tx.set(reservationRef, {
+      facilityId,
+      unitId,
+      unitNumber: unitNumber || unitData.unitNumber || '',
+      email,
+      phone: sourceTenantData.phone ? String(sourceTenantData.phone).trim() : null,
+      name: sourceTenantData.name ? String(sourceTenantData.name).trim() : null,
+      status: 'pending',
+      reservedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      moveInDate: moveInDate ? admin.firestore.Timestamp.fromDate(new Date(moveInDate)) : null,
+      moveInToken,
+      metadata: {
+        holdType: 'checkout',
+        holdMinutes,
+        source: 'tenant_portal_additional_unit',
+        portalTenantId: sourceTenantDoc.id,
+        portalAccountId,
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    tx.set(holdRef, {
+      facilityId,
+      unitId,
+      reservationId: reservationRef.id,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if (!sourceTenantData.portalAccountId) {
+      tx.update(sourceTenantDoc.ref, {
+        portalAccountId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  });
+
+  return {
+    success: true,
+    reservationId: reservationRef.id,
+    moveInToken,
+    expiresAt: expiresAt.toISOString(),
+  };
+});
+
+/**
  * Create Stripe Checkout for public move-in payment (no auth; token-gated).
  */
 export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
@@ -8202,6 +8451,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const unitId = reservation.unitId as string | undefined;
   const unitNumber = (reservation.unitNumber as string | undefined) || 'Unassigned';
   const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
+  const reservationSource = String(reservationMetadata.source || '').trim();
+  const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
   const moveInDate = (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
 
   if (!facilityId) {
@@ -8290,6 +8541,52 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const facilitySnap = await tx.get(facilityDocRef);
     const facilityOwnerUid = (facilitySnap.data() as Record<string, any> | undefined)?.ownerUid || 'publicMoveIn';
 
+    // If this move-in originated from tenant portal, link the new tenant record
+    // to the same portal account identity as the source tenant.
+    let linkedPortalFields: Record<string, any> = {
+      portalEnabled: false,
+      portalAccessCode: null,
+      portalWelcomeMessage: null,
+      portalLastAccessAt: null,
+      portalVisitCount: 0,
+      portalAccountId: null,
+      primaryPortalTenant: false,
+    };
+    if (reservationSource === 'tenant_portal_additional_unit' && portalSourceTenantId) {
+      const sourceTenantRef = facilityDocRef.collection('tenants').doc(portalSourceTenantId);
+      const sourceTenantSnap = await tx.get(sourceTenantRef);
+      if (sourceTenantSnap.exists) {
+        const sourceTenantData = sourceTenantSnap.data() as Record<string, any>;
+        const sourceEmailLower = (sourceTenantData.emailLower || '').toString().trim().toLowerCase();
+        const sourcePortalEnabled = sourceTenantData.portalEnabled === true;
+        if (!sourcePortalEnabled || sourceEmailLower !== normalizedEmail) {
+          throw new functions.https.HttpsError(
+            'permission-denied',
+            'Portal-linked move-in validation failed',
+          );
+        }
+        const sourceAccessCode = (sourceTenantData.portalAccessCode || '').toString().trim();
+        const sourcePortalAccountId = (sourceTenantData.portalAccountId || '').toString().trim();
+        const resolvedPortalAccountId = sourcePortalAccountId || portalSourceTenantId;
+        linkedPortalFields = {
+          portalEnabled: true,
+          portalAccessCode: sourceAccessCode.length > 0 ? sourceAccessCode : null,
+          portalWelcomeMessage: sourceTenantData.portalWelcomeMessage ?? null,
+          portalLastAccessAt: null,
+          portalVisitCount: 0,
+          portalAccountId: resolvedPortalAccountId,
+          primaryPortalTenant: false,
+        };
+        // Backfill account id on the source tenant when missing so subsequent fetches link both.
+        if (!sourcePortalAccountId) {
+          tx.update(sourceTenantRef, {
+            portalAccountId: resolvedPortalAccountId,
+            updatedAt: nowTs,
+          });
+        }
+      }
+    }
+
     // Create tenant
     const tenantRef = admin.firestore()
       .collection('facilities')
@@ -8341,11 +8638,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
             notes: '',
           }]
         : [],
-      portalEnabled: false,
-      portalAccessCode: null,
-      portalWelcomeMessage: null,
-      portalLastAccessAt: null,
-      portalVisitCount: 0,
+      ...linkedPortalFields,
       ...(enrollAutopay
         ? {
           autopay: {
@@ -15468,7 +15761,7 @@ export const restoreFacilitySmsForPhone = functions.https.onCall(
       const n = formatPhoneNumber(String(entry));
       return n !== normalizedPhone && String(entry).trim() !== normalizedPhone && String(entry).trim() !== phoneRaw;
     });
-    let removedFromBlockList = newBlockList.length < blockList.length;
+    const removedFromBlockList = newBlockList.length < blockList.length;
     if (removedFromBlockList) {
       await facilityRef.update({
         'smsSettings.blockList': newBlockList,

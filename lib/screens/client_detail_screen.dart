@@ -2673,7 +2673,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                   labelText: 'Provider Name (optional)',
                   border: OutlineInputBorder(),
                   isDense: true,
-                  hintText: 'e.g. StorSmart Insurance',
+                  hintText: 'e.g. Example Insurance',
                 ),
               ),
             ],

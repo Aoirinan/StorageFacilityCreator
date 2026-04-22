@@ -297,7 +297,7 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
             TextField(
               controller: _referralNameController,
               decoration: const InputDecoration(
-                labelText: 'Provider Name (e.g. "StorSmart Insurance")',
+                labelText: 'Provider Name (e.g. "Example Insurance")',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),

@@ -38,6 +38,7 @@ import 'package:flutter/rendering.dart';
 import '../utils/error_message_helper.dart';
 import 'package:sfcapp/utils/map_export_stub.dart' if (dart.library.html) 'package:sfcapp/utils/map_export_web.dart' as map_export;
 import 'dart:async' show unawaited;
+import 'dart:math' as math;
 
 /// Provider for map shapes stream (scoped by facilityId)
 final facilityMapShapesProvider = StreamProvider.family<List<MapShapeModel>, String>((ref, facilityId) {
@@ -89,9 +90,11 @@ int compareUnitNumbersNatural(String a, String b) {
   return pa.length.compareTo(pb.length);
 }
 
-/// Clipboard for copy/paste of unassigned map shapes (geometry only; no unit link).
-class _UnassignedMapShapeClipboard {
-  const _UnassignedMapShapeClipboard({
+/// One unassigned map block on the clipboard (geometry + position relative to group origin).
+class _ClipboardShapeItem {
+  const _ClipboardShapeItem({
+    required this.relX,
+    required this.relY,
     required this.type,
     required this.width,
     required this.height,
@@ -100,6 +103,8 @@ class _UnassignedMapShapeClipboard {
     this.metadata,
   });
 
+  final double relX;
+  final double relY;
   final String type;
   final double width;
   final double height;
@@ -162,6 +167,14 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   Set<String> _selectedUnitIds = {}; // For bulk operations
   Set<MapLayerType> _visibleLayers = {MapLayerType.units}; // Visible layers
   bool _isBulkSelectMode = false; // Toggle for bulk selection mode
+  /// Shape IDs in multi-selection (bulk mode taps and Ctrl/Cmd+click). Kept when bulk mode is toggled off.
+  final Set<String> _bulkSelectedShapeIds = {};
+  /// During drag, when non-null, all listed shapes use the same [_dragOffset] preview and move together on commit.
+  Set<String>? _bulkDragActiveIds;
+  /// True after pointer moved during the current shape drag (avoids bulk onTap toggling right after a drag).
+  bool _mapPointerDragMoved = false;
+  /// After Ctrl/Cmd+click multi-select, skip the next primary tap so [GestureDetector.onTap] does not clear the set.
+  bool _suppressNextShapePrimaryTap = false;
   double? _lastCanvasMinX;
   double? _lastCanvasMinY;
   double? _lastCanvasWidth;
@@ -172,8 +185,10 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   bool _isSeedingBottomRow = false;
   bool _isDeletingAllShapes = false;
   bool _isDuplicatingRow = false;
+  /// When true, blocks cannot be dragged, resized, or nudged with arrow keys (prevents accidental moves).
+  bool _mapPositionsLocked = false;
   final FocusNode _mapKeyboardFocus = FocusNode(debugLabel: 'mapEditorKeyboard');
-  _UnassignedMapShapeClipboard? _clipboardUnassigned;
+  List<_ClipboardShapeItem>? _clipboardUnassignedItems;
 
   /// When true, [InteractiveViewer] pan/scale are off so shape drags/resizes are not
   /// stolen by the viewport (sync updates — avoids waiting for [setState]).
@@ -229,21 +244,23 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         _deleteSelectedShape();
         return KeyEventResult.handled;
       }
-      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-        _nudgeShape(-_gridSize, 0);
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-        _nudgeShape(_gridSize, 0);
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        _nudgeShape(0, -_gridSize);
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-        _nudgeShape(0, _gridSize);
-        return KeyEventResult.handled;
+      if (!_mapPositionsLocked) {
+        if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+          _nudgeShape(-_gridSize, 0);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+          _nudgeShape(_gridSize, 0);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+          _nudgeShape(0, -_gridSize);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+          _nudgeShape(0, _gridSize);
+          return KeyEventResult.handled;
+        }
       }
     }
     return KeyEventResult.ignored;
@@ -251,37 +268,95 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
 
   void _copySelectedUnassignedToClipboard() {
     final shapes = ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value;
-    final selectedId = _selectedShapeId;
-    if (shapes == null || selectedId == null) return;
-    final shape = shapes.where((s) => s.id == selectedId).firstOrNull;
-    if (shape == null) return;
-    if (shape.unitId != null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Only unassigned map blocks can be copied to the clipboard'),
-            duration: Duration(seconds: 2),
-          ),
-        );
+    if (shapes == null) return;
+
+    final List<MapShapeModel> toCopy;
+    // Copy every unassigned shape in the bulk set whenever the set is non-empty,
+    // even if bulk mode was toggled off (selection is preserved for Ctrl+C / paste).
+    if (_bulkSelectedShapeIds.isNotEmpty) {
+      toCopy = shapes
+          .where((s) => _bulkSelectedShapeIds.contains(s.id) && s.unitId == null)
+          .toList();
+      if (toCopy.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No unassigned blocks in the selection. Only grey “unassigned” blocks can be copied.',
+              ),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
       }
-      return;
+    } else {
+      final selectedId = _selectedShapeId;
+      if (selectedId == null) return;
+      final shape = shapes.where((s) => s.id == selectedId).firstOrNull;
+      if (shape == null) return;
+      if (shape.unitId != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Only unassigned map blocks can be copied to the clipboard'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+      toCopy = [shape];
     }
-    final meta = shape.metadata;
+
+    var minX = toCopy.first.x;
+    var minY = toCopy.first.y;
+    for (final s in toCopy) {
+      minX = math.min(minX, s.x);
+      minY = math.min(minY, s.y);
+    }
+
+    final items = toCopy
+        .map(
+          (s) => _ClipboardShapeItem(
+            relX: s.x - minX,
+            relY: s.y - minY,
+            type: s.type,
+            width: s.width,
+            height: s.height,
+            rotation: s.rotation,
+            zIndex: s.zIndex,
+            metadata: s.metadata != null ? Map<String, dynamic>.from(s.metadata!) : null,
+          ),
+        )
+        .toList()
+      ..sort((a, b) {
+        final c = a.relY.compareTo(b.relY);
+        if (c != 0) return c;
+        return a.relX.compareTo(b.relX);
+      });
+
     setState(() {
-      _clipboardUnassigned = _UnassignedMapShapeClipboard(
-        type: shape.type,
-        width: shape.width,
-        height: shape.height,
-        rotation: shape.rotation,
-        zIndex: shape.zIndex,
-        metadata: meta != null ? Map<String, dynamic>.from(meta) : null,
-      );
+      _clipboardUnassignedItems = items;
     });
     if (mounted) {
+      final skipped = _bulkSelectedShapeIds.isNotEmpty
+          ? (_bulkSelectedShapeIds.length - items.length)
+          : 0;
+      final tail = ' — paste with Ctrl+V (⌘V on Mac)';
+      final String body;
+      if (skipped > 0) {
+        body =
+            'Copied ${items.length} unassigned block(s); skipped $skipped linked to units$tail';
+      } else if (items.length == 1) {
+        body = 'Copied 1 block$tail';
+      } else {
+        body = 'Copied ${items.length} blocks$tail';
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Copied — paste with Ctrl+V (⌘V on Mac)'),
-          duration: Duration(seconds: 1),
+        SnackBar(
+          content: Text(body),
+          duration: const Duration(seconds: 2),
         ),
       );
     }
@@ -323,34 +398,72 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   Future<void> _pasteUnassignedFromClipboard() async {
-    final clip = _clipboardUnassigned;
-    if (clip == null) return;
+    final items = _clipboardUnassignedItems;
+    if (items == null || items.isEmpty) return;
 
     final shapes =
         ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value ?? const <MapShapeModel>[];
-    final pos = _pastePlacementForSize(shapes, clip.width, clip.height);
+    final groupW = items.map((e) => e.relX + e.width).reduce(math.max);
+    final groupH = items.map((e) => e.relY + e.height).reduce(math.max);
+    final origin = _pastePlacementForSize(shapes, groupW, groupH);
 
+    int currentCount;
     try {
-      final createdId = await MapLayoutService.createMapShape(
-        facilityId: widget.facilityId,
-        type: clip.type,
-        x: pos.dx,
-        y: pos.dy,
-        width: clip.width,
-        height: clip.height,
-        rotation: clip.rotation,
-        zIndex: clip.zIndex + 1,
-        metadata: clip.metadata,
-      );
+      currentCount = await FacilityLimitsService.getMapShapeCount(widget.facilityId);
+    } catch (_) {
+      currentCount = shapes.length;
+    }
+    final remainingSlots = math.max(
+      0,
+      FacilityLimitsService.maxMapShapesPerFacility - currentCount,
+    );
+    final toCreate = math.min(items.length, remainingSlots);
+    if (toCreate <= 0) {
       if (mounted) {
-        setState(() {
-          _pendingFocusShapeId = createdId;
-          _selectedShapeId = createdId;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Pasted unassigned block'),
-            duration: Duration(seconds: 1),
+          SnackBar(
+            content: Text(
+              'Map shape limit reached (${FacilityLimitsService.maxMapShapesPerFacility} max).',
+            ),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+      return;
+    }
+
+    String? lastId;
+    try {
+      for (var i = 0; i < toCreate; i++) {
+        final item = items[i];
+        final x = _snapToGridValue(origin.dx + item.relX);
+        final y = _snapToGridValue(origin.dy + item.relY);
+        lastId = await MapLayoutService.createMapShape(
+          facilityId: widget.facilityId,
+          type: item.type,
+          x: x,
+          y: y,
+          width: item.width,
+          height: item.height,
+          rotation: item.rotation,
+          zIndex: item.zIndex + i + 1,
+          metadata: item.metadata,
+        );
+      }
+      if (mounted && lastId != null) {
+        setState(() {
+          _pendingFocusShapeId = lastId;
+          _selectedShapeId = lastId;
+        });
+        final msg = toCreate < items.length
+            ? 'Pasted $toCreate of ${items.length} blocks (map limit)'
+            : toCreate == 1
+                ? 'Pasted 1 block'
+                : 'Pasted $toCreate blocks';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -385,13 +498,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _draggingShapeId = null;
       _dragOffset = null;
       _selectedUnitIds.clear();
+      _bulkSelectedShapeIds.clear();
+      _bulkDragActiveIds = null;
       _isResizing = false;
       _viewerPointerLock.value = false;
       _resizePointerId = null;
       _transformationController.value = Matrix4.identity();
       _didAutoSeedBottomRow = false;
       _isSeedingBottomRow = false;
-      _clipboardUnassigned = null;
+      _clipboardUnassignedItems = null;
+      _mapPositionsLocked = false;
     }
   }
 
@@ -402,10 +518,99 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     setState(() {
       _dragOffset = null;
       _draggingShapeId = null;
+      _bulkDragActiveIds = null;
       _isResizing = false;
       _activeResizeShape = null;
       _shapePointerActive = false;
     });
+  }
+
+  Future<void> _commitShapeDragEnd(MapShapeModel shape) async {
+    if (_draggingShapeId != shape.id || _dragOffset == null || _isResizing) {
+      _clearDragState();
+      return;
+    }
+    final dx = _dragOffset!.dx;
+    final dy = _dragOffset!.dy;
+    if (dx.abs() < 0.5 && dy.abs() < 0.5) {
+      _clearDragState();
+      return;
+    }
+
+    final bulk = _bulkDragActiveIds;
+    if (bulk != null && bulk.isNotEmpty) {
+      var shapesList =
+          ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value;
+      shapesList ??= await MapLayoutService.getMapShapes(widget.facilityId);
+      if (!mounted) {
+        _clearDragState();
+        return;
+      }
+      final batch = <MapShapeModel>[];
+      for (final id in bulk) {
+        final s = shapesList.where((x) => x.id == id).firstOrNull;
+        if (s == null) continue;
+        var nx = (s.x + dx).clamp(0.0, double.infinity);
+        var ny = (s.y + dy).clamp(0.0, double.infinity);
+        if (_snapToGrid) {
+          nx = _snapToGridValue(nx);
+          ny = _snapToGridValue(ny);
+        }
+        batch.add(s.copyWith(x: nx, y: ny));
+      }
+      if (batch.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not resolve selected shapes to move. Try again.'),
+              backgroundColor: AppTheme.warning,
+            ),
+          );
+        }
+        _clearDragState();
+        return;
+      }
+      try {
+        await MapLayoutService.batchUpdateShapes(
+          facilityId: widget.facilityId,
+          shapes: batch,
+        );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Could not move selection: $e'),
+              backgroundColor: AppTheme.error,
+            ),
+          );
+        }
+      }
+      _clearDragState();
+      return;
+    }
+
+    final newX = (shape.x + dx).clamp(0.0, double.infinity);
+    final newY = (shape.y + dy).clamp(0.0, double.infinity);
+    final snappedX = _snapToGrid ? _snapToGridValue(newX) : newX;
+    final snappedY = _snapToGrid ? _snapToGridValue(newY) : newY;
+    try {
+      await MapLayoutService.updateMapShape(
+        facilityId: widget.facilityId,
+        shapeId: shape.id,
+        x: snappedX.clamp(0.0, double.infinity),
+        y: snappedY.clamp(0.0, double.infinity),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not move shape: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    }
+    _clearDragState();
   }
 
   void _nudgeShape(double deltaX, double deltaY) {
@@ -515,13 +720,30 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     return box.size;
   }
 
-  void _focusShapeOnCanvas(MapShapeModel shape, {int attempt = 0}) {
+  /// Centers the map on [shape] in [InteractiveViewer] child space.
+  ///
+  /// Shapes are laid out at `(shape.x - canvasMinX, shape.y - canvasMinY)` in the
+  /// canvas Stack; using raw world coords here previously panned to the wrong place
+  /// (often the empty top-right) whenever the canvas origin was not (0,0).
+  ///
+  /// [canvasMinX]/[canvasMinY] must match the offsets passed to [_buildShape] for this frame.
+  void _focusShapeOnCanvas(
+    MapShapeModel shape, {
+    int attempt = 0,
+    double canvasMinX = 0,
+    double canvasMinY = 0,
+  }) {
     final vs = _interactiveViewerViewportSize();
     if (vs.width <= 0 || vs.height <= 0) {
       if (attempt < 12) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!_isDisposed && mounted) {
-            _focusShapeOnCanvas(shape, attempt: attempt + 1);
+            _focusShapeOnCanvas(
+              shape,
+              attempt: attempt + 1,
+              canvasMinX: canvasMinX,
+              canvasMinY: canvasMinY,
+            );
           }
         });
         return;
@@ -539,13 +761,22 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       return;
     }
 
-    final centerX = shape.x + shape.width / 2;
-    final centerY = shape.y + shape.height / 2;
-    const scale = 1.4;
+    final childCenterX = shape.x - canvasMinX + shape.width / 2;
+    final childCenterY = shape.y - canvasMinY + shape.height / 2;
+    final prev = _transformationController.value;
+    var scale = prev.getMaxScaleOnAxis();
+    if (!scale.isFinite || scale < 0.02) {
+      scale = 1.4;
+    } else if (scale > 4.0) {
+      scale = 4.0;
+    }
     final vw = vs.width;
     final vh = vs.height;
     _transformationController.value = Matrix4.identity()
-      ..translate(-(centerX * scale) + (vw / 2), -(centerY * scale) + (vh / 2))
+      ..translate(
+        -(childCenterX * scale) + (vw / 2),
+        -(childCenterY * scale) + (vh / 2),
+      )
       ..scale(scale);
     setState(() {
       _selectedShapeId = shape.id;
@@ -553,13 +784,49 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     });
   }
 
-  void _selectShape(String? shapeId) {
+  void _selectShape(String? shapeId, {bool keepMultiSelect = false}) {
     _mapKeyboardFocus.requestFocus();
     setState(() {
       _selectedShapeId = shapeId;
+      if (shapeId == null) {
+        _bulkSelectedShapeIds.clear();
+        _selectedUnitIds.clear();
+      } else if (!keepMultiSelect && !_isBulkSelectMode) {
+        _bulkSelectedShapeIds.clear();
+        _selectedUnitIds.clear();
+      }
       _dragOffset = null;
     });
     ref.read(selectedMapShapeProvider.notifier).state = shapeId;
+  }
+
+  /// Starts a shape drag without clearing [_dragOffset] in a second [setState] (avoids gesture glitches on web).
+  void _beginShapePointerDrag(String shapeId, {required Set<String>? bulkDragIds}) {
+    _mapKeyboardFocus.requestFocus();
+    setState(() {
+      _selectedShapeId = shapeId;
+      _bulkDragActiveIds = bulkDragIds;
+      _draggingShapeId = shapeId;
+      _dragOffset = Offset.zero;
+      _isResizing = false;
+    });
+    ref.read(selectedMapShapeProvider.notifier).state = shapeId;
+  }
+
+  void _toggleBulkShapeSelection(MapShapeModel shape, UnitModel? unit) {
+    setState(() {
+      if (_bulkSelectedShapeIds.contains(shape.id)) {
+        _bulkSelectedShapeIds.remove(shape.id);
+        if (unit != null) {
+          _selectedUnitIds.remove(unit.id);
+        }
+      } else {
+        _bulkSelectedShapeIds.add(shape.id);
+        if (unit != null) {
+          _selectedUnitIds.add(unit.id);
+        }
+      }
+    });
   }
 
   double _snapToGridValue(double value) {
@@ -732,12 +999,14 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final count = shapes.length;
+    final firstOk = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('Delete all map shapes?'),
         content: Text(
-          'This removes all ${shapes.length} shapes from the map for this facility. '
+          'This will remove all $count shapes from the map for this facility. '
           'Your units and tenants are not deleted. This cannot be undone.',
         ),
         actions: [
@@ -745,10 +1014,41 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('Cancel'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
-            child: const Text('Delete all'),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: AppTheme.textOnDark,
+            ),
+            child: const Text('Continue…'),
+          ),
+        ],
+      ),
+    );
+
+    if (firstOk != true || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Are you sure?'),
+        content: Text(
+          'You are about to permanently delete all $count blocks from the map. '
+          'Only tap the button below if you meant to clear the entire map.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: AppTheme.textOnDark,
+            ),
+            child: const Text('Delete everything'),
           ),
         ],
       ),
@@ -1130,12 +1430,14 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               });
             },
           ),
-          if (_selectedUnitIds.isNotEmpty)
+          if (_bulkSelectedShapeIds.isNotEmpty)
             MapBulkActionsToolbar(
+              selectedBlockCount: _bulkSelectedShapeIds.length,
               selectedUnitIds: _selectedUnitIds.toList(),
               onClearSelection: () {
                 setState(() {
                   _selectedUnitIds.clear();
+                  _bulkSelectedShapeIds.clear();
                 });
               },
               onBulkStatusChange: _handleBulkStatusChange,
@@ -1273,14 +1575,38 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
           IconButton(
             onPressed: () {
               setState(() {
+                _mapPositionsLocked = !_mapPositionsLocked;
+              });
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      _mapPositionsLocked
+                          ? 'Positions locked — drag, resize, and arrow nudge are off until you unlock.'
+                          : 'Positions unlocked — you can move and resize blocks again.',
+                    ),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            icon: Icon(_mapPositionsLocked ? Icons.lock : Icons.lock_open),
+            tooltip: _mapPositionsLocked
+                ? 'Unlock positions (allow moving and resizing blocks)'
+                : 'Lock positions (prevent accidental moves; selection and map pan still work)',
+            color: _mapPositionsLocked ? cs.primary : cs.onSurfaceVariant,
+          ),
+          IconButton(
+            onPressed: () {
+              setState(() {
                 _isBulkSelectMode = !_isBulkSelectMode;
-                if (!_isBulkSelectMode) {
-                  _selectedUnitIds.clear();
-                }
+                // Keep the bulk set when turning bulk mode off so Ctrl+C still copies
+                // the whole group (users often toggle bulk off before pasting).
               });
             },
             icon: Icon(_isBulkSelectMode ? Icons.check_box : Icons.check_box_outline_blank),
-            tooltip: 'Bulk Select Mode',
+            tooltip:
+                'Bulk select: tap blocks to add/remove. Selection stays when you turn bulk off (Ctrl+C copies all). Ctrl/Cmd+click adds without bulk mode.',
             color: _isBulkSelectMode ? cs.primary : cs.onSurfaceVariant,
           ),
           PopupMenuButton<String>(
@@ -1391,7 +1717,11 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   void _zoomToShape(MapShapeModel shape) {
-    _focusShapeOnCanvas(shape);
+    _focusShapeOnCanvas(
+      shape,
+      canvasMinX: _lastCanvasMinX ?? 0,
+      canvasMinY: _lastCanvasMinY ?? 0,
+    );
   }
 
   Widget _buildCanvas(List<MapShapeModel> shapes, List<UnitModel> units) {
@@ -1408,17 +1738,6 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         });
       }
 
-      if (_pendingFocusShapeId != null) {
-        final pending = shapes.where((s) => s.id == _pendingFocusShapeId).firstOrNull;
-        if (pending != null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              _focusShapeOnCanvas(pending);
-            }
-          });
-        }
-      }
-      
       // Filter shapes based on status filters
       final filteredShapes = shapes.where((shape) {
         if (shape.unitId == null) return true; // Show unassigned shapes
@@ -1467,7 +1786,20 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _lastCanvasMinY = minY;
       _lastCanvasWidth = canvasWidth;
       _lastCanvasHeight = canvasHeight;
-      
+
+      if (_pendingFocusShapeId != null) {
+        final pending = shapes.where((s) => s.id == _pendingFocusShapeId).firstOrNull;
+        if (pending != null) {
+          final ox = minX;
+          final oy = minY;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _focusShapeOnCanvas(pending, canvasMinX: ox, canvasMinY: oy);
+            }
+          });
+        }
+      }
+
       print('[MapEditor] Canvas size: ${canvasWidth}x${canvasHeight}, offset: ($minX, $minY)');
 
       return ValueListenableBuilder<bool>(
@@ -1493,10 +1825,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
           // Handle clicks on empty canvas to deselect
           onTapDown: (details) {
             if (_isDisposed || !mounted) return;
-            if (_selectedShapeId != null && !_shapePointerActive) {
-              setState(() {
-                _selectedShapeId = null;
-              });
+            if (!_shapePointerActive) {
+              if (_selectedShapeId != null ||
+                  _bulkSelectedShapeIds.isNotEmpty ||
+                  _selectedUnitIds.isNotEmpty) {
+                _selectShape(null);
+                setState(() {
+                  _bulkSelectedShapeIds.clear();
+                  _selectedUnitIds.clear();
+                });
+              }
             }
             _mapKeyboardFocus.requestFocus();
           },
@@ -1590,14 +1928,18 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     final statusColor = unit != null
         ? (unit.isOverlocked ? AppTheme.error : _getUnitStatusColor(unit.status))
         : AppTheme.textTertiary;
-    final borderColor = isSelected ? AppTheme.primaryBlue : statusColor;
-    final borderWidth = isSelected ? 3.0 : 2.0;
+    final outlineBulk = _bulkSelectedShapeIds.contains(shape.id);
+    final borderColor =
+        outlineBulk ? AppTheme.warning : (isSelected ? AppTheme.primaryBlue : statusColor);
+    final borderWidth = (outlineBulk || isSelected) ? 3.0 : 2.0;
 
-    // Apply drag offset ONLY if this is the shape being dragged
-    final isDragging = shape.id == _draggingShapeId && _dragOffset != null;
+    final applyDragPreview = _dragOffset != null &&
+        !_isResizing &&
+        ((_bulkDragActiveIds != null && _bulkDragActiveIds!.contains(shape.id)) ||
+            (_bulkDragActiveIds == null && shape.id == _draggingShapeId));
     final dragOffset = _dragOffset ?? Offset.zero;
-    final displayX = (renderShape.x - canvasOffsetX) + (isDragging ? dragOffset.dx : 0);
-    final displayY = (renderShape.y - canvasOffsetY) + (isDragging ? dragOffset.dy : 0);
+    final displayX = (renderShape.x - canvasOffsetX) + (applyDragPreview ? dragOffset.dx : 0);
+    final displayY = (renderShape.y - canvasOffsetY) + (applyDragPreview ? dragOffset.dy : 0);
 
     return Positioned(
       left: displayX,
@@ -1619,16 +1961,18 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
               if (kDebugMode) {
                 debugPrint('[MapEditor] pointer down (shape) shape=${shape.id}');
               }
-              _selectShape(shape.id);
-              setState(() {
-                _draggingShapeId = shape.id;
-                _dragOffset = Offset.zero;
-                _isResizing = false;
-              });
+              _mapPointerDragMoved = false;
+              final useBulkDrag = _bulkSelectedShapeIds.length > 1 &&
+                  _bulkSelectedShapeIds.contains(shape.id);
+              final bulkIds =
+                  useBulkDrag ? Set<String>.from(_bulkSelectedShapeIds) : null;
+              _beginShapePointerDrag(shape.id, bulkDragIds: bulkIds);
             },
             onPointerMove: (event) {
               if (_isDisposed || !mounted) return;
+              if (_mapPositionsLocked) return;
               if (_draggingShapeId != shape.id || _isResizing) return;
+              _mapPointerDragMoved = true;
               final matrix = _transformationController.value;
               final scale = matrix.getMaxScaleOnAxis();
               setState(() {
@@ -1641,57 +1985,54 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             onPointerUp: (event) {
               if (_isDisposed || !mounted) return;
               _shapePointerActive = false;
-              if (_draggingShapeId != shape.id || _dragOffset == null || _isResizing) {
-                _clearDragState();
-                return;
+              // Bulk add/remove must run here: GestureDetector.onTap often does not fire on web
+              // after this Listener's pointer sequence (especially with InteractiveViewer).
+              if (_draggingShapeId == shape.id &&
+                  !_mapPointerDragMoved &&
+                  (_dragOffset == null ||
+                      (_dragOffset!.dx.abs() < 0.5 && _dragOffset!.dy.abs() < 0.5))) {
+                final hw = HardwareKeyboard.instance;
+                final primaryAdd = hw.isControlPressed || hw.isMetaPressed;
+                if (_isBulkSelectMode) {
+                  _toggleBulkShapeSelection(shape, unit);
+                  _clearDragState();
+                  return;
+                }
+                if (primaryAdd) {
+                  _toggleBulkShapeSelection(shape, unit);
+                  _selectShape(shape.id, keepMultiSelect: true);
+                  _suppressNextShapePrimaryTap = true;
+                  // Two frames: [GestureDetector.onTap] can arrive the frame after pointer-up on web.
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        setState(() => _suppressNextShapePrimaryTap = false);
+                      }
+                    });
+                  });
+                  _clearDragState();
+                  return;
+                }
               }
-              final dx = _dragOffset!.dx;
-              final dy = _dragOffset!.dy;
-              if (dx.abs() < 0.5 && dy.abs() < 0.5) {
-                _clearDragState();
-                return;
-              }
-              final newX = (shape.x + dx).clamp(0.0, double.infinity);
-              final newY = (shape.y + dy).clamp(0.0, double.infinity);
-              final snappedX = _snapToGrid
-                  ? _snapToGridValue(newX)
-                  : newX;
-              final snappedY = _snapToGrid
-                  ? _snapToGridValue(newY)
-                  : newY;
-              MapLayoutService.updateMapShape(
-                facilityId: widget.facilityId,
-                shapeId: shape.id,
-                x: snappedX.clamp(0.0, double.infinity),
-                y: snappedY.clamp(0.0, double.infinity),
-              );
-              _clearDragState();
+              unawaited(_commitShapeDragEnd(shape));
             },
             onPointerCancel: (_) {
               _shapePointerActive = false;
               _clearDragState();
             },
             child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
+              behavior: HitTestBehavior.translucent,
               onTap: () {
                 if (_isDisposed || !mounted) return;
-                if (_isBulkSelectMode && unit != null) {
-                  // Toggle unit selection in bulk mode
-                  setState(() {
-                    if (_selectedUnitIds.contains(unit.id)) {
-                      _selectedUnitIds.remove(unit.id);
-                    } else {
-                      _selectedUnitIds.add(unit.id);
-                    }
-                  });
-                } else {
-                  // Normal mode: select shape only (avoid disruptive navigation on single click)
+                if (_suppressNextShapePrimaryTap) return;
+                // Bulk selection is handled in Listener.onPointerUp (reliable on web).
+                if (!_isBulkSelectMode) {
                   _selectShape(shape.id);
                 }
               },
               onDoubleTap: () {
                 if (_isDisposed || !mounted) return;
-                _selectShape(shape.id);
+                _selectShape(shape.id, keepMultiSelect: _isBulkSelectMode);
                 if (unit != null) {
                   _showUnitDetails(unit);
                 } else {
@@ -1704,7 +2045,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 _showShapeActions(shape, unit);
               },
               child: MouseRegion(
-                cursor: SystemMouseCursors.move,
+                cursor: _mapPositionsLocked ? SystemMouseCursors.basic : SystemMouseCursors.move,
                 onEnter: (_) {
                   if (unit != null) {
                     setState(() {
@@ -1734,18 +2075,14 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                       decoration: BoxDecoration(
                         color: statusColor.withOpacity(0.2),
                         border: Border.all(
-                          color: _selectedUnitIds.contains(unit?.id)
-                              ? AppTheme.warning
-                              : borderColor,
-                          width: _selectedUnitIds.contains(unit?.id) ? 3.0 : borderWidth,
+                          color: borderColor,
+                          width: borderWidth,
                         ),
                         borderRadius: BorderRadius.circular(4),
-                        boxShadow: isSelected || _selectedUnitIds.contains(unit?.id)
+                        boxShadow: outlineBulk || isSelected
                             ? [
                                 BoxShadow(
-                                  color: (_selectedUnitIds.contains(unit?.id)
-                                          ? AppTheme.warning
-                                          : AppTheme.primaryBlue)
+                                  color: (outlineBulk ? AppTheme.warning : AppTheme.primaryBlue)
                                       .withOpacity(0.3),
                                   blurRadius: 8,
                                   spreadRadius: 2,
@@ -1843,7 +2180,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             ),
           ),
           // Keep handles mounted while resizing so the pan gesture is not torn down.
-          if (isSelected &&
+          if (!_mapPositionsLocked &&
+              isSelected &&
+              _bulkSelectedShapeIds.length <= 1 &&
               (_draggingShapeId == null ||
                   (_isResizing && _draggingShapeId == shape.id)))
             ..._buildResizeHandles(renderShape),
@@ -1915,6 +2254,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     final handle = Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: (e) {
+        if (_mapPositionsLocked) return;
         _viewerPointerLock.value = true;
         if (kDebugMode) {
           debugPrint('[MapEditor] resize down $corner shape=${shape.id}');
@@ -2076,107 +2416,122 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   void _showShapeActions(MapShapeModel shape, UnitModel? unit) {
-    showModalBottomSheet(
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('Assign Unit'),
-              onTap: () {
-                Navigator.of(context).pop();
-                _showUnitAssignmentDialog(shape);
-              },
-            ),
-            if (shape.unitId == null)
-              ListTile(
-                leading: const Icon(Icons.content_copy),
-                title: const Text('Copy layout'),
-                subtitle: const Text('Paste with Ctrl+V (⌘V on Mac)'),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  _selectShape(shape.id);
-                  _copySelectedUnassignedToClipboard();
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('Duplicate Shape'),
-              onTap: () {
-                Navigator.of(context).pop();
-                _selectShape(shape.id);
-                _duplicateSelectedShape();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.library_add),
-              title: const Text('Duplicate many in a row…'),
-              subtitle: const Text('Same size, in a line to the right'),
-              onTap: () {
-                Navigator.of(context).pop();
-                _selectShape(shape.id);
-                _showDuplicateRowDialog(sourceShape: shape);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.swap_horiz),
-              title: const Text('Swap width & height'),
-              subtitle: Text(
-                '${shape.width.toStringAsFixed(0)} × ${shape.height.toStringAsFixed(0)}',
-              ),
-              onTap: () {
-                Navigator.of(context).pop();
-                _selectShape(shape.id);
-                _swapShapeWidthHeight(shape);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.rotate_90_degrees_cw),
-              title: const Text('Rotate 90° (swap size)'),
-              subtitle: const Text('Updates stored rotation for maps that use it'),
-              onTap: () {
-                Navigator.of(context).pop();
-                _selectShape(shape.id);
-                _rotateShape90Clockwise(shape);
-              },
-            ),
-            if (unit != null) ...[
-              ListTile(
-                leading: const Icon(Icons.info),
-                title: const Text('View Unit Details'),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  _showUnitDetails(unit);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.edit_location),
-                title: const Text('Edit Unit'),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  context.push(
-                    AppRoute.legacyScreen,
-                    extra: UnitCreationScreen(
-                      facilityId: widget.facilityId,
-                      unit: unit,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) {
+        final maxH = MediaQuery.sizeOf(context).height * 0.88;
+        return ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxH),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.edit),
+                  title: const Text('Assign Unit'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _showUnitAssignmentDialog(shape);
+                  },
+                ),
+                if (shape.unitId == null)
+                  ListTile(
+                    leading: const Icon(Icons.content_copy),
+                    title: const Text('Copy layout'),
+                    subtitle: const Text(
+                      'Multi-select grey blocks (bulk mode or Ctrl/Cmd+click), then Ctrl+C — Ctrl+V pastes the whole group',
                     ),
-                  );
-                },
-              ),
-            ],
-            ListTile(
-              leading: const Icon(Icons.delete, color: AppTheme.error),
-              title: const Text('Delete Shape', style: TextStyle(color: AppTheme.error)),
-              onTap: () {
-                Navigator.of(context).pop();
-                _deleteSelectedShape();
-              },
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      setState(() {
+                        _bulkSelectedShapeIds.clear();
+                        _selectedUnitIds.clear();
+                      });
+                      _selectShape(shape.id);
+                      _copySelectedUnassignedToClipboard();
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.copy),
+                  title: const Text('Duplicate Shape'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _selectShape(shape.id);
+                    _duplicateSelectedShape();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.library_add),
+                  title: const Text('Duplicate many in a row…'),
+                  subtitle: const Text('Same size, in a line to the right'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _selectShape(shape.id);
+                    _showDuplicateRowDialog(sourceShape: shape);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.swap_horiz),
+                  title: const Text('Swap width & height'),
+                  subtitle: Text(
+                    '${shape.width.toStringAsFixed(0)} × ${shape.height.toStringAsFixed(0)}',
+                  ),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _selectShape(shape.id);
+                    _swapShapeWidthHeight(shape);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.rotate_90_degrees_cw),
+                  title: const Text('Rotate 90° (swap size)'),
+                  subtitle: const Text('Updates stored rotation for maps that use it'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _selectShape(shape.id);
+                    _rotateShape90Clockwise(shape);
+                  },
+                ),
+                if (unit != null) ...[
+                  ListTile(
+                    leading: const Icon(Icons.info),
+                    title: const Text('View Unit Details'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _showUnitDetails(unit);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.edit_location),
+                    title: const Text('Edit Unit'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      context.push(
+                        AppRoute.legacyScreen,
+                        extra: UnitCreationScreen(
+                          facilityId: widget.facilityId,
+                          unit: unit,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+                ListTile(
+                  leading: const Icon(Icons.delete, color: AppTheme.error),
+                  title: const Text('Delete Shape', style: TextStyle(color: AppTheme.error)),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _deleteSelectedShape();
+                  },
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -2372,6 +2727,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       if (!mounted) return;
       setState(() {
         _selectedUnitIds.clear();
+        _bulkSelectedShapeIds.clear();
         _isSaving = false;
       });
 
@@ -2399,11 +2755,11 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   Future<void> _handleBulkDelete() async {
-    if (_selectedUnitIds.isEmpty) {
+    if (_bulkSelectedShapeIds.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No units selected for deletion'),
+            content: Text('Nothing selected to delete'),
             backgroundColor: AppTheme.warning,
           ),
         );
@@ -2411,13 +2767,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       return;
     }
 
+    final toDeleteCount = _bulkSelectedShapeIds.length;
+
     // Confirm deletion
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Selected Units'),
+        title: const Text('Delete selected map blocks'),
         content: Text(
-          'Are you sure you want to delete ${_selectedUnitIds.length} unit(s) from the map? This will remove the map shapes. The units themselves will remain in the system unless you delete them separately.',
+          'Remove $toDeleteCount map block${toDeleteCount == 1 ? '' : 's'} from the layout? '
+          'Linked units stay in the system unless you delete them elsewhere.',
         ),
         actions: [
           TextButton(
@@ -2445,40 +2804,20 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     }
 
     try {
-      // Get all map shapes to find which ones correspond to selected units
-      final shapes = await MapLayoutService.getMapShapes(widget.facilityId);
-      
-      // Find shapes that match selected unit IDs
-      final shapesToDelete = shapes
-          .where((shape) => shape.unitId != null && _selectedUnitIds.contains(shape.unitId))
-          .toList();
-
-      if (shapesToDelete.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No map shapes found for selected units'),
-              backgroundColor: AppTheme.warning,
-            ),
-          );
-        }
-        return;
-      }
-
-      // Delete all matching map shapes
+      final ids = List<String>.from(_bulkSelectedShapeIds);
       int successCount = 0;
       int failCount = 0;
-      
-      for (final shape in shapesToDelete) {
+
+      for (final shapeId in ids) {
         try {
           await MapLayoutService.deleteMapShape(
             facilityId: widget.facilityId,
-            shapeId: shape.id,
+            shapeId: shapeId,
           );
           successCount++;
         } catch (e) {
           if (kDebugMode) {
-            print('❌ Error deleting map shape ${shape.id}: $e');
+            print('❌ Error deleting map shape $shapeId: $e');
           }
           failCount++;
         }
@@ -2488,6 +2827,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       if (mounted) {
         setState(() {
           _selectedUnitIds.clear();
+          _bulkSelectedShapeIds.clear();
           _isBulkSelectMode = false;
         });
 

@@ -138,7 +138,6 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with 
         final colorScheme = Theme.of(context).colorScheme;
         return Column(
           children: [
-            _buildFacilitySelector(facilityId),
             Container(
               color: colorScheme.surface,
               child: TabBar(
@@ -256,7 +255,6 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with 
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildFacilitySelector(facilityId),
           _buildHowLateWorks(facilityId, facilityAsync.whenOrNull(data: (d) => d)),
           const SizedBox(height: 16),
           _buildStatistics(facilityId),
@@ -277,7 +275,6 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with 
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildFacilitySelector(facilityId),
           _buildOverduePayments(facilityId),
           const SizedBox(height: 24),
           _buildTenantsWithOverdue(facilityId),
@@ -864,88 +861,6 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with 
               ],
             ),
           ),
-        );
-      },
-    );
-  }
-
-  Widget _buildFacilitySelector(String facilityId) {
-    return Consumer(
-      builder: (context, ref, child) {
-        final auth = ref.watch(authStateProvider);
-        return auth.when(
-          data: (user) {
-            if (user == null) return const SizedBox.shrink();
-            final facilitiesAsync = ref.watch(userFacilitiesProvider(user.uid));
-            return facilitiesAsync.when(
-              data: (facilities) {
-                if (facilities.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                final currentId = facilities.any((f) => f.id == facilityId)
-                    ? facilityId
-                    : facilities.first.id;
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Facility',
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      value: currentId,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.business),
-                      ),
-                      selectedItemBuilder: (context) => facilities
-                          .map((f) => Text(
-                                f.name,
-                                style: AppTheme.dropdownItemTextStyle.copyWith(
-                                  color: Theme.of(context).colorScheme.onSurface,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ))
-                          .toList(),
-                      items: facilities
-                          .map(
-                            (facility) => DropdownMenuItem<String>(
-                              value: facility.id,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                child: Text(
-                                  facility.name,
-                                  style: AppTheme.dropdownItemTextStyle,
-                                  softWrap: true,
-                                ),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null || value == _selectedFacilityId) return;
-                        setState(() => _selectedFacilityId = value);
-                        ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
-                        _refreshData();
-                      },
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                );
-              },
-              loading: () => const Padding(
-                padding: EdgeInsets.only(bottom: 24),
-                child: LinearProgressIndicator(),
-              ),
-              error: (error, _) => const SizedBox.shrink(),
-            );
-          },
-          loading: () => const SizedBox.shrink(),
-          error: (_, __) => const SizedBox.shrink(),
         );
       },
     );

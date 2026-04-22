@@ -107,6 +107,8 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
       final nextId = next.whenOrNull(data: (d) => d);
       if (nextId != null && _selectedFacilityId != nextId && mounted) {
         setState(() => _selectedFacilityId = nextId);
+        ref.invalidate(invoicesForFacilityProvider(nextId));
+        ref.invalidate(overdueInvoicesProvider(nextId));
       }
     });
     return authState.when(
@@ -234,111 +236,48 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (isPhone) ...[
-            FutureBuilder<List<FacilityModel>>(
-              future: ref.read(authStateProvider).maybeWhen(
-                data: (user) => user != null
-                    ? ref.read(userFacilitiesProvider(user.uid).future)
-                    : Future.value(<FacilityModel>[]),
-                orElse: () => Future.value(<FacilityModel>[]),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    labelText: isPhone ? 'Search' : 'Search invoices',
+                    hintText: isPhone
+                        ? 'Invoice #, tenant...'
+                        : 'Invoice number, tenant name...',
+                    prefixIcon: Icon(Icons.search, size: isPhone ? 20 : 24),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: isPhone ? 10 : 8,
+                    ),
+                    isDense: isPhone,
+                  ),
+                  onChanged: (value) =>
+                      setState(() => _searchQuery = value.toLowerCase()),
+                ),
               ),
-              builder: (context, snapshot) {
-                final facilities = snapshot.data ?? [];
-                if (facilities.isEmpty) return const SizedBox.shrink();
-                return _buildFacilityDropdown(facilities, true);
-              },
-            ),
-            SizedBox(height: pad),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      labelText: 'Search',
-                      hintText: 'Invoice #, tenant...',
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      isDense: true,
-                    ),
-                    onChanged: (value) => setState(() => _searchQuery = value.toLowerCase()),
-                  ),
+              if (_selectedFacilityId.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: () {
+                    ref.invalidate(invoicesForFacilityProvider(_selectedFacilityId));
+                    ref.invalidate(overdueInvoicesProvider(_selectedFacilityId));
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Invoices refreshed'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Sync invoices',
                 ),
-                if (_selectedFacilityId.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: () {
-                      ref.invalidate(invoicesForFacilityProvider(_selectedFacilityId));
-                      ref.invalidate(overdueInvoicesProvider(_selectedFacilityId));
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Invoices refreshed'),
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.refresh),
-                    tooltip: 'Sync invoices',
-                  ),
-                ],
               ],
-            ),
-          ] else
-            Row(
-              children: [
-                Expanded(
-                  child: FutureBuilder<List<FacilityModel>>(
-                    future: ref.read(authStateProvider).maybeWhen(
-                      data: (user) => user != null
-                          ? ref.read(userFacilitiesProvider(user.uid).future)
-                          : Future.value(<FacilityModel>[]),
-                      orElse: () => Future.value(<FacilityModel>[]),
-                    ),
-                    builder: (context, snapshot) {
-                      final facilities = snapshot.data ?? [];
-                      if (facilities.isEmpty) return const SizedBox.shrink();
-                      return _buildFacilityDropdown(facilities, false);
-                    },
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 2,
-                  child: TextField(
-                    decoration: InputDecoration(
-                      labelText: 'Search invoices',
-                      hintText: 'Invoice number, tenant name...',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    ),
-                    onChanged: (value) =>
-                        setState(() => _searchQuery = value.toLowerCase()),
-                  ),
-                ),
-                if (_selectedFacilityId.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: () {
-                      ref.invalidate(invoicesForFacilityProvider(_selectedFacilityId));
-                      ref.invalidate(overdueInvoicesProvider(_selectedFacilityId));
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Invoices refreshed'),
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.refresh),
-                    tooltip: 'Sync invoices',
-                  ),
-                ],
-              ],
-            ),
+            ],
+          ),
           SizedBox(height: isPhone ? 10 : 12),
           Wrap(
             spacing: 6,
@@ -364,52 +303,6 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildFacilityDropdown(List<FacilityModel> facilities, bool isDense) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textStyle = AppTheme.dropdownItemTextStyle.copyWith(
-      fontSize: isDense ? 14 : 16,
-      color: colorScheme.onSurface,
-    );
-    return DropdownButtonFormField<String>(
-      value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
-      isExpanded: true,
-      decoration: InputDecoration(
-        labelText: 'Facility',
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: isDense ? 10 : 8),
-        isDense: isDense,
-      ),
-      menuMaxHeight: 300,
-      selectedItemBuilder: (context) => facilities.map((f) => Text(
-        f.name,
-        style: textStyle,
-        overflow: TextOverflow.ellipsis,
-        maxLines: 1,
-      )).toList(),
-      items: facilities.map((facility) {
-        return DropdownMenuItem(
-          value: facility.id,
-          child: Text(
-            facility.name,
-            overflow: TextOverflow.ellipsis,
-            style: AppTheme.dropdownItemTextStyle.copyWith(fontSize: isDense ? 14 : 16),
-          ),
-        );
-      }).toList(),
-      onChanged: (value) {
-        if (value != null) {
-          setState(() {
-            _selectedFacilityId = value;
-            _selectedTenantId = null;
-          });
-          ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(value);
-          ref.invalidate(invoicesForFacilityProvider(value));
-          ref.invalidate(overdueInvoicesProvider(value));
-        }
-      },
     );
   }
 
@@ -610,7 +503,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'If you just created an invoice, confirm the Facility dropdown above is set to the same facility, then tap Sync.',
+                    'If you just created an invoice, confirm the facility in the top bar matches, then tap Sync.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textTertiary,
                       fontStyle: FontStyle.italic,

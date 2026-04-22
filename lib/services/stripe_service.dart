@@ -264,6 +264,7 @@ class StripeService {
     required String email,
     required String accessCode,
     required double amount,
+    String? tenantId,
   }) async {
     try {
       if (kDebugMode) {
@@ -276,6 +277,8 @@ class StripeService {
         'email': email.trim().toLowerCase(),
         'accessCode': accessCode.trim(),
         'amount': amount,
+        if (tenantId != null && tenantId.trim().isNotEmpty)
+          'tenantId': tenantId.trim(),
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () {

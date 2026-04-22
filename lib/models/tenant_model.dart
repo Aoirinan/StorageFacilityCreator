@@ -121,6 +121,8 @@ class TenantModel {
   final List<Address> addresses; // Mailing + alternate addresses
   final bool portalEnabled;
   final String? portalAccessCode;
+  final String? portalAccountId;
+  final bool primaryPortalTenant;
   final String? portalWelcomeMessage;
   final DateTime? portalLastAccessAt;
   final int portalVisitCount;
@@ -194,6 +196,8 @@ class TenantModel {
     this.addresses = const [],
     this.portalEnabled = false,
     this.portalAccessCode,
+    this.portalAccountId,
+    this.primaryPortalTenant = false,
     this.portalWelcomeMessage,
     this.portalLastAccessAt,
     this.portalVisitCount = 0,
@@ -281,6 +285,8 @@ class TenantModel {
           .toList(),
       portalEnabled: data?['portalEnabled'] ?? false,
       portalAccessCode: data?['portalAccessCode'],
+      portalAccountId: data?['portalAccountId'] as String?,
+      primaryPortalTenant: data?['primaryPortalTenant'] == true,
       portalWelcomeMessage: data?['portalWelcomeMessage'],
       portalLastAccessAt: (data?['portalLastAccessAt'] as Timestamp?)?.toDate(),
       portalVisitCount: ((data?['portalVisitCount'] ?? 0) as num).toInt(),
@@ -389,6 +395,9 @@ class TenantModel {
       'addresses': addresses.map((address) => address.toMap()).toList(),
       'portalEnabled': portalEnabled,
       'portalAccessCode': portalAccessCode,
+      if (portalAccountId != null && portalAccountId!.isNotEmpty)
+        'portalAccountId': portalAccountId,
+      'primaryPortalTenant': primaryPortalTenant,
       'portalWelcomeMessage': portalWelcomeMessage,
       'portalLastAccessAt': portalLastAccessAt != null
           ? Timestamp.fromDate(portalLastAccessAt!)
@@ -476,6 +485,8 @@ class TenantModel {
     List<Address>? addresses,
     bool? portalEnabled,
     String? portalAccessCode,
+    String? portalAccountId,
+    bool? primaryPortalTenant,
     String? portalWelcomeMessage,
     DateTime? portalLastAccessAt,
     int? portalVisitCount,
@@ -538,6 +549,8 @@ class TenantModel {
       addresses: addresses ?? this.addresses,
       portalEnabled: portalEnabled ?? this.portalEnabled,
       portalAccessCode: portalAccessCode ?? this.portalAccessCode,
+      portalAccountId: portalAccountId ?? this.portalAccountId,
+      primaryPortalTenant: primaryPortalTenant ?? this.primaryPortalTenant,
       portalWelcomeMessage: portalWelcomeMessage ?? this.portalWelcomeMessage,
       portalLastAccessAt: portalLastAccessAt ?? this.portalLastAccessAt,
       portalVisitCount: portalVisitCount ?? this.portalVisitCount,

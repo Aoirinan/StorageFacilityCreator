@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
@@ -87,7 +88,7 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
                 controller: _tabController,
                 children: [
                   FacilityMapEditorScreen(facilityId: widget.facilityId),
-                  _OperationsMapView(facilityId: widget.facilityId),
+                  _OperationsMapView(key: ValueKey(widget.facilityId), facilityId: widget.facilityId),
                   _VersionHistoryTab(
                     facilityId: widget.facilityId,
                     onRollback: (versionId) async {
@@ -211,18 +212,199 @@ class _VersionHistoryTab extends StatelessWidget {
   }
 }
 
-class _OperationsMapView extends ConsumerWidget {
+/// Canvas layout for Operations — same padding/minimum size idea as [FacilityMapEditorScreen].
+class _OperationsCanvasLayout {
+  const _OperationsCanvasLayout({
+    required this.minX,
+    required this.minY,
+    required this.width,
+    required this.height,
+  });
+
+  final double minX;
+  final double minY;
+  final double width;
+  final double height;
+}
+
+_OperationsCanvasLayout _operationsLayoutForShapes(List<MapShapeModel> shapes) {
+  double minX = 0;
+  double minY = 0;
+  double maxX = 2000.0;
+  double maxY = 1500.0;
+  if (shapes.isNotEmpty) {
+    for (final s in shapes) {
+      final right = s.x + s.width;
+      final bottom = s.y + s.height;
+      if (s.x < minX) minX = s.x;
+      if (s.y < minY) minY = s.y;
+      if (right > maxX) maxX = right;
+      if (bottom > maxY) maxY = bottom;
+    }
+    minX -= 200;
+    minY -= 200;
+    maxX += 200;
+    maxY += 200;
+  }
+  if (maxX - minX < 2000) {
+    maxX = minX + 2000;
+  }
+  if (maxY - minY < 1500) {
+    maxY = minY + 1500;
+  }
+  return _OperationsCanvasLayout(
+    minX: minX,
+    minY: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  );
+}
+
+void _operationsFitTransform(
+  TransformationController controller,
+  double canvasW,
+  double canvasH,
+  Size viewport,
+) {
+  if (viewport.width <= 0 || viewport.height <= 0 || canvasW <= 0 || canvasH <= 0) {
+    return;
+  }
+  final fitScale = (viewport.width / canvasW < viewport.height / canvasH
+          ? viewport.width / canvasW
+          : viewport.height / canvasH)
+      .clamp(0.02, 4.0);
+  final translateX = (viewport.width - canvasW * fitScale) / 2;
+  final translateY = (viewport.height - canvasH * fitScale) / 2;
+  controller.value = Matrix4.identity()
+    ..translate(translateX, translateY)
+    ..scale(fitScale);
+}
+
+int _operationsLayoutSignature(List<MapShapeModel> shapes, _OperationsCanvasLayout layout) {
+  var h = Object.hash(shapes.length, layout.minX, layout.minY, layout.width, layout.height);
+  for (final s in shapes) {
+    h = Object.hash(h, s.id, s.x, s.y, s.width, s.height, s.zIndex);
+  }
+  return h;
+}
+
+class _OperationsMapView extends ConsumerStatefulWidget {
   final String facilityId;
 
-  const _OperationsMapView({required this.facilityId});
+  _OperationsMapView({super.key, required this.facilityId});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final shapesAsync = ref.watch(facilityMapShapesProvider(facilityId));
-    final unitsAsync = ref.watch(facilityUnitsProvider(facilityId));
+  ConsumerState<_OperationsMapView> createState() => _OperationsMapViewState();
+}
+
+class _OperationsMapViewState extends ConsumerState<_OperationsMapView> {
+  final TransformationController _transform = TransformationController();
+  int? _lastAutoFitSignature;
+  _OperationsCanvasLayout? _lastLayout;
+  Size _lastViewport = Size.zero;
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  void _zoomBy(double factor) {
+    final vs = _lastViewport;
+    if (vs.width <= 0 || vs.height <= 0) return;
+    final focal = Offset(vs.width / 2, vs.height / 2);
+    final currentScale = _transform.value.getMaxScaleOnAxis();
+    final targetScale = (currentScale * factor).clamp(0.02, 4.0);
+    final scaleChange = targetScale / currentScale;
+    _transform.value = _transform.value.clone()
+      ..translate(focal.dx, focal.dy)
+      ..scale(scaleChange)
+      ..translate(-focal.dx, -focal.dy);
+    setState(() {});
+  }
+
+  void _fitMapToView() {
+    final layout = _lastLayout;
+    final vs = _lastViewport;
+    if (layout == null || vs.width <= 0 || vs.height <= 0) return;
+    _operationsFitTransform(_transform, layout.width, layout.height, vs);
+    setState(() {});
+  }
+
+  void _scheduleAutoFit(List<MapShapeModel> shapes, _OperationsCanvasLayout layout, Size viewport) {
+    if (!mounted || viewport.width <= 0 || viewport.height <= 0) return;
+    final sig = _operationsLayoutSignature(shapes, layout);
+    if (_lastAutoFitSignature == sig) return;
+    void run() {
+      if (!mounted) return;
+      _operationsFitTransform(_transform, layout.width, layout.height, viewport);
+      _lastAutoFitSignature = sig;
+    }
+
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks || phase == SchedulerPhase.midFrameMicrotasks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => run());
+    } else {
+      run();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shapesAsync = ref.watch(facilityMapShapesProvider(widget.facilityId));
+    final unitsAsync = ref.watch(facilityUnitsProvider(widget.facilityId));
     return shapesAsync.when(
       data: (shapes) => unitsAsync.when(
-        data: (units) => _buildMap(context, shapes, units),
+        data: (units) => LayoutBuilder(
+          builder: (context, constraints) {
+            final layout = _operationsLayoutForShapes(shapes);
+            final viewport = Size(constraints.maxWidth, constraints.maxHeight);
+            _lastLayout = layout;
+            _lastViewport = viewport;
+            _scheduleAutoFit(shapes, layout, viewport);
+            final cs = Theme.of(context).colorScheme;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildMap(context, shapes, units, layout),
+                Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: Material(
+                    elevation: 3,
+                    borderRadius: BorderRadius.circular(10),
+                    color: cs.surfaceContainerHighest,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Zoom in',
+                          icon: const Icon(Icons.add),
+                          color: cs.onSurface,
+                          onPressed: () => _zoomBy(1.15),
+                        ),
+                        const SizedBox(height: 2),
+                        IconButton(
+                          tooltip: 'Zoom out',
+                          icon: const Icon(Icons.remove),
+                          color: cs.onSurface,
+                          onPressed: () => _zoomBy(0.85),
+                        ),
+                        const SizedBox(height: 2),
+                        IconButton(
+                          tooltip: 'Fit map to view',
+                          icon: const Icon(Icons.center_focus_strong),
+                          color: cs.primary,
+                          onPressed: _fitMapToView,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('Failed to load units: $e')),
       ),
@@ -231,28 +413,37 @@ class _OperationsMapView extends ConsumerWidget {
     );
   }
 
-  Widget _buildMap(BuildContext context, List<MapShapeModel> shapes, List<UnitModel> units) {
+  Widget _buildMap(
+    BuildContext context,
+    List<MapShapeModel> shapes,
+    List<UnitModel> units,
+    _OperationsCanvasLayout layout,
+  ) {
     final byId = {for (final unit in units) unit.id: unit};
     final sorted = [...shapes]..sort((a, b) => a.zIndex.compareTo(b.zIndex));
     return InteractiveViewer(
-      minScale: 0.2,
-      maxScale: 4,
+      transformationController: _transform,
+      constrained: false,
+      boundaryMargin: const EdgeInsets.all(double.infinity),
+      minScale: 0.02,
+      maxScale: 4.0,
       child: SizedBox(
-        width: 2200,
-        height: 1600,
+        width: layout.width,
+        height: layout.height,
         child: Stack(
+          clipBehavior: Clip.none,
           children: sorted.map((shape) {
             final unit = shape.unitId == null ? null : byId[shape.unitId];
             final status = unit?.status ?? UnitStatus.available;
             final color = _statusColor(status);
             return Positioned(
-              left: shape.x,
-              top: shape.y,
+              left: shape.x - layout.minX,
+              top: shape.y - layout.minY,
               child: InkWell(
                 onTap: unit == null
                     ? null
                     : () => context.push(
-                          '${AppRoute.unitDetail}?facilityId=$facilityId&unitId=${unit.id}',
+                          '${AppRoute.unitDetail}?facilityId=${widget.facilityId}&unitId=${unit.id}',
                         ),
                 child: Container(
                   width: shape.width,

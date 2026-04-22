@@ -1,4 +1,5 @@
 import 'package:cloud_functions/cloud_functions.dart';
+import '../models/reservation_model.dart';
 import '../models/tenant_model.dart';
 import '../models/tenant_portal_models.dart';
 
@@ -54,6 +55,59 @@ class TenantPortalService {
     } on FirebaseFunctionsException catch (error) {
       throw TenantPortalException(
         message: error.message ?? 'Unable to update profile.',
+        code: error.code,
+      );
+    } catch (error) {
+      throw TenantPortalException(
+        message: error.toString(),
+        code: 'unknown',
+      );
+    }
+  }
+
+  static Future<Reservation> createAdditionalUnitReservation({
+    required String email,
+    required String accessCode,
+    required String facilityId,
+    required String unitId,
+    String? unitNumber,
+    DateTime? moveInDate,
+  }) async {
+    final callable = _functions.httpsCallable('createTenantPortalAdditionalUnitHold');
+    try {
+      final result = await callable.call(<String, dynamic>{
+        'email': email.trim(),
+        'accessCode': accessCode.trim(),
+        'facilityId': facilityId,
+        'unitId': unitId,
+        'unitNumber': unitNumber,
+        'moveInDate': moveInDate?.toIso8601String(),
+      });
+      final payload = Map<String, dynamic>.from(result.data as Map);
+      if (payload['success'] != true) {
+        throw TenantPortalException(
+          message: 'Unable to start rental hold.',
+          code: 'unknown',
+        );
+      }
+      final token = payload['moveInToken']?.toString() ?? '';
+      final reservationId = payload['reservationId']?.toString() ?? '';
+      return Reservation(
+        id: reservationId,
+        facilityId: facilityId,
+        unitId: unitId,
+        unitNumber: unitNumber,
+        email: email.toLowerCase().trim(),
+        status: ReservationStatus.pending,
+        reservedAt: DateTime.now(),
+        expiresAt: DateTime.tryParse(payload['expiresAt']?.toString() ?? ''),
+        moveInDate: moveInDate,
+        moveInToken: token,
+        metadata: const {'source': 'tenant_portal_additional_unit'},
+      );
+    } on FirebaseFunctionsException catch (error) {
+      throw TenantPortalException(
+        message: error.message ?? 'Unable to start unit rental.',
         code: error.code,
       );
     } catch (error) {
