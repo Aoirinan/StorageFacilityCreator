@@ -1,22 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/tenant_portal_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/screens/auth/widgets/auth_shell.dart';
 import 'package:sfcapp/screens/tenant_portal_screen.dart';
 import 'package:sfcapp/services/home_button_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
-class TenantPortalAccessScreen extends ConsumerStatefulWidget {
+/// Public tenant entry — uses the same [AuthShell] as facility owner login so the
+/// experience is visually consistent and clearly distinct from the legacy layout.
+class TenantPortalAccessScreen extends StatefulWidget {
   const TenantPortalAccessScreen({super.key});
 
   @override
-  ConsumerState<TenantPortalAccessScreen> createState() => _TenantPortalAccessScreenState();
+  State<TenantPortalAccessScreen> createState() => _TenantPortalAccessScreenState();
 }
 
-class _TenantPortalAccessScreenState extends ConsumerState<TenantPortalAccessScreen> {
+class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _accessCodeController = TextEditingController();
@@ -41,9 +44,7 @@ class _TenantPortalAccessScreenState extends ConsumerState<TenantPortalAccessScr
   Future<void> _loadPortal() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     final email = _emailController.text.trim();
     final accessCode = _accessCodeController.text.trim();
@@ -51,7 +52,7 @@ class _TenantPortalAccessScreenState extends ConsumerState<TenantPortalAccessScr
     try {
       final data = await TenantPortalService.fetchPortalData(email: email, accessCode: accessCode);
       if (!mounted) return;
-      context.push(
+      await context.push(
         AppRoute.legacyScreen,
         extra: TenantPortalScreen(
           lookup: TenantPortalLookup(email: email, accessCode: accessCode),
@@ -77,118 +78,103 @@ class _TenantPortalAccessScreenState extends ConsumerState<TenantPortalAccessScr
         ),
       );
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  static String? _validateAccessCode(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Enter the access code from your facility';
+    }
+    if (value.trim().length < 4) {
+      return 'Access code should be at least 4 characters';
+    }
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Tenant Portal Access'),
-        backgroundColor: AppTheme.primaryBlueDark,
-        foregroundColor: AppTheme.textOnDark,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 16),
-              Icon(Icons.key_outlined, size: 56, color: theme.colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(
-                'Welcome to your storage tenant portal.',
-                style: theme.textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Enter the email address on file and the access code provided by your facility.',
-                style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 32),
-              TextFormField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: 'Email Address',
-                  prefixIcon: Icon(Icons.email_outlined),
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter your email address';
-                  }
-                  final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-                  if (!emailRegex.hasMatch(value.trim())) {
-                    return 'Enter a valid email address';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _accessCodeController,
-                textInputAction: TextInputAction.done,
-                decoration: InputDecoration(
-                  labelText: 'Access Code',
-                  prefixIcon: const Icon(Icons.lock_outline),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.paste_outlined),
-                    tooltip: 'Paste from clipboard',
-                    onPressed: () async {
-                      final data = await Clipboard.getData('text/plain');
-                      final text = data?.text ?? '';
-                      if (text.isNotEmpty) {
-                        _accessCodeController.text = text.trim();
-                      }
-                    },
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Enter the access code shared by your facility';
-                  }
-                  if (value.trim().length < 4) {
-                    return 'Access code should be at least 4 characters';
-                  }
-                  return null;
-                },
-                onFieldSubmitted: (_) => _loadPortal(),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _isLoading ? null : _loadPortal,
-                icon: _isLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.textOnDark),
-                      )
-                    : const Icon(Icons.lock_open_outlined),
-                label: Text(_isLoading ? 'Loading...' : 'Open Tenant Portal'),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Having trouble accessing your account? Contact your facility manager to request a new access code.',
-                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 120),
-            ],
+    return AuthShell(
+      backButton: context.canPop() ? AuthShellBackButton(onPressed: () => context.pop()) : null,
+      belowCard: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          AuthSecondaryLink(
+            icon: Icons.login_rounded,
+            label: 'Facility manager sign in',
+            onPressed: () => context.go(AppRoute.login),
           ),
+        ],
+      ),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const AuthLogoHeader(
+              title: 'Tenant portal',
+              subtitle: 'Use the email on file with your facility and the access code they gave you.',
+            ),
+            const AuthFieldLabel('Email'),
+            const SizedBox(height: 6),
+            TextFormField(
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              validator: AuthValidators.validateEmail,
+              autofillHints: const [AutofillHints.email],
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+              decoration: authFieldDecoration(
+                hint: 'you@email.com',
+                icon: Icons.email_outlined,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const AuthFieldLabel('Access code'),
+            const SizedBox(height: 6),
+            TextFormField(
+              controller: _accessCodeController,
+              textInputAction: TextInputAction.done,
+              validator: _validateAccessCode,
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+              decoration: authFieldDecoration(
+                hint: 'Code from your facility',
+                icon: Icons.lock_outlined,
+                suffix: IconButton(
+                  splashRadius: 20,
+                  icon: const Icon(Icons.content_paste_go_rounded, size: 20, color: AppTheme.textTertiary),
+                  tooltip: 'Paste from clipboard',
+                  onPressed: () async {
+                    final data = await Clipboard.getData('text/plain');
+                    final text = data?.text ?? '';
+                    if (text.isNotEmpty) {
+                      _accessCodeController.text = text.trim();
+                    }
+                  },
+                ),
+              ),
+              onFieldSubmitted: (_) => _loadPortal(),
+            ),
+            const SizedBox(height: 22),
+            AuthGradientButton(
+              isLoading: _isLoading,
+              onPressed: _loadPortal,
+              label: 'Open tenant portal',
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Need a new code? Ask your facility manager.',
+              style: TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondary,
+                height: 1.45,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       ),
     );

@@ -413,9 +413,14 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      final detail = e is FirebaseFunctionsException &&
+              e.message != null &&
+              e.message!.trim().isNotEmpty
+          ? e.message!.trim()
+          : e.toString();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Unable to start payment: $e'),
+          content: Text('Unable to start payment: $detail'),
           backgroundColor: AppTheme.error,
         ),
       );

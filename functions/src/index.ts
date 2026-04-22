@@ -781,6 +781,17 @@ function getPlatformPublishableKey(): string {
 // Initialize Stripe (platform secret only; Connect uses stripeAccount option per request)
 let stripeClient: Stripe | null = null;
 
+/**
+ * Stripe rejects Checkout when `customer_email` is blank or malformed; omit the field instead.
+ */
+function optionalStripeCheckoutCustomerEmail(email: unknown): string | undefined {
+  if (typeof email !== 'string') return undefined;
+  const t = email.trim();
+  if (!t || t.length > 320) return undefined;
+  if (!t.includes('@')) return undefined;
+  return t;
+}
+
 function getStripeClient(): Stripe {
   if (!stripeClient) {
     const secretKey = STRIPE_SECRET_KEY.value();
@@ -7885,42 +7896,85 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
     `&reservationId=${safeReservationId}` +
     '&checkout=cancel';
 
-  const stripe = getStripeClient();
-  const session = await stripe.checkout.sessions.create(
-    {
-      mode: 'payment',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: description || `Move-in payment for ${facilityData.name || 'Facility'}`,
-            },
-            unit_amount: Math.round(amountNumber * 100),
-          },
-          quantity: 1,
-        },
-      ],
-      customer_email: reservation.email as string | undefined,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: {
-        type: 'public_move_in',
-        reservationId: String(reservationId),
-        moveInToken: String(token),
-        facilityId,
-      },
-    },
-    {
-      stripeAccount: connectAccountId,
-    },
-  );
+  const cents = Math.round(amountNumber * 100);
+  if (cents < 50) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
+    );
+  }
 
-  return {
-    checkoutUrl: session.url,
-    sessionId: session.id,
-  };
+  const customerEmail = optionalStripeCheckoutCustomerEmail(reservation.email);
+  const rawLineName =
+    (description || `Move-in payment for ${facilityData.name || 'Facility'}`).toString();
+  const lineItemName = rawLineName.length > 200 ? `${rawLineName.slice(0, 197)}...` : rawLineName;
+
+  try {
+    const stripe = getStripeClient();
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: lineItemName,
+              },
+              unit_amount: cents,
+            },
+            quantity: 1,
+          },
+        ],
+        ...(customerEmail ? { customer_email: customerEmail } : {}),
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          type: 'public_move_in',
+          reservationId: String(reservationId),
+          moveInToken: String(token),
+          facilityId,
+        },
+      },
+      {
+        stripeAccount: connectAccountId,
+      },
+    );
+
+    if (!session.url) {
+      functions.logger.error('createPublicMoveInCheckout: session missing url', {
+        sessionId: session.id,
+        facilityId,
+      });
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Stripe did not return a checkout link. The facility owner should confirm Stripe Checkout is enabled for their account.',
+      );
+    }
+
+    return {
+      checkoutUrl: session.url,
+      sessionId: session.id,
+    };
+  } catch (err: unknown) {
+    if (err instanceof functions.https.HttpsError) {
+      throw err;
+    }
+    const e = err as { type?: string; code?: string; message?: string };
+    const rawMessage = typeof e.message === 'string' && e.message.trim() !== ''
+      ? e.message.trim()
+      : 'Payment could not be started.';
+    functions.logger.error('createPublicMoveInCheckout Stripe error', {
+      facilityId,
+      reservationId: String(reservationId),
+      stripeType: e.type,
+      stripeCode: e.code,
+      message: rawMessage,
+    });
+    const capped = rawMessage.length > 240 ? `${rawMessage.slice(0, 237)}...` : rawMessage;
+    throw new functions.https.HttpsError('failed-precondition', capped);
+  }
 });
 
 /**

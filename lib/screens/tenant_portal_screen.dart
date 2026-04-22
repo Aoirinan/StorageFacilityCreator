@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +17,9 @@ import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/ui/payments/stripe_embedded_payment_dialog.dart';
+import 'package:go_router/go_router.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/screens/auth/widgets/auth_shell.dart';
 
 class TenantPortalScreen extends ConsumerStatefulWidget {
   final TenantPortalLookup lookup;
@@ -42,11 +47,12 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     super.initState();
     // Prefetch App Check token to avoid failed-precondition on first load.
     if (!_isLocalhost) {
-      FirebaseAppCheck.instance.getToken().catchError((_) {
+      FirebaseAppCheck.instance.getToken().catchError((Object _) {
         if (mounted && !_appCheckFailureShown) {
           _appCheckFailureShown = true;
           _showAppCheckDialog();
         }
+        return null;
       });
     }
   }
@@ -104,13 +110,18 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     }
   }
 
+  Future<void> _reloadTenantPortal() async {
+    ref.invalidate(tenantPortalProvider(widget.lookup));
+    await ref.read(tenantPortalProvider(widget.lookup).future);
+  }
+
   Future<void> _manualRefresh() async {
     try {
       // Ensure App Check token is fresh before hitting Functions
       if (!_isLocalhost) {
         await FirebaseAppCheck.instance.getToken();
       }
-      await ref.refresh(tenantPortalProvider(widget.lookup).future);
+      await _reloadTenantPortal();
     } on TenantPortalException catch (error) {
       if (error.code == 'failed-precondition') {
         _showAppCheckDialog();
@@ -214,7 +225,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       barrierDismissible: false,
       builder: (context) => Dialog(
         insetPadding: const EdgeInsets.all(16),
-        child: Container(
+        child: SizedBox(
           width: double.infinity,
           height: double.infinity,
           child: Column(
@@ -226,7 +237,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                   color: AppTheme.primaryBlue,
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
+                      color: Colors.black.withValues(alpha: 0.1),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
@@ -283,53 +294,138 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   }
 
   void _handlePaymentSuccess() {
-    // Refresh portal data
-    ref.refresh(tenantPortalProvider(widget.lookup).future);
-    _showSnack('Payment successful! Your account will be updated shortly.');
+    unawaited(_reloadTenantPortalAfterPayment());
+  }
+
+  Future<void> _reloadTenantPortalAfterPayment() async {
+    await _reloadTenantPortal();
+    if (mounted) {
+      _showSnack('Payment successful! Your account will be updated shortly.');
+    }
+  }
+
+  void _exitPortal(BuildContext context) {
+    if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go(AppRoute.tenantPortal);
+    }
+  }
+
+  Widget _buildPortalBackdrop(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF312E81),
+                AppTheme.primaryBlue,
+                Color(0xFF2563EB),
+              ],
+              stops: [0.0, 0.55, 1.0],
+            ),
+          ),
+        ),
+        Positioned(
+          top: -100,
+          left: -80,
+          child: _TenantPortalOrb(size: 320, color: Colors.white.withValues(alpha: 0.06)),
+        ),
+        Positioned(
+          bottom: -120,
+          right: -100,
+          child: _TenantPortalOrb(
+            size: 380,
+            color: AppTheme.accentYellow.withValues(alpha: 0.08),
+          ),
+        ),
+        Positioned(
+          top: screenWidth * 0.3,
+          right: -60,
+          child: _TenantPortalOrb(
+            size: 220,
+            color: AppTheme.accentBlueLight.withValues(alpha: 0.08),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPortalTopBar(
+    BuildContext context,
+    TenantPortalData data,
+    AsyncValue<TenantPortalData> portalAsync,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 2, 8, 10),
+      child: Row(
+        children: [
+          AuthShellBackButton(onPressed: () => _exitPortal(context)),
+          Expanded(
+            child: Column(
+              children: [
+                Text(
+                  data.facility.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.35,
+                  ),
+                ),
+                Text(
+                  'Tenant portal',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Material(
+            color: Colors.white.withValues(alpha: 0.12),
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: portalAsync.isLoading ? null : _manualRefresh,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: portalAsync.isLoading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white.withValues(alpha: 0.92),
+                        ),
+                      )
+                    : Icon(
+                        Icons.refresh_rounded,
+                        size: 22,
+                        color: Colors.white.withValues(alpha: 0.95),
+                      ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final portalAsync = ref.watch(tenantPortalProvider(widget.lookup));
     final data = portalAsync.value ?? widget.initialData;
-
-    if (data == null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Tenant Portal'),
-          backgroundColor: AppTheme.primaryBlueDark,
-          foregroundColor: AppTheme.textOnDark,
-        ),
-        body: portalAsync.when(
-          data: (value) => const SizedBox.shrink(),
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, stackTrace) => Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.error_outline, color: AppTheme.error, size: 42),
-                  const SizedBox(height: 16),
-                  Text(
-                    error is TenantPortalException
-                        ? error.message
-                        : 'We could not load your portal right now.',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: _manualRefresh,
-                    child: const Text('Try Again'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
 
     final theme = Theme.of(context);
 
@@ -362,36 +458,95 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       ),
     ];
 
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isMobile = screenWidth < 600;
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${data.facility.name} Portal'),
-        backgroundColor: AppTheme.primaryBlueDark,
-        foregroundColor: AppTheme.textOnDark,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-            onPressed: portalAsync.isLoading ? null : _manualRefresh,
-          ),
-        ],
-      ),
+      backgroundColor: const Color(0xFF312E81),
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          RefreshIndicator(
-            onRefresh: () => ref.refresh(tenantPortalProvider(widget.lookup).future),
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-              children: bodyChildren,
+          _buildPortalBackdrop(context),
+          SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildPortalTopBar(context, data, portalAsync),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      RefreshIndicator(
+                        onRefresh: () async {
+                          ref.invalidate(tenantPortalProvider(widget.lookup));
+                          await ref.read(tenantPortalProvider(widget.lookup).future);
+                        },
+                        child: ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: EdgeInsets.fromLTRB(
+                            isMobile ? 16 : 24,
+                            4,
+                            isMobile ? 16 : 24,
+                            28,
+                          ),
+                          children: [
+                            Center(
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 720),
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(24),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.18),
+                                        blurRadius: 48,
+                                        offset: const Offset(0, 24),
+                                      ),
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.06),
+                                        blurRadius: 12,
+                                        offset: const Offset(0, 4),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Padding(
+                                    padding: EdgeInsets.all(isMobile ? 20 : 28),
+                                    child: Theme(
+                                      data: theme.copyWith(
+                                        cardTheme: CardThemeData(
+                                          elevation: 0,
+                                          color: const Color(0xFFF8FAFC),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(16),
+                                            side: const BorderSide(color: AppTheme.borderLight),
+                                          ),
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                                        children: bodyChildren,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (portalAsync.isLoading && portalAsync.value != null)
+                        const Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: LinearProgressIndicator(minHeight: 3),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          if (portalAsync.isLoading && portalAsync.value != null)
-            const Positioned(
-              left: 0,
-              right: 0,
-              top: 0,
-              child: LinearProgressIndicator(minHeight: 3),
-            ),
         ],
       ),
     );
@@ -409,7 +564,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     }
 
     return Card(
-      color: AppTheme.error.withOpacity(0.1),
+      color: AppTheme.error.withValues(alpha: 0.1),
       child: ListTile(
         leading: Icon(Icons.error_outline, color: AppTheme.error),
         title: Text(
@@ -428,7 +583,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   Widget _buildOverlockBanner(BuildContext context) {
     final theme = Theme.of(context);
     return Card(
-      color: AppTheme.error.withOpacity(0.1),
+      color: AppTheme.error.withValues(alpha: 0.1),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
@@ -475,7 +630,13 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
           children: [
             Text(
               tenant.name,
-              style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.textPrimary,
+                letterSpacing: -0.45,
+                height: 1.2,
+              ),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -521,24 +682,10 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
             ),
             if (outstanding > 0) ...[
               const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _isProcessingPayment ? null : () => _initiatePayment(data, outstanding),
-                  icon: _isProcessingPayment
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.payment),
-                  label: Text(_isProcessingPayment ? 'Processing...' : 'Pay Now'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryBlue,
-                    foregroundColor: AppTheme.textOnDark,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                ),
+              AuthGradientButton(
+                isLoading: _isProcessingPayment,
+                onPressed: () => _initiatePayment(data, outstanding),
+                label: 'Pay now',
               ),
             ],
             if (tenant.welcomeMessage != null && tenant.welcomeMessage!.isNotEmpty) ...[
@@ -547,7 +694,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppTheme.primaryBlueDark.withOpacity(0.1),
+                  color: AppTheme.primaryBlueDark.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: SelectableText(
@@ -565,9 +712,9 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   Widget _infoChip(IconData icon, String label) {
     return Chip(
       avatar: Icon(icon, size: 18, color: AppTheme.primaryBlueDark),
-      backgroundColor: AppTheme.primaryBlueDark.withOpacity(0.08),
+      backgroundColor: AppTheme.primaryBlueDark.withValues(alpha: 0.08),
       label: Text(label),
-      side: BorderSide(color: AppTheme.primaryBlueDark.withOpacity(0.12)),
+      side: BorderSide(color: AppTheme.primaryBlueDark.withValues(alpha: 0.12)),
     );
   }
 
@@ -580,8 +727,8 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
 
     return Chip(
       avatar: Icon(icon, size: 18, color: color),
-      backgroundColor: color.withOpacity(0.08),
-      side: BorderSide(color: color.withOpacity(0.12)),
+      backgroundColor: color.withValues(alpha: 0.08),
+      side: BorderSide(color: color.withValues(alpha: 0.12)),
       label: Text(
         label,
         style: TextStyle(color: color, fontWeight: FontWeight.w600),
@@ -785,7 +932,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                     width: 28,
                     height: 28,
                     decoration: BoxDecoration(
-                      color: item.color.withOpacity(0.12),
+                      color: item.color.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(item.icon, size: 14, color: item.color),
@@ -925,14 +1072,14 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: highlight.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: highlight.withOpacity(0.15)),
+        color: highlight.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: highlight.withValues(alpha: 0.15)),
       ),
       child: Row(
         children: [
           CircleAvatar(
-            backgroundColor: highlight.withOpacity(0.15),
+            backgroundColor: highlight.withValues(alpha: 0.15),
             foregroundColor: highlight,
             child: Icon(icon),
           ),
@@ -1176,7 +1323,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       );
       if (!mounted) return;
       _showSnack('Information updated successfully.');
-      ref.refresh(tenantPortalProvider(widget.lookup).future);
+      await _reloadTenantPortal();
     } on TenantPortalException catch (e) {
       if (!mounted) return;
       _showSnack('Error: ${e.message}', isError: true);
@@ -1275,8 +1422,8 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
   Widget _tagChip(String label, Color color) {
     return Chip(
       label: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
-      backgroundColor: color.withOpacity(0.1),
-      side: BorderSide(color: color.withOpacity(0.2)),
+      backgroundColor: color.withValues(alpha: 0.1),
+      side: BorderSide(color: color.withValues(alpha: 0.2)),
     );
   }
 
@@ -1368,7 +1515,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: CircleAvatar(
-                        backgroundColor: statusColor.withOpacity(0.12),
+                        backgroundColor: statusColor.withValues(alpha: 0.12),
                         foregroundColor: statusColor,
                         child: Icon(_statusIcon(payment.status)),
                       ),
@@ -1428,7 +1575,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       if (!mounted) return;
       if (dialogResult != null && dialogResult.succeeded) {
         _showSnack('Card saved. Refreshing…');
-        await ref.refresh(tenantPortalProvider(widget.lookup).future);
+        await _reloadTenantPortal();
         final data = ref.read(tenantPortalProvider(widget.lookup)).whenOrNull(data: (d) => d);
         if (data != null && data.tenant.autopay.isRequested) {
           await AutopayService.setTenantAutopayFromPortal(
@@ -1436,7 +1583,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
             accessCode: widget.lookup.accessCode,
             enabled: true,
           );
-          await ref.refresh(tenantPortalProvider(widget.lookup).future);
+          await _reloadTenantPortal();
           _showSnack('Autopay is now on.');
         }
       }
@@ -1459,21 +1606,21 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         statusChip = Chip(
           avatar: const Icon(Icons.toggle_off, color: AppTheme.textSecondary, size: 20),
           label: const Text('OFF'),
-          backgroundColor: AppTheme.textSecondary.withOpacity(0.1),
+          backgroundColor: AppTheme.textSecondary.withValues(alpha: 0.1),
         );
         break;
       case AutopayStatus.requested:
         statusChip = Chip(
           avatar: const Icon(Icons.schedule, color: AppTheme.warning, size: 20),
           label: const Text('REQUESTED'),
-          backgroundColor: AppTheme.warning.withOpacity(0.1),
+          backgroundColor: AppTheme.warning.withValues(alpha: 0.1),
         );
         break;
       case AutopayStatus.on:
         statusChip = Chip(
           avatar: const Icon(Icons.check_circle, color: AppTheme.success, size: 20),
           label: const Text('ON'),
-          backgroundColor: AppTheme.success.withOpacity(0.1),
+          backgroundColor: AppTheme.success.withValues(alpha: 0.1),
         );
         break;
     }
@@ -1522,7 +1669,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                               accessCode: widget.lookup.accessCode,
                               enabled: false,
                             );
-                            await ref.refresh(tenantPortalProvider(widget.lookup).future);
+                            await _reloadTenantPortal();
                             _showSnack('Autopay turned off.');
                           } catch (e) {
                             _showSnack('Could not update. Try again.');
@@ -1564,7 +1711,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                           accessCode: widget.lookup.accessCode,
                           enabled: true,
                         );
-                        await ref.refresh(tenantPortalProvider(widget.lookup).future);
+                        await _reloadTenantPortal();
                         _showSnack('Autopay is now on.');
                       } catch (e) {
                         _showSnack(e.toString().replaceFirst('Exception: ', ''));
@@ -1618,6 +1765,27 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TenantPortalOrb extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _TenantPortalOrb({required this.size, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
         ),
       ),
     );

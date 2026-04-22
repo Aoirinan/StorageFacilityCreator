@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/public_rental_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class PublicRentalPortalScreen extends StatefulWidget {
   final String? facilityId;
@@ -158,6 +159,21 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     return FacilityMapV2Service.getPublicSlugForFacility(facilityId);
   }
 
+  Future<void> _dialFacilityPhone() async {
+    final raw = _facilityPhone?.trim();
+    if (raw == null || raw.isEmpty) return;
+    final normalized = raw.replaceAll(RegExp(r'[^\d+]'), '');
+    if (normalized.isEmpty) return;
+    final uri = Uri(scheme: 'tel', path: normalized);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      }
+    } catch (_) {
+      /* ignore launch failures on unsupported platforms */
+    }
+  }
+
   /// Re-read `publicFacilityMaps` so the list matches what Cloud Functions enforce.
   Future<void> _reloadInventoryFromPublishedSnapshot() async {
     final slug = _facilitySlug;
@@ -261,11 +277,15 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        backgroundColor: AppTheme.backgroundLight,
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
 
     if (_error != null) {
       return Scaffold(
+        backgroundColor: AppTheme.backgroundLight,
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -276,32 +296,62 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     }
 
     final groups = _groups;
+    const sheetBg = AppTheme.backgroundLight;
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F7FC),
+      backgroundColor: const Color(0xFF0A1F4A),
       body: Column(
         children: [
           _buildFacilityHeader(),
-          if (_categorySlugs.isNotEmpty) _buildCategoryTabs(),
           Expanded(
-            child: groups.isEmpty
-                ? _buildEmptyState()
-                : RefreshIndicator(
-                    onRefresh: _reloadInventoryFromPublishedSnapshot,
-                    child: ListView.builder(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                      itemCount: groups.length + 2,
-                      itemBuilder: (context, index) {
-                        if (index == groups.length) {
-                          return _buildWhyRentSection();
-                        }
-                        if (index == groups.length + 1) {
-                          return _buildFaqSection();
-                        }
-                        return _buildGroupCard(groups[index]);
-                      },
-                    ),
+            child: Container(
+              margin: const EdgeInsets.only(top: -20),
+              decoration: const BoxDecoration(
+                color: sheetBg,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Color(0x280F172A),
+                    blurRadius: 28,
+                    offset: Offset(0, -6),
                   ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(28)),
+                child: Column(
+                  children: [
+                    if (_categorySlugs.isNotEmpty) _buildCategoryTabs(),
+                    Expanded(
+                      child: groups.isEmpty
+                          ? _buildEmptyState()
+                          : RefreshIndicator(
+                              onRefresh: _reloadInventoryFromPublishedSnapshot,
+                              child: ListView.builder(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                padding: EdgeInsets.fromLTRB(
+                                  20,
+                                  _categorySlugs.isEmpty ? 20 : 8,
+                                  20,
+                                  32,
+                                ),
+                                itemCount: groups.length + 2,
+                                itemBuilder: (context, index) {
+                                  if (index == groups.length) {
+                                    return _buildWhyRentSection();
+                                  }
+                                  if (index == groups.length + 1) {
+                                    return _buildFaqSection();
+                                  }
+                                  return _buildGroupCard(groups[index]);
+                                },
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -311,85 +361,161 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   Widget _buildFacilityHeader() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+      padding: EdgeInsets.fromLTRB(
+        22,
+        MediaQuery.of(context).padding.top + 20,
+        22,
+        32,
+      ),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: <Color>[
-            Color(0xFF103A86),
-            Color(0xFF1658BF),
+            Color(0xFF0C1E4D),
+            Color(0xFF143A8F),
+            Color(0xFF1E5BD4),
           ],
+          stops: <double>[0, 0.45, 1],
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          if (_facilityLogoUrl != null &&
-              _facilityLogoUrl!.trim().isNotEmpty) ...[
-            Image.network(
-              _facilityLogoUrl!,
-              height: 46,
-              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-            ),
-            const SizedBox(height: 8),
-          ],
-          Text(
-            _facilityName,
-            style: const TextStyle(
-              fontSize: 30,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.4,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Rent storage units in minutes',
-            style: TextStyle(
-              fontSize: 15,
-              color: Colors.white.withOpacity(0.92),
-            ),
-          ),
-          if (_facilityPhone != null && _facilityPhone!.trim().isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(Icons.phone, size: 16, color: Colors.white.withOpacity(0.9)),
-                const SizedBox(width: 6),
-                Text(
-                  _facilityPhone!,
-                  style: TextStyle(color: Colors.white.withOpacity(0.9)),
+          Positioned(
+            right: -40,
+            top: -24,
+            child: IgnorePointer(
+              child: Container(
+                width: 180,
+                height: 180,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.06),
                 ),
-              ],
-            ),
-          ],
-          if (_facilityDescription != null &&
-              _facilityDescription!.trim().isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(
-              _facilityDescription!,
-              style: TextStyle(color: Colors.white.withOpacity(0.86)),
-            ),
-          ],
-          if (_customDomain != null && _customDomain!.trim().isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text(
-              _customDomain!,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.95),
-                fontWeight: FontWeight.w600,
               ),
             ),
-          ],
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: const [
-              _StepChip(index: 1, label: 'Choose unit'),
-              _StepChip(index: 2, label: 'Enter details'),
-              _StepChip(index: 3, label: 'Reserve online'),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_facilityLogoUrl != null &&
+                  _facilityLogoUrl!.trim().isNotEmpty) ...[
+                Material(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
+                  clipBehavior: Clip.antiAlias,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Image.network(
+                      _facilityLogoUrl!,
+                      height: 44,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              Text(
+                _facilityName,
+                style: const TextStyle(
+                  fontSize: 32,
+                  height: 1.1,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -1,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Rent storage units in minutes',
+                style: TextStyle(
+                  fontSize: 16,
+                  height: 1.35,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.white.withValues(alpha: 0.88),
+                  letterSpacing: 0.15,
+                ),
+              ),
+              if (_facilityPhone != null && _facilityPhone!.trim().isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _dialFacilityPhone,
+                    borderRadius: BorderRadius.circular(999),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.phone_in_talk_rounded,
+                            size: 18,
+                            color: Colors.white.withValues(alpha: 0.95),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _facilityPhone!,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.95),
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.underline,
+                              decorationColor: Colors.white.withValues(alpha: 0.35),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              if (_facilityDescription != null &&
+                  _facilityDescription!.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _facilityDescription!,
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.45,
+                    color: Colors.white.withValues(alpha: 0.82),
+                  ),
+                ),
+              ],
+              if (_customDomain != null && _customDomain!.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _customDomain!,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.92),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: const [
+                  _StepChip(
+                    index: 1,
+                    label: 'Choose unit',
+                    highlighted: true,
+                  ),
+                  _StepChip(
+                    index: 2,
+                    label: 'Enter details',
+                    highlighted: false,
+                  ),
+                  _StepChip(
+                    index: 3,
+                    label: 'Reserve online',
+                    highlighted: false,
+                  ),
+                ],
+              ),
             ],
           ),
         ],
@@ -399,26 +525,28 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
   Widget _buildCategoryTabs() {
     final slugs = _categorySlugs;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 6,
-        children: [
-          ChoiceChip(
-            label: const Text('All'),
-            selected: _selectedCategorySlug == null,
-            onSelected: (_) => setState(() => _selectedCategorySlug = null),
-          ),
-          ...slugs.map(
-            (slug) => ChoiceChip(
-              label: Text(_displayCategory(slug)),
-              selected: _selectedCategorySlug == slug,
-              onSelected: (_) => setState(() => _selectedCategorySlug = slug),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _CategoryFilterChip(
+              label: 'All',
+              selected: _selectedCategorySlug == null,
+              onTap: () => setState(() => _selectedCategorySlug = null),
             ),
-          ),
-        ],
+            ...slugs.map(
+              (slug) => _CategoryFilterChip(
+                label: _displayCategory(slug),
+                selected: _selectedCategorySlug == slug,
+                onTap: () => setState(() => _selectedCategorySlug = slug),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -639,33 +767,94 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   Widget _buildEmptyState() {
+    final hasPhone =
+        _facilityPhone != null && _facilityPhone!.trim().isNotEmpty;
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.inventory_2_outlined,
-                size: 56, color: AppTheme.textTertiary),
-            const SizedBox(height: 12),
-            const Text(
-              'No rentable units are currently available online.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppTheme.textSecondary),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x0F0F172A),
+                  blurRadius: 24,
+                  offset: Offset(0, 12),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            OutlinedButton(
-              onPressed:
-                  _facilityPhone == null || _facilityPhone!.trim().isEmpty
-                      ? null
-                      : () {},
-              child: Text(
-                _facilityPhone == null || _facilityPhone!.trim().isEmpty
-                    ? 'Check back soon'
-                    : 'Call $_facilityPhone',
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(28, 36, 28, 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: const Icon(
+                      Icons.inventory_2_outlined,
+                      size: 40,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  const Text(
+                    'Nothing available online right now',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.4,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    hasPhone
+                        ? 'Units can open up throughout the day. Call the facility — staff can often help you find the right space.'
+                        : 'Please check back soon — availability updates as units turn over.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 15,
+                      height: 1.5,
+                      color: AppTheme.textSecondary.withValues(alpha: 0.95),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (hasPhone)
+                    FilledButton.tonalIcon(
+                      onPressed: _dialFacilityPhone,
+                      icon: const Icon(Icons.call_rounded, size: 20),
+                      label: Text('Call $_facilityPhone'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                        foregroundColor: const Color(0xFF0F172A),
+                        backgroundColor: const Color(0xFFE8EEF7),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    )
+                  else
+                    Text(
+                      'Check back soon',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textTertiary,
+                      ),
+                    ),
+                ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -840,45 +1029,130 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 class _StepChip extends StatelessWidget {
   final int index;
   final String label;
+  final bool highlighted;
 
   const _StepChip({
     required this.index,
     required this.label,
+    this.highlighted = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    final labelColor =
+        highlighted ? const Color(0xFF0F172A) : Colors.white.withValues(alpha: 0.94);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.14),
+        color: highlighted ? Colors.white : Colors.white.withValues(alpha: 0.11),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withOpacity(0.24)),
+        border: Border.all(
+          color: highlighted
+              ? Colors.white.withValues(alpha: 0.35)
+              : Colors.white.withValues(alpha: 0.22),
+          width: 1,
+        ),
+        boxShadow: highlighted
+            ? const [
+                BoxShadow(
+                  color: Color(0x330F172A),
+                  blurRadius: 16,
+                  offset: Offset(0, 6),
+                ),
+              ]
+            : null,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircleAvatar(
-            radius: 10,
-            backgroundColor: Colors.white,
+          Container(
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: highlighted
+                  ? const Color(0xFF143A8F)
+                  : Colors.white.withValues(alpha: 0.92),
+              shape: BoxShape.circle,
+            ),
             child: Text(
               '$index',
-              style: const TextStyle(
-                color: Color(0xFF103A86),
-                fontWeight: FontWeight.w700,
+              style: TextStyle(
+                color: highlighted ? Colors.white : const Color(0xFF143A8F),
+                fontWeight: FontWeight.w800,
                 fontSize: 11,
+                height: 1,
               ),
             ),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Text(
             label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
+            style: TextStyle(
+              color: labelColor,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              letterSpacing: 0.1,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _CategoryFilterChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CategoryFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF143A8F) : const Color(0xFFEEF2F6),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: selected
+                  ? const Color(0xFF143A8F)
+                  : const Color(0xFFDCE3ED),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (selected) ...[
+                const Icon(Icons.check_rounded, size: 18, color: Colors.white),
+                const SizedBox(width: 6),
+              ],
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.15,
+                  color: selected ? Colors.white : const Color(0xFF475569),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
