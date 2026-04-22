@@ -1,6 +1,15 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <!-- Default Firebase Hosting domains → canonical site (301-like client redirect). -->
+  <script>
+    (function () {
+      var h = location.hostname;
+      if (h === 'storage-facility-creator.web.app' || h === 'storage-facility-creator.firebaseapp.com') {
+        location.replace('https://www.storagefacilitycreator.com' + location.pathname + location.search + location.hash);
+      }
+    })();
+  </script>
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
@@ -12,7 +21,7 @@
   <meta property="og:title" content="Storage Facility Creator - Modern Self Storage Management Software">
   <meta property="og:description" content="Track occupancy across facilities. Automate late notices. Send payment reminders. Unify rentals, billing, access control, messaging, and reporting.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://storagefacilitycreator.com">
+  <meta property="og:url" content="https://www.storagefacilitycreator.com">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Storage Facility Creator - Modern Self Storage Management Software">
   <meta name="twitter:description" content="Track occupancy across facilities. Automate late notices. Send payment reminders. Unify rentals, billing, access control, messaging, and reporting.">
@@ -32,7 +41,7 @@
   <meta name="app-version" content="2.10.35">
   <!-- Manifest removed - PWA installability disabled for web-only SaaS -->
   <!-- Canonical domain -->
-  <link rel="canonical" href="https://storagefacilitycreator.com">
+  <link rel="canonical" href="https://www.storagefacilitycreator.com">
   
   <!-- Noto Sans - reduces "Could not find a set of Noto fonts" warning on Flutter web -->
   <link rel="preconnect" href="https://fonts.googleapis.com">

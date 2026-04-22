@@ -17248,7 +17248,7 @@ async function addOptOutFooter(facilityId: string, message: string): Promise<str
 export const redirectToCustomDomain = functions.https.onRequest((req, res) => {
   // Use x-forwarded-host as Firebase Hosting proxies requests
   const forwardedHost = req.get('x-forwarded-host') || req.get('host') || '';
-  const canonicalDomain = 'storagefacilitycreator.com';
+  const canonicalDomain = 'www.storagefacilitycreator.com';
   
   // Check if the request is coming from a Firebase default domain
   const isFirebaseDomain = 
@@ -17316,7 +17316,7 @@ export const redirectToCustomDomain = functions.https.onRequest((req, res) => {
   <link rel="apple-touch-icon" href="/icons/Icon-192.png">
   <link rel="icon" type="image/png" href="/favicon.png"/>
   <title>SFC App - Storage Facility Creator</title>
-  <link rel="canonical" href="https://storagefacilitycreator.com">
+  <link rel="canonical" href="https://www.storagefacilitycreator.com">
   <script src="https://js.stripe.com/v3/"></script>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0, private">
   <meta http-equiv="Pragma" content="no-cache">
