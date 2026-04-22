@@ -285,7 +285,7 @@ export default function HomePage() {
               <div>
                 <dt className="text-xs uppercase tracking-wider text-slate-500">Setup time</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">
-                  &lt;1<span className="text-slate-500 text-base font-semibold"> day</span>
+                  &lt;1<span className="text-slate-500 text-base font-semibold"> hour</span>
                 </dd>
               </div>
             </dl>
