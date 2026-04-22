@@ -2,7 +2,7 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.26';
+  static const String version = '2.10.27';
 
   // Build number (YYYYMMDD format for easy identification)
   static const String buildNumber = '20260423';

@@ -9,6 +9,7 @@ import '../models/map_shape_model.dart';
 import '../models/map_layer_model.dart';
 import '../models/unit_model.dart';
 import '../services/map_layout_service.dart';
+import '../services/facility_limits_service.dart';
 import '../providers/unit_provider.dart';
 import '../providers/facility_provider.dart';
 import '../services/unit_service.dart';
@@ -36,6 +37,7 @@ import 'dart:typed_data';
 import 'package:flutter/rendering.dart';
 import '../utils/error_message_helper.dart';
 import 'package:sfcapp/utils/map_export_stub.dart' if (dart.library.html) 'package:sfcapp/utils/map_export_web.dart' as map_export;
+import 'dart:async' show unawaited;
 
 /// Provider for map shapes stream (scoped by facilityId)
 final facilityMapShapesProvider = StreamProvider.family<List<MapShapeModel>, String>((ref, facilityId) {
@@ -52,6 +54,9 @@ final selectedMapShapeProvider = StateProvider<String?>((ref) => null);
 
 /// Auto-seed and default "Starter Row" size — not tied to total facility unit count.
 const int kMapStarterRowBlockCount = 20;
+
+/// Horizontal gap between shapes when using "duplicate many in a row" (matches starter row spacing).
+const double kMapDuplicateRowGap = 12.0;
 
 List<Object> _alphanumericPartsForSort(String raw) {
   final s = raw.trim();
@@ -82,6 +87,25 @@ int compareUnitNumbersNatural(String a, String b) {
     }
   }
   return pa.length.compareTo(pb.length);
+}
+
+/// Clipboard for copy/paste of unassigned map shapes (geometry only; no unit link).
+class _UnassignedMapShapeClipboard {
+  const _UnassignedMapShapeClipboard({
+    required this.type,
+    required this.width,
+    required this.height,
+    required this.rotation,
+    required this.zIndex,
+    this.metadata,
+  });
+
+  final String type;
+  final double width;
+  final double height;
+  final double rotation;
+  final int zIndex;
+  final Map<String, dynamic>? metadata;
 }
 
 /// Corner resize handles for [FacilityMapEditorScreen] (axis-aligned rects).
@@ -147,6 +171,9 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   bool _didAutoSeedBottomRow = false;
   bool _isSeedingBottomRow = false;
   bool _isDeletingAllShapes = false;
+  bool _isDuplicatingRow = false;
+  final FocusNode _mapKeyboardFocus = FocusNode(debugLabel: 'mapEditorKeyboard');
+  _UnassignedMapShapeClipboard? _clipboardUnassigned;
 
   /// When true, [InteractiveViewer] pan/scale are off so shape drags/resizes are not
   /// stolen by the viewport (sync updates — avoids waiting for [setState]).
@@ -163,6 +190,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       debugPrint('[MapEditor] dispose for facility ${widget.facilityId}');
     }
     _isDisposed = true;
+    _mapKeyboardFocus.dispose();
     _viewerPointerLock.dispose();
     _transformationController.dispose();
     super.dispose();
@@ -175,22 +203,165 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       debugPrint('[MapEditor] initState for facility ${widget.facilityId}');
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      FocusScope.of(context).requestFocus(FocusNode());
+      if (mounted) {
+        _mapKeyboardFocus.requestFocus();
+      }
     });
   }
 
-  void _handleKeyEvent(KeyEvent event) {
-    if (event is KeyDownEvent && _selectedShapeId != null) {
+  KeyEventResult _onMapKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    final hw = HardwareKeyboard.instance;
+    final primaryModifier = hw.isControlPressed || hw.isMetaPressed;
+
+    if (primaryModifier && event.logicalKey == LogicalKeyboardKey.keyC) {
+      _copySelectedUnassignedToClipboard();
+      return KeyEventResult.handled;
+    }
+    if (primaryModifier && event.logicalKey == LogicalKeyboardKey.keyV) {
+      unawaited(_pasteUnassignedFromClipboard());
+      return KeyEventResult.handled;
+    }
+
+    if (_selectedShapeId != null) {
       if (event.logicalKey == LogicalKeyboardKey.delete) {
         _deleteSelectedShape();
-      } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
         _nudgeShape(-_gridSize, 0);
-      } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
         _nudgeShape(_gridSize, 0);
-      } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
         _nudgeShape(0, -_gridSize);
-      } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
         _nudgeShape(0, _gridSize);
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _copySelectedUnassignedToClipboard() {
+    final shapes = ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value;
+    final selectedId = _selectedShapeId;
+    if (shapes == null || selectedId == null) return;
+    final shape = shapes.where((s) => s.id == selectedId).firstOrNull;
+    if (shape == null) return;
+    if (shape.unitId != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Only unassigned map blocks can be copied to the clipboard'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+    final meta = shape.metadata;
+    setState(() {
+      _clipboardUnassigned = _UnassignedMapShapeClipboard(
+        type: shape.type,
+        width: shape.width,
+        height: shape.height,
+        rotation: shape.rotation,
+        zIndex: shape.zIndex,
+        metadata: meta != null ? Map<String, dynamic>.from(meta) : null,
+      );
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Copied — paste with Ctrl+V (⌘V on Mac)'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  Offset _pastePlacementForSize(List<MapShapeModel> shapes, double w, double h) {
+    final bounds = _computeWorkspaceBounds(shapes);
+    final selectedId = _selectedShapeId;
+    if (selectedId != null) {
+      final sel = shapes.where((s) => s.id == selectedId).firstOrNull;
+      if (sel != null) {
+        var x = _snapToGridValue(sel.x + _gridSize);
+        var y = _snapToGridValue(sel.y + _gridSize);
+        final maxX = (bounds.maxX - w).clamp(bounds.minX, bounds.maxX);
+        final maxY = (bounds.maxY - h).clamp(bounds.minY, bounds.maxY);
+        x = x.clamp(bounds.minX, maxX);
+        y = y.clamp(bounds.minY, maxY);
+        return Offset(x, y);
+      }
+    }
+
+    final vs = _interactiveViewerViewportSize();
+    final Offset scenePoint;
+    if (vs.width > 0 && vs.height > 0) {
+      scenePoint = _transformationController.toScene(Offset(vs.width / 2, vs.height / 2));
+    } else {
+      scenePoint = Offset(
+        bounds.minX + (bounds.maxX - bounds.minX) / 2,
+        bounds.minY + (bounds.maxY - bounds.minY) / 2,
+      );
+    }
+    var defaultX = _snapToGridValue(scenePoint.dx - w / 2);
+    var defaultY = _snapToGridValue(scenePoint.dy - h / 2);
+    final maxPlaceX = (bounds.maxX - w).clamp(bounds.minX, bounds.maxX);
+    final maxPlaceY = (bounds.maxY - h).clamp(bounds.minY, bounds.maxY);
+    defaultX = defaultX.clamp(bounds.minX, maxPlaceX);
+    defaultY = defaultY.clamp(bounds.minY, maxPlaceY);
+    return Offset(defaultX, defaultY);
+  }
+
+  Future<void> _pasteUnassignedFromClipboard() async {
+    final clip = _clipboardUnassigned;
+    if (clip == null) return;
+
+    final shapes =
+        ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value ?? const <MapShapeModel>[];
+    final pos = _pastePlacementForSize(shapes, clip.width, clip.height);
+
+    try {
+      final createdId = await MapLayoutService.createMapShape(
+        facilityId: widget.facilityId,
+        type: clip.type,
+        x: pos.dx,
+        y: pos.dy,
+        width: clip.width,
+        height: clip.height,
+        rotation: clip.rotation,
+        zIndex: clip.zIndex + 1,
+        metadata: clip.metadata,
+      );
+      if (mounted) {
+        setState(() {
+          _pendingFocusShapeId = createdId;
+          _selectedShapeId = createdId;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Pasted unassigned block'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not paste: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
       }
     }
   }
@@ -220,6 +391,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _transformationController.value = Matrix4.identity();
       _didAutoSeedBottomRow = false;
       _isSeedingBottomRow = false;
+      _clipboardUnassigned = null;
     }
   }
 
@@ -382,6 +554,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   }
 
   void _selectShape(String? shapeId) {
+    _mapKeyboardFocus.requestFocus();
     setState(() {
       _selectedShapeId = shapeId;
       _dragOffset = null;
@@ -758,6 +931,152 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     }
   }
 
+  Future<void> _showDuplicateRowDialog({MapShapeModel? sourceShape}) async {
+    final shapes = ref.read(facilityMapShapesProvider(widget.facilityId)).asData?.value ?? const <MapShapeModel>[];
+    final MapShapeModel? source = sourceShape ??
+        (_selectedShapeId != null ? shapes.where((s) => s.id == _selectedShapeId).firstOrNull : null);
+    if (source == null || !mounted) return;
+
+    final controller = TextEditingController(text: '5');
+    final parsed = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Duplicate in a row'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Creates copies to the right of this block, same height and size (${source.width.toStringAsFixed(0)}×${source.height.toStringAsFixed(0)}), aligned in one row.',
+                style: Theme.of(ctx).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Number of copies',
+                  hintText: 'e.g. 20',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.number,
+                onSubmitted: (_) {
+                  final n = int.tryParse(controller.text.trim());
+                  if (n != null && n >= 1) {
+                    Navigator.of(ctx).pop(n);
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final n = int.tryParse(controller.text.trim());
+                if (n == null || n < 1) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('Enter a whole number of at least 1')),
+                  );
+                  return;
+                }
+                Navigator.of(ctx).pop(n);
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (parsed == null || parsed < 1 || !mounted) return;
+    await _duplicateShapeRowToRight(source, parsed);
+  }
+
+  Future<void> _duplicateShapeRowToRight(MapShapeModel source, int requestedCount) async {
+    if (requestedCount < 1 || !mounted) return;
+
+    setState(() => _isDuplicatingRow = true);
+    try {
+      final currentCount = await FacilityLimitsService.getMapShapeCount(widget.facilityId);
+      final remainingSlots = FacilityLimitsService.maxMapShapesPerFacility - currentCount;
+      if (remainingSlots <= 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Map shape limit reached (${FacilityLimitsService.maxMapShapesPerFacility} max).',
+              ),
+              backgroundColor: AppTheme.error,
+            ),
+          );
+        }
+        return;
+      }
+
+      final n = requestedCount > remainingSlots ? remainingSlots : requestedCount;
+      final step = source.width + kMapDuplicateRowGap;
+      final meta = source.metadata;
+      final Map<String, dynamic>? metaCopy =
+          meta != null ? Map<String, dynamic>.from(meta) : null;
+
+      String? lastId;
+      for (var k = 1; k <= n; k++) {
+        if (!mounted) return;
+        final x = _snapToGridValue(source.x + k * step);
+        final y = _snapToGridValue(source.y);
+        lastId = await MapLayoutService.createMapShape(
+          facilityId: widget.facilityId,
+          type: source.type,
+          x: x,
+          y: y,
+          width: source.width,
+          height: source.height,
+          rotation: source.rotation,
+          zIndex: source.zIndex + k,
+          metadata: metaCopy,
+        );
+      }
+
+      if (!mounted || lastId == null) return;
+
+      setState(() {
+        _pendingFocusShapeId = lastId;
+        _selectedShapeId = lastId;
+      });
+
+      final String msg;
+      if (n < requestedCount) {
+        msg = 'Created $n copies in a row (stopped at map limit; ${requestedCount - n} not created)';
+      } else {
+        msg = n == 1 ? 'Created 1 copy in a row' : 'Created $n copies in a row';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not duplicate in a row: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDuplicatingRow = false);
+      }
+    }
+  }
+
   Future<void> _saveMap() async {
     setState(() => _isSaving = true);
     try {
@@ -787,9 +1106,10 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     final shapesAsync = ref.watch(facilityMapShapesProvider(widget.facilityId));
     final unitsAsync = ref.watch(facilityUnitsProvider(widget.facilityId));
 
-    return KeyboardListener(
-      focusNode: FocusNode(),
-      onKeyEvent: _handleKeyEvent,
+    return Focus(
+      focusNode: _mapKeyboardFocus,
+      autofocus: true,
+      onKeyEvent: _onMapKey,
       child: Column(
         children: [
           _buildToolbar(),
@@ -892,8 +1212,11 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       color: cs.surface,
-      child: Row(
-        children: [
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           ElevatedButton.icon(
             onPressed: _addRectangle,
             icon: const Icon(Icons.add_box, size: 20),
@@ -914,6 +1237,25 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                   )
                 : const Icon(Icons.view_week, size: 18),
             label: Text(_isSeedingBottomRow ? 'Building...' : 'Starter row ($kMapStarterRowBlockCount)'),
+          ),
+          const SizedBox(width: 8),
+          Tooltip(
+            message: _selectedShapeId == null
+                ? 'Select a map block first, then create copies in a line to the right'
+                : 'Create several copies of the selected block in one row to the right',
+            child: OutlinedButton.icon(
+              onPressed: (_selectedShapeId == null || _isDuplicatingRow)
+                  ? null
+                  : () => _showDuplicateRowDialog(),
+              icon: _isDuplicatingRow
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.copy_all_outlined, size: 18),
+              label: Text(_isDuplicatingRow ? 'Duplicating…' : 'Duplicate row…'),
+            ),
           ),
           const SizedBox(width: 12),
           IconButton(
@@ -1004,7 +1346,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             tooltip: 'Shape Manager',
             onPressed: _openShapeManager,
           ),
-          const Spacer(),
+          const SizedBox(width: 16),
           TextButton.icon(
             onPressed: _isDeletingAllShapes || shapeCount == 0 || shapesAsync.isLoading
                 ? null
@@ -1043,6 +1385,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
             ),
           ),
         ],
+        ),
       ),
     );
   }
@@ -1155,6 +1498,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 _selectedShapeId = null;
               });
             }
+            _mapKeyboardFocus.requestFocus();
           },
           child: Builder(
             builder: (context) {
@@ -1746,6 +2090,17 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 _showUnitAssignmentDialog(shape);
               },
             ),
+            if (shape.unitId == null)
+              ListTile(
+                leading: const Icon(Icons.content_copy),
+                title: const Text('Copy layout'),
+                subtitle: const Text('Paste with Ctrl+V (⌘V on Mac)'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _selectShape(shape.id);
+                  _copySelectedUnassignedToClipboard();
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.copy),
               title: const Text('Duplicate Shape'),
@@ -1753,6 +2108,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
                 Navigator.of(context).pop();
                 _selectShape(shape.id);
                 _duplicateSelectedShape();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.library_add),
+              title: const Text('Duplicate many in a row…'),
+              subtitle: const Text('Same size, in a line to the right'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _selectShape(shape.id);
+                _showDuplicateRowDialog(sourceShape: shape);
               },
             ),
             ListTile(
