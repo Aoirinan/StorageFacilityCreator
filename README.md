@@ -13,9 +13,14 @@ Flutter web app for Storage Facility Creator.
 - Analyze: `flutter analyze`
 - Tests (with Firebase mocks): `flutter test`
 
-## Hosting Source Of Truth
-- Public website (`storagefacilitycreator.com`, `www.storagefacilitycreator.com`): **Vercel** using the Next.js app in `marketing`.
-- Flutter web app in this repo is still built to `build/web` and can be served from Firebase Hosting `web.app`/`firebaseapp.com` URLs for app/internal use.
+## Hosting source of truth (do not mix these up)
+
+| Surface | Folder | Goes live via |
+|--------|--------|----------------|
+| **Marketing / SEO site** | `marketing/` | **Vercel** (push to `main` when Git is connected) → `https://www.storagefacilitycreator.com` |
+| **Operator Flutter app** | repo root (`lib/`, …) | **Firebase Hosting** → run **`./deploy.ps1`** (push to GitHub does **not** update Firebase by itself unless you added CI) |
+
+Details: [docs/DEPLOY_MARKETING_VS_APP.md](docs/DEPLOY_MARKETING_VS_APP.md) · Search Console + optional DNS: [docs/SEO_SETUP_CHECKLIST.md](docs/SEO_SETUP_CHECKLIST.md)
 
 ## Flutter Web Build (App)
 - Build with cache busting: `./build_web_with_cache_bust.ps1`

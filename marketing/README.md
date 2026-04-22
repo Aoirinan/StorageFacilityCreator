@@ -90,6 +90,8 @@ Update these for footer, contact page, and A2P/support references.
 
 You can run the site in production without running it locally. Deploy from this repo as follows.
 
+**Not the Flutter app:** the operator app ships from the repo root via Firebase (`deploy.ps1`). See [docs/DEPLOY_MARKETING_VS_APP.md](../docs/DEPLOY_MARKETING_VS_APP.md) so marketing (Vercel) and the app (Firebase) are not confused.
+
 ### Vercel (recommended)
 
 1. Push the repo (including the `marketing/` folder) to GitHub/GitLab/Bitbucket.

@@ -1,5 +1,9 @@
 # Deployment script for Storage Facility Creator
 # Deploys Flutter web app, Firestore rules, Storage rules, and hosting
+#
+# This script is for the FIREBASE / FLUTTER APP only — not the marketing site.
+# Marketing (Next.js) lives in marketing/ and deploys via Vercel. See:
+#   docs/DEPLOY_MARKETING_VS_APP.md
 
 Write-Host ''
 Write-Host 'Starting deployment...' -ForegroundColor Green
