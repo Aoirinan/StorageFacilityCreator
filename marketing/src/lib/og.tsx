@@ -154,7 +154,7 @@ export function renderOgImage({ title, subtitle, eyebrow, accent = 'blue' }: Opt
             color: 'rgba(255,255,255,0.85)',
           }}
         >
-          <div>storagefacilitycreator.com</div>
+          <div>www.storagefacilitycreator.com</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ opacity: 0.8 }}>Self-storage management software</span>
           </div>

@@ -17,6 +17,9 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_DOMAIN),
+  alternates: {
+    canonical: '/',
+  },
   title: {
     default: `${SITE_NAME} | Self-Storage Management Software`,
     template: `%s | ${SITE_NAME}`,

@@ -10799,7 +10799,7 @@ export const createCustomerPortalSession = functions.runWith({ secrets: STRIPE_S
 
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: returnUrl || 'https://storagefacilitycreator.com/subscription/manage',
+      return_url: returnUrl || 'https://www.storagefacilitycreator.com/subscription/manage',
     });
 
     return {
@@ -13661,7 +13661,7 @@ export const createStripeConnectAccountLink = functions.runWith({ secrets: STRIP
       functions.logger.info(`Created Stripe Connect account ${connectAccountId} for facility ${facilityId}`);
     }
 
-    const baseUrl = 'https://storagefacilitycreator.com';
+    const baseUrl = 'https://www.storagefacilitycreator.com';
     const accountLink = await stripe.accountLinks.create({
       account: connectAccountId,
       refresh_url: `${baseUrl}/#/stripe-connect?facilityId=${facilityId}&refresh=1`,
@@ -14006,8 +14006,8 @@ export const createTenantPaymentCheckout = functions.runWith({ secrets: STRIPE_S
         },
       ],
       customer_email: tenantEmail,
-      success_url: 'https://storagefacilitycreator.com/payment/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://storagefacilitycreator.com/payment/cancel',
+      success_url: 'https://www.storagefacilitycreator.com/payment/success?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://www.storagefacilitycreator.com/payment/cancel',
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,

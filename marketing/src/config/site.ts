@@ -1,7 +1,8 @@
-export const SITE_VERSION = '1.3.0';
+export const SITE_VERSION = '1.3.1';
 
 export const SITE_NAME = 'Storage Facility Creator';
-export const SITE_DOMAIN = 'https://storagefacilitycreator.com';
+/** Canonical public marketing origin (www). Apex host should 308 to this URL. */
+export const SITE_DOMAIN = 'https://www.storagefacilitycreator.com';
 export const SUPPORT_EMAIL = 'support@storagefacilitycreator.com';
 export const SUPPORT_PHONE = '855-526-4544';
 

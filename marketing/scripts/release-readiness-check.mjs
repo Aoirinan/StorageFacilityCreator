@@ -25,7 +25,7 @@ function runChecks() {
   assertIncludes(siteConfig, "PRIMARY_CTA_HREF = '/contact?intent=trial'", 'Primary CTA href mismatch.', failures);
   assertIncludes(siteConfig, "SECONDARY_CTA_HREF = '/contact?intent=demo'", 'Secondary CTA href mismatch.', failures);
   assertIncludes(siteConfig, "TERTIARY_CTA_HREF = '/product-tour'", 'Tertiary CTA href mismatch.', failures);
-  assertIncludes(siteConfig, "SITE_DOMAIN = 'https://storagefacilitycreator.com'", 'Canonical domain mismatch.', failures);
+  assertIncludes(siteConfig, "SITE_DOMAIN = 'https://www.storagefacilitycreator.com'", 'Canonical domain mismatch.', failures);
 
   const contactPage = read('src/app/contact/page.tsx');
   assertIncludes(contactPage, 'href="/terms"', 'Contact consent links missing Terms link.', failures);
