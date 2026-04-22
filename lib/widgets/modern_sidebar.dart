@@ -134,8 +134,8 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate('/payments'),
                 ),
                 _SidebarItem(
-                  icon: Icons.point_of_sale_outlined,
-                  activeIcon: Icons.point_of_sale,
+                  icon: Icons.local_offer_outlined,
+                  activeIcon: Icons.local_offer,
                   label: 'Retail',
                   route: AppRoute.retail,
                   isActive:

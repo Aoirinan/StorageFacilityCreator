@@ -2,7 +2,7 @@
 /// Update this file whenever deploying a new version
 class AppVersion {
   // Version number (semver: major.minor.patch)
-  static const String version = '2.10.35';
+  static const String version = '2.10.36';
 
   // Build number (YYYYMMDD format for easy identification)
   static const String buildNumber = '20260422';
@@ -13,11 +13,11 @@ class AppVersion {
   // Deployment date/time (update on each deploy)
   static const String deploymentDate = '2026-04-22';
   static const String deploymentTime =
-      'Tenant portal additional-unit rental linking with secure portal hold flow; online rentals compatibility hardening.';
+      'Sidebar Retail nav uses a reliable Material icon (price tag) so the glyph renders consistently on web.';
 
   // Feature version (what's in this release)
   static const String featureTag =
-      'Tenant portal multi-unit aggregation, per-unit portal payments, and safe additional-unit move-in linking.';
+      'Retail sidebar icon fix for live web UI.';
 
   // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';
