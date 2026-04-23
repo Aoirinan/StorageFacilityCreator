@@ -14,6 +14,9 @@ import 'package:sfcapp/screens/super_admin/tabs/metrics_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/users_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/leads_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/commission_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/messaging_guard_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/referrals_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/custom_domain_guide_tab.dart';
 
 class SuperAdminScreen extends ConsumerStatefulWidget {
   const SuperAdminScreen({super.key});
@@ -34,13 +37,16 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.toggle_on, label: 'Feature Flags'),
     _TabDef(icon: Icons.support_agent, label: 'Leads'),
     _TabDef(icon: Icons.request_quote, label: 'Commission'),
+    _TabDef(icon: Icons.mail_lock, label: 'Messaging'),
+    _TabDef(icon: Icons.redeem, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
+    _TabDef(icon: Icons.dns, label: 'Custom domain'),
   ];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 8, vsync: this);
+    _tabController = TabController(length: 11, vsync: this);
     // Seed feature flags on first load (no-op if already seeded)
     FeatureFlagService.seedDefaults();
   }
@@ -227,7 +233,10 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           FeatureFlagsTab(),
           LeadsTab(),
           CommissionTab(),
+          MessagingGuardTab(),
+          ReferralsTab(),
           BugReportsTab(),
+          CustomDomainGuideTab(),
         ],
       ),
     );

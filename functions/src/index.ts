@@ -17,11 +17,25 @@ import {
   isStopKeyword,
 } from './texting_onboarding_helpers';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
+import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformMessagingGuard';
 import { emailMonthlyLimitForAccount } from './constants/emailMonthlyLimits';
+import { runAllMigrations } from './migrations/phase2_migrations';
+import { backfillContractCompliance } from './migrations/backfill_contract_compliance';
 export {
   syncPublicFacilityMapInventoryOnTenantWrite,
   syncPublicFacilityMapInventoryOnUnitWrite,
 } from './publicFacilityMapInventorySync';
+export { getPublicWebsiteConfig, renderPublicWebsite } from './publicWebsite';
+export {
+  claimReferralAttribution,
+  ensureReferralCodeForAccount,
+  setReferralRewardPreferredFacility,
+} from './referralRewards';
+import {
+  getRefereePlatformTrialDays,
+  processReferralOnPlatformInvoicePaid,
+  resolveReferralPendingItemForSuperAdmin,
+} from './referralRewards';
 
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
@@ -141,11 +155,59 @@ function getTwilioClient(): any {
   return twilioClient;
 }
 
+/**
+ * Validates Twilio `X-Twilio-Signature` for standard form POST webhooks.
+ * In the emulator, set TWILIO_SKIP_SIGNATURE_VERIFY=true to skip (local testing only).
+ */
+function verifyTwilioWebhookSignature(
+  req: functions.https.Request,
+  res: functions.Response<any>,
+  authToken: string,
+): boolean {
+  if (
+    process.env.FUNCTIONS_EMULATOR === 'true' &&
+    process.env.TWILIO_SKIP_SIGNATURE_VERIFY === 'true'
+  ) {
+    functions.logger.warn('Twilio webhook signature verification skipped (emulator only)');
+    return true;
+  }
+  const twilioSdk = require('twilio') as typeof import('twilio') & {
+    validateExpressRequest: (
+      req: functions.https.Request,
+      authToken: string,
+      opts?: Record<string, unknown>,
+    ) => boolean;
+  };
+  const token = (authToken || '').trim();
+  if (!token) {
+    functions.logger.error('Twilio webhook: TWILIO_AUTH_TOKEN is empty');
+    res.status(500).type('text/plain').send('Webhook misconfigured');
+    return false;
+  }
+  try {
+    const ok = twilioSdk.validateExpressRequest(req, token, {});
+    if (!ok) {
+      functions.logger.warn('Twilio webhook signature validation failed', {
+        path: (req as ExpressRequest).path,
+        hasSignature: Boolean(req.get?.('X-Twilio-Signature')),
+      });
+      res.status(403).type('text/plain').send('Forbidden');
+      return false;
+    }
+  } catch (e: any) {
+    functions.logger.error('Twilio webhook signature validation error', { message: e?.message });
+    res.status(403).type('text/plain').send('Forbidden');
+    return false;
+  }
+  return true;
+}
+
 // Super admin email list (case-insensitive checks via helper).
 // Can be overridden via SUPER_ADMIN_EMAILS env var (comma-separated).
-// Must match lib/services/superadmin_service.dart and firestore.rules
+// Must match lib/services/superadmin_service.dart, firestore.rules, and storage.rules
 const SUPER_ADMIN_EMAILS_HARDCODED = [
   'russell_forsyth_1992@outlook.com',
+  'russellforsyth09091992@gmail.com',
   'kennethgriggs03@gmail.com',
 ];
 
@@ -717,6 +779,100 @@ export const superAdminListAuthUsers = functions.https.onCall(
       users,
       nextPageToken: listResult.pageToken || null,
     };
+  },
+);
+
+/**
+ * Super admin only: list referral rewards that require manual review.
+ * Source: referralRewardsPending collection written by webhook referral logic.
+ */
+export const superAdminListReferralRewardsPending = functions.https.onCall(
+  async (data: { limit?: number }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Only super admins can list referral pending items',
+      );
+    }
+
+    const requested = Number(data?.limit);
+    const limit = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.floor(requested), 1), 200)
+      : 100;
+
+    const snap = await admin.firestore()
+      .collection('referralRewardsPending')
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+
+    return {
+      items: snap.docs.map((doc) => {
+        const d = doc.data() as Record<string, unknown>;
+        return {
+          id: doc.id,
+          reason: (d.reason as string | undefined) || null,
+          error: (d.error as string | undefined) || null,
+          referrerAccountId: (d.referrerAccountId as string | undefined) || null,
+          refereeAccountId: (d.refereeAccountId as string | undefined) || null,
+          refereeFacilityId: (d.refereeFacilityId as string | undefined) || null,
+          stripeInvoiceId: (d.stripeInvoiceId as string | undefined) || null,
+          createdAt: (d.createdAt as admin.firestore.Timestamp | undefined)?.toMillis() || null,
+          status: (d.status as string | undefined) || 'open',
+          resolutionAction: (d.resolutionAction as string | undefined) || null,
+          resolutionNote: (d.resolutionNote as string | undefined) || null,
+          resolvedByEmail: (d.resolvedByEmail as string | undefined) || null,
+          resolvedAt: (d.resolvedAt as admin.firestore.Timestamp | undefined)?.toMillis() || null,
+          resolvedAppliedToFacilityId: (d.resolvedAppliedToFacilityId as string | undefined) || null,
+        };
+      }),
+    };
+  },
+);
+
+/**
+ * Super admin only: resolve one pending referral queue item.
+ * - resolve_only: mark item closed with note
+ * - apply_reward: apply manual 3-month reward then mark closed
+ */
+export const superAdminResolveReferralPending = functions.https.onCall(
+  async (
+    data: {
+      pendingId?: string;
+      action?: 'resolve_only' | 'apply_reward';
+      note?: string;
+      targetFacilityId?: string;
+    },
+    context,
+  ) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Only super admins can resolve referral pending items',
+      );
+    }
+
+    const pendingId = String(data?.pendingId || '').trim();
+    const action = (data?.action === 'apply_reward' ? 'apply_reward' : 'resolve_only');
+    if (!pendingId) {
+      throw new functions.https.HttpsError('invalid-argument', 'pendingId is required');
+    }
+
+    return resolveReferralPendingItemForSuperAdmin(getStripeClient(), {
+      pendingId,
+      action,
+      note: data?.note,
+      actorEmail: callerEmail || 'unknown',
+      targetFacilityId: data?.targetFacilityId || null,
+    });
   },
 );
 
@@ -1381,6 +1537,8 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
   // Generate message log ID early
   const messageLogId = `email-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
+  let platformEmailReserved = false;
+  let sendGridAcceptedEmail = false;
   try {
     // Get user email for super admin check and message logging
     const userRecord = await admin.auth().getUser(context.auth.uid);
@@ -1711,8 +1869,11 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         subject,
       });
       // #endregion
-      
+
+      await reservePlatformOutgoing('email');
+      platformEmailReserved = true;
       [result] = await getSgMail().send(msg);
+      sendGridAcceptedEmail = true;
       
       // Extract x-message-id from headers (if available)
       messageId = result.headers?.['x-message-id'] || null;
@@ -1923,6 +2084,11 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
     };
 
   } catch (error: any) {
+    if (platformEmailReserved && !sendGridAcceptedEmail) {
+      await releasePlatformOutgoing('email').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing email', err),
+      );
+    }
     // If it's already an HttpsError, re-throw it (don't wrap it)
     if (error instanceof functions.https.HttpsError) {
       functions.logger.error(
@@ -2104,6 +2270,8 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
 
   const { facilityId, digestId, to, subject, html, text, templateId, variables } = data;
 
+  let digestPlatformEmailReserved = false;
+  let digestEmailActuallySent = false;
   try {
     // Verify user owns the facility
     const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
@@ -2123,6 +2291,8 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
     const facilityName = (fd.name as string) || 'Storage Facility';
     const tenantIdForDigest = String((variables as Record<string, unknown> | undefined)?.tenantId ?? '').trim();
 
+    await reservePlatformOutgoing('email');
+    digestPlatformEmailReserved = true;
     const digestSend = await sendFacilityEmailWithCompliance(
       {
         to: to,
@@ -2143,12 +2313,17 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
       },
     );
     if (!digestSend.sent) {
+      await releasePlatformOutgoing('email').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing digest email', err),
+      );
+      digestPlatformEmailReserved = false;
       throw new functions.https.HttpsError(
         'failed-precondition',
         'This recipient has unsubscribed from emails from this facility.',
       );
     }
 
+    digestEmailActuallySent = true;
     const messageId = digestSend.messageId || `sg-${Date.now()}`;
 
     await admin.firestore()
@@ -2181,7 +2356,15 @@ export const sendDigest = functions.runWith({ secrets: SENDGRID_SECRETS }).https
     };
 
   } catch (error: any) {
+    if (digestPlatformEmailReserved && !digestEmailActuallySent) {
+      await releasePlatformOutgoing('email').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing digest email (catch)', err),
+      );
+    }
     functions.logger.error(`Failed to send digest email to ${to} for facility ${facilityId}`, error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
     throw new functions.https.HttpsError('internal', `Failed to send digest email: ${error.message}`);
   }
 });
@@ -3577,6 +3760,8 @@ export const sendSMS = functions.runWith({
     // Will be validated later
   }
 
+  let platformSmsReserved = false;
+  let twilioSmsSendCommitted = false;
   try {
     // Verify user has access to the facility (owner or manager)
     const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
@@ -3890,6 +4075,8 @@ export const sendSMS = functions.runWith({
     // #endregion
 
     // Use Twilio REST API to send SMS
+    await reservePlatformOutgoing('sms');
+    platformSmsReserved = true;
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
     const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
 
@@ -4205,6 +4392,7 @@ export const sendSMS = functions.runWith({
       statusMessage = 'Message delivered successfully.';
     }
 
+    twilioSmsSendCommitted = true;
     return {
       success: true,
       messageId: result.sid,
@@ -4221,6 +4409,11 @@ export const sendSMS = functions.runWith({
     };
 
   } catch (error: any) {
+    if (platformSmsReserved && !twilioSmsSendCommitted) {
+      await releasePlatformOutgoing('sms').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing sms', err),
+      );
+    }
     // If it's already an HttpsError (from Twilio auth, invalid args, etc.), rethrow it
     if (error instanceof functions.https.HttpsError) {
       // Update message log to "failed"
@@ -4359,6 +4552,8 @@ async function sendSMSAsEmail(
   usageWarning?: string;
   usageState: string;
 }> {
+  let platformEmailReserved = false;
+  let fallbackEmailActuallySent = false;
   try {
     // Get tenant email if 'to' is a phone number, or use 'to' if it's already an email
     let emailAddress = to;
@@ -4439,6 +4634,8 @@ async function sendSMSAsEmail(
       /* ignore lookup failures */
     }
 
+    await reservePlatformOutgoing('email');
+    platformEmailReserved = true;
     const sendResult = await sendFacilityEmailWithCompliance(
       {
         to: emailAddress,
@@ -4460,6 +4657,10 @@ async function sendSMSAsEmail(
     );
 
     if (!sendResult.sent) {
+      await releasePlatformOutgoing('email').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing sms-as-email', err),
+      );
+      platformEmailReserved = false;
       functions.logger.warn(`SMS email fallback skipped (unsubscribed): ${emailAddress}`);
       return {
         success: false,
@@ -4469,6 +4670,7 @@ async function sendSMSAsEmail(
       };
     }
 
+    fallbackEmailActuallySent = true;
     const messageId = sendResult.messageId || `email-${Date.now()}`;
 
     // Log fallback email send
@@ -4502,6 +4704,11 @@ async function sendSMSAsEmail(
       usageState: usageCheck.state,
     };
   } catch (error: any) {
+    if (platformEmailReserved && !fallbackEmailActuallySent) {
+      await releasePlatformOutgoing('email').catch((err) =>
+        functions.logger.warn('releasePlatformOutgoing sms-as-email (catch)', err),
+      );
+    }
     functions.logger.error(`Failed to send SMS fallback email: ${error.message}`, error);
     return {
       success: false,
@@ -5410,9 +5617,12 @@ export const getSMSUsageStatus = functions.https.onCall(async (data: any, contex
  * Admin function: Override SMS limits for a facility/account
  */
 export const overrideSMSLimit = functions.https.onCall(async (data: any, context) => {
-  // TODO: Add admin authentication check
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can override SMS limits');
   }
   enforceAppCheckOrThrow(context);
 
@@ -10922,7 +11132,7 @@ export const createFacilitySubscriptionCheckout = functions.runWith({ timeoutSec
       cancel_url: cancelUrl || `https://app.storagefacilitycreator.com/subscription/cancel?facility_id=${facilityId}`,
       metadata: { accountId, facilityId, ownerUid: context.auth.uid },
       subscription_data: {
-        trial_period_days: 30,
+        trial_period_days: getRefereePlatformTrialDays(facilityDoc),
         metadata: { accountId, facilityId },
       },
     });
@@ -11602,6 +11812,11 @@ async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
   if (facilityId && !tenantId) {
     await updateFacilityFromPlatformSubscription(facilityId, subscriptionId);
     functions.logger.info(`Facility ${facilityId} platform payment succeeded`);
+    try {
+      await processReferralOnPlatformInvoicePaid(getStripeClient(), invoice, subscription, facilityId);
+    } catch (referralErr: any) {
+      functions.logger.error('Referral reward processing failed', referralErr);
+    }
     return;
   }
   if (accountId) {
@@ -13042,6 +13257,8 @@ interface AIAssistantConfig {
   enabled: boolean;
   allowlistFacilityIds: string[];
   killSwitch: boolean;
+  /** When false (default), aiAssistantExecuteAction rejects all requests (stub not ready for production). */
+  executeActionsEnabled?: boolean;
   provider?: string; // 'openai', 'anthropic', etc. (to be configured later)
   maxTokensPerRequest?: number; // Max tokens per request (default: 1000)
   maxMessagesPerDay?: number; // Max messages per facility per day (default: 100)
@@ -13054,6 +13271,7 @@ const DEFAULT_AI_ASSISTANT_CONFIG: AIAssistantConfig = {
   enabled: false,
   allowlistFacilityIds: [],
   killSwitch: false,
+  executeActionsEnabled: false,
   maxTokensPerRequest: 1000,
   maxMessagesPerDay: 30,  // Per facility (hard limit)
   maxMessagesPerUser: 20, // Per user per day (hard limit)
@@ -13080,6 +13298,7 @@ async function getAIAssistantConfig(): Promise<AIAssistantConfig> {
       enabled: data.enabled ?? false,
       allowlistFacilityIds: data.allowlistFacilityIds || [],
       killSwitch: data.killSwitch ?? false,
+      executeActionsEnabled: data.executeActionsEnabled === true,
       provider: data.provider as string | undefined,
       maxTokensPerRequest: data.maxTokensPerRequest ?? DEFAULT_AI_ASSISTANT_CONFIG.maxTokensPerRequest,
       maxMessagesPerDay: data.maxMessagesPerDay ?? DEFAULT_AI_ASSISTANT_CONFIG.maxMessagesPerDay,
@@ -16180,10 +16399,6 @@ export const lookupUserByEmail = functions.https.onCall(async (data: any, contex
   }
 });
 
-// Export migration functions (Phase 2)
-import { runAllMigrations } from './migrations/phase2_migrations';
-import { backfillContractCompliance } from './migrations/backfill_contract_compliance';
-
 // Cloud Function to run migrations (for manual execution)
 export const runPhase2Migrations = functions.https.onCall(async (data: any, context) => {
   // Only allow super admins to run migrations
@@ -16191,13 +16406,8 @@ export const runPhase2Migrations = functions.https.onCall(async (data: any, cont
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
 
-  const userEmail = context.auth.token.email;
-  const superAdminEmails = [
-    'russell_forsyth_1992@outlook.com',
-    'russellforsyth09091992@gmail.com',
-  ];
-
-  if (!superAdminEmails.includes(userEmail?.toLowerCase() || '')) {
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
     throw new functions.https.HttpsError('permission-denied', 'Only super admins can run migrations');
   }
 
@@ -16217,13 +16427,8 @@ export const backfillContractComplianceFields = functions.https.onCall(async (da
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
 
-  const userEmail = context.auth.token.email;
-  const superAdminEmails = [
-    'russell_forsyth_1992@outlook.com',
-    'russellforsyth09091992@gmail.com',
-  ];
-
-  if (!superAdminEmails.includes(userEmail?.toLowerCase() || '')) {
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
     throw new functions.https.HttpsError('permission-denied', 'Only super admins can run migrations');
   }
 
@@ -16375,7 +16580,9 @@ async function processSfcLeadInboundSMSWebhook(params: {
  * Dedicated Twilio webhook for the SFC lead line (SMS).
  * Can be pointed to directly from Twilio, or internally reused by handleIncomingSMS.
  */
-export const handleSfcLeadSMS = functions.https.onRequest(async (req, res) => {
+export const handleSfcLeadSMS = functions.runWith({
+  secrets: [TWILIO_AUTH_TOKEN],
+}).https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
@@ -16391,6 +16598,9 @@ export const handleSfcLeadSMS = functions.https.onRequest(async (req, res) => {
   }
 
   try {
+    if (!verifyTwilioWebhookSignature(req, res, TWILIO_AUTH_TOKEN.value())) {
+      return;
+    }
     const from = String(req.body.From || '').trim();
     const to = String(req.body.To || '').trim();
     const body = String(req.body.Body || '').trim();
@@ -16415,7 +16625,9 @@ export const handleSfcLeadSMS = functions.https.onRequest(async (req, res) => {
  * Dedicated Twilio webhook for voice calls to the SFC lead line.
  * Logs inbound call activity and forwards the call to a configured personal number.
  */
-export const handleSfcLeadCall = functions.https.onRequest(async (req, res) => {
+export const handleSfcLeadCall = functions.runWith({
+  secrets: [TWILIO_AUTH_TOKEN],
+}).https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
@@ -16431,6 +16643,9 @@ export const handleSfcLeadCall = functions.https.onRequest(async (req, res) => {
   }
 
   try {
+    if (!verifyTwilioWebhookSignature(req, res, TWILIO_AUTH_TOKEN.value())) {
+      return;
+    }
     const from = String(req.body.From || '').trim();
     const to = String(req.body.To || '').trim();
     const callSid = String(req.body.CallSid || '').trim();
@@ -16489,10 +16704,10 @@ export const handleIncomingSMS = functions.runWith({
   }
 
   try {
-    // Note: Twilio signature verification requires twilio package or manual crypto implementation
-    // For now, we'll rely on the webhook URL being secret and Firebase security rules
-    // TODO: Implement proper Twilio signature verification when twilio package is added
-    
+    if (!verifyTwilioWebhookSignature(req, res, TWILIO_AUTH_TOKEN.value())) {
+      return;
+    }
+
     // Extract phone number and message from Twilio webhook
     const from = req.body.From as string;
     const to = req.body.To as string;
@@ -17364,20 +17579,23 @@ export const redirectToCustomDomain = functions.https.onRequest((req, res) => {
 });
 
 /**
- * TEMPORARY ADMIN FUNCTION: Enable Stripe Connect feature flag
- * This is a one-time use function to enable Stripe Connect globally
- * TODO: Remove this function after enabling the feature flag
+ * Maintenance-only: enable Stripe Connect in Firestore appConfig.
+ * Requires super-admin email and ENABLE_STRIPE_CONNECT_ADMIN_CALLABLE=true on the function runtime.
  */
 export const enableStripeConnectAdmin = functions.https.onCall(async (data: any, context) => {
-  // Only allow super admins
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
 
-  const userEmail = context.auth.token.email || '';
-  const isSuperAdmin = getSuperAdminEmails().includes(userEmail.toLowerCase());
+  if (process.env.ENABLE_STRIPE_CONNECT_ADMIN_CALLABLE?.trim() !== 'true') {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'This maintenance endpoint is disabled. Set ENABLE_STRIPE_CONNECT_ADMIN_CALLABLE=true on the function to allow.',
+    );
+  }
 
-  if (!isSuperAdmin) {
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
     throw new functions.https.HttpsError('permission-denied', 'Only super admins can enable feature flags');
   }
 
@@ -18197,6 +18415,14 @@ export const aiAssistantExecuteAction = functions.https.onCall(async (data: any,
   }
 
   try {
+    const aiCfg = await getAIAssistantConfig();
+    if (aiCfg.executeActionsEnabled !== true) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'AI action execution is not enabled. Set appConfig/aiAssistant.executeActionsEnabled to true when ready.',
+      );
+    }
+
     // Check if AI assistant is enabled
     const aiEnabled = await isAIAssistantEnabled(facilityId);
     if (!aiEnabled) {

@@ -253,6 +253,19 @@ class FacilityPublicService {
     return '$base/#/f/$facilitySlug/$categorySlug';
   }
 
+  /// Get cookie-cutter public website URL by slug.
+  static String getPublicWebsiteUrl(String facilitySlug, {String? baseUrl}) {
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
+    return '$base/w/$facilitySlug';
+  }
+
+  /// Get website config JSON endpoint by slug.
+  static String getPublicWebsiteConfigUrl(String facilitySlug,
+      {String? baseUrl}) {
+    final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
+    return '$base/api/public-website?slug=$facilitySlug';
+  }
+
   /// Verifies if a custom domain appears configured for Firebase Hosting.
   static Future<DomainCheckResult> verifyCustomDomain(String domain) async {
     final normalized = _normalizeDomain(domain);

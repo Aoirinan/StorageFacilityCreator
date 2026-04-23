@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -11,6 +12,7 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/services/referral_program_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/models/facility_model.dart';
@@ -47,6 +49,8 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
   String? _checkoutUrl;
   WebViewController? _webViewController;
   bool _hasShownTrialExpiredDialog = false;
+  String? _referralShareLink;
+  bool _referralFacilityPrefBusy = false;
 
   @override
   void initState() {
@@ -66,9 +70,26 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       }
 
       final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-      
+
+      String? referralShareLink;
+      var accForState = account;
+      try {
+        final codeFromFn = await ReferralProgramService.syncForCurrentUser();
+        final refreshedAcc = await FacilityCreatorAccountService.getAccount(account.accountId);
+        if (refreshedAcc != null) accForState = refreshedAcc;
+        final code = (codeFromFn ?? refreshedAcc?.referralCode)?.trim().toUpperCase();
+        if (code != null && code.isNotEmpty) {
+          referralShareLink = ReferralProgramService.signupUrlForCode(code);
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('Referral sync: $e');
+        }
+      }
+
       setState(() {
-        _account = account;
+        _account = accForState;
+        _referralShareLink = referralShareLink;
         _isLoading = false;
       });
 
@@ -165,8 +186,14 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       // Listen for account updates (e.g., after webhook processes payment)
       FacilityCreatorAccountService.getAccountStream(account.accountId).listen((updatedAccount) {
         if (updatedAccount != null && mounted) {
+          String? link = _referralShareLink;
+          final c = updatedAccount.referralCode?.trim().toUpperCase();
+          if (c != null && c.isNotEmpty) {
+            link = ReferralProgramService.signupUrlForCode(c);
+          }
           setState(() {
             _account = updatedAccount;
+            _referralShareLink = link;
           });
         }
       });
@@ -747,6 +774,160 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     );
   }
 
+  String? _coerceReferralRewardDropdownValue(String? pref) {
+    if (pref == null || pref.isEmpty) return null;
+    if (_subscribedFacilities.any((f) => f.id == pref)) return pref;
+    return null;
+  }
+
+  Future<void> _onReferralRewardFacilityChanged(String? facilityId) async {
+    if (_account == null) return;
+    setState(() => _referralFacilityPrefBusy = true);
+    try {
+      await ReferralProgramService.setPreferredRewardFacility(facilityId);
+      if (!mounted) return;
+      final updated = await FacilityCreatorAccountService.getAccount(_account!.accountId);
+      setState(() {
+        _account = updated ?? _account;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Referral reward preference saved')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _referralFacilityPrefBusy = false);
+    }
+  }
+
+  void _showReferralProgramDetailsDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Referral program details'),
+        content: SingleChildScrollView(
+          child: Text(
+            'Eligibility\n'
+            '• Rewards are for new operators you refer who are not already in a sales process with us.\n'
+            '• You cannot refer yourself or your own company.\n'
+            '• We may disqualify referrals that abuse the program or do not represent a good-faith customer.\n\n'
+            'What referred operators get\n'
+            '• Their facility’s platform subscription checkout uses a longer trial before the first bill.\n\n'
+            'What you get\n'
+            '• After their first paid invoice on that referred facility’s platform subscription, you receive '
+            'three months at no charge on one of your own facility platform subscriptions (the one you pick above, '
+            'or the first eligible if you leave it on Automatic).\n'
+            '• There is a limit of ten such rewards per calendar year for your account. If you reach the cap, '
+            'we will queue the case for manual review.\n\n'
+            'If something fails in billing automation, your account or our support team may need to apply credits '
+            'manually—contact support@storagefacilitycreator.com.',
+            style: Theme.of(ctx).textTheme.bodyMedium,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReferralCard() {
+    final link = _referralShareLink;
+    if (link == null || link.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final prefValue = _coerceReferralRewardDropdownValue(_account?.referralRewardPreferredFacilityId);
+    return Card(
+      elevation: 2,
+      color: AppTheme.surface,
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: AppTheme.borderLight, width: 1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.card_giftcard, color: AppTheme.success, size: 22),
+                const SizedBox(width: 8),
+                Text(
+                  'Refer another operator',
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Referred facilities get 60 days on the platform before their first bill. '
+              'After their first paid month on that facility’s subscription, you get 3 months free '
+              'on one of your own facility subscriptions. Up to 10 rewards per calendar year.',
+              style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            SelectableText(link, style: theme.textTheme.bodyLarge),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: link));
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Referral link copied')),
+                );
+              },
+              icon: const Icon(Icons.copy, size: 18),
+              label: const Text('Copy link'),
+            ),
+            if (_subscribedFacilities.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Apply referral rewards to',
+                style: theme.textTheme.labelLarge?.copyWith(color: AppTheme.textPrimary),
+              ),
+              const SizedBox(height: 6),
+              DropdownButton<String?>(
+                isExpanded: true,
+                value: prefValue,
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('Automatic — first eligible facility'),
+                  ),
+                  ..._subscribedFacilities.map(
+                    (f) => DropdownMenuItem<String?>(
+                      value: f.id,
+                      child: Text(f.name, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                ],
+                onChanged: _referralFacilityPrefBusy
+                    ? null
+                    : (v) => _onReferralRewardFacilityChanged(v),
+              ),
+            ],
+            TextButton(
+              onPressed: _showReferralProgramDetailsDialog,
+              child: const Text('Program details and eligibility'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
@@ -782,6 +963,9 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                       // Compact status summary (status, period, key alerts)
                       _buildStatusSummaryCard(),
                       const SizedBox(height: 16),
+                      _buildReferralCard(),
+                      if (_referralShareLink != null && _referralShareLink!.isNotEmpty)
+                        const SizedBox(height: 16),
 
                       // Subscription Status Card (compact, neutral background for readability)
                       Card(

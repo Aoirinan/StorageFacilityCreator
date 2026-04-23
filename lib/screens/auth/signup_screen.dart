@@ -10,14 +10,17 @@ import 'terms_screen.dart';
 import 'privacy_screen.dart';
 import '../../theme/app_theme.dart';
 import '../../router/app_route.dart';
+import '../../services/referral_program_service.dart';
 import 'widgets/auth_shell.dart';
 
 class SignupScreen extends ConsumerStatefulWidget {
   final String? initialEmail;
+  final String? initialReferralCode;
 
   const SignupScreen({
     super.key,
     this.initialEmail,
+    this.initialReferralCode,
   });
 
   @override
@@ -41,6 +44,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     if (pre != null && pre.trim().isNotEmpty) {
       _emailController.text = pre.trim();
     }
+    ReferralProgramService.cachePendingCodeFromQuery(widget.initialReferralCode);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       HomeButtonService.instance.hide();
     });

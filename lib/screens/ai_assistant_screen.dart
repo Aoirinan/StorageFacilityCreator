@@ -253,8 +253,7 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
   }
 
   Future<String> _getAIResponse(String question, String? facilityContext) async {
-    // TODO: Replace with actual LLM API call
-    // For now, return helpful responses based on keywords
+    // Keyword fallback when the OpenAI-backed path is not used (see `aiAssistantChat` / appConfig).
     
     final lowerQuestion = question.toLowerCase();
     

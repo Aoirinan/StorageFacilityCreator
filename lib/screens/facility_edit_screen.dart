@@ -15,6 +15,7 @@ import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
+import '../constants/facility_capacity.dart';
 
 class FacilityEditScreen extends ConsumerStatefulWidget {
   final FacilityModel facility;
@@ -443,16 +444,16 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Total Units (required, 1–200)
+                  // Total Units (required, capacity cap)
                   TextFormField(
                     controller: _totalUnitsController,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Total Units',
                       hintText: 'e.g., 50',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.grid_view),
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.grid_view),
                       helperText:
-                          'Total physical capacity (1–200). Used for occupancy calculations.',
+                          'Total physical capacity (1–$kMaxFacilityCapacityUnits). Used for occupancy calculations.',
                     ),
                     keyboardType: TextInputType.number,
                     validator: (value) {
@@ -461,8 +462,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                         return 'Total units is required.';
                       }
                       final n = int.tryParse(raw);
-                      if (n == null || n < 1 || n > 200) {
-                        return 'Total units must be between 1 and 200.';
+                      if (n == null || n < 1 || n > kMaxFacilityCapacityUnits) {
+                        return 'Total units must be between 1 and $kMaxFacilityCapacityUnits.';
                       }
                       return null;
                     },

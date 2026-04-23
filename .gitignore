@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
+functions/lib/
+
 # Firebase / local env
 .firebase/
 .env

@@ -8,6 +8,13 @@ import 'permission_service.dart';
 import 'facility_creator_account_service.dart';
 import 'superadmin_service.dart';
 import 'debug_logger.dart';
+import '../constants/facility_capacity.dart';
+
+void _facilityServiceDebugLog(String message) {
+  if (kDebugMode) {
+    _facilityServiceDebugLog(message);
+  }
+}
 
 /// Helper class for facility creation permission check
 class _CanCreateFacilityResult {
@@ -66,7 +73,7 @@ class FacilityService {
       return out;
     } catch (e) {
       if (kDebugMode) {
-        print('❌ [FacilityService] Error loading role-based facilities: $e');
+        _facilityServiceDebugLog('❌ [FacilityService] Error loading role-based facilities: $e');
       }
       return [];
     }
@@ -96,7 +103,7 @@ class FacilityService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('⚠️ [FacilityService] user_roles lookup for getFacility: $e');
+        _facilityServiceDebugLog('⚠️ [FacilityService] user_roles lookup for getFacility: $e');
       }
     }
     return false;
@@ -113,13 +120,13 @@ class FacilityService {
       final user = _auth.currentUser;
       if (user == null) {
         if (kDebugMode) {
-          print('⚠️ No user signed in, skipping backfill');
+          _facilityServiceDebugLog('⚠️ No user signed in, skipping backfill');
         }
         return;
       }
 
       if (kDebugMode) {
-        print('🔄 Running facility backfill for user: ${user.uid}');
+        _facilityServiceDebugLog('🔄 Running facility backfill for user: ${user.uid}');
       }
 
       final snapshot = await _firestore
@@ -140,14 +147,14 @@ class FacilityService {
           updates['active'] = true;
           docNeedsUpdate = true;
           if (kDebugMode) {
-            print('🔧 Fixing facility: ${data['name']} - setting active: true');
+            _facilityServiceDebugLog('🔧 Fixing facility: ${data['name']} - setting active: true');
           }
         }
 
         // Fix missing ownerUid (shouldn't happen but be safe)
         if (data['ownerUid'] == null || data['ownerUid'] != user.uid) {
           if (kDebugMode) {
-            print('❌ ERROR: Facility ${data['name']} has invalid ownerUid, blocking unsafe update');
+            _facilityServiceDebugLog('❌ ERROR: Facility ${data['name']} has invalid ownerUid, blocking unsafe update');
           }
           continue; // Skip this doc to prevent security issues
         }
@@ -157,7 +164,7 @@ class FacilityService {
           updates['roles.${user.uid}'] = 'owner';
           docNeedsUpdate = true;
           if (kDebugMode) {
-            print('🔧 Ensuring owner role entry for facility: ${data['name']}');
+            _facilityServiceDebugLog('🔧 Ensuring owner role entry for facility: ${data['name']}');
           }
         }
 
@@ -170,18 +177,18 @@ class FacilityService {
       if (needsUpdate) {
         await batch.commit();
         if (kDebugMode) {
-          print('✅ Facility backfill completed');
+          _facilityServiceDebugLog('✅ Facility backfill completed');
         }
       } else {
         if (kDebugMode) {
-          print('✅ No facilities need backfill');
+          _facilityServiceDebugLog('✅ No facilities need backfill');
         }
       }
 
       _backfillCompleted = true;
     } catch (e) {
       if (kDebugMode) {
-        print('⚠️ Error during facility backfill: $e');
+        _facilityServiceDebugLog('⚠️ Error during facility backfill: $e');
       }
       // Don't rethrow - backfill is non-critical
     }
@@ -208,7 +215,7 @@ class FacilityService {
           }
 
           if (kDebugMode) {
-            print('Creating facility: $name for user: ${user.uid}');
+            _facilityServiceDebugLog('Creating facility: $name for user: ${user.uid}');
           }
 
           // ✅ Phase 7: Check subscription status before creating facility
@@ -238,9 +245,11 @@ class FacilityService {
             }
           }
 
-          // Enforce totalUnits: required, 1–200
-          if (totalUnits < 1 || totalUnits > 200) {
-            throw Exception('Total units must be between 1 and 200.');
+          // Enforce totalUnits: required, 1–kMaxFacilityCapacityUnits
+          if (totalUnits < 1 || totalUnits > kMaxFacilityCapacityUnits) {
+            throw Exception(
+              'Total units must be between 1 and $kMaxFacilityCapacityUnits.',
+            );
           }
 
           final ref = _firestore.collection('facilities').doc();
@@ -266,15 +275,15 @@ class FacilityService {
           };
 
           if (kDebugMode) {
-            print('🔄 Setting facility data to Firestore...');
+            _facilityServiceDebugLog('🔄 Setting facility data to Firestore...');
           }
 
           // Set facility data with better error handling
           await ref.set(facilityData, SetOptions(merge: false));
 
           if (kDebugMode) {
-            print('✅ Facility data set successfully: ${ref.id}');
-            print('🔄 Verifying facility was created...');
+            _facilityServiceDebugLog('✅ Facility data set successfully: ${ref.id}');
+            _facilityServiceDebugLog('🔄 Verifying facility was created...');
           }
 
           // Verify the facility was actually created
@@ -284,15 +293,15 @@ class FacilityService {
           }
 
           if (kDebugMode) {
-            print('Facility created and verified successfully: ${ref.id}');
+            _facilityServiceDebugLog('Facility created and verified successfully: ${ref.id}');
           }
 
           return ref.id;
         } catch (e) {
           if (kDebugMode) {
-            print('❌ Error creating facility: $e');
+            _facilityServiceDebugLog('❌ Error creating facility: $e');
             if (e.toString().contains('permission-denied')) {
-              print('🚨 PERMISSION DENIED: Check Firestore security rules');
+              _facilityServiceDebugLog('🚨 PERMISSION DENIED: Check Firestore security rules');
             }
           }
           rethrow;
@@ -391,7 +400,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Getting facilities for owner: ${user.uid}');
+        _facilityServiceDebugLog('🔄 Getting facilities for owner: ${user.uid}');
       }
 
       // Fix existing facilities that might be missing the active field
@@ -414,7 +423,7 @@ class FacilityService {
       } catch (orderingError) {
         if (orderingError.toString().contains('failed-precondition') && orderingError.toString().contains('index')) {
           if (kDebugMode) {
-            print('📋 INDEX BUILDING: Using fallback unordered query...');
+            _facilityServiceDebugLog('📋 INDEX BUILDING: Using fallback unordered query...');
           }
           // Fallback to unordered query
           Query fallbackQuery = _firestore
@@ -432,7 +441,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('✅ Successfully retrieved ${snapshot.docs.length} facilities');
+        _facilityServiceDebugLog('✅ Successfully retrieved ${snapshot.docs.length} facilities');
       }
 
       final owned = snapshot.docs
@@ -478,9 +487,9 @@ class FacilityService {
       return facilities;
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error getting user facilities: $e');
+        _facilityServiceDebugLog('❌ Error getting user facilities: $e');
         if (e.toString().contains('permission-denied')) {
-          print('🚨 PERMISSION DENIED: Check Firestore security rules for facilities collection');
+          _facilityServiceDebugLog('🚨 PERMISSION DENIED: Check Firestore security rules for facilities collection');
         }
       }
       
@@ -607,7 +616,7 @@ class FacilityService {
       throw Exception('Not signed in');
     }
     if (kDebugMode) {
-      print('🔄 ACTIVE facilities stream (owned + roles): ${user.uid}');
+      _facilityServiceDebugLog('🔄 ACTIVE facilities stream (owned + roles): ${user.uid}');
     }
     return getFacilitiesForUserStream();
   }
@@ -621,7 +630,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Setting up ARCHIVED facilities stream for owner: ${user.uid}');
+        _facilityServiceDebugLog('🔄 Setting up ARCHIVED facilities stream for owner: ${user.uid}');
       }
 
       Query query = _firestore
@@ -634,7 +643,7 @@ class FacilityService {
         query = query.orderBy('archivedAt', descending: true);
       } catch (orderingError) {
         if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
+          _facilityServiceDebugLog('⚠️ Ordered query not available, using unordered: $orderingError');
         }
       }
 
@@ -647,14 +656,14 @@ class FacilityService {
         facilities.sort((a, b) => a.name.compareTo(b.name));
 
         if (kDebugMode) {
-          print('📡 Stream update: ${facilities.length} ARCHIVED facilities for owner: ${user.uid}');
+          _facilityServiceDebugLog('📡 Stream update: ${facilities.length} ARCHIVED facilities for owner: ${user.uid}');
         }
 
         return facilities;
       });
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error setting up archived facilities stream: $e');
+        _facilityServiceDebugLog('❌ Error setting up archived facilities stream: $e');
       }
       rethrow;
     }
@@ -684,7 +693,7 @@ class FacilityService {
       );
       if (!allowed) {
         if (kDebugMode) {
-          print('❌ User ${user.uid} cannot read facility $facilityId');
+          _facilityServiceDebugLog('❌ User ${user.uid} cannot read facility $facilityId');
         }
         return null;
       }
@@ -692,7 +701,7 @@ class FacilityService {
       return FacilityModel.fromFirestore(doc);
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error getting facility: $e');
+        _facilityServiceDebugLog('❌ Error getting facility: $e');
       }
       return null;
     }
@@ -726,7 +735,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Updating facility: $facilityId');
+        _facilityServiceDebugLog('🔄 Updating facility: $facilityId');
       }
 
       final updateData = <String, dynamic>{
@@ -744,8 +753,10 @@ class FacilityService {
       if (billingSettings != null) updateData['billingSettings'] = billingSettings;
       if (insuranceSettings != null) updateData['insuranceSettings'] = insuranceSettings;
       if (totalUnits != null) {
-        if (totalUnits < 1 || totalUnits > 200) {
-          throw Exception('Total units must be between 1 and 200.');
+        if (totalUnits < 1 || totalUnits > kMaxFacilityCapacityUnits) {
+          throw Exception(
+            'Total units must be between 1 and $kMaxFacilityCapacityUnits.',
+          );
         }
         updateData['totalUnits'] = totalUnits;
       }
@@ -753,11 +764,11 @@ class FacilityService {
       await _firestore.collection('facilities').doc(facilityId).update(updateData);
 
       if (kDebugMode) {
-        print('✅ Facility updated successfully: $facilityId');
+        _facilityServiceDebugLog('✅ Facility updated successfully: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error updating facility: $e');
+        _facilityServiceDebugLog('❌ Error updating facility: $e');
       }
       rethrow;
     }
@@ -778,7 +789,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Archiving facility: $facilityId');
+        _facilityServiceDebugLog('🔄 Archiving facility: $facilityId');
       }
 
       await _firestore.collection('facilities').doc(facilityId).update({
@@ -799,7 +810,7 @@ class FacilityService {
         accountSyncOk = true;
       } catch (e) {
         if (kDebugMode) {
-          print('⚠️ Could not remove facility from account (archived anyway): $e');
+          _facilityServiceDebugLog('⚠️ Could not remove facility from account (archived anyway): $e');
         }
       }
       // Fallback: server-side reconcile overwrites facilityIds from actual facilities
@@ -810,11 +821,11 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('✅ Facility archived successfully: $facilityId');
+        _facilityServiceDebugLog('✅ Facility archived successfully: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error archiving facility: $e');
+        _facilityServiceDebugLog('❌ Error archiving facility: $e');
       }
       rethrow;
     }
@@ -840,7 +851,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Restoring facility: $facilityId');
+        _facilityServiceDebugLog('🔄 Restoring facility: $facilityId');
       }
 
       await _firestore.collection('facilities').doc(facilityId).update({
@@ -851,11 +862,11 @@ class FacilityService {
       });
 
       if (kDebugMode) {
-        print('✅ Facility restored successfully: $facilityId');
+        _facilityServiceDebugLog('✅ Facility restored successfully: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error restoring facility: $e');
+        _facilityServiceDebugLog('❌ Error restoring facility: $e');
       }
       rethrow;
     }
@@ -881,7 +892,7 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('🔄 Deleting facility permanently: $facilityId');
+        _facilityServiceDebugLog('🔄 Deleting facility permanently: $facilityId');
       }
 
       // Keep account.facilityIds in sync before we delete the facility doc
@@ -895,7 +906,7 @@ class FacilityService {
         accountSyncOk = true;
       } catch (e) {
         if (kDebugMode) {
-          print('⚠️ Could not remove facility from account (deleting anyway): $e');
+          _facilityServiceDebugLog('⚠️ Could not remove facility from account (deleting anyway): $e');
         }
       }
 
@@ -913,11 +924,11 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('✅ Facility deleted permanently: $facilityId');
+        _facilityServiceDebugLog('✅ Facility deleted permanently: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error deleting facility: $e');
+        _facilityServiceDebugLog('❌ Error deleting facility: $e');
       }
       rethrow;
     }
@@ -948,11 +959,11 @@ class FacilityService {
       }
 
       if (kDebugMode) {
-        print('✅ All sub-collections deleted for facility: $facilityId');
+        _facilityServiceDebugLog('✅ All sub-collections deleted for facility: $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error deleting sub-collections: $e');
+        _facilityServiceDebugLog('❌ Error deleting sub-collections: $e');
       }
       rethrow;
     }
@@ -972,12 +983,12 @@ class FacilityService {
         await batch.commit();
         
         if (kDebugMode) {
-          print('🔄 Deleted batch of ${snapshot.docs.length} documents from $subcollection');
+          _facilityServiceDebugLog('🔄 Deleted batch of ${snapshot.docs.length} documents from $subcollection');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error deleting subcollection $subcollection: $e');
+        _facilityServiceDebugLog('❌ Error deleting subcollection $subcollection: $e');
       }
       // Continue with other subcollections even if one fails
     }

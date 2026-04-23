@@ -12,6 +12,7 @@ import '../services/facility_creator_account_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/email_usage_service.dart';
 import 'package:sfcapp/constants/email_monthly_limits.dart';
+import 'package:sfcapp/constants/facility_capacity.dart';
 import '../theme/app_theme.dart';
 import '../screens/subscription_test_screen.dart';
 import '../router/app_router.dart';
@@ -894,14 +895,15 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                             ),
                             const SizedBox(height: 16),
                             
-                            // Total Units (required, 1–200)
+                            // Total Units (required, capacity cap)
                             TextFormField(
                               controller: _totalUnitsController,
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: 'Total Units',
                                 hintText: 'e.g., 50',
-                                prefixIcon: Icon(Icons.grid_view),
-                                helperText: 'Total physical capacity (1–200). Used for occupancy calculations.',
+                                prefixIcon: const Icon(Icons.grid_view),
+                                helperText:
+                                    'Total physical capacity (1–$kMaxFacilityCapacityUnits). Used for occupancy calculations.',
                               ),
                               keyboardType: TextInputType.number,
                               validator: (value) {
@@ -910,8 +912,8 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                                   return 'Total units is required.';
                                 }
                                 final n = int.tryParse(raw);
-                                if (n == null || n < 1 || n > 200) {
-                                  return 'Total units must be between 1 and 200.';
+                                if (n == null || n < 1 || n > kMaxFacilityCapacityUnits) {
+                                  return 'Total units must be between 1 and $kMaxFacilityCapacityUnits.';
                                 }
                                 return null;
                               },

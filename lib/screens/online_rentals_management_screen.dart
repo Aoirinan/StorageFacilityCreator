@@ -238,6 +238,14 @@ class _OnlineRentalsManagementScreenState
     return linkBaseUrlFromCustomDomainField(_customDomainController.text);
   }
 
+  String get _websiteBaseUrl {
+    final domain = normalizeCustomDomain(_customDomainController.text);
+    if (domain.isNotEmpty) {
+      return 'https://$domain';
+    }
+    return 'https://app.storagefacilitycreator.com';
+  }
+
   Future<void> _checkDomainStatus({bool showSnackBar = false}) async {
     final domain = normalizeCustomDomain(_customDomainController.text);
     if (domain.isEmpty) {
@@ -349,7 +357,8 @@ class _OnlineRentalsManagementScreenState
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Renter message copied — replace [AMOUNT] and [PAYMENT_LINK]'),
+        content:
+            Text('Renter message copied — replace [AMOUNT] and [PAYMENT_LINK]'),
         backgroundColor: AppTheme.success,
       ),
     );
@@ -672,6 +681,51 @@ class _OnlineRentalsManagementScreenState
             hintText: 'your-facility',
             border: OutlineInputBorder(),
             prefixIcon: Icon(Icons.link),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Website Setup (Cookie Cutter)',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Each facility gets one cookie-cutter website. Template and layout are fixed.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const _TemplateBadge(),
+                const SizedBox(height: 10),
+                _LinkRow(
+                  label: 'Website URL',
+                  value: (_customDomainController.text.trim().isNotEmpty)
+                      ? _websiteBaseUrl
+                      : FacilityPublicService.getPublicWebsiteUrl(
+                          _slugPreview,
+                          baseUrl: _websiteBaseUrl,
+                        ),
+                  onCopy: _copy,
+                ),
+                const Divider(),
+                _LinkRow(
+                  label: 'Website JSON',
+                  value: FacilityPublicService.getPublicWebsiteConfigUrl(
+                    _slugPreview,
+                    baseUrl: _websiteBaseUrl,
+                  ),
+                  onCopy: _copy,
+                ),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -1050,6 +1104,23 @@ class _OnlineRentalsManagementScreenState
             ),
           ],
         ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () {
+              final url = (_customDomainController.text.trim().isNotEmpty)
+                  ? _websiteBaseUrl
+                  : FacilityPublicService.getPublicWebsiteUrl(
+                      _slugPreview,
+                      baseUrl: _websiteBaseUrl,
+                    );
+              unawaited(_copy('Website URL', url));
+            },
+            icon: const Icon(Icons.language),
+            label: const Text('Copy Website URL'),
+          ),
+        ),
       ],
     );
   }
@@ -1113,6 +1184,29 @@ class _DomainStatusChip extends StatelessWidget {
       child: Text(
         connected ? 'Looks Valid' : 'Needs Setup',
         style: TextStyle(color: color, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+class _TemplateBadge extends StatelessWidget {
+  const _TemplateBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE6F9FF),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFF9EE7FF)),
+      ),
+      child: const Text(
+        'Template: Cookie Cutter v1 (Fixed)',
+        style: TextStyle(
+          color: Color(0xFF0C4A6E),
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }

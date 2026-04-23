@@ -13,6 +13,7 @@ import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
 import '../services/modern_navigation_service.dart';
+import '../services/referral_program_service.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/signup_screen.dart';
 import '../screens/auth/forgot_password_screen.dart';
@@ -105,6 +106,7 @@ import '../screens/email_opt_outs_settings_screen.dart';
 import '../screens/sms_opt_outs_settings_screen.dart';
 import '../screens/profile_edit_screen.dart';
 import '../screens/appearance_settings_screen.dart';
+import '../screens/facility_website_setup_screen.dart';
 import '../screens/bulk_messaging_screen.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/tenant_service.dart';
@@ -222,7 +224,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         name: 'signup',
         builder: (context, state) {
           final email = state.uri.queryParameters['email'];
-          return SignupScreen(initialEmail: email);
+          final refCode = state.uri
+              .queryParameters[ReferralProgramService.referralSignupQueryParam];
+          return SignupScreen(
+            initialEmail: email,
+            initialReferralCode: refCode,
+          );
         },
       ),
       GoRoute(
@@ -1190,6 +1197,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 );
               }
               return OnlineRentalsManagementScreen(facilityId: facilityId);
+            },
+          ),
+          GoRoute(
+            path: AppRoute.websiteSetup,
+            name: 'website-setup',
+            builder: (context, state) {
+              final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+              if (facilityId.isEmpty) {
+                return const SettingsScreen();
+              }
+              return FacilityWebsiteSetupScreen(facilityId: facilityId);
             },
           ),
           GoRoute(

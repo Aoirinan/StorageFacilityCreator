@@ -371,6 +371,65 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             },
                           ),
                           _SettingsTile(
+                            icon: Icons.language_outlined,
+                            title: 'Website Setup',
+                            subtitle:
+                                'Configure one cookie-cutter website per facility',
+                            onTap: () {
+                              facilitiesAsync?.when(
+                                data: (facilities) {
+                                  if (facilities.isEmpty) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                            'Please create a facility first'),
+                                        backgroundColor: AppTheme.warning,
+                                      ),
+                                    );
+                                  } else if (facilities.length == 1) {
+                                    context.push(
+                                        '${AppRoute.websiteSetup}?facilityId=${facilities.first.id}');
+                                  } else {
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Select Facility'),
+                                        content: SizedBox(
+                                          width: double.maxFinite,
+                                          child: ListView.builder(
+                                            shrinkWrap: true,
+                                            itemCount: facilities.length,
+                                            itemBuilder: (context, index) {
+                                              final facility =
+                                                  facilities[index];
+                                              return ListTile(
+                                                title: Text(facility.name),
+                                                onTap: () {
+                                                  Navigator.of(ctx).pop();
+                                                  context.push(
+                                                      '${AppRoute.websiteSetup}?facilityId=${facility.id}');
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(),
+                                            child: const Text('Cancel'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }
+                                },
+                                loading: () {},
+                                error: (_, __) {},
+                              );
+                            },
+                          ),
+                          _SettingsTile(
                             icon: Icons.email_outlined,
                             title: 'Email opt-outs',
                             subtitle:

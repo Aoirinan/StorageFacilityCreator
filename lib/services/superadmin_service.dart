@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 /// Superadmins bypass all subscription restrictions and have full access
 /// 
 /// NOTE: Super admin emails must be kept in sync with:
-/// - functions/src/index.ts (SUPER_ADMIN_EMAILS)
-/// - firestore.rules (isSuperAdmin function)
+/// - functions/src/index.ts (SUPER_ADMIN_EMAILS_HARDCODED / getSuperAdminEmails)
+/// - firestore.rules and storage.rules (isSuperAdmin)
 /// 
 /// To add/remove super admins, update all three locations.
 class SuperAdminService {
@@ -15,6 +15,7 @@ class SuperAdminService {
   // IMPORTANT: Keep in sync with functions/src/index.ts and firestore.rules
   static const List<String> superAdminEmails = [
     'russell_forsyth_1992@outlook.com',
+    'russellforsyth09091992@gmail.com',
     'kennethgriggs03@gmail.com',
   ];
 

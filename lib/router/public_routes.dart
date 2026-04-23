@@ -15,6 +15,7 @@ import '../screens/marketing_landing_page.dart';
 import '../models/contract_model.dart';
 import 'app_route.dart';
 import 'route_helpers.dart';
+import '../services/referral_program_service.dart';
 
 /// Public routes that don't require authentication
 List<RouteBase> getPublicRoutes() {
@@ -43,7 +44,11 @@ List<RouteBase> getPublicRoutes() {
       name: 'signup',
       builder: (context, state) {
         final email = state.uri.queryParameters['email'];
-        return SignupScreen(initialEmail: email);
+        final refCode = state.uri.queryParameters[ReferralProgramService.referralSignupQueryParam];
+        return SignupScreen(
+          initialEmail: email,
+          initialReferralCode: refCode,
+        );
       },
     ),
     GoRoute(

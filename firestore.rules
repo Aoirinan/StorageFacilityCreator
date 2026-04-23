@@ -44,10 +44,11 @@ service cloud.firestore {
 
     function isSuperAdmin() {
       let email = authEmailLower();
-      // Keep in sync with lib/services/superadmin_service.dart and functions/src/index.ts
+      // Keep in sync with lib/services/superadmin_service.dart, storage.rules, and functions/src/index.ts
       return email != null && (
         email == 'russell_forsyth_1992@outlook.com' ||
         email == 'russell_Forsyth_1992@outlook.com' ||
+        email == 'russellforsyth09091992@gmail.com' ||
         email == 'kennethgriggs03@gmail.com'
       );
     }
@@ -269,6 +270,14 @@ service cloud.firestore {
       match /security_settings/{settingId} {
         allow read, write: if isAuthenticated() && isAccountOwner(accountId);
       }
+    }
+
+    // Referral program indexes — written only by Cloud Functions (Admin SDK)
+    match /referralLookup/{code} {
+      allow read, write: if false;
+    }
+    match /referralRewardsPending/{id} {
+      allow read, write: if false;
     }
     
     // Facilities - owner-based access with proper validation

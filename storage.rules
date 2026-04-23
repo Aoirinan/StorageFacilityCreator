@@ -12,6 +12,7 @@ service firebase.storage {
       return email != null && (
         email == 'russell_forsyth_1992@outlook.com' ||
         email == 'russell_Forsyth_1992@outlook.com' ||
+        email == 'russellforsyth09091992@gmail.com' ||
         email == 'kennethgriggs03@gmail.com'
       );
     }
@@ -34,8 +35,22 @@ service firebase.storage {
         (facilityDoc(facilityId).managers != null &&
           facilityDoc(facilityId).managers[request.auth.uid] == true) ||
         facilityRole(facilityId) == 'owner' ||
-        facilityRole(facilityId) == 'manager'
+        facilityRole(facilityId) == 'manager' ||
+        facilityRole(facilityId) == 'admin'
       );
+    }
+
+    function globalDnrEntryAllowsEvidenceWrite(entryId) {
+      return firestore.exists(/databases/(default)/documents/global_dnr_entries/$(entryId)) &&
+        (
+          firestore.get(/databases/(default)/documents/global_dnr_entries/$(entryId)).data.createdByUserId == request.auth.uid ||
+          (
+            firestore.get(/databases/(default)/documents/global_dnr_entries/$(entryId)).data.createdByFacilityId is string &&
+            isFacilityOwnerOrManager(
+              firestore.get(/databases/(default)/documents/global_dnr_entries/$(entryId)).data.createdByFacilityId
+            )
+          )
+        );
     }
     
     // Per-user uploads
@@ -43,11 +58,11 @@ service firebase.storage {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
     
-    // Global DNR evidence - any authenticated SFC user can read; write for uploads
+    // Global DNR evidence — aligned with Firestore global_dnr_entries/{entryId}/evidence rules.
     // Path: dnrEvidence/{entryId}/{evidenceId}/{filename}
     match /dnrEvidence/{entryId}/{allPaths=**} {
       allow read: if signedIn();
-      allow write: if signedIn();
+      allow write: if signedIn() && (isSuperAdmin() || globalDnrEntryAllowsEvidenceWrite(entryId));
     }
 
     // Public branding assets (online rentals logos, etc.).

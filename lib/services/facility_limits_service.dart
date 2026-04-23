@@ -8,7 +8,7 @@ class FacilityLimitsService {
 
   // Hard caps (enforced limits)
   static const int maxTenantsPerFacility = 250;
-  static const int maxUnitsPerFacility = 400;
+  static const int maxUnitsPerFacility = 200;
   static const int maxMapShapesPerFacility = 300;
   static const int maxContractsPerFacility = 250;
 

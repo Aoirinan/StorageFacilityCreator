@@ -17,7 +17,11 @@ If the document doesn't exist, create it with these fields:
 
 ## Alternative: Use Deployed Cloud Function
 
-A Cloud Function `enableStripeConnectAdmin` has been deployed. You can call it from your authenticated app:
+A Cloud Function `enableStripeConnectAdmin` exists for one-time setup. It is **disabled by default** until you set a runtime environment variable on that function:
+
+1. In Google Cloud Console (or Firebase Console → Functions → your function → **Environment variables**), set:
+   - `ENABLE_STRIPE_CONNECT_ADMIN_CALLABLE` = `true`
+2. Call it while signed in as a super admin:
 
 ```dart
 // In your Flutter app
@@ -26,7 +30,7 @@ final result = await callable.call();
 print(result.data);
 ```
 
-**Note:** This function requires super admin authentication (your email must be in the super admin list).
+**Note:** Requires super-admin email (same list as `SuperAdminService`) **and** `ENABLE_STRIPE_CONNECT_ADMIN_CALLABLE=true`. Remove or unset the env var after use.
 
 ## After Enabling
 

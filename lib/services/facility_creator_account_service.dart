@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_creator_account_model.dart';
 import '../models/facility_model.dart';
+import 'referral_program_service.dart';
 
 /// Service for managing Facility Creator Accounts
 class FacilityCreatorAccountService {
@@ -232,14 +233,21 @@ class FacilityCreatorAccountService {
         'updatedAt': Timestamp.fromDate(DateTime.now()),
       });
 
-      // Also update the facility to link to account
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .update({
+      final referralBy = account.referredByAccountId?.trim();
+      final facilityUpdate = <String, dynamic>{
         'facilityCreatorAccountId': accountId,
         'updatedAt': Timestamp.fromDate(DateTime.now()),
-      });
+      };
+      final facSnap = await _firestore.collection('facilities').doc(facilityId).get();
+      final existingPlatformRef = (facSnap.data()?['platformReferralReferredByAccountId'] as String?)?.trim();
+      if ((existingPlatformRef == null || existingPlatformRef.isEmpty) &&
+          referralBy != null &&
+          referralBy.isNotEmpty) {
+        facilityUpdate['platformReferralReferredByAccountId'] = referralBy;
+      }
+
+      // Also update the facility to link to account
+      await _firestore.collection('facilities').doc(facilityId).update(facilityUpdate);
 
       // Update Stripe subscription quantity if subscription exists
       await _syncSubscriptionQuantity(accountId);
@@ -400,6 +408,8 @@ class FacilityCreatorAccountService {
         throw Exception('Failed to create account');
       }
     }
+
+    Future.microtask(() => ReferralProgramService.syncForCurrentUser());
 
     return account;
   }

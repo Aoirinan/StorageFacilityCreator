@@ -1,4 +1,4 @@
-export const SITE_VERSION = '1.3.1';
+export const SITE_VERSION = '1.3.3';
 
 export const SITE_NAME = 'Storage Facility Creator';
 /** Canonical public marketing origin (www). Apex host should 308 to this URL. */

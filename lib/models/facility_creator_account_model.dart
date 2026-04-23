@@ -41,6 +41,13 @@ class FacilityCreatorAccountModel {
   final List<String> facilityIds; // List of facility IDs owned by this account
   final Map<String, dynamic>? metadata;
 
+  /// Shareable code for the referral program (set by Cloud Function).
+  final String? referralCode;
+  /// Facility creator account id of the referrer, if this account joined via referral.
+  final String? referredByAccountId;
+  /// Facility id whose platform subscription receives referral rewards first (optional).
+  final String? referralRewardPreferredFacilityId;
+
   const FacilityCreatorAccountModel({
     required this.accountId,
     required this.ownerUid,
@@ -62,6 +69,9 @@ class FacilityCreatorAccountModel {
     required this.updatedAt,
     this.facilityIds = const [],
     this.metadata,
+    this.referralCode,
+    this.referredByAccountId,
+    this.referralRewardPreferredFacilityId,
   });
 
   /// Create from Firestore document
@@ -99,6 +109,9 @@ class FacilityCreatorAccountModel {
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       facilityIds: (data?['facilityIds'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
       metadata: data?['metadata'] != null ? Map<String, dynamic>.from(data!['metadata']) : null,
+      referralCode: data?['referralCode'] as String?,
+      referredByAccountId: data?['referredByAccountId'] as String?,
+      referralRewardPreferredFacilityId: data?['referralRewardPreferredFacilityId'] as String?,
     );
   }
 
@@ -132,6 +145,10 @@ class FacilityCreatorAccountModel {
       'updatedAt': Timestamp.fromDate(updatedAt),
       'facilityIds': facilityIds,
       'metadata': metadata,
+      if (referralCode != null) 'referralCode': referralCode,
+      if (referredByAccountId != null) 'referredByAccountId': referredByAccountId,
+      if (referralRewardPreferredFacilityId != null)
+        'referralRewardPreferredFacilityId': referralRewardPreferredFacilityId,
     };
   }
 
@@ -157,6 +174,9 @@ class FacilityCreatorAccountModel {
     DateTime? updatedAt,
     List<String>? facilityIds,
     Map<String, dynamic>? metadata,
+    String? referralCode,
+    String? referredByAccountId,
+    String? referralRewardPreferredFacilityId,
   }) {
     return FacilityCreatorAccountModel(
       accountId: accountId ?? this.accountId,
@@ -179,6 +199,10 @@ class FacilityCreatorAccountModel {
       updatedAt: updatedAt ?? this.updatedAt,
       facilityIds: facilityIds ?? this.facilityIds,
       metadata: metadata ?? this.metadata,
+      referralCode: referralCode ?? this.referralCode,
+      referredByAccountId: referredByAccountId ?? this.referredByAccountId,
+      referralRewardPreferredFacilityId:
+          referralRewardPreferredFacilityId ?? this.referralRewardPreferredFacilityId,
     );
   }
 

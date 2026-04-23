@@ -258,6 +258,64 @@ class FacilityCommunicationUsage {
   });
 }
 
+class ReferralPendingItem {
+  final String id;
+  final String? reason;
+  final String? error;
+  final String? referrerAccountId;
+  final String? refereeAccountId;
+  final String? refereeFacilityId;
+  final String? stripeInvoiceId;
+  final DateTime? createdAt;
+  final String status;
+  final String? resolutionAction;
+  final String? resolutionNote;
+  final String? resolvedByEmail;
+  final DateTime? resolvedAt;
+  final String? resolvedAppliedToFacilityId;
+
+  const ReferralPendingItem({
+    required this.id,
+    this.reason,
+    this.error,
+    this.referrerAccountId,
+    this.refereeAccountId,
+    this.refereeFacilityId,
+    this.stripeInvoiceId,
+    this.createdAt,
+    this.status = 'open',
+    this.resolutionAction,
+    this.resolutionNote,
+    this.resolvedByEmail,
+    this.resolvedAt,
+    this.resolvedAppliedToFacilityId,
+  });
+}
+
+class ReferralFacilityAuditRow {
+  final String facilityId;
+  final String facilityName;
+  final String? facilityCreatorAccountId;
+  final String? referredByAccountId;
+  final DateTime? rewardGrantedAt;
+  final String? rewardStripeInvoiceId;
+  final String? rewardAppliedToFacilityId;
+  final bool rewardPendingManual;
+  final bool rewardCapReached;
+
+  const ReferralFacilityAuditRow({
+    required this.facilityId,
+    required this.facilityName,
+    this.facilityCreatorAccountId,
+    this.referredByAccountId,
+    this.rewardGrantedAt,
+    this.rewardStripeInvoiceId,
+    this.rewardAppliedToFacilityId,
+    this.rewardPendingManual = false,
+    this.rewardCapReached = false,
+  });
+}
+
 class CommissionPayoutPeriod {
   final String id;
   final DateTime periodStart;
@@ -389,6 +447,49 @@ final allUsersProvider = StreamProvider<List<UserModel>>((ref) {
       .snapshots()
       .map((snap) =>
           snap.docs.map((d) => UserModel.fromFirestore(d)).toList());
+});
+
+/// Facilities with referral-related fields present.
+final referralFacilityAuditProvider =
+    StreamProvider<List<ReferralFacilityAuditRow>>((ref) {
+  return FirebaseFirestore.instance
+      .collection('facilities')
+      .orderBy('createdAt', descending: true)
+      .snapshots()
+      .map((snap) {
+    return snap.docs
+        .map((doc) {
+          final d = doc.data();
+          final referredBy =
+              (d['platformReferralReferredByAccountId'] as String?)?.trim();
+          final rewardGrantedAt =
+              (d['platformReferralRewardGrantedAt'] as Timestamp?)?.toDate();
+          final rewardPendingManual = d['platformReferralRewardPendingManual'] == true;
+          final rewardCapReached = d['platformReferralRewardCapReached'] == true;
+          if ((referredBy == null || referredBy.isEmpty) &&
+              rewardGrantedAt == null &&
+              !rewardPendingManual &&
+              !rewardCapReached) {
+            return null;
+          }
+          return ReferralFacilityAuditRow(
+            facilityId: doc.id,
+            facilityName: (d['name'] as String?) ?? doc.id,
+            facilityCreatorAccountId:
+                (d['facilityCreatorAccountId'] as String?)?.trim(),
+            referredByAccountId: referredBy,
+            rewardGrantedAt: rewardGrantedAt,
+            rewardStripeInvoiceId:
+                (d['platformReferralRewardStripeInvoiceId'] as String?)?.trim(),
+            rewardAppliedToFacilityId:
+                (d['platformReferralRewardAppliedToFacilityId'] as String?)?.trim(),
+            rewardPendingManual: rewardPendingManual,
+            rewardCapReached: rewardCapReached,
+          );
+        })
+        .whereType<ReferralFacilityAuditRow>()
+        .toList();
+  });
 });
 
 /// Marketing leads captured from website demo/trial forms.
@@ -551,6 +652,55 @@ class SuperAdminNote {
 class SuperAdminDataService {
   static final _db = FirebaseFirestore.instance;
   static final _functions = FirebaseFunctions.instance;
+
+  static Future<List<ReferralPendingItem>> listReferralRewardsPending({
+    int limit = 100,
+  }) async {
+    final callable = _functions.httpsCallable('superAdminListReferralRewardsPending');
+    final result = await callable.call<Map<String, dynamic>>({'limit': limit});
+    final data = result.data;
+    final rawItems = (data['items'] as List<dynamic>? ?? const []);
+    return rawItems.map((raw) {
+      final m = Map<String, dynamic>.from(raw as Map);
+      final createdMs = m['createdAt'] as num?;
+      return ReferralPendingItem(
+        id: (m['id'] ?? '').toString(),
+        reason: m['reason'] as String?,
+        error: m['error'] as String?,
+        referrerAccountId: m['referrerAccountId'] as String?,
+        refereeAccountId: m['refereeAccountId'] as String?,
+        refereeFacilityId: m['refereeFacilityId'] as String?,
+        stripeInvoiceId: m['stripeInvoiceId'] as String?,
+        createdAt: createdMs == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(createdMs.toInt()),
+        status: (m['status'] as String?) ?? 'open',
+        resolutionAction: m['resolutionAction'] as String?,
+        resolutionNote: m['resolutionNote'] as String?,
+        resolvedByEmail: m['resolvedByEmail'] as String?,
+        resolvedAt: (m['resolvedAt'] as num?) == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch((m['resolvedAt'] as num).toInt()),
+        resolvedAppliedToFacilityId: m['resolvedAppliedToFacilityId'] as String?,
+      );
+    }).toList();
+  }
+
+  static Future<void> resolveReferralPending({
+    required String pendingId,
+    required String action, // resolve_only | apply_reward
+    String? note,
+    String? targetFacilityId,
+  }) async {
+    final callable = _functions.httpsCallable('superAdminResolveReferralPending');
+    await callable.call<Map<String, dynamic>>({
+      'pendingId': pendingId,
+      'action': action,
+      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      if (targetFacilityId != null && targetFacilityId.trim().isNotEmpty)
+        'targetFacilityId': targetFacilityId.trim(),
+    });
+  }
 
   /// Super admin only: permanently delete facility creator account document,
   /// all facilities owned by the account owner (full trees), and the owner's
