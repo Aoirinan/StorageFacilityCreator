@@ -1,28 +1,21 @@
-/// App version constants
-/// Update this file whenever deploying a new version
+/// Fallback app version when [PackageInfo] is unavailable (tests, early frame).
+/// **Keep in sync with `pubspec.yaml`** `version:` line (`major.minor.patch+build`).
 class AppVersion {
-  // Version number (semver: major.minor.patch)
-  static const String version = '2.10.36';
+  static const String version = '2.10.45';
 
-  // Build number (YYYYMMDD format for easy identification)
-  static const String buildNumber = '20260422';
+  static const String buildNumber = '20260424';
 
-  // Full version string
   static const String fullVersion = '$version+$buildNumber';
 
-  // Deployment date/time (update on each deploy)
-  static const String deploymentDate = '2026-04-22';
+  static const String deploymentDate = '2026-04-24';
   static const String deploymentTime =
-      'Sidebar Retail nav uses a reliable Material icon (price tag) so the glyph renders consistently on web.';
+      'Sidebar version now reads from package_info (pubspec).';
 
-  // Feature version (what's in this release)
   static const String featureTag =
-      'Retail sidebar icon fix for live web UI.';
+      'Version display matches each web build; super-admin tab icons.';
 
-  // Full display string
   static String get displayVersion => 'v$version (Build $buildNumber)';
 
-  // Detailed info for settings/about page
   static String get detailedVersion =>
       'Version $version\n'
       'Build $buildNumber\n'

@@ -1,8 +1,25 @@
 import 'package:flutter/material.dart';
-import '../theme/app_theme.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
 import '../constants/app_version.dart';
 import '../router/app_route.dart';
+import '../theme/app_theme.dart';
 import 'bug_report_dialog.dart';
+
+/// `PackageInfo` on web sometimes omits [PackageInfo.buildNumber]; fall back to `+` in [PackageInfo.version].
+String _sidebarVersionLabel(PackageInfo p) {
+  var version = p.version.trim();
+  var build = p.buildNumber.trim();
+  if (build.isEmpty && version.contains('+')) {
+    final parts = version.split('+');
+    version = parts.first.trim();
+    build = parts.length > 1 ? parts.sublist(1).join('+').trim() : '';
+  }
+  if (build.isEmpty) {
+    return 'v$version';
+  }
+  return 'v$version (Build $build)';
+}
 
 /// Modern sidebar navigation inspired by Storable's design
 class ModernSidebar extends StatelessWidget {
@@ -314,13 +331,21 @@ class ModernSidebar extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 4, 8, 10),
                   child: Center(
-                    child: Text(
-                      AppVersion.displayVersion,
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w500,
-                      ),
+                    child: FutureBuilder<PackageInfo>(
+                      future: PackageInfo.fromPlatform(),
+                      builder: (context, snap) {
+                        final label = snap.hasData
+                            ? _sidebarVersionLabel(snap.data!)
+                            : AppVersion.displayVersion;
+                        return Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
