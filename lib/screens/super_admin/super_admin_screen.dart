@@ -37,10 +37,11 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.toggle_on, label: 'Feature Flags'),
     _TabDef(icon: Icons.support_agent, label: 'Leads'),
     _TabDef(icon: Icons.request_quote, label: 'Commission'),
-    _TabDef(icon: Icons.mail_lock, label: 'Messaging'),
-    _TabDef(icon: Icons.redeem, label: 'Referrals'),
+    // Use Material icons that survive web font tree-shaking (avoid missing glyphs).
+    _TabDef(icon: Icons.forum_outlined, label: 'Messaging'),
+    _TabDef(icon: Icons.group_add_outlined, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
-    _TabDef(icon: Icons.dns, label: 'Custom domain'),
+    _TabDef(icon: Icons.language_outlined, label: 'Custom domain'),
   ];
 
   @override

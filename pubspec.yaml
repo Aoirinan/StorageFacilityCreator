@@ -2,7 +2,7 @@ name: sfcapp
 description: Storage Facility Creator - A comprehensive facility management app
 publish_to: 'none'
 
-version: 2.10.41+20260423
+version: 2.10.44+20260423
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -96,4 +96,3 @@ flutter:
     - lib/templates/reminders/
     - lib/templates/emails/
     - assets/images/
-    - docs/SUPERADMIN_CUSTOM_DOMAIN_WEBSITE.md
