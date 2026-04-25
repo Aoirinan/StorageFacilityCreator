@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../config/web_host_config.dart';
-import '../../../services/super_admin_data_service.dart';
-import '../../../theme/app_theme.dart';
+import 'package:sfcapp/config/web_host_config.dart';
+import 'package:sfcapp/services/super_admin_data_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
 
 /// Short super-admin guide: facility public website on **their** hostname.
 class CustomDomainGuideTab extends StatefulWidget {
@@ -103,7 +103,7 @@ Storage Facility Creator support''';
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final publicExample = 'https://${kAppWebHostname}/w/your-slug-here';
+    final publicExample = 'https://$kAppWebHostname/w/your-slug-here';
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -125,7 +125,7 @@ Storage Facility Creator support''';
                   const SizedBox(height: 8),
                   Text(
                     'Use this when a facility wants their own address (e.g. rent.theirstorage.com) '
-                    'to show the same SFC-hosted marketing site as ${kAppWebHostname}/w/…',
+                    'to show the same SFC-hosted marketing site as $kAppWebHostname/w/…',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                       height: 1.4,

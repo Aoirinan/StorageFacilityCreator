@@ -37,11 +37,12 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.toggle_on, label: 'Feature Flags'),
     _TabDef(icon: Icons.support_agent, label: 'Leads'),
     _TabDef(icon: Icons.request_quote, label: 'Commission'),
-    // Use Material icons that survive web font tree-shaking (avoid missing glyphs).
-    _TabDef(icon: Icons.forum_outlined, label: 'Messaging'),
-    _TabDef(icon: Icons.group_add_outlined, label: 'Referrals'),
+    // Prefer older filled Material icons on web — some *outlined* glyphs are absent
+    // from the bundled MaterialIcons font and render as blank.
+    _TabDef(icon: Icons.forum, label: 'Messaging'),
+    _TabDef(icon: Icons.group_add, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
-    _TabDef(icon: Icons.language_outlined, label: 'Custom domain'),
+    _TabDef(icon: Icons.language, label: 'Custom domain'),
   ];
 
   @override
@@ -136,8 +137,8 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
                     const SizedBox(height: 4),
                     Text(
                       email,
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white70),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white70),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -147,8 +148,8 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
             : Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: AppTheme.error.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(6),
@@ -187,8 +188,8 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Center(
                 child: Text(email,
-                    style: const TextStyle(
-                        fontSize: 12, color: Colors.white70)),
+                    style:
+                        const TextStyle(fontSize: 12, color: Colors.white70)),
               ),
             ),
           IconButton(
@@ -211,7 +212,8 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           dividerColor: Colors.transparent,
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white54,
-          labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          labelStyle:
+              const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
           unselectedLabelStyle:
               const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
           tabs: _tabs
