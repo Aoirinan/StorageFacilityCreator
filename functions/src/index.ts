@@ -27,6 +27,10 @@ export {
 } from './publicFacilityMapInventorySync';
 export { getPublicWebsiteConfig, renderPublicWebsite, routeCustomDomainRoot } from './publicWebsite';
 export {
+  superAdminGetHostingCustomDomainStatus,
+  superAdminProvisionHostingCustomDomain,
+} from './hostingCustomDomains';
+export {
   claimReferralAttribution,
   ensureReferralCodeForAccount,
   setReferralRewardPreferredFacility,

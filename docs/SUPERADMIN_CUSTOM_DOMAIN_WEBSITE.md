@@ -1,7 +1,9 @@
 # Super Admin: Custom domain + SFC public website (walkthrough)
 
+> **Day-to-day:** In the app, use **Super Admin → Custom domain** for the short checklist, copy buttons, and email draft. This file is the long-form reference.
+
 **Audience:** Storage Facility Creator (SFC) super admins and internal support.  
-**Goal:** A facility keeps the **same cookie-cutter website** we host, but visitors use **their** domain (e.g. `https://rent.theirstorage.com/...`).
+**Goal:** A facility keeps the **same SFC-hosted public website** we host, but visitors use **their** domain (e.g. `https://rent.theirstorage.com/...`).
 
 **Important:** Their domain’s **DNS** must be updated at whoever **owns/registers** that domain (the customer or their IT). SFC cannot push DNS changes to GoDaddy, Namecheap, etc. without their registrar credentials. This guide covers **what you do in Firebase/SFC** and **what you ask the customer to do in DNS**.
 
@@ -89,12 +91,13 @@ If the custom host is **only** for the static `/w/...` marketing site and everyo
 
 ### Phase E — Verification (super admin)
 
-- [ ] **HTTPS:** `https://<hostname>/w/<slug>` loads the cookie-cutter site (no certificate warning).
+- [ ] **HTTPS:** `https://<hostname>/w/<slug>` loads the public marketing site (no certificate warning).
 - [ ] **Content:** Matches what you see on `https://app.storagefacilitycreator.com/w/<slug>` (same facility).
 - [ ] **Optional:** `https://<hostname>/api/public-website?slug=<slug>` returns JSON (Hosting rewrite to `getPublicWebsiteConfig`).
 
-**Note on bare `/`:**  
-On the **same** Hosting site as the main SFC web app, the path **`/`** is currently handled by the **Flutter app** (`index.html`), not the marketing HTML. For marketing, **share and print** the URL **`https://<hostname>/w/<slug>`** until a future product change adds a root redirect for marketing-only hosts.
+**Note on bare `/` (now implemented):**  
+For mapped facility custom domains, `https://<hostname>/` now redirects to `https://<hostname>/w/<slug>` via `routeCustomDomainRoot`.  
+For the operator app host (`app.storagefacilitycreator.com`), root still resolves to the Flutter app shell (`/index.html`).
 
 ---
 
@@ -133,9 +136,27 @@ Thanks,
 
 ---
 
-## Future automation (not required for this checklist)
+## Hosting API automation (implemented)
 
-A super-admin tool could call the [Firebase Hosting REST API](https://firebase.google.com/docs/reference/hosting/rest) (`customDomains.create`) with a **service account** so you rarely open the Hosting UI. **Customer DNS** would still be required unless SFC controls their domain or you integrate with their DNS provider’s API.
+Super Admin now has callable-backed provisioning for Hosting custom domains:
+
+- `superAdminProvisionHostingCustomDomain` (Cloud Functions callable): creates or reuses `projects.sites.customDomains` entry and returns DNS records + status.
+- `superAdminGetHostingCustomDomainStatus` (Cloud Functions callable): refreshes provisioning/certificate status and record guidance.
+
+Both functions are super-admin gated (email list policy), and both use ADC/service-account credentials from Cloud Functions runtime to call Firebase Hosting v1beta1.
+
+### IAM and env requirements
+
+- Cloud Functions runtime identity needs Firebase Hosting Admin permissions (e.g. `roles/firebasehosting.admin` on project `storage-facility-creator`).
+- Optional function params if using non-default project/site:
+  - `HOSTING_PROJECT_ID` (default `storage-facility-creator`)
+  - `HOSTING_SITE_ID` (default `storage-facility-creator`)
+- No JSON service-account key is required in code and no secrets should be committed.
+
+### Tradeoff note
+
+Firebase Hosting config cannot cleanly do host-conditional root behavior in `firebase.json` alone.  
+Using `routeCustomDomainRoot` keeps `app.storagefacilitycreator.com` intact while redirecting mapped custom-domain root requests to the facility marketing route.
 
 ---
 

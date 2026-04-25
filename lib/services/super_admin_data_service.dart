@@ -197,7 +197,8 @@ class MarketingLead {
       landingPath: d['landingPath'] as String?,
       referrer: d['referrer'] as String?,
       smsConsent: d['smsConsent'] == true,
-      status: MarketingLeadStatusDisplay.fromValue((d['status'] ?? 'new').toString()),
+      status: MarketingLeadStatusDisplay.fromValue(
+          (d['status'] ?? 'new').toString()),
       assignedToUid: d['assignedToUid'] as String?,
       assignedToEmail: d['assignedToEmail'] as String?,
       assignedToName: d['assignedToName'] as String?,
@@ -401,7 +402,8 @@ class CommissionPayoutRepRow {
       rep: (d['rep'] ?? '').toString(),
       totalLeads: (d['totalLeads'] as num?)?.toInt() ?? 0,
       wonCount: (d['wonCount'] as num?)?.toInt() ?? 0,
-      commissionableWonCount: (d['commissionableWonCount'] as num?)?.toInt() ?? 0,
+      commissionableWonCount:
+          (d['commissionableWonCount'] as num?)?.toInt() ?? 0,
       saleTotal: (d['saleTotal'] as num?)?.toDouble() ?? 0,
       commissionableSaleTotal:
           (d['commissionableSaleTotal'] as num?)?.toDouble() ?? 0,
@@ -409,6 +411,63 @@ class CommissionPayoutRepRow {
       paid: d['paid'] == true,
       paidAt: (d['paidAt'] as Timestamp?)?.toDate(),
       paidByEmail: d['paidByEmail'] as String?,
+    );
+  }
+}
+
+class HostingDnsRecord {
+  final String type;
+  final String name;
+  final String value;
+
+  const HostingDnsRecord({
+    required this.type,
+    required this.name,
+    required this.value,
+  });
+
+  factory HostingDnsRecord.fromMap(Map<String, dynamic> map) {
+    return HostingDnsRecord(
+      type: (map['type'] ?? '').toString(),
+      name: (map['name'] ?? '').toString(),
+      value: (map['value'] ?? '').toString(),
+    );
+  }
+}
+
+class HostingCustomDomainProvisionResult {
+  final String hostname;
+  final String facilityId;
+  final String slug;
+  final String status;
+  final String? certState;
+  final DateTime? retrievedAt;
+  final List<HostingDnsRecord> records;
+
+  const HostingCustomDomainProvisionResult({
+    required this.hostname,
+    required this.facilityId,
+    required this.slug,
+    required this.status,
+    this.certState,
+    this.retrievedAt,
+    required this.records,
+  });
+
+  factory HostingCustomDomainProvisionResult.fromMap(Map<String, dynamic> map) {
+    final rawRecords = (map['records'] as List<dynamic>? ?? const []);
+    return HostingCustomDomainProvisionResult(
+      hostname: (map['hostname'] ?? '').toString(),
+      facilityId: (map['facilityId'] ?? '').toString(),
+      slug: (map['slug'] ?? '').toString(),
+      status: (map['status'] ?? 'unknown').toString(),
+      certState: (map['certState'] as String?)?.trim(),
+      retrievedAt: DateTime.tryParse((map['retrievedAt'] ?? '').toString()),
+      records: rawRecords
+          .whereType<Map>()
+          .map(
+              (raw) => HostingDnsRecord.fromMap(Map<String, dynamic>.from(raw)))
+          .toList(),
     );
   }
 }
@@ -445,8 +504,7 @@ final allUsersProvider = StreamProvider<List<UserModel>>((ref) {
       .collection('users')
       .orderBy('createdAt', descending: true)
       .snapshots()
-      .map((snap) =>
-          snap.docs.map((d) => UserModel.fromFirestore(d)).toList());
+      .map((snap) => snap.docs.map((d) => UserModel.fromFirestore(d)).toList());
 });
 
 /// Facilities with referral-related fields present.
@@ -464,8 +522,10 @@ final referralFacilityAuditProvider =
               (d['platformReferralReferredByAccountId'] as String?)?.trim();
           final rewardGrantedAt =
               (d['platformReferralRewardGrantedAt'] as Timestamp?)?.toDate();
-          final rewardPendingManual = d['platformReferralRewardPendingManual'] == true;
-          final rewardCapReached = d['platformReferralRewardCapReached'] == true;
+          final rewardPendingManual =
+              d['platformReferralRewardPendingManual'] == true;
+          final rewardCapReached =
+              d['platformReferralRewardCapReached'] == true;
           if ((referredBy == null || referredBy.isEmpty) &&
               rewardGrantedAt == null &&
               !rewardPendingManual &&
@@ -482,7 +542,8 @@ final referralFacilityAuditProvider =
             rewardStripeInvoiceId:
                 (d['platformReferralRewardStripeInvoiceId'] as String?)?.trim(),
             rewardAppliedToFacilityId:
-                (d['platformReferralRewardAppliedToFacilityId'] as String?)?.trim(),
+                (d['platformReferralRewardAppliedToFacilityId'] as String?)
+                    ?.trim(),
             rewardPendingManual: rewardPendingManual,
             rewardCapReached: rewardCapReached,
           );
@@ -508,7 +569,8 @@ final commissionPayoutPeriodsProvider =
       .orderBy('createdAt', descending: true)
       .limit(50)
       .snapshots()
-      .map((snap) => snap.docs.map(CommissionPayoutPeriod.fromFirestore).toList());
+      .map((snap) =>
+          snap.docs.map(CommissionPayoutPeriod.fromFirestore).toList());
 });
 
 /// Derived: facilities enriched with owner email and subscription status.
@@ -531,9 +593,7 @@ final superAdminFacilityRowsProvider =
             error: (e, s) => AsyncValue.error(e, s),
             data: (users) {
               final userMap = {for (final u in users) u.uid: u};
-              final accountByOwner = {
-                for (final a in accounts) a.ownerUid: a
-              };
+              final accountByOwner = {for (final a in accounts) a.ownerUid: a};
 
               return AsyncValue.data(facilities.map((f) {
                 final owner = userMap[f.ownerUid];
@@ -541,10 +601,8 @@ final superAdminFacilityRowsProvider =
                 return SuperAdminFacilityRow(
                   facility: f,
                   ownerEmail: owner?.email ?? f.email ?? 'Unknown',
-                  subscriptionStatus:
-                      account?.subscriptionStatus.displayName,
-                  subscriptionPeriodEnd:
-                      account?.subscriptionCurrentPeriodEnd,
+                  subscriptionStatus: account?.subscriptionStatus.displayName,
+                  subscriptionPeriodEnd: account?.subscriptionCurrentPeriodEnd,
                 );
               }).toList());
             },
@@ -653,10 +711,44 @@ class SuperAdminDataService {
   static final _db = FirebaseFirestore.instance;
   static final _functions = FirebaseFunctions.instance;
 
+  static Future<HostingCustomDomainProvisionResult>
+      provisionHostingCustomDomain({
+    required String hostname,
+    String? facilityId,
+    String? slug,
+  }) async {
+    final callable =
+        _functions.httpsCallable('superAdminProvisionHostingCustomDomain');
+    final result = await callable.call<Map<String, dynamic>>({
+      'hostname': hostname.trim(),
+      if (facilityId != null && facilityId.trim().isNotEmpty)
+        'facilityId': facilityId.trim(),
+      if (slug != null && slug.trim().isNotEmpty) 'slug': slug.trim(),
+    });
+    return HostingCustomDomainProvisionResult.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+  }
+
+  static Future<HostingCustomDomainProvisionResult>
+      getHostingCustomDomainStatus({
+    required String hostname,
+  }) async {
+    final callable =
+        _functions.httpsCallable('superAdminGetHostingCustomDomainStatus');
+    final result = await callable.call<Map<String, dynamic>>({
+      'hostname': hostname.trim(),
+    });
+    return HostingCustomDomainProvisionResult.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+  }
+
   static Future<List<ReferralPendingItem>> listReferralRewardsPending({
     int limit = 100,
   }) async {
-    final callable = _functions.httpsCallable('superAdminListReferralRewardsPending');
+    final callable =
+        _functions.httpsCallable('superAdminListReferralRewardsPending');
     final result = await callable.call<Map<String, dynamic>>({'limit': limit});
     final data = result.data;
     final rawItems = (data['items'] as List<dynamic>? ?? const []);
@@ -680,8 +772,10 @@ class SuperAdminDataService {
         resolvedByEmail: m['resolvedByEmail'] as String?,
         resolvedAt: (m['resolvedAt'] as num?) == null
             ? null
-            : DateTime.fromMillisecondsSinceEpoch((m['resolvedAt'] as num).toInt()),
-        resolvedAppliedToFacilityId: m['resolvedAppliedToFacilityId'] as String?,
+            : DateTime.fromMillisecondsSinceEpoch(
+                (m['resolvedAt'] as num).toInt()),
+        resolvedAppliedToFacilityId:
+            m['resolvedAppliedToFacilityId'] as String?,
       );
     }).toList();
   }
@@ -692,7 +786,8 @@ class SuperAdminDataService {
     String? note,
     String? targetFacilityId,
   }) async {
-    final callable = _functions.httpsCallable('superAdminResolveReferralPending');
+    final callable =
+        _functions.httpsCallable('superAdminResolveReferralPending');
     await callable.call<Map<String, dynamic>>({
       'pendingId': pendingId,
       'action': action,
@@ -745,10 +840,8 @@ class SuperAdminDataService {
 
   /// Extend a trial by N days for a given account.
   static Future<void> extendTrial(String accountId, int days) async {
-    final doc = await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .get();
+    final doc =
+        await _db.collection('facilityCreatorAccounts').doc(accountId).get();
     if (!doc.exists) return;
     final data = doc.data()!;
     final currentEnd = (data['subscriptionTrialEnd'] as Timestamp?)?.toDate() ??
@@ -767,10 +860,7 @@ class SuperAdminDataService {
   static Future<void> grantTrial(String accountId, {int days = 30}) async {
     final now = DateTime.now();
     final trialEnd = now.add(Duration(days: days));
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update({
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
       'subscriptionStatus': 'trialing',
       'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
       'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
@@ -781,10 +871,7 @@ class SuperAdminDataService {
 
   /// Revoke an active trial — sets status back to cancelled and clears trial end.
   static Future<void> revokeTrial(String accountId) async {
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update({
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
       'subscriptionStatus': 'cancelled',
       'subscriptionTrialEnd': null,
       'subscriptionCurrentPeriodEnd': null,
@@ -797,10 +884,7 @@ class SuperAdminDataService {
   static Future<void> approveTrial(String accountId, {int days = 30}) async {
     final now = DateTime.now();
     final trialEnd = now.add(Duration(days: days));
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update({
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
       'subscriptionStatus': 'trialing',
       'subscriptionTrialEnd': Timestamp.fromDate(trialEnd),
       'subscriptionCurrentPeriodStart': Timestamp.fromDate(now),
@@ -813,17 +897,15 @@ class SuperAdminDataService {
   /// Reject a pending account — marks it cancelled so the user sees the
   /// subscription screen with an appropriate message.
   static Future<void> rejectAccount(String accountId) async {
-    await _db
-        .collection('facilityCreatorAccounts')
-        .doc(accountId)
-        .update({
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
       'subscriptionStatus': 'cancelled',
       'rejectedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
-  static Stream<List<MarketingLeadActivity>> marketingLeadActivities(String leadId) {
+  static Stream<List<MarketingLeadActivity>> marketingLeadActivities(
+      String leadId) {
     return _db
         .collection('marketing_leads')
         .doc(leadId)
@@ -851,7 +933,8 @@ class SuperAdminDataService {
     });
     await leadRef.collection('activities').add({
       'type': 'assignment',
-      'summary': 'Assigned to ${assignedToName ?? assignedToEmail ?? 'unassigned'}.',
+      'summary':
+          'Assigned to ${assignedToName ?? assignedToEmail ?? 'unassigned'}.',
       'actorUid': actorUid,
       'actorEmail': actorEmail,
       'actorName': actorName,
@@ -889,7 +972,8 @@ class SuperAdminDataService {
     if (markCalled && leadData['firstContactedAt'] == null) {
       update['firstContactedAt'] = FieldValue.serverTimestamp();
     }
-    if ((status == MarketingLeadStatus.won || status == MarketingLeadStatus.lost) &&
+    if ((status == MarketingLeadStatus.won ||
+            status == MarketingLeadStatus.lost) &&
         leadData['closedAt'] == null) {
       update['closedAt'] = FieldValue.serverTimestamp();
     }
@@ -1051,6 +1135,9 @@ class SuperAdminDataService {
       update['subscriptionCurrentPeriodEnd'] = FieldValue.delete();
       update['subscriptionTrialEnd'] = FieldValue.delete();
     }
-    await _db.collection('facilityCreatorAccounts').doc(accountId).update(update);
+    await _db
+        .collection('facilityCreatorAccounts')
+        .doc(accountId)
+        .update(update);
   }
 }
