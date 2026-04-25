@@ -25,7 +25,7 @@ export {
   syncPublicFacilityMapInventoryOnTenantWrite,
   syncPublicFacilityMapInventoryOnUnitWrite,
 } from './publicFacilityMapInventorySync';
-export { getPublicWebsiteConfig, renderPublicWebsite } from './publicWebsite';
+export { getPublicWebsiteConfig, renderPublicWebsite, routeCustomDomainRoot } from './publicWebsite';
 export {
   claimReferralAttribution,
   ensureReferralCodeForAccount,

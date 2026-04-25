@@ -533,7 +533,7 @@ function toHtml(payload: {
     <div class="wrap footer-row">
       <div>
         <div class="footer-brand">Powered by Storage Facility Creator</div>
-        <div class="fine">Cookie-cutter facility website template v2</div>
+        <div class="fine">Storage Facility Creator — public website template v2</div>
       </div>
       <div class="fine" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         ${reviewFooter}
@@ -544,7 +544,7 @@ function toHtml(payload: {
 </html>`;
 }
 
-async function resolveSlug(slug?: string, domain?: string, hostHeader?: string): Promise<string | null> {
+export async function resolveSlug(slug?: string, domain?: string, hostHeader?: string): Promise<string | null> {
   const directSlug = (slug || '').trim().toLowerCase();
   if (directSlug) return directSlug;
   const candidateDomain = normalizeDomain(domain || hostHeader || '');
@@ -821,4 +821,44 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       })),
     }),
   );
+});
+
+function normalizeHostHeader(hostHeader: string): string {
+  return String(hostHeader || '').trim().toLowerCase().split(':')[0];
+}
+
+function isPrimaryOperatorHost(hostHeader: string): boolean {
+  const host = normalizeHostHeader(hostHeader);
+  return (
+    host === 'app.storagefacilitycreator.com' ||
+    host === 'storage-facility-creator.web.app' ||
+    host === 'storage-facility-creator.firebaseapp.com' ||
+    host === 'localhost' ||
+    host === '127.0.0.1'
+  );
+}
+
+/**
+ * For facility vanity hosts that share this same Hosting site, route `/` to the
+ * matching marketing page instead of the Flutter operator SPA shell.
+ */
+export const routeCustomDomainRoot = functions.https.onRequest(async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.status(405).type('text/plain').send('Method not allowed.');
+    return;
+  }
+
+  const host = String(req.headers.host || '');
+  if (isPrimaryOperatorHost(host)) {
+    res.redirect(302, '/index.html');
+    return;
+  }
+
+  const slug = await resolveSlug('', '', host);
+  if (!slug) {
+    res.redirect(302, '/index.html');
+    return;
+  }
+
+  res.redirect(302, `/w/${encodeURIComponent(slug)}`);
 });
