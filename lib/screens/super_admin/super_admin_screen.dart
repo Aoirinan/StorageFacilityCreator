@@ -39,10 +39,10 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.request_quote, label: 'Commission'),
     // Prefer older filled Material icons on web — some *outlined* glyphs are absent
     // from the bundled MaterialIcons font and render as blank.
-    _TabDef(icon: Icons.forum, label: 'Messaging'),
+    _TabDef(icon: Icons.chat_bubble, label: 'Messaging'),
     _TabDef(icon: Icons.group_add, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
-    _TabDef(icon: Icons.language, label: 'Custom domain'),
+    _TabDef(icon: Icons.link, label: 'Custom domain'),
   ];
 
   @override

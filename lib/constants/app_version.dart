@@ -1,9 +1,9 @@
 /// Fallback app version when [PackageInfo] is unavailable (tests, early frame).
 /// **Keep in sync with `pubspec.yaml`** `version:` line (`major.minor.patch+build`).
 class AppVersion {
-  static const String version = '2.10.48';
+  static const String version = '2.10.49';
 
-  static const String buildNumber = '20260424';
+  static const String buildNumber = '20260425';
 
   static const String fullVersion = '$version+$buildNumber';
 
