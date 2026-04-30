@@ -72,7 +72,7 @@ class _LateDashboardScreenState extends ConsumerState<LateDashboardScreen> with 
       try {
         // Ensure account exists before loading facilities
         await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-        
+        ref.invalidate(userFacilitiesProvider(authState.value!.uid));
         final facilitiesAsync = await ref.read(userFacilitiesProvider(authState.value!.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
         if (facilities.isNotEmpty && mounted) {

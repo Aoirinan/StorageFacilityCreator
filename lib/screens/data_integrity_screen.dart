@@ -32,6 +32,7 @@ class _DataIntegrityScreenState extends ConsumerState<DataIntegrityScreen> {
   Future<void> _loadUserFacilities() async {
     final authState = ref.read(authStateProvider);
     if (authState.hasValue && authState.value != null) {
+      ref.invalidate(userFacilitiesProvider(authState.value!.uid));
       final facilities = await ref.read(userFacilitiesProvider(authState.value!.uid).future);
       if (facilities.isNotEmpty) {
         setState(() {

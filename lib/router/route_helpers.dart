@@ -17,6 +17,7 @@ import '../widgets/modern_sidebar.dart';
 import '../widgets/facility_switcher.dart';
 import '../theme/app_theme.dart';
 import '../services/debug_logger.dart';
+import '../screens/late_dashboard_screen.dart';
 
 /// Simple wrapper to refresh go_router on auth stream changes.
 class GoRouterRefreshStream extends ChangeNotifier {
@@ -63,6 +64,52 @@ class NotFoundPage extends StatelessWidget {
             ElevatedButton(
               onPressed: () => context.go(AppRoute.dashboard),
               child: const Text('Back to dashboard'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Dedicated shell screen for delinquency tab routing.
+class DelinquencyShellScreen extends StatelessWidget {
+  const DelinquencyShellScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const LateDashboardScreen();
+  }
+}
+
+/// Shown when a feature has been disabled via the Super Admin feature flags.
+class FeatureDisabledPage extends StatelessWidget {
+  final String featureName;
+  const FeatureDisabledPage({super.key, required this.featureName});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.block, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text(
+              '$featureName is currently unavailable.',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'This feature has been temporarily disabled by the platform administrator.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 24),
+            TextButton(
+              onPressed: () => context.go(AppRoute.dashboard),
+              child: const Text('Back to Dashboard'),
             ),
           ],
         ),

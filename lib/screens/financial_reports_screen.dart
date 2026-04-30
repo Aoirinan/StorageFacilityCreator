@@ -13,6 +13,7 @@ import '../services/modern_navigation_service.dart';
 import '../models/facility_model.dart';
 import '../providers/auth_provider.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/setup_retry_controller.dart';
 
 class FinancialReportsScreen extends ConsumerStatefulWidget {
   final FacilityModel? facility;
@@ -34,6 +35,7 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
   bool _isLoadingFacilities = true;
   String? _facilityError;
   StreamSubscription<List<FacilityModel>>? _facilitySub;
+  final SetupRetryController _setupRetry = SetupRetryController();
 
   @override
   void initState() {
@@ -65,9 +67,6 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
           }
         }
 
-        // Small delay to ensure account is fully created and permissions are set
-        await Future.delayed(const Duration(milliseconds: 500));
-
         // Now subscribe to facilities stream
         if (mounted) {
           _facilitySub = FacilityService.getFacilitiesForUserStream().listen(
@@ -92,6 +91,7 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
                             : (facilities.isNotEmpty ? facilities.first.id : null);
                   }
                 });
+                _setupRetry.reset();
               }
             },
             onError: (error) {
@@ -110,21 +110,32 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
                 // If they're logged in and getting permission errors, it's likely a setup issue
                 isLikelySetupIssue = true;
               }
-              
+
+              if (isPermissionError && isLikelySetupIssue) {
+                // Don't show error for setup issues while the account setup settles.
+                setState(() {
+                  _facilityError = null;
+                  _isLoadingFacilities = true;
+                });
+                _setupRetry.schedule(
+                  onRetry: () {
+                    if (!mounted) return;
+                    _facilitySub?.cancel();
+                    _initializeAccountAndLoadFacilities();
+                  },
+                  onExhausted: () {
+                    if (!mounted) return;
+                    setState(() {
+                      _facilityError = 'Still waiting for account setup to finish. Please refresh in a moment.';
+                      _isLoadingFacilities = false;
+                    });
+                  },
+                );
+                return;
+              }
+
               setState(() {
-                if (isPermissionError && isLikelySetupIssue) {
-                  // Don't show error for setup issues - just show loading or success
-                  // The account creation should handle this
-                  _facilityError = null; // Clear error for setup issues
-                  _isLoadingFacilities = true; // Keep loading to retry
-                  // Retry after a short delay
-                  Future.delayed(const Duration(seconds: 2), () {
-                    if (mounted) {
-                      _facilitySub?.cancel();
-                      _initializeAccountAndLoadFacilities();
-                    }
-                  });
-                } else if (isPermissionError) {
+                if (isPermissionError) {
                   _facilityError = 'You do not have permission to access reports for this facility.';
                   _isLoadingFacilities = false;
                 } else {
@@ -149,6 +160,7 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
 
   @override
   void dispose() {
+    _setupRetry.cancel();
     _facilitySub?.cancel();
     super.dispose();
   }

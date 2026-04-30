@@ -41,6 +41,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   List<String> _selectedFeatures = [];
   bool _isLoading = false;
   String? _errorMessage;
+  bool _isBulkCreateMode = false;
 
   List<String> _availableFeatures = [
     'Climate Control',
@@ -214,6 +215,66 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
     }
   }
 
+  List<String> _expandUnitNumbers(String input) {
+    final normalizedInput = input.trim();
+    if (normalizedInput.isEmpty) {
+      return [];
+    }
+
+    final tokens = normalizedInput
+        .split(',')
+        .map((token) => token.trim())
+        .where((token) => token.isNotEmpty)
+        .toList();
+
+    final expanded = <String>[];
+
+    for (final token in tokens) {
+      final rangeMatch = RegExp(r'^([A-Za-z\-]*)(\d+)\s*-\s*([A-Za-z\-]*)(\d+)$')
+          .firstMatch(token);
+      if (rangeMatch == null) {
+        expanded.add(token);
+        continue;
+      }
+
+      final startPrefix = rangeMatch.group(1) ?? '';
+      final startDigits = rangeMatch.group(2) ?? '';
+      final endPrefix = rangeMatch.group(3) ?? '';
+      final endDigits = rangeMatch.group(4) ?? '';
+
+      if (startPrefix != endPrefix) {
+        expanded.add(token);
+        continue;
+      }
+
+      final start = int.tryParse(startDigits);
+      final end = int.tryParse(endDigits);
+      if (start == null || end == null || end < start) {
+        expanded.add(token);
+        continue;
+      }
+
+      final width = startDigits.length > endDigits.length
+          ? startDigits.length
+          : endDigits.length;
+
+      for (var value = start; value <= end; value++) {
+        expanded.add('$startPrefix${value.toString().padLeft(width, '0')}');
+      }
+    }
+
+    final deduped = <String>[];
+    final seen = <String>{};
+    for (final unit in expanded) {
+      final normalized = unit.trim();
+      if (normalized.isEmpty) continue;
+      if (seen.add(normalized.toLowerCase())) {
+        deduped.add(normalized);
+      }
+    }
+    return deduped;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -281,18 +342,110 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                             // Unit Number
                             TextFormField(
                               controller: _unitNumberController,
-                              decoration: const InputDecoration(
-                                labelText: 'Unit Number *',
-                                hintText: 'e.g., A101, B205',
-                                prefixIcon: Icon(Icons.tag),
+                              decoration: InputDecoration(
+                                labelText: _isBulkCreateMode
+                                    ? 'Unit Numbers *'
+                                    : 'Unit Number *',
+                                hintText: _isBulkCreateMode
+                                    ? 'e.g., 101-120, A1, A3, B10-B12'
+                                    : 'e.g., A101, B205',
+                                prefixIcon: const Icon(Icons.tag),
+                                helperText: _isBulkCreateMode
+                                    ? 'Use commas and ranges. Example: 101-107, 201, A1-A3'
+                                    : null,
                               ),
                               validator: (value) {
                                 if (value == null || value.trim().isEmpty) {
-                                  return 'Unit number is required';
+                                  return _isBulkCreateMode
+                                      ? 'At least one unit number is required'
+                                      : 'Unit number is required';
+                                }
+                                if (_isBulkCreateMode) {
+                                  final parsed = _expandUnitNumbers(value);
+                                  if (parsed.isEmpty) {
+                                    return 'Enter valid unit numbers';
+                                  }
                                 }
                                 return null;
                               },
+                              onChanged: (_) {
+                                if (_isBulkCreateMode && mounted) {
+                                  setState(() {});
+                                }
+                              },
                             ),
+                            if (widget.unit == null) ...[
+                              const SizedBox(height: 12),
+                              SwitchListTile.adaptive(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('Create multiple units'),
+                                subtitle: const Text(
+                                  'Apply this same setup to each unit number entered.',
+                                ),
+                                value: _isBulkCreateMode,
+                                onChanged: _isLoading
+                                    ? null
+                                    : (enabled) {
+                                        if (mounted) {
+                                          setState(() {
+                                            _isBulkCreateMode = enabled;
+                                          });
+                                        }
+                                      },
+                              ),
+                            ],
+                            if (widget.unit == null && _isBulkCreateMode) ...[
+                              const SizedBox(height: 8),
+                              Builder(
+                                builder: (context) {
+                                  final parsedUnits = _expandUnitNumbers(
+                                      _unitNumberController.text);
+                                  final previewUnits = parsedUnits.take(20).toList();
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        parsedUnits.isEmpty
+                                            ? 'No units parsed yet.'
+                                            : '${parsedUnits.length} unit(s) will be created:',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                      ),
+                                      if (previewUnits.isNotEmpty) ...[
+                                        const SizedBox(height: 8),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: [
+                                            ...previewUnits.map(
+                                              (unit) => Chip(
+                                                label: Text(unit),
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                              ),
+                                            ),
+                                            if (parsedUnits.length > 20)
+                                              Chip(
+                                                label: Text(
+                                                    '+${parsedUnits.length - 20} more'),
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                              ),
+                                          ],
+                                        ),
+                                      ],
+                                    ],
+                                  );
+                                },
+                              ),
+                            ],
                             const SizedBox(height: 20),
 
                             // Unit Type
@@ -918,7 +1071,9 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                 )
                               : Text(
                                   widget.unit == null
-                                      ? 'Create Unit'
+                                      ? (_isBulkCreateMode
+                                          ? 'Create Units'
+                                          : 'Create Unit')
                                       : 'Update Unit',
                                   style: const TextStyle(
                                     fontSize: 16,
@@ -996,32 +1151,76 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
       }
 
       if (widget.unit == null) {
-        // Create new unit
-        await UnitService.createUnit(
-          facilityId: widget.facilityId,
-          unitNumber: _unitNumberController.text.trim(),
-          unitType: _selectedUnitType,
-          monthlyRate: double.parse(_monthlyRateController.text),
-          description: _descriptionController.text.trim().isEmpty
-              ? null
-              : _descriptionController.text.trim(),
-          dimensions: dimensions.isEmpty ? null : dimensions,
-          features: _selectedFeatures.isEmpty ? null : _selectedFeatures,
-          notes: _notesController.text.trim().isEmpty
-              ? null
-              : _notesController.text.trim(),
-          securityDeposit: _securityDepositController.text.trim().isEmpty
-              ? null
-              : double.tryParse(_securityDepositController.text),
-        );
+        final unitNumbers = _isBulkCreateMode
+            ? _expandUnitNumbers(_unitNumberController.text)
+            : <String>[_unitNumberController.text.trim()];
+        final failedUnits = <String, String>{};
+        var createdCount = 0;
+
+        for (final unitNumber in unitNumbers) {
+          try {
+            await UnitService.createUnit(
+              facilityId: widget.facilityId,
+              unitNumber: unitNumber,
+              unitType: _selectedUnitType,
+              monthlyRate: double.parse(_monthlyRateController.text),
+              description: _descriptionController.text.trim().isEmpty
+                  ? null
+                  : _descriptionController.text.trim(),
+              dimensions: dimensions.isEmpty ? null : dimensions,
+              features: _selectedFeatures.isEmpty ? null : _selectedFeatures,
+              notes: _notesController.text.trim().isEmpty
+                  ? null
+                  : _notesController.text.trim(),
+              securityDeposit: _securityDepositController.text.trim().isEmpty
+                  ? null
+                  : double.tryParse(_securityDepositController.text),
+            );
+            createdCount++;
+          } catch (error) {
+            failedUnits[unitNumber] =
+                ErrorMessageHelper.getUserFriendlyMessage(error);
+          }
+        }
+
+        if (createdCount == 0) {
+          final firstFailure = failedUnits.entries.isNotEmpty
+              ? '${failedUnits.entries.first.key}: ${failedUnits.entries.first.value}'
+              : 'Unknown error';
+          throw Exception('No units were created. $firstFailure');
+        }
 
         if (mounted) {
+          final failureCount = failedUnits.length;
+          final requestedCount = unitNumbers.length;
+          final successMessage = _isBulkCreateMode
+              ? 'Created $createdCount of $requestedCount units.'
+              : 'Unit created successfully!';
+
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unit created successfully!')),
+            SnackBar(
+              content: Text(successMessage),
+              backgroundColor:
+                  failureCount > 0 ? AppTheme.warning : Colors.green,
+              duration: const Duration(seconds: 4),
+            ),
           );
+
+          if (failureCount > 0) {
+            final failedList = failedUnits.keys.take(8).join(', ');
+            _errorMessage =
+                '$failureCount unit(s) failed: $failedList${failureCount > 8 ? '...' : ''}';
+          }
+
           // Invalidate providers to refresh unit lists
           ref.invalidate(facilityUnitsProvider(widget.facilityId));
-          Navigator.of(context).pop();
+          if (failureCount == 0 || !_isBulkCreateMode) {
+            Navigator.of(context).pop();
+          } else {
+            setState(() {
+              _isLoading = false;
+            });
+          }
         }
       } else {
         // Update existing unit

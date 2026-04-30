@@ -506,6 +506,10 @@ class FacilityMapV2Service {
             : facilityLogoUrl;
     final unitTypeImageUrls =
         publicSettingsModel?.unitTypeImageUrls ?? const <String, String>{};
+    final websiteConfigRaw = publicSettingsModel?.widgets?['websiteConfig'];
+    final websiteConfig = websiteConfigRaw is Map
+        ? websiteConfigRaw.map((k, v) => MapEntry(k.toString(), v))
+        : const <String, dynamic>{};
 
     return PublicFacilityMapSnapshot(
       facilityId: facilityId,
@@ -518,6 +522,9 @@ class FacilityMapV2Service {
         'facilityPhone': facilityPhone,
         'facilityLogoUrl': publicLogoUrl,
         'customDomain': publicSettingsModel?.customDomain,
+        'pageTitle': publicSettingsModel?.pageTitle,
+        'pageDescription': publicSettingsModel?.pageDescription,
+        'marketingContent': publicSettingsModel?.marketingContent,
         'unitTypeImageUrls': unitTypeImageUrls,
         'showPublicPricing': showPublicPricing,
         'allowReservation': allowReservation,
@@ -535,6 +542,11 @@ class FacilityMapV2Service {
         'chargeSecurityDepositAtMoveIn': chargeSecurityDepositAtMoveIn,
         'publicSecurityDepositAmount': publicSecurityDepositAmount,
         'mapSettings': mapSettings,
+        'customStyles': publicSettingsModel?.customStyles ??
+            const <String, dynamic>{},
+        'featuredImages': publicSettingsModel?.featuredImages ??
+            const <String>[],
+        'websiteConfig': websiteConfig,
       },
       elements: visibleElements,
       units: safeUnits,

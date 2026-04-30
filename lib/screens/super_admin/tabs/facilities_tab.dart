@@ -29,6 +29,8 @@ class _FacilitiesTabState extends ConsumerState<FacilitiesTab> {
           final matchSearch = q.isEmpty ||
               r.facility.name.toLowerCase().contains(q) ||
               r.ownerEmail.toLowerCase().contains(q) ||
+              r.facility.id.toLowerCase().contains(q) ||
+              r.facility.ownerUid.toLowerCase().contains(q) ||
               (r.facility.address?.toLowerCase().contains(q) ?? false);
           final matchStatus = _statusFilter == 'all' ||
               (_statusFilter == 'active' && r.facility.active) ||
@@ -64,7 +66,7 @@ class _FacilitiesTabState extends ConsumerState<FacilitiesTab> {
           Expanded(
             child: TextField(
               decoration: InputDecoration(
-                hintText: 'Search by name, email, address…',
+                hintText: 'Search by name, email, address, facility ID…',
                 prefixIcon: const Icon(Icons.search, size: 18),
                 isDense: true,
                 border: OutlineInputBorder(
@@ -97,12 +99,106 @@ class _FacilitiesTabState extends ConsumerState<FacilitiesTab> {
   }
 }
 
-class _FacilityRow extends StatelessWidget {
+class _FacilityRow extends ConsumerWidget {
   final SuperAdminFacilityRow row;
   const _FacilityRow({required this.row});
 
+  Future<void> _onDeletePressed(BuildContext context, WidgetRef ref) async {
+    final f = row.facility;
+    final expected = f.name.trim().isEmpty ? f.id : f.name.trim();
+    final hint = f.name.trim().isEmpty
+        ? 'This facility has no name. Type its Facility ID to confirm.'
+        : 'Type the facility name exactly (including spaces and capitalization) to confirm.';
+    final controller = TextEditingController();
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete facility permanently?'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'This removes all Firestore data for this facility, deletes files in '
+                'Firebase Storage under this facility (contracts, uploads, branding, etc.), '
+                'unlinks it from the creator account, removes the public map entry if present, '
+                'and updates Stripe subscription quantity. This cannot be undone.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              Text(hint, style: Theme.of(ctx).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Confirmation',
+                  border: OutlineInputBorder(),
+                ),
+                autofocus: true,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () {
+              if (controller.text.trim() != expected) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(
+                    content: Text('Confirmation does not match.'),
+                    backgroundColor: AppTheme.error,
+                  ),
+                );
+                return;
+              }
+              Navigator.pop(ctx, true);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed != true || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Deleting facility…')),
+    );
+    try {
+      await SuperAdminDataService.deleteFacility(
+        facilityId: f.id,
+        facilityNameConfirmation: expected,
+      );
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Facility deleted.'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+      ref.invalidate(superAdminFacilityRowsProvider);
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Delete failed: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    }
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final f = row.facility;
     final dateStr = DateFormat('MMM d, yyyy').format(f.createdAt);
     final occupancy = f.totalUnits == 0
@@ -168,6 +264,7 @@ class _FacilityRow extends StatelessWidget {
           const SizedBox(height: 12),
           _DetailGrid(children: [
             _Detail('Signed Up', dateStr),
+            _Detail('Facility ID', f.id, selectable: true),
             _Detail('Address', f.address ?? '—'),
             _Detail('Phone', f.phone ?? '—'),
             _Detail('Email', f.email ?? '—'),
@@ -182,7 +279,9 @@ class _FacilityRow extends StatelessWidget {
           const SizedBox(height: 10),
           _FacilityCommunicationUsageCard(facilityId: f.id),
           const SizedBox(height: 8),
-          Row(
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
             children: [
               TextButton.icon(
                 icon: const Icon(Icons.copy, size: 14),
@@ -207,6 +306,12 @@ class _FacilityRow extends StatelessWidget {
                         duration: Duration(seconds: 1)),
                   );
                 },
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.delete_outline, size: 16),
+                label: const Text('Delete facility'),
+                style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+                onPressed: () => _onDeletePressed(context, ref),
               ),
             ],
           ),
@@ -275,8 +380,13 @@ class _DetailGrid extends StatelessWidget {
                             .textTheme
                             .bodySmall
                             ?.copyWith(color: AppTheme.textTertiary)),
-                    Text(d.value,
-                        style: Theme.of(context).textTheme.bodySmall),
+                    d.selectable
+                        ? SelectableText(
+                            d.value,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          )
+                        : Text(d.value,
+                            style: Theme.of(context).textTheme.bodySmall),
                   ],
                 ),
               ))
@@ -288,7 +398,8 @@ class _DetailGrid extends StatelessWidget {
 class _Detail {
   final String label;
   final String value;
-  const _Detail(this.label, this.value);
+  final bool selectable;
+  const _Detail(this.label, this.value, {this.selectable = false});
 }
 
 class _FacilityCommunicationUsageCard extends StatelessWidget {

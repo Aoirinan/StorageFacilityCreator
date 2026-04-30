@@ -10,10 +10,8 @@ import 'package:sfcapp/models/dnr_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/lead_source_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
-import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
-import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/autopay_service.dart';
@@ -29,6 +27,7 @@ import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/email_send_feedback.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 class TenantCreationScreen extends ConsumerStatefulWidget {
   final List<FacilityModel> facilities;
@@ -59,7 +58,6 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   final _portalWelcomeController = TextEditingController();
   
   String _selectedFacilityId = '';
-  String? _selectedUnitId; // Track selected unit from dropdown
   String _selectedIdType = 'none';
   String? _selectedIdState;
   String? _selectedIdCountry;
@@ -1267,7 +1265,6 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 onChanged: (value) {
                   setState(() {
                     _selectedFacilityId = value ?? '';
-                    _selectedUnitId = null; // Reset unit selection when facility changes
                     _unitController.clear();
                     _rateController.clear();
                   });
@@ -1422,106 +1419,12 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 const SizedBox(height: 16),
               ],
               
-              // Unit Number
-              TextFormField(
-                controller: _unitController,
-                decoration: const InputDecoration(
-                  labelText: 'Unit Number *',
-                  hintText: 'e.g., A101, 205, Storage-12',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.home),
-                  helperText: 'Unit will be created on map if it doesn\'t exist',
-                ),
-                onChanged: (value) {
-                  // Clear selected unit if manually editing
-                  if (_selectedUnitId != null) {
-                    setState(() {
-                      _selectedUnitId = null;
-                    });
-                  }
-                },
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter a unit number';
-                  }
-                  return null;
-                },
+              TenantFacilityUnitPicker(
+                key: ValueKey(_selectedFacilityId),
+                facilityId: _selectedFacilityId,
+                unitNumberController: _unitController,
+                monthlyRateController: _rateController,
               ),
-              const SizedBox(height: 8),
-              // Unit Selection Dropdown from Map
-              if (_selectedFacilityId.isNotEmpty) ...[
-                Consumer(
-                  builder: (context, ref, child) {
-                    final unitsAsync = ref.watch(facilityUnitsProvider(_selectedFacilityId));
-                    return unitsAsync.when(
-                      data: (units) {
-                        if (units.isEmpty) {
-                          return const SizedBox.shrink();
-                        }
-                        return DropdownButtonFormField<String>(
-                          value: _selectedUnitId,
-                          decoration: const InputDecoration(
-                            labelText: 'Select from Existing Units (Optional)',
-                            hintText: 'Choose a unit from the map to auto-fill details',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.map),
-                            helperText: 'Selecting a unit will auto-fill the unit number and rate',
-                          ),
-                          items: [
-                            const DropdownMenuItem<String>(
-                              value: null,
-                              child: Text('Enter unit number manually (will create if needed)'),
-                            ),
-                            ...units.map((unit) {
-                              final statusIcon = unit.status == UnitStatus.available
-                                  ? Icons.check_circle
-                                  : unit.status == UnitStatus.occupied
-                                      ? Icons.person
-                                      : Icons.block;
-                              final statusColor = unit.status == UnitStatus.available
-                                  ? AppTheme.success
-                                  : unit.status == UnitStatus.occupied
-                                      ? AppTheme.warning
-                                      : AppTheme.textTertiary;
-                              return DropdownMenuItem<String>(
-                                value: unit.id,
-                                child: Row(
-                                  children: [
-                                    Icon(statusIcon, size: 16, color: statusColor),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        'Unit ${unit.unitNumber} - \$${unit.monthlyRate.toStringAsFixed(2)}/mo',
-                                        style: TextStyle(
-                                          color: unit.status == UnitStatus.occupied 
-                                              ? AppTheme.textTertiary 
-                                              : null,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }),
-                          ],
-                          onChanged: (value) {
-                            setState(() {
-                              _selectedUnitId = value;
-                              if (value != null) {
-                                final unit = units.firstWhere((u) => u.id == value);
-                                _unitController.text = unit.unitNumber;
-                                _rateController.text = unit.monthlyRate.toStringAsFixed(2);
-                              }
-                            });
-                          },
-                        );
-                      },
-                      loading: () => const SizedBox.shrink(),
-                      error: (_, __) => const SizedBox.shrink(),
-                    );
-                  },
-                ),
-              ],
               const SizedBox(height: 16),
               
               // Monthly Rate

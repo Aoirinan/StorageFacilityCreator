@@ -6,61 +6,7 @@ import '../models/tenant_model.dart';
 import '../services/email_service.dart';
 import '../services/debug_logger.dart';
 import '../utils/email_send_feedback.dart';
-
-class _QuickEmailTemplate {
-  final String label;
-  final String? subject;
-  final String body;
-
-  const _QuickEmailTemplate({
-    required this.label,
-    this.subject,
-    required this.body,
-  });
-}
-
-/// Starter messages for the tenant email tab. Use {{tenant_name}}, {{first_name}}, {{unit}}, {{email}}, {{phone}}.
-const List<_QuickEmailTemplate> _kQuickEmailTemplates = [
-  _QuickEmailTemplate(
-    label: 'Payment reminder',
-    subject: 'Reminder: storage rent',
-    body:
-        'Hi {{first_name}},\n\n'
-        'This is a friendly reminder about your upcoming storage rent. If you have already paid, please disregard this message.\n\n'
-        'Thank you,\nManagement',
-  ),
-  _QuickEmailTemplate(
-    label: 'Past due notice',
-    subject: 'Important: past due balance',
-    body:
-        'Hi {{first_name}},\n\n'
-        'Our records show a past-due balance on your account for unit {{unit}}. Please contact us at your earliest convenience to arrange payment or discuss options.\n\n'
-        'Thank you,\nManagement',
-  ),
-  _QuickEmailTemplate(
-    label: 'Thank you',
-    subject: 'Thank you',
-    body:
-        'Hi {{first_name}},\n\n'
-        'Thank you for being a valued customer. We appreciate your business.\n\n'
-        'Best regards,\nManagement',
-  ),
-  _QuickEmailTemplate(
-    label: 'Document / update needed',
-    subject: 'Action needed for your account',
-    body:
-        'Hi {{first_name}},\n\n'
-        'We need a quick update for your account (unit {{unit}}). Please reply to this email or call the office when you have a moment.\n\n'
-        'Thank you,\nManagement',
-  ),
-  _QuickEmailTemplate(
-    label: 'Blank greeting',
-    body:
-        'Hi {{first_name}},\n\n'
-        '\n\n'
-        'Best regards,\nManagement',
-  ),
-];
+import '../constants/quick_message_templates.dart';
 
 /// Widget for composing and sending a single email to a tenant
 class EmailCompositionWidget extends ConsumerStatefulWidget {
@@ -107,7 +53,7 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
         .replaceAll('{{phone}}', t.phone);
   }
 
-  void _applyQuickTemplate(_QuickEmailTemplate template) {
+  void _applyQuickTemplate(QuickMessageTemplate template) {
     if (_selectedTenantId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Select a tenant first')),
@@ -407,7 +353,7 @@ class _EmailCompositionWidgetState extends ConsumerState<EmailCompositionWidget>
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: _kQuickEmailTemplates.map((t) {
+                    children: kQuickMessageTemplates.map((t) {
                       return ActionChip(
                         label: Text(t.label),
                         onPressed:

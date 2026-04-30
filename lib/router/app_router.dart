@@ -9,21 +9,15 @@ import 'dart:convert';
 import '../providers/auth_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/feature_flag_provider.dart';
 import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
+import 'public_auth_entry_routes.dart';
+import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
-import '../services/referral_program_service.dart';
-import '../screens/auth/login_screen.dart';
-import '../screens/auth/signup_screen.dart';
-import '../screens/auth/forgot_password_screen.dart';
-import '../screens/auth/email_verification_screen.dart';
-import '../screens/tenant_portal_access_screen.dart';
-import '../screens/contract_signing_screen.dart';
-import '../screens/accept_invite_screen.dart';
 import '../screens/facility_management_screen.dart';
 import '../screens/client_list_screen.dart';
-import '../screens/public_facility_map_screen.dart';
 import '../screens/units_map_entry_screen.dart';
 import '../screens/unit_list_screen.dart';
 import '../screens/manager_overlock_screen.dart';
@@ -47,7 +41,6 @@ import '../screens/reminder_list_screen.dart';
 import '../screens/dnr_list_screen.dart';
 import '../screens/facility_creation_wizard.dart';
 import '../widgets/global_home_overlay.dart';
-import '../screens/late_dashboard_screen.dart';
 import '../screens/subscription_test_screen.dart';
 import '../screens/billing_and_payments_screen.dart';
 import '../models/tenant_model.dart';
@@ -115,11 +108,7 @@ import '../widgets/messaging_facility_selector.dart';
 import '../screens/email_template_management_screen.dart';
 import '../screens/sms_template_management_screen.dart';
 import '../screens/public_payment_screen.dart';
-import '../screens/public_rental_portal_screen.dart';
-import '../screens/public_facility_page_screen.dart';
-import '../screens/public_move_in_screen.dart';
 import '../screens/payment_links_management_screen.dart';
-import '../screens/online_rentals_management_screen.dart';
 import '../screens/report_scheduling_management_screen.dart';
 import '../screens/report_scheduling_editor_screen.dart';
 import '../screens/email_sequence_management_screen.dart';
@@ -138,12 +127,7 @@ import '../screens/pending_approval_screen.dart';
 import '../models/document_attachment_model.dart';
 import '../config/web_host_config.dart';
 import '../screens/marketing_landing_page.dart';
-import '../screens/sms_policy_screen.dart';
-import '../screens/contact_screen.dart';
-import '../screens/auth/privacy_screen.dart';
-import '../screens/auth/terms_screen.dart';
 import '../screens/super_admin/super_admin_screen.dart';
-import '../providers/feature_flag_provider.dart';
 // NOTE: Route constants, guards, and helpers are now in separate files:
 // - app_route.dart: Route constants
 // - route_guards.dart: Route guard logic (includes subscription cache)
@@ -155,16 +139,6 @@ import '../providers/feature_flag_provider.dart';
 // - route_guards.dart: Route guard logic
 // - route_helpers.dart: Helper widgets (NotFoundPage, AppShell, GoRouterRefreshStream, etc.)
 // - public_routes.dart: Public route definitions
-
-// Additional landing screens that are specific to this router file
-class DelinquencyShellScreen extends StatelessWidget {
-  const DelinquencyShellScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const LateDashboardScreen();
-  }
-}
 
 /// Main router provider
 ///
@@ -180,188 +154,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) => routeGuard(context, state, ref),
     errorBuilder: (context, state) => NotFoundPage(state: state),
     routes: [
-      GoRoute(
-        path: AppRoute.landing,
-        name: 'landing',
-        builder: (context, state) => MarketingLandingPage(),
-      ),
-      GoRoute(
-        path: AppRoute.marketing,
-        name: 'marketing',
-        builder: (context, state) => MarketingLandingPage(),
-      ),
-      GoRoute(
-        path: '/privacy',
-        name: 'privacy',
-        builder: (context, state) => const PrivacyScreen(),
-      ),
-      GoRoute(
-        path: '/terms',
-        name: 'terms',
-        builder: (context, state) => const TermsScreen(),
-      ),
-      GoRoute(
-        path: '/sms-policy',
-        name: 'sms-policy',
-        builder: (context, state) => const SMSPolicyScreen(),
-      ),
-      GoRoute(
-        path: '/contact',
-        name: 'contact',
-        builder: (context, state) => const ContactScreen(),
-      ),
-      GoRoute(
-        path: AppRoute.login,
-        name: 'login',
-        builder: (context, state) {
-          final email = state.uri.queryParameters['email'];
-          final redirect = state.uri.queryParameters['redirect'];
-          return LoginScreen(initialEmail: email, redirectAfterLogin: redirect);
-        },
-      ),
-      GoRoute(
-        path: AppRoute.signup,
-        name: 'signup',
-        builder: (context, state) {
-          final email = state.uri.queryParameters['email'];
-          final refCode = state.uri
-              .queryParameters[ReferralProgramService.referralSignupQueryParam];
-          return SignupScreen(
-            initialEmail: email,
-            initialReferralCode: refCode,
-          );
-        },
-      ),
-      GoRoute(
-        path: AppRoute.forgotPassword,
-        name: 'forgot-password',
-        builder: (context, state) => const ForgotPasswordScreen(),
-      ),
-      GoRoute(
-        path: AppRoute.verifyEmail,
-        name: 'verify-email',
-        builder: (context, state) {
-          final emailExtra = state.extra;
-          final emailParam = state.uri.queryParameters['email'];
-          final email = emailExtra is String ? emailExtra : (emailParam ?? '');
-          return EmailVerificationScreen(email: email);
-        },
-      ),
-      GoRoute(
-        path: AppRoute.tenantPortal,
-        name: 'tenant-portal',
-        builder: (context, state) => Consumer(
-          builder: (ctx, ref, _) {
-            final enabled =
-                ref.watch(featureFlagEnabledProvider('tenantPortal'));
-            if (!enabled) {
-              return const _FeatureDisabledPage(featureName: 'Tenant Portal');
-            }
-            return const TenantPortalAccessScreen();
-          },
-        ),
-      ),
-      GoRoute(
-        path: AppRoute.contractSign,
-        name: 'contract-sign',
-        builder: (context, state) {
-          final token = state.uri.queryParameters['token'];
-          if (token == null || token.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          final contract = state.extra is ContractModel
-              ? state.extra as ContractModel
-              : null;
-          return ContractSigningScreen(signingToken: token, contract: contract);
-        },
-      ),
-      GoRoute(
-        path: AppRoute.publicRental,
-        name: 'public-rental',
-        builder: (context, state) {
-          final facilityId = state.uri.queryParameters['facilityId'];
-          return PublicRentalPortalScreen(facilityId: facilityId);
-        },
-      ),
-      GoRoute(
-        path: '${AppRoute.publicFacilityRentalBase}/:facilitySlug/rent',
-        name: 'public-rental-by-slug',
-        builder: (context, state) {
-          final slug = state.pathParameters['facilitySlug'];
-          if (slug == null || slug.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicRentalPortalScreen(facilitySlug: slug);
-        },
-      ),
-      GoRoute(
-        path:
-            '${AppRoute.publicFacilityRentalBase}/:facilitySlug/available-units',
-        name: 'public-available-units-by-slug',
-        builder: (context, state) {
-          final slug = state.pathParameters['facilitySlug'];
-          if (slug == null || slug.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicRentalPortalScreen(
-            facilitySlug: slug,
-            availableOnly: true,
-          );
-        },
-      ),
-      GoRoute(
-        path:
-            '${AppRoute.publicFacilityRentalBase}/:facilitySlug/:categorySlug',
-        name: 'public-rental-category-by-slug',
-        builder: (context, state) {
-          final slug = state.pathParameters['facilitySlug'];
-          final categorySlug = state.pathParameters['categorySlug'];
-          if (slug == null ||
-              slug.isEmpty ||
-              categorySlug == null ||
-              categorySlug.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicRentalPortalScreen(
-            facilitySlug: slug,
-            initialCategorySlug: categorySlug,
-          );
-        },
-      ),
-      GoRoute(
-        path: AppRoute.publicMoveIn,
-        name: 'public-move-in',
-        builder: (context, state) {
-          final token = state.uri.queryParameters['token'];
-          if (token == null || token.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicMoveInScreen(token: token);
-        },
-      ),
-      GoRoute(
-        path: '${AppRoute.publicFacility}/:facilityId',
-        name: 'public-facility',
-        builder: (context, state) {
-          final facilityId = state.pathParameters['facilityId'] ??
-              state.uri.queryParameters['facilityId'];
-          if (facilityId == null || facilityId.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicFacilityPageScreen(facilityId: facilityId);
-        },
-      ),
-      GoRoute(
-        path: '${AppRoute.publicMapBase}/:facilitySlug/map',
-        name: 'public-facility-map',
-        builder: (context, state) {
-          final slug = state.pathParameters['facilitySlug'];
-          if (slug == null || slug.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return PublicFacilityMapScreen(facilitySlug: slug);
-        },
-      ),
+      ...buildPublicAuthEntryRoutes(),
+      ...buildPublicCommerceRoutes(),
       // Report Scheduling Routes (inside ShellRoute)
       GoRoute(
         path: AppRoute.reportScheduling,
@@ -428,24 +222,6 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final id = state.pathParameters['id'];
           return EmailSequenceEditorScreen(sequenceId: id);
-        },
-      ),
-      GoRoute(
-        path: AppRoute.acceptInvite,
-        name: 'accept-invite',
-        builder: (context, state) {
-          final facilityId = state.uri.queryParameters['facilityId'];
-          final inviteId = state.uri.queryParameters['inviteId'];
-          if (facilityId == null ||
-              facilityId.isEmpty ||
-              inviteId == null ||
-              inviteId.isEmpty) {
-            return NotFoundPage(state: state);
-          }
-          return AcceptInviteScreen(
-            facilityId: facilityId,
-            inviteId: inviteId,
-          );
         },
       ),
       ShellRoute(
@@ -910,7 +686,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 final enabled = ref
                     .watch(featureFlagEnabledProvider('TEXTING_ONBOARDING_V1'));
                 if (!enabled) {
-                  return const _FeatureDisabledPage(
+                  return const FeatureDisabledPage(
                       featureName: 'Texting Setup');
                 }
                 final facilityId = state.uri.queryParameters['facilityId'];
@@ -1177,26 +953,26 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               if (facilityId.isEmpty) {
-                // No facility selected — trigger facility picker
+                // Backward compatibility route: forward legacy link to website setup.
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (context.mounted) {
                     ModernNavigationService.navigateToRoute(
-                        context, '/online-rentals');
+                        context, AppRoute.websiteSetup);
                   }
                 });
                 return const Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.storefront, size: 64, color: Colors.grey),
+                      Icon(Icons.language, size: 64, color: Colors.grey),
                       SizedBox(height: 16),
-                      Text('Select a facility to manage online rentals.',
+                      Text('Redirecting to Website Setup...',
                           style: TextStyle(fontSize: 16)),
                     ],
                   ),
                 );
               }
-              return OnlineRentalsManagementScreen(facilityId: facilityId);
+              return FacilityWebsiteSetupScreen(facilityId: facilityId);
             },
           ),
           GoRoute(
@@ -1265,7 +1041,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 final enabled =
                     ref.watch(featureFlagEnabledProvider('aiAssistant'));
                 if (!enabled) {
-                  return const _FeatureDisabledPage(
+                  return const FeatureDisabledPage(
                       featureName: 'AI Assistant');
                 }
                 return const AIAssistantScreen();
@@ -1631,36 +1407,3 @@ final goRouterProvider = Provider<GoRouter>((ref) {
   );
 });
 
-/// Shown when a feature has been disabled via the Super Admin feature flags.
-class _FeatureDisabledPage extends StatelessWidget {
-  final String featureName;
-  const _FeatureDisabledPage({required this.featureName});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.block, size: 48, color: Colors.grey),
-            const SizedBox(height: 16),
-            Text('$featureName is currently unavailable.',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            const Text(
-              'This feature has been temporarily disabled by the platform administrator.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 24),
-            TextButton(
-              onPressed: () => context.go(AppRoute.dashboard),
-              child: const Text('Back to Dashboard'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

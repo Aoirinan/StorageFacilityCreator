@@ -23,6 +23,7 @@ import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/setup_retry_controller.dart';
 import 'client_detail_screen.dart';
 import 'tenant_creation_screen.dart';
 import 'tenant_edit_screen.dart';
@@ -52,6 +53,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   bool _isSelectionMode = false;
   final Set<String> _selectedTenantIds = {};
   bool _hasInitializedFacility = false;
+  final SetupRetryController _setupRetry = SetupRetryController();
 
   @override
   void initState() {
@@ -64,6 +66,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
   @override
   void dispose() {
+    _setupRetry.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -86,6 +89,18 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       if (mounted) {
         debugPrint('⚠️ Error ensuring account exists: $e');
       }
+    }
+  }
+
+  Future<void> _retrySetupAndRefresh({String? facilityId}) async {
+    final authState = ref.read(authStateProvider);
+    if (!authState.hasValue || authState.value == null) return;
+    final user = authState.value!;
+
+    await _ensureAccountExists();
+    ref.invalidate(userFacilitiesProvider(user.uid));
+    if (facilityId != null && facilityId.isNotEmpty && facilityId != 'all') {
+      ref.invalidate(facilityTenantsProvider(facilityId));
     }
   }
 
@@ -132,6 +147,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         
         return facilitiesAsync.when(
           data: (facilities) {
+            _setupRetry.reset();
             // Auto-select facility: prefer active facility (global context) so dropdowns stay in sync
             if (!_hasInitializedFacility && facilities.isNotEmpty && _selectedFacilityId.isEmpty) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -176,9 +192,23 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
           ),
           error: (error, stackTrace) {
             final errorMessage = error.toString();
+            final isPermissionError = errorMessage.contains('permission-denied') ||
+                errorMessage.contains('Missing or insufficient permissions');
+            if (isPermissionError && _setupRetry.canRetry) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _setupRetry.schedule(
+                    onRetry: () {
+                      if (!mounted) return;
+                      _retrySetupAndRefresh();
+                    },
+                  );
+                }
+              });
+            }
             String userMessage;
-            
-            if (errorMessage.contains('permission-denied')) {
+
+            if (isPermissionError) {
               userMessage = 'Permission denied. Please check your account status or contact support.';
             } else if (errorMessage.contains('Not signed in')) {
               userMessage = 'Please sign in to view your facilities.';
@@ -215,9 +245,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       ),
                       const SizedBox(height: 24),
                       ElevatedButton.icon(
-                        onPressed: () {
-                          ref.invalidate(userFacilitiesProvider(user.uid));
-                          _ensureAccountExists();
+                        onPressed: () async {
+                          await _retrySetupAndRefresh();
                         },
                         icon: const Icon(Icons.refresh),
                         label: const Text('Retry'),
@@ -692,6 +721,20 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                           final errorStr = error.toString();
                           bool isPermissionError = errorStr.contains('permission-denied') || 
                                                   errorStr.contains('Missing or insufficient permissions');
+                          if (isPermissionError && _setupRetry.canRetry) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                _setupRetry.schedule(
+                                  onRetry: () {
+                                    if (!mounted) return;
+                                    _retrySetupAndRefresh(
+                                      facilityId: _selectedFacilityId,
+                                    );
+                                  },
+                                );
+                              }
+                            });
+                          }
                           
                           return Center(
                             child: Padding(
@@ -732,15 +775,10 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
                                       ElevatedButton.icon(
-                                        onPressed: () {
-                                          final authState = ref.read(authStateProvider);
-                                          if (authState.hasValue && authState.value != null) {
-                                            if (_selectedFacilityId.isNotEmpty) {
-                                              ref.invalidate(facilityTenantsProvider(_selectedFacilityId));
-                                            }
-                                            ref.invalidate(userFacilitiesProvider(authState.value!.uid));
-                                            _ensureAccountExists();
-                                          }
+                                        onPressed: () async {
+                                          await _retrySetupAndRefresh(
+                                            facilityId: _selectedFacilityId,
+                                          );
                                         },
                                         icon: const Icon(Icons.refresh),
                                         label: const Text('Retry'),

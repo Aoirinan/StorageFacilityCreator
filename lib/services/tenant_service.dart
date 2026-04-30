@@ -2,11 +2,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/tenant_model.dart';
+import '../models/unit_model.dart';
 import 'audit_service.dart';
 import 'facility_creator_account_service.dart';
 import 'facility_limits_service.dart';
-import 'facility_service.dart';
 import 'facility_stats_service.dart';
+import 'facility_service.dart';
 import 'superadmin_service.dart';
 import 'unit_service.dart';
 
@@ -555,6 +556,62 @@ class TenantService {
           'fieldsChanged': updateData.keys.toList(),
         },
       );
+
+      // Keep facilities/{id}/units in sync when unit number changes (createTenant already does this).
+      if (unitNumber != null && beforeData != null) {
+        final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
+        final newNum = unitNumber.trim();
+        final wasActive = (beforeData['isActive'] as bool?) ?? true;
+        final nowActive = isActive ?? wasActive;
+        final resolvedName =
+            name ?? (beforeData['name'] as String?)?.trim() ?? '';
+        final resolvedRate = monthlyRate ??
+            ((beforeData['monthlyRate'] as num?)?.toDouble() ?? 0.0);
+
+        if (oldNum != newNum) {
+          if (oldNum.isNotEmpty) {
+            await _updateUnitOccupancy(
+                facilityId, oldNum, tenantId, resolvedName, false, resolvedRate);
+          }
+          if (newNum.isNotEmpty && nowActive) {
+            await _updateUnitOccupancy(
+                facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
+          }
+          await FacilityStatsService.updateFacilityStats(facilityId);
+        } else if (newNum.isNotEmpty && isActive == false && wasActive) {
+          await _updateUnitOccupancy(
+              facilityId, newNum, tenantId, resolvedName, false, resolvedRate);
+          await FacilityStatsService.updateFacilityStats(facilityId);
+        } else if (newNum.isNotEmpty && nowActive) {
+          final unitsSnap = await _firestore
+              .collection('facilities')
+              .doc(facilityId)
+              .collection('units')
+              .where('unitNumber', isEqualTo: newNum)
+              .limit(5)
+              .get();
+          final activeDocs = unitsSnap.docs.where((d) {
+            final m = d.data();
+            return (m['isActive'] ?? true) == true;
+          }).toList();
+          if (activeDocs.isNotEmpty) {
+            final m = activeDocs.first.data();
+            final linked = (m['tenantId'] as String?)?.trim();
+            final st = (m['status'] as String?)?.trim().toLowerCase();
+            final needsHeal =
+                linked != tenantId || st != UnitStatus.occupied.name;
+            if (needsHeal) {
+              await _updateUnitOccupancy(facilityId, newNum, tenantId,
+                  resolvedName, true, resolvedRate);
+              await FacilityStatsService.updateFacilityStats(facilityId);
+            }
+          } else {
+            await _updateUnitOccupancy(
+                facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
+            await FacilityStatsService.updateFacilityStats(facilityId);
+          }
+        }
+      }
 
       if (kDebugMode) {
         print('✅ Tenant updated successfully: $tenantId');

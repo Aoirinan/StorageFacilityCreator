@@ -24,6 +24,7 @@ import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/unit_provider.dart';
 import '../models/ledger_entry_model.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
@@ -32,6 +33,7 @@ import '../services/autopay_service.dart';
 import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
 import '../widgets/keyboard_scrollable.dart';
+import '../widgets/tenant_facility_unit_picker.dart';
 import '../constants/location_options.dart';
 import 'ledger_screen.dart';
 import '../ui/payments/tenant_billing_panel.dart';
@@ -123,7 +125,12 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               const SizedBox(height: 12),
               TextFormField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.phone)), keyboardType: TextInputType.phone, validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
               const SizedBox(height: 12),
-              TextFormField(controller: unitCtrl, decoration: const InputDecoration(labelText: 'Unit Number *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.home)), validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
+              TenantFacilityUnitPicker(
+                facilityId: tenant.facilityId,
+                unitNumberController: unitCtrl,
+                monthlyRateController: rateCtrl,
+                forTenantId: tenant.id,
+              ),
               const SizedBox(height: 12),
               TextFormField(controller: rateCtrl, decoration: const InputDecoration(labelText: 'Monthly Rate *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.attach_money)), keyboardType: TextInputType.number, validator: (v) {
                 if (v == null || v.trim().isEmpty) return 'Required';
@@ -165,6 +172,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       );
       if (mounted) {
         ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+        ref.invalidate(facilityUnitsProvider(tenant.facilityId));
+        ref.invalidate(unitsForFacilityProvider(tenant.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contact info updated'), backgroundColor: AppTheme.success, duration: Duration(seconds: 2)));
       }
     } catch (e) {

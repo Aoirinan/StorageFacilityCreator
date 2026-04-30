@@ -50,6 +50,7 @@ class _CouponManagementScreenState extends ConsumerState<CouponManagementScreen>
     final authState = ref.read(authStateProvider);
     authState.whenData((user) {
       if (user != null && mounted) {
+        ref.invalidate(userFacilitiesProvider(user.uid));
         ref.read(userFacilitiesProvider(user.uid).future).then((facilities) {
           if (facilities.isNotEmpty && mounted) {
             setState(() {

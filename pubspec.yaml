@@ -2,7 +2,7 @@ name: sfcapp
 description: Storage Facility Creator - A comprehensive facility management app
 publish_to: 'none'
 
-version: 2.10.49+20260425
+version: 2.10.63+20260427
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -81,6 +81,7 @@ dependencies:
   cupertino_icons: ^1.0.2
   google_fonts: ^8.0.0
   table_calendar: ^3.2.0
+  flutter_colorpicker: ^1.1.0
 
 dev_dependencies:
   flutter_test:

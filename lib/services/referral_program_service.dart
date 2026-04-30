@@ -21,6 +21,12 @@ class ReferralProgramService {
     await prefs.setString(_pendingPrefsKey, t);
   }
 
+  /// Clears a pending referral (e.g. user removed the optional code on signup).
+  static Future<void> clearPendingReferralCode() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingPrefsKey);
+  }
+
   /// Ensures this user has a [referralCode] and applies any pending `?ref=` from signup.
   /// Returns the shareable code when allocation succeeds.
   static Future<String?> syncForCurrentUser() async {

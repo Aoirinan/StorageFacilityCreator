@@ -253,7 +253,7 @@ class FacilityPublicService {
     return '$base/#/f/$facilitySlug/$categorySlug';
   }
 
-  /// Get cookie-cutter public website URL by slug.
+  /// Get templated public website URL by slug (`/w/{slug}`).
   static String getPublicWebsiteUrl(String facilitySlug, {String? baseUrl}) {
     final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
     return '$base/w/$facilitySlug';

@@ -669,6 +669,46 @@ final platformMetricsProvider = Provider<AsyncValue<PlatformMetrics>>((ref) {
 // Super admin note model
 // ---------------------------------------------------------------------------
 
+/// Dry-run stats for emailing all unique facility owners (super admin).
+class SuperAdminFacilityOwnerBroadcastPreview {
+  final int facilityDocuments;
+  final int uniqueOwnerUids;
+  final int recipientCount;
+
+  const SuperAdminFacilityOwnerBroadcastPreview({
+    required this.facilityDocuments,
+    required this.uniqueOwnerUids,
+    required this.recipientCount,
+  });
+}
+
+class SuperAdminFacilityOwnerBroadcastFailure {
+  final String uid;
+  final String email;
+  final String error;
+
+  const SuperAdminFacilityOwnerBroadcastFailure({
+    required this.uid,
+    required this.email,
+    required this.error,
+  });
+}
+
+/// Outcome of a facility-owner platform email broadcast.
+class SuperAdminFacilityOwnerBroadcastResult {
+  final int sent;
+  final int failureCount;
+  final int totalRecipients;
+  final List<SuperAdminFacilityOwnerBroadcastFailure> failures;
+
+  const SuperAdminFacilityOwnerBroadcastResult({
+    required this.sent,
+    required this.failureCount,
+    required this.totalRecipients,
+    required this.failures,
+  });
+}
+
 class SuperAdminNote {
   final String id;
   final String targetId;
@@ -710,6 +750,69 @@ class SuperAdminNote {
 class SuperAdminDataService {
   static final _db = FirebaseFirestore.instance;
   static final _functions = FirebaseFunctions.instance;
+
+  static HttpsCallable _facilityOwnerBroadcastCallable({Duration? timeout}) {
+    return _functions.httpsCallable(
+      'superAdminBroadcastEmailToFacilityOwners',
+      options: HttpsCallableOptions(
+        timeout: timeout ?? const Duration(minutes: 6),
+      ),
+    );
+  }
+
+  /// How many facility documents and unique owner emails a broadcast would hit.
+  static Future<SuperAdminFacilityOwnerBroadcastPreview>
+      previewFacilityOwnerBroadcast({
+    bool includeInactiveFacilities = false,
+  }) async {
+    final callable = _facilityOwnerBroadcastCallable(
+      timeout: const Duration(seconds: 120),
+    );
+    final result = await callable.call<Map<String, dynamic>>({
+      'dryRun': true,
+      'includeInactiveFacilities': includeInactiveFacilities,
+    });
+    final data = Map<String, dynamic>.from(result.data);
+    return SuperAdminFacilityOwnerBroadcastPreview(
+      facilityDocuments: (data['facilityDocuments'] as num?)?.toInt() ?? 0,
+      uniqueOwnerUids: (data['uniqueOwnerUids'] as num?)?.toInt() ?? 0,
+      recipientCount: (data['recipientCount'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  /// Send one platform email per unique facility owner inbox. Requires [acknowledgment] `BROADCAST`.
+  static Future<SuperAdminFacilityOwnerBroadcastResult> sendFacilityOwnerBroadcast({
+    required String subject,
+    String? html,
+    String? text,
+    required String acknowledgment,
+    bool includeInactiveFacilities = false,
+  }) async {
+    final callable = _facilityOwnerBroadcastCallable();
+    final result = await callable.call<Map<String, dynamic>>({
+      'subject': subject.trim(),
+      if (html != null && html.trim().isNotEmpty) 'html': html,
+      if (text != null && text.trim().isNotEmpty) 'text': text,
+      'acknowledgment': acknowledgment.trim(),
+      'includeInactiveFacilities': includeInactiveFacilities,
+    });
+    final data = Map<String, dynamic>.from(result.data);
+    final rawFailures = data['failures'] as List<dynamic>? ?? const [];
+    final failures = rawFailures.map((raw) {
+      final m = Map<String, dynamic>.from(raw as Map);
+      return SuperAdminFacilityOwnerBroadcastFailure(
+        uid: (m['uid'] ?? '').toString(),
+        email: (m['email'] ?? '').toString(),
+        error: (m['error'] ?? '').toString(),
+      );
+    }).toList();
+    return SuperAdminFacilityOwnerBroadcastResult(
+      sent: (data['sent'] as num?)?.toInt() ?? 0,
+      failureCount: (data['failureCount'] as num?)?.toInt() ?? 0,
+      totalRecipients: (data['totalRecipients'] as num?)?.toInt() ?? 0,
+      failures: failures,
+    );
+  }
 
   static Future<HostingCustomDomainProvisionResult>
       provisionHostingCustomDomain({
@@ -809,6 +912,22 @@ class SuperAdminDataService {
     await callable.call<Map<String, dynamic>>({
       'accountId': accountId,
       'ownerEmailConfirmation': ownerEmailConfirmation.trim(),
+    });
+  }
+
+  /// Super admin only: permanently delete one facility (full Firestore subtree),
+  /// Firebase Storage files under `facilities/{id}/`, public website map entry when
+  /// applicable, account membership, and Stripe quantity.
+  /// [facilityNameConfirmation] must be the facility's display name exactly, or the
+  /// facility document id when the facility has no name.
+  static Future<void> deleteFacility({
+    required String facilityId,
+    required String facilityNameConfirmation,
+  }) async {
+    final callable = _functions.httpsCallable('superAdminDeleteFacility');
+    await callable.call<Map<String, dynamic>>({
+      'facilityId': facilityId.trim(),
+      'facilityNameConfirmation': facilityNameConfirmation.trim(),
     });
   }
 

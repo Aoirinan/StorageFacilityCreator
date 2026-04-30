@@ -57,7 +57,8 @@ class ModernNavigationService {
     final needsFacilitySelection = route == '/messaging' ||
         route == '/access' ||
         route == '/units/map' ||
-        route == '/online-rentals';
+        route == '/online-rentals' ||
+        route == AppRoute.websiteSetup;
 
     if (isSameLocation && !needsFacilitySelection) {
       // #region agent log
@@ -110,7 +111,10 @@ class ModernNavigationService {
           context.go('/payments');
           break;
         case '/online-rentals':
-          _navigateToOnlineRentalsWithFacilitySelection(context);
+          _navigateToWebsiteSetupWithFacilitySelection(context);
+          break;
+        case AppRoute.websiteSetup:
+          _navigateToWebsiteSetupWithFacilitySelection(context);
           break;
         case '/contracts':
           context.go('/contracts');
@@ -250,15 +254,15 @@ class ModernNavigationService {
     }
   }
 
-  // Helper method to navigate to online rentals with facility selection
-  static Future<void> _navigateToOnlineRentalsWithFacilitySelection(
+  // Helper method to navigate to website setup with facility selection.
+  // Also used as compatibility path for old online-rentals links.
+  static Future<void> _navigateToWebsiteSetupWithFacilitySelection(
       BuildContext context) async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Please sign in to access online rentals')),
+          const SnackBar(content: Text('Please sign in to access website setup')),
         );
         return;
       }
@@ -266,12 +270,12 @@ class ModernNavigationService {
       final facilities = await FacilityService.getUserFacilities();
 
       if (facilities.isEmpty) {
-        _showNoFacilitiesDialog(context, featureName: 'online rentals');
+        _showNoFacilitiesDialog(context, featureName: 'website setup');
         return;
       }
 
       if (facilities.length == 1) {
-        context.go('/online-rentals?facilityId=${facilities.first.id}');
+        context.go('${AppRoute.websiteSetup}?facilityId=${facilities.first.id}');
         return;
       }
 
@@ -281,11 +285,11 @@ class ModernNavigationService {
       );
 
       if (selected != null) {
-        context.go('/online-rentals?facilityId=${selected.id}');
+        context.go('${AppRoute.websiteSetup}?facilityId=${selected.id}');
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error accessing online rentals: $e')),
+        SnackBar(content: Text('Error accessing website setup: $e')),
       );
     }
   }

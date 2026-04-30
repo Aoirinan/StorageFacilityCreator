@@ -161,15 +161,6 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate(AppRoute.retail),
                 ),
                 _SidebarItem(
-                  icon: Icons.storefront_outlined,
-                  activeIcon: Icons.storefront,
-                  label: 'Online Rentals',
-                  route: '/online-rentals',
-                  isActive: isActive('/online-rentals'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/online-rentals'),
-                ),
-                _SidebarItem(
                   icon: Icons.warning_amber_outlined,
                   activeIcon: Icons.warning_amber,
                   label: 'Delinquency',

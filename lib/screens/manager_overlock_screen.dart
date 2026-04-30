@@ -1005,6 +1005,9 @@ class _ManagerOverlockScreenState extends ConsumerState<ManagerOverlockScreen> {
   Future<void> _printOverlockList() async {
     if (_facilityId == null) return;
     final authState = ref.read(authStateProvider).value;
+    if (authState != null) {
+      ref.invalidate(userFacilitiesProvider(authState.uid));
+    }
     final facilities = authState != null ? await ref.read(userFacilitiesProvider(authState.uid).future) : <FacilityModel>[];
     String facilityName = _facilityId!;
     for (final f in facilities) {

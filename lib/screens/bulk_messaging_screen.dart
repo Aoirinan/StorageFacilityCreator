@@ -4,6 +4,7 @@ import '../theme/app_theme.dart';
 import '../utils/breakpoints.dart';
 import '../providers/tenant_provider.dart';
 import '../models/tenant_model.dart';
+import '../constants/quick_message_templates.dart';
 import '../services/email_service.dart';
 import '../services/sms_service.dart';
 import '../services/debug_logger.dart';
@@ -481,6 +482,62 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     });
   }
 
+  List<TenantModel> _readCurrentTenants() {
+    final asyncValue = widget.tenantsKey.isNotEmpty
+        ? ref.read(multiFacilityTenantsProvider(widget.tenantsKey))
+        : ref.read(facilityTenantsProvider(widget.facilityId));
+    return asyncValue.maybeWhen(
+      data: (tenants) => tenants,
+      orElse: () => <TenantModel>[],
+    );
+  }
+
+  static String _firstNameFromTenant(TenantModel tenant) {
+    final name = tenant.name.trim();
+    if (name.isEmpty) return 'there';
+    return name.split(RegExp(r'\s+')).first;
+  }
+
+  String _interpolateTemplate(String template, TenantModel? tenant) {
+    if (tenant == null) {
+      return template
+          .replaceAll('{{tenant_name}}', 'Tenant')
+          .replaceAll('{{name}}', 'Tenant')
+          .replaceAll('{{first_name}}', 'there')
+          .replaceAll('{{unit}}', 'your unit')
+          .replaceAll('{{email}}', '')
+          .replaceAll('{{phone}}', '');
+    }
+
+    return template
+        .replaceAll('{{tenant_name}}', tenant.name)
+        .replaceAll('{{name}}', tenant.name)
+        .replaceAll('{{first_name}}', _firstNameFromTenant(tenant))
+        .replaceAll('{{unit}}', tenant.unitNumber)
+        .replaceAll('{{email}}', tenant.email)
+        .replaceAll('{{phone}}', tenant.phone);
+  }
+
+  TenantModel? _templateTenant() {
+    if (_selectedTenantIds.length != 1) return null;
+    final selectedId = _selectedTenantIds.first;
+    final tenants = _readCurrentTenants();
+    for (final tenant in tenants) {
+      if (tenant.id == selectedId) return tenant;
+    }
+    return null;
+  }
+
+  void _applyQuickTemplate(QuickMessageTemplate template) {
+    final tenant = _templateTenant();
+    setState(() {
+      _messageController.text = _interpolateTemplate(template.body, tenant);
+      if (template.subject != null) {
+        _subjectController.text = _interpolateTemplate(template.subject!, tenant);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final tenantsAsync = widget.tenantsKey.isNotEmpty
@@ -544,6 +601,33 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Quick messages',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _selectedTenantIds.length == 1
+                          ? 'Templates will personalize using the selected tenant.'
+                          : 'Templates use generic placeholders unless exactly one tenant is selected.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textSecondary,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: kQuickMessageTemplates.map((template) {
+                        return ActionChip(
+                          label: Text(template.label),
+                          onPressed: _isSending ? null : () => _applyQuickTemplate(template),
+                        );
+                      }).toList(),
                     ),
                     const SizedBox(height: 16),
                     if (_sendEmail) ...[

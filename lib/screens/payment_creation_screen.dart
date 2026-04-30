@@ -87,7 +87,9 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                                 ElevatedButton.icon(
                                   onPressed: () async {
                                     // Get facilities for tenant creation
-                                    final facilities = await ref.read(userFacilitiesProvider(FirebaseAuth.instance.currentUser!.uid).future);
+                                    final uid = FirebaseAuth.instance.currentUser!.uid;
+                                    ref.invalidate(userFacilitiesProvider(uid));
+                                    final facilities = await ref.read(userFacilitiesProvider(uid).future);
                                     if (mounted && facilities.isNotEmpty) {
                                       context.push(
                                         AppRoute.legacyScreen,

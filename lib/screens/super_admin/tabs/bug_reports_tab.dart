@@ -227,6 +227,7 @@ class _BugReportCard extends StatefulWidget {
 class _BugReportCardState extends State<_BugReportCard> {
   bool _expanded = false;
   bool _saving = false;
+  bool _deleting = false;
   late BugReportStatus _status;
   final _notesCtrl = TextEditingController();
 
@@ -270,6 +271,72 @@ class _BugReportCardState extends State<_BugReportCard> {
       }
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  bool get _canDelete =>
+      _status == BugReportStatus.resolved || _status == BugReportStatus.closed;
+
+  Future<void> _confirmAndDelete() async {
+    if (!_canDelete) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Set status to Resolved or Closed before deleting this report.',
+          ),
+        ),
+      );
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete bug report?'),
+        content: Text(
+          'Permanently remove “${widget.report.title}” from bug_reports? '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _deleting = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('bug_reports')
+          .doc(widget.report.id)
+          .delete();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Bug report deleted'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+        setState(() => _expanded = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Delete failed: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
     }
   }
 
@@ -466,15 +533,33 @@ class _BugReportCardState extends State<_BugReportCard> {
                   ),
                   const SizedBox(height: 16),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      TextButton.icon(
+                        onPressed: (_saving || _deleting) ? null : _confirmAndDelete,
+                        icon: _deleting
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.delete_outline, size: 18),
+                        label: Text(_deleting ? 'Deleting…' : 'Delete report'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: _canDelete
+                              ? AppTheme.error
+                              : AppTheme.textTertiary,
+                        ),
+                      ),
+                      const Spacer(),
                       TextButton(
-                        onPressed: () => setState(() => _expanded = false),
+                        onPressed: (_saving || _deleting)
+                            ? null
+                            : () => setState(() => _expanded = false),
                         child: const Text('Cancel'),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton.icon(
-                        onPressed: _saving ? null : _save,
+                        onPressed: (_saving || _deleting) ? null : _save,
                         icon: _saving
                             ? const SizedBox(
                                 width: 14,

@@ -7,17 +7,13 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
-import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/screens/permission_management_screen.dart';
 import 'package:sfcapp/providers/dashboard_provider.dart';
-import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/two_factor_service.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
-import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 const String _kMarketingBase = 'https://storagefacilitycreator.com';
 
@@ -371,10 +367,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             },
                           ),
                           _SettingsTile(
-                            icon: Icons.language_outlined,
+                            icon: Icons.web_outlined,
                             title: 'Website Setup',
                             subtitle:
-                                'Configure one cookie-cutter website per facility',
+                                'Configure one public marketing website per facility',
                             onTap: () {
                               facilitiesAsync?.when(
                                 data: (facilities) {
@@ -489,7 +485,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             },
                           ),
                           _SettingsTile(
-                            icon: Icons.block_flipped,
+                            icon: Icons.sms,
                             title: 'SMS opt-outs',
                             subtitle:
                                 'Tenants who texted STOP and SMS block list',

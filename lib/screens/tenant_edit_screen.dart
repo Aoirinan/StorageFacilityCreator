@@ -7,10 +7,12 @@ import 'package:sfcapp/constants/location_options.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 class TenantEditScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -942,6 +944,9 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
       );
 
       if (mounted) {
+        ref.invalidate(facilityTenantsProvider(_facilityId));
+        ref.invalidate(facilityUnitsProvider(_facilityId));
+        ref.invalidate(unitsForFacilityProvider(_facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${widget.tenant.name} updated successfully!'),
@@ -949,7 +954,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
             duration: const Duration(seconds: 2),
           ),
         );
-        
+
         // Navigate back
         Navigator.of(context).pop();
       }
@@ -1173,21 +1178,29 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
                           const SizedBox(height: 16),
                         ],
                         
-                        // Unit Number
-                        TextFormField(
-                          controller: _unitController,
-                          decoration: const InputDecoration(
-                            labelText: 'Unit Number *',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.home),
+                        if (_hasFacilityContext)
+                          TenantFacilityUnitPicker(
+                            key: ValueKey('${_facilityId}_${widget.tenant.id}'),
+                            facilityId: _facilityId,
+                            unitNumberController: _unitController,
+                            monthlyRateController: _rateController,
+                            forTenantId: widget.tenant.id,
+                          )
+                        else
+                          TextFormField(
+                            controller: _unitController,
+                            decoration: const InputDecoration(
+                              labelText: 'Unit Number *',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.home),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Please enter a unit number';
+                              }
+                              return null;
+                            },
                           ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Please enter a unit number';
-                            }
-                            return null;
-                          },
-                        ),
                         const SizedBox(height: 16),
                         
                         // Monthly Rate

@@ -62,9 +62,8 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
             return;
           }
         }
-        
-        await Future.delayed(const Duration(milliseconds: 500));
-        
+
+        ref.invalidate(userFacilitiesProvider(user.uid));
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
         if (facilities.isNotEmpty) {

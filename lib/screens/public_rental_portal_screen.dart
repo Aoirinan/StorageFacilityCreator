@@ -29,6 +29,24 @@ class PublicRentalPortalScreen extends StatefulWidget {
 }
 
 class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
+  static const double _contentMaxWidth = 1120;
+
+  /// Hash routes (`/#/f/...?embed=1`) put query params in [Uri.fragment], not
+  /// [Uri.queryParameters]. Parse both so embedded mode actually activates.
+  Map<String, String> _locationQueryParams() {
+    final merged = Map<String, String>.from(Uri.base.queryParameters);
+    final frag = Uri.base.fragment;
+    if (frag.isNotEmpty) {
+      final q = frag.indexOf('?');
+      if (q != -1 && q < frag.length - 1) {
+        merged.addAll(Uri.splitQueryString(frag.substring(q + 1)));
+      }
+    }
+    return merged;
+  }
+
+  bool get _isEmbeddedMode => _locationQueryParams()['embed'] == '1';
+
   bool _isLoading = true;
   String? _error;
   String? _facilitySlug;
@@ -38,6 +56,20 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String? _facilityPhone;
   String? _facilityLogoUrl;
   String? _customDomain;
+  Color _heroGradientStart = const Color(0xFF0C1E4D);
+  Color _heroGradientEnd = const Color(0xFF1E5BD4);
+  Color _heroTextColor = Colors.white;
+  Color _ctaButtonColor = const Color(0xFF103A86);
+  String? _heroImageUrl;
+  String? _stepChooseIconUrl;
+  String? _stepDetailsIconUrl;
+  String? _stepReserveIconUrl;
+  String? _promiseSecurityIconUrl;
+  String? _promiseServiceIconUrl;
+  String? _promiseConvenienceIconUrl;
+  String _promiseSecurityText = 'Secure and well-monitored property';
+  String _promiseServiceText = 'Friendly support when you need help';
+  String _promiseConvenienceText = 'Fast online reservation and move-in flow';
 
   bool _publicRentalsEnabled = false;
   bool _publicPricingEnabled = true;
@@ -96,8 +128,9 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           .map((raw) => _PublicUnitView.fromMap(raw))
           .where((u) => u.unitId.isNotEmpty)
           .toList();
-      _preferredUnitId = Uri.base.queryParameters['unitId'];
-      _preferredUnitType = Uri.base.queryParameters['unitType'];
+      final locQ = _locationQueryParams();
+      _preferredUnitId = locQ['unitId'];
+      _preferredUnitType = locQ['unitType'];
 
       final enabledTypes =
           (settings['enabledPublicUnitTypes'] as List<dynamic>? ??
@@ -109,6 +142,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           (settings['unitTypeImageUrls'] as Map<String, dynamic>? ??
                   const <String, dynamic>{})
               .map((key, value) => MapEntry(key.toString(), value.toString()));
+      final customStyles = _coerceStyleMap(settings['customStyles']);
+      final websiteConfig = _coerceStyleMap(settings['websiteConfig']);
+      final featuredImages =
+          (settings['featuredImages'] as List<dynamic>? ?? const <dynamic>[])
+              .map((e) => e.toString())
+              .where((e) => e.trim().isNotEmpty)
+              .toList();
 
       setState(() {
         _facilitySlug = resolvedSlug;
@@ -121,6 +161,42 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _facilityPhone = settings['facilityPhone']?.toString();
         _facilityLogoUrl = settings['facilityLogoUrl']?.toString();
         _customDomain = settings['customDomain']?.toString();
+        _heroGradientStart = _parseColor(
+          customStyles['heroGradientStart']?.toString(),
+          const Color(0xFF0C1E4D),
+        );
+        _heroGradientEnd = _parseColor(
+          customStyles['heroGradientEnd']?.toString(),
+          const Color(0xFF1E5BD4),
+        );
+        _heroTextColor = _parseColor(
+          customStyles['heroTextColor']?.toString(),
+          Colors.white,
+        );
+        _ctaButtonColor = _parseColor(
+          customStyles['ctaButtonColor']?.toString(),
+          const Color(0xFF103A86),
+        );
+        _heroImageUrl = featuredImages.isNotEmpty ? featuredImages.first : null;
+        _stepChooseIconUrl = websiteConfig['stepChooseIconUrl']?.toString();
+        _stepDetailsIconUrl = websiteConfig['stepDetailsIconUrl']?.toString();
+        _stepReserveIconUrl = websiteConfig['stepReserveIconUrl']?.toString();
+        _promiseSecurityIconUrl =
+            websiteConfig['promiseSecurityIconUrl']?.toString();
+        _promiseServiceIconUrl =
+            websiteConfig['promiseServiceIconUrl']?.toString();
+        _promiseConvenienceIconUrl =
+            websiteConfig['promiseConvenienceIconUrl']?.toString();
+        _promiseSecurityText =
+            _asNonEmptyOrDefault(websiteConfig['promiseSecurity']?.toString(),
+                'Secure and well-monitored property');
+        _promiseServiceText =
+            _asNonEmptyOrDefault(websiteConfig['promiseService']?.toString(),
+                'Friendly support when you need help');
+        _promiseConvenienceText = _asNonEmptyOrDefault(
+          websiteConfig['promiseConvenience']?.toString(),
+          'Fast online reservation and move-in flow',
+        );
         _publicRentalsEnabled = settings['publicRentalsEnabled'] == true;
         _publicPricingEnabled = settings['showPublicPricing'] != false;
         _publicUnitNumbersEnabled =
@@ -135,6 +211,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _selectedCategorySlug = widget.initialCategorySlug;
         _isLoading = false;
       });
+
+      _maybeAutoStartRental();
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRentalPortal] Failed to load public rental data: $e');
@@ -174,6 +252,43 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     }
   }
 
+  String _originBase() {
+    final origin = Uri.base.origin;
+    if (origin.isNotEmpty) return origin;
+    return 'https://app.storagefacilitycreator.com';
+  }
+
+  String _publicWebsiteBaseUrl() {
+    final slug = _facilitySlug?.trim();
+    if (slug == null || slug.isEmpty) return _originBase();
+    return '${_originBase()}/w/$slug';
+  }
+
+  String _publicUnitsUrl() {
+    final slug = _facilitySlug?.trim();
+    if (slug == null || slug.isEmpty) return _originBase();
+    return '${_originBase()}/w/$slug#units';
+  }
+
+  String _publicMapUrl() {
+    final slug = _facilitySlug?.trim();
+    if (slug == null || slug.isEmpty) return _originBase();
+    return '${_originBase()}/public/$slug/map';
+  }
+
+  Future<void> _openPublicUrl(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      await launchUrl(
+        uri,
+        mode: LaunchMode.platformDefault,
+        webOnlyWindowName: '_self',
+      );
+    } catch (_) {
+      /* no-op if navigation fails */
+    }
+  }
+
   /// Re-read `publicFacilityMaps` so the list matches what Cloud Functions enforce.
   Future<void> _reloadInventoryFromPublishedSnapshot() async {
     final slug = _facilitySlug;
@@ -193,6 +308,124 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
       if (kDebugMode) {
         print('⚠️ [PublicRentalPortal] Inventory refresh failed: $e');
       }
+    }
+  }
+
+  bool _autoStartFired = false;
+
+  bool get _isAutoSubmitMode {
+    final params = _locationQueryParams();
+    return params['autoSubmit'] == '1' &&
+        (params['email']?.trim().isNotEmpty == true);
+  }
+
+  /// When arriving from the marketing page with autoSubmit=1 and form data
+  /// in the URL, skip all UI and submit the reservation directly.
+  Future<void> _maybeAutoStartRental() async {
+    if (_autoStartFired) return;
+    if (!_isEmbeddedMode) return;
+    if (!_publicRentalsEnabled) return;
+
+    final params = _locationQueryParams();
+    final hasAutoSubmit = params['autoSubmit'] == '1' &&
+        (params['email']?.trim().isNotEmpty == true);
+    if (!hasAutoSubmit) return;
+
+    _autoStartFired = true;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) return;
+
+    _PublicUnitView? unit;
+    final targetId = _preferredUnitId;
+
+    if (targetId != null && targetId.trim().isNotEmpty) {
+      unit = _units.cast<_PublicUnitView?>().firstWhere(
+            (u) => u!.unitId == targetId && _unitStillRentableOnline(u),
+            orElse: () => null,
+          );
+    }
+
+    if (unit == null) {
+      final groups = _groups;
+      if (groups.isEmpty) {
+        _showAutoSubmitError('No units are currently available.');
+        return;
+      }
+      final available = groups.first.availableUnits;
+      if (available.isEmpty) {
+        _showAutoSubmitError('No units are currently available.');
+        return;
+      }
+      unit = available.first;
+    }
+
+    _handleDirectSubmit(unit, params);
+  }
+
+  void _showAutoSubmitError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _error = message;
+    });
+  }
+
+  /// Submit the reservation directly using form data from URL params.
+  Future<void> _handleDirectSubmit(
+      _PublicUnitView unit, Map<String, String> params) async {
+    if (_facilityId == null) return;
+
+    final email = params['email']?.trim() ?? '';
+    final name = params['name']?.trim();
+    final phone = params['phone']?.trim();
+    final moveInDateStr = params['moveInDate']?.trim();
+
+    if (email.isEmpty || !email.contains('@')) {
+      _showAutoSubmitError('Invalid email address provided.');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await _reloadInventoryFromPublishedSnapshot();
+      if (!mounted) return;
+
+      if (!_unitStillRentableOnline(unit)) {
+        _showAutoSubmitError(
+            'That unit is no longer available. Please go back and choose another.');
+        return;
+      }
+
+      final reservation = await PublicRentalService.createReservation(
+        facilityId: _facilityId!,
+        unitId: unit.unitId,
+        unitNumber: _publicUnitNumbersEnabled ? unit.unitLabel : null,
+        email: email,
+        phone: (phone != null && phone.isNotEmpty) ? phone : null,
+        name: (name != null && name.isNotEmpty) ? name : null,
+        moveInDate: (moveInDateStr != null && moveInDateStr.isNotEmpty)
+            ? DateTime.tryParse(moveInDateStr)
+            : null,
+        expirationDuration: const Duration(minutes: 10),
+        metadata: <String, dynamic>{
+          'source': 'publicWebsite',
+          'facilitySlug': _facilitySlug,
+          'autoAssigned': _preferredUnitId == null,
+          'directFromWebsite': true,
+        },
+      );
+
+      if (!mounted) return;
+      unawaited(
+          context.push('/public-move-in?token=${reservation.moveInToken}'));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Unable to complete reservation. Please try again.';
+        _isLoading = false;
+      });
     }
   }
 
@@ -274,6 +507,32 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         .join(' ');
   }
 
+  Color _parseColor(String? raw, Color fallback) {
+    if (raw == null || raw.trim().isEmpty) return fallback;
+    var cleaned = raw.trim().replaceAll('#', '');
+    if (cleaned.length == 3 && RegExp(r'^[0-9a-fA-F]{3}$').hasMatch(cleaned)) {
+      cleaned =
+          '${cleaned[0]}${cleaned[0]}${cleaned[1]}${cleaned[1]}${cleaned[2]}${cleaned[2]}';
+    }
+    if (cleaned.length == 6 && RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(cleaned)) {
+      return Color(int.parse('FF$cleaned', radix: 16));
+    }
+    return fallback;
+  }
+
+  static Map<String, dynamic> _coerceStyleMap(dynamic raw) {
+    if (raw is Map) {
+      return raw.map((k, v) => MapEntry(k.toString(), v));
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _asNonEmptyOrDefault(String? value, String fallback) {
+    final cleaned = value?.trim();
+    if (cleaned == null || cleaned.isEmpty) return fallback;
+    return cleaned;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -295,62 +554,276 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
       );
     }
 
-    final groups = _groups;
-    const sheetBg = AppTheme.backgroundLight;
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A1F4A),
-      body: Column(
-        children: [
-          _buildFacilityHeader(),
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.only(top: -20),
-              decoration: const BoxDecoration(
-                color: sheetBg,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0x280F172A),
-                    blurRadius: 28,
-                    offset: Offset(0, -6),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(28)),
-                child: Column(
-                  children: [
-                    if (_categorySlugs.isNotEmpty) _buildCategoryTabs(),
-                    Expanded(
-                      child: groups.isEmpty
-                          ? _buildEmptyState()
-                          : RefreshIndicator(
-                              onRefresh: _reloadInventoryFromPublishedSnapshot,
-                              child: ListView.builder(
-                                physics: const AlwaysScrollableScrollPhysics(),
-                                padding: EdgeInsets.fromLTRB(
-                                  20,
-                                  _categorySlugs.isEmpty ? 20 : 8,
-                                  20,
-                                  32,
-                                ),
-                                itemCount: groups.length + 2,
-                                itemBuilder: (context, index) {
-                                  if (index == groups.length) {
-                                    return _buildWhyRentSection();
-                                  }
-                                  if (index == groups.length + 1) {
-                                    return _buildFaqSection();
-                                  }
-                                  return _buildGroupCard(groups[index]);
-                                },
-                              ),
-                            ),
-                    ),
-                  ],
+    if (_isAutoSubmitMode) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 18),
+              Text(
+                'Completing your reservation...',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF64748B),
                 ),
               ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final groups = _groups;
+    final sheetBg = _isEmbeddedMode ? Colors.white : const Color(0xFFF7FAFC);
+    return Scaffold(
+      backgroundColor: sheetBg,
+      body: RefreshIndicator(
+        onRefresh: _reloadInventoryFromPublishedSnapshot,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          children: [
+            if (!_isEmbeddedMode) _buildFacilityHeader(),
+            if (!_isEmbeddedMode)
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: _contentMaxWidth),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(22, 12, 22, 0),
+                    child: _buildPublicNavBar(),
+                  ),
+                ),
+              ),
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _contentMaxWidth),
+                child: Container(
+                  color: sheetBg,
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      22,
+                      _isEmbeddedMode ? 12 : 18,
+                      22,
+                      _isEmbeddedMode ? 14 : 28,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (!_isEmbeddedMode) ...[
+                          _buildJourneyStrip(),
+                          const SizedBox(height: 14),
+                        ],
+                        if (_isEmbeddedMode) ...[
+                          _buildEmbedSectionHeader(),
+                          if (_categorySlugs.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            _buildCategoryDropdown(),
+                          ],
+                        ] else ...[
+                          _buildSectionHeader(
+                            title: 'Available Units',
+                            subtitle: _categorySlugs.isEmpty
+                                ? 'Pick a unit type and reserve online in minutes.'
+                                : 'Filter by unit type to find the right fit quickly.',
+                          ),
+                          if (_categorySlugs.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            _buildCategoryTabs(),
+                          ],
+                        ],
+                        const SizedBox(height: 14),
+                        if (groups.isEmpty)
+                          _buildEmptyState()
+                        else
+                          ...groups.map(
+                            (g) => _isEmbeddedMode
+                                ? _buildEmbedGroupCard(g)
+                                : _buildGroupCard(g),
+                          ),
+                        if (!_isEmbeddedMode) ...[
+                          const SizedBox(height: 12),
+                          _buildInfoRail(),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmbedSectionHeader() {
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Available units',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+            letterSpacing: -0.3,
+          ),
+        ),
+        SizedBox(height: 4),
+        Text(
+          'Choose a unit type, then continue.',
+          style: TextStyle(
+            color: AppTheme.textSecondary,
+            fontSize: 14,
+            height: 1.35,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCategoryDropdown() {
+    final slugs = _categorySlugs;
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: 'Unit type',
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _ctaButtonColor, width: 2),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String?>(
+          isExpanded: true,
+          value: _selectedCategorySlug,
+          borderRadius: BorderRadius.circular(12),
+          hint: const Text('All types'),
+          items: [
+            const DropdownMenuItem<String?>(
+              value: null,
+              child: Text('All types'),
+            ),
+            ...slugs.map(
+              (s) => DropdownMenuItem<String?>(
+                value: s,
+                child: Text(_displayCategory(s)),
+              ),
+            ),
+          ],
+          onChanged: (v) => setState(() => _selectedCategorySlug = v),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmbedGroupCard(_UnitTypeGroup group) {
+    final availableCount = group.availableUnits.length;
+    final unavailable = availableCount == 0;
+    final monthlyRate = group.lowestRate;
+    final canRent = _publicRentalsEnabled &&
+        !unavailable &&
+        (_allowAutoAssign || _allowUnitSelection);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x080F172A),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  group.title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF0F172A),
+                    height: 1.25,
+                  ),
+                ),
+              ),
+              if (_showAvailabilityCount)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: unavailable
+                          ? const Color(0xFFFFE9E9)
+                          : const Color(0xFFE7F7EE),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      unavailable
+                          ? 'Unavailable'
+                          : availableCount == 1
+                              ? '1 left'
+                              : '$availableCount left',
+                      style: TextStyle(
+                        color: unavailable
+                            ? AppTheme.error
+                            : AppTheme.success,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          if (_publicPricingEnabled && monthlyRate != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              '\$${monthlyRate.toStringAsFixed(0)}/month',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: _ctaButtonColor,
+                fontSize: 18,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _ctaButtonColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(44),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: canRent ? () => _handleRentNow(group) : null,
+              child: Text(unavailable ? 'Unavailable' : 'Reserve this unit'),
             ),
           ),
         ],
@@ -359,28 +832,41 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   Widget _buildFacilityHeader() {
+    final totalAvailable = _groups.fold<int>(
+      0,
+      (sum, group) => sum + group.availableUnits.length,
+    );
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.fromLTRB(
-        22,
-        MediaQuery.of(context).padding.top + 20,
-        22,
-        32,
-      ),
-      decoration: const BoxDecoration(
+      padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 14),
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: <Color>[
-            Color(0xFF0C1E4D),
-            Color(0xFF143A8F),
-            Color(0xFF1E5BD4),
+            _heroGradientStart,
+            Color.lerp(_heroGradientStart, _heroGradientEnd, 0.55)!,
+            _heroGradientEnd,
           ],
           stops: <double>[0, 0.45, 1],
         ),
       ),
       child: Stack(
         children: [
+          if (_heroImageUrl != null && _heroImageUrl!.trim().isNotEmpty)
+            Positioned.fill(
+              child: Image.network(
+                _heroImageUrl!,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+          if (_heroImageUrl != null && _heroImageUrl!.trim().isNotEmpty)
+            Positioned.fill(
+              child: Container(
+                color: _heroGradientStart.withValues(alpha: 0.58),
+              ),
+            ),
           Positioned(
             right: -40,
             top: -24,
@@ -395,9 +881,14 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               ),
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: _contentMaxWidth),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 6, 22, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
               if (_facilityLogoUrl != null &&
                   _facilityLogoUrl!.trim().isNotEmpty) ...[
                 Material(
@@ -413,26 +904,26 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
               ],
-              Text(
-                _facilityName,
-                style: const TextStyle(
-                  fontSize: 32,
-                  height: 1.1,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -1,
-                  color: Colors.white,
-                ),
-              ),
+                    Text(
+                      _facilityName,
+                      style: TextStyle(
+                        fontSize: 42,
+                        height: 1.08,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -1.05,
+                        color: _heroTextColor,
+                      ),
+                    ),
               const SizedBox(height: 8),
               Text(
                 'Rent storage units in minutes',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 18,
                   height: 1.35,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.white.withValues(alpha: 0.88),
+                  fontWeight: FontWeight.w600,
+                  color: _heroTextColor.withValues(alpha: 0.88),
                   letterSpacing: 0.15,
                 ),
               ),
@@ -451,17 +942,18 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                           Icon(
                             Icons.phone_in_talk_rounded,
                             size: 18,
-                            color: Colors.white.withValues(alpha: 0.95),
+                            color: _heroTextColor.withValues(alpha: 0.95),
                           ),
                           const SizedBox(width: 8),
                           Text(
                             _facilityPhone!,
                             style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.95),
+                              color: _heroTextColor.withValues(alpha: 0.95),
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
                               decoration: TextDecoration.underline,
-                              decorationColor: Colors.white.withValues(alpha: 0.35),
+                              decorationColor:
+                                  _heroTextColor.withValues(alpha: 0.35),
                             ),
                           ),
                         ],
@@ -472,13 +964,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               ],
               if (_facilityDescription != null &&
                   _facilityDescription!.trim().isNotEmpty) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Text(
                   _facilityDescription!,
                   style: TextStyle(
                     fontSize: 14,
                     height: 1.45,
-                    color: Colors.white.withValues(alpha: 0.82),
+                    color: _heroTextColor.withValues(alpha: 0.82),
                   ),
                 ),
               ],
@@ -487,36 +979,122 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                 Text(
                   _customDomain!,
                   style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.92),
+                    color: _heroTextColor.withValues(alpha: 0.92),
                     fontWeight: FontWeight.w600,
                     fontSize: 13,
                     letterSpacing: 0.2,
                   ),
                 ),
               ],
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
               Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: const [
-                  _StepChip(
-                    index: 1,
-                    label: 'Choose unit',
-                    highlighted: true,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _MetaPill(
+                    icon: Icons.check_circle_outline,
+                    label: totalAvailable == 1
+                        ? '1 unit available'
+                        : '$totalAvailable units available',
+                    textColor: _heroTextColor,
                   ),
-                  _StepChip(
-                    index: 2,
-                    label: 'Enter details',
-                    highlighted: false,
-                  ),
-                  _StepChip(
-                    index: 3,
-                    label: 'Reserve online',
-                    highlighted: false,
+                  if (_publicPricingEnabled)
+                    _MetaPill(
+                      icon: Icons.attach_money_rounded,
+                      label: 'Transparent monthly pricing',
+                      textColor: _heroTextColor,
+                    ),
+                  _MetaPill(
+                    icon: Icons.bolt_rounded,
+                    label: 'Online reservation flow',
+                    textColor: _heroTextColor,
                   ),
                 ],
               ),
-            ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildJourneyStrip() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F5)),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          _StepChip(
+            index: 1,
+            label: 'Choose unit',
+            highlighted: true,
+            accentColor: _ctaButtonColor,
+            textColor: const Color(0xFF0F172A),
+            iconUrl: _stepChooseIconUrl,
+          ),
+          _StepChip(
+            index: 2,
+            label: 'Enter details',
+            highlighted: false,
+            accentColor: _ctaButtonColor,
+            textColor: const Color(0xFF0F172A),
+            iconUrl: _stepDetailsIconUrl,
+          ),
+          _StepChip(
+            index: 3,
+            label: 'Reserve online',
+            highlighted: false,
+            accentColor: _ctaButtonColor,
+            textColor: const Color(0xFF0F172A),
+            iconUrl: _stepReserveIconUrl,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPublicNavBar() {
+    final websiteBase = _publicWebsiteBaseUrl();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F5)),
+      ),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        alignment: WrapAlignment.center,
+        children: [
+          _PublicNavButton(
+            label: 'Home',
+            onTap: () => _openPublicUrl(websiteBase),
+          ),
+          _PublicNavButton(
+            label: 'About',
+            onTap: () => _openPublicUrl('$websiteBase#about'),
+          ),
+          _PublicNavButton(
+            label: 'Units',
+            onTap: () => _openPublicUrl(_publicUnitsUrl()),
+          ),
+          _PublicNavButton(
+            label: 'Map',
+            onTap: () => _openPublicUrl(_publicMapUrl()),
+          ),
+          _PublicNavButton(
+            label: 'Contact',
+            onTap: () => _openPublicUrl('$websiteBase#contact'),
           ),
         ],
       ),
@@ -525,28 +1103,27 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
 
   Widget _buildCategoryTabs() {
     final slugs = _categorySlugs;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _CategoryFilterChip(
-              label: 'All',
-              selected: _selectedCategorySlug == null,
-              onTap: () => setState(() => _selectedCategorySlug = null),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _CategoryFilterChip(
+            label: 'All',
+            selected: _selectedCategorySlug == null,
+            selectedColor: _ctaButtonColor,
+            onTap: () => setState(() => _selectedCategorySlug = null),
+          ),
+          ...slugs.map(
+            (slug) => _CategoryFilterChip(
+              label: _displayCategory(slug),
+              selected: _selectedCategorySlug == slug,
+              selectedColor: _ctaButtonColor,
+              onTap: () => setState(() => _selectedCategorySlug = slug),
             ),
-            ...slugs.map(
-              (slug) => _CategoryFilterChip(
-                label: _displayCategory(slug),
-                selected: _selectedCategorySlug == slug,
-                onTap: () => setState(() => _selectedCategorySlug = slug),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -565,18 +1142,18 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE2E8F5)),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFDCE5F3)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x120F1C3D),
-            blurRadius: 8,
-            offset: Offset(0, 2),
+            blurRadius: 12,
+            offset: Offset(0, 4),
           )
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -596,16 +1173,48 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               const SizedBox(height: 14),
             ],
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
-                  child: Text(
-                    group.title,
-                    style: const TextStyle(
-                      fontSize: 27,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF111827),
-                    ),
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      Text(
+                        group.title,
+                        style: const TextStyle(
+                          fontSize: 34,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF111827),
+                          letterSpacing: -0.8,
+                        ),
+                      ),
+                      if (_showAvailabilityCount)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: availableCount == 0
+                                ? const Color(0xFFFFE9E9)
+                                : const Color(0xFFE7F7EE),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            availableCount == 0
+                                ? 'Unavailable'
+                                : availableCount == 1
+                                    ? '1 left'
+                                    : '$availableCount left',
+                            style: TextStyle(
+                              color: availableCount == 0
+                                  ? AppTheme.error
+                                  : AppTheme.success,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 if (_publicPricingEnabled && monthlyRate != null)
@@ -614,7 +1223,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                     style: const TextStyle(
                       fontWeight: FontWeight.w800,
                       color: Color(0xFF103A86),
-                      fontSize: 27,
+                      fontSize: 38,
+                      letterSpacing: -1,
                     ),
                   ),
               ],
@@ -627,45 +1237,20 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                 style: const TextStyle(color: AppTheme.textSecondary),
               ),
             ],
-            if (_showAvailabilityCount) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(999),
-                  color: availableCount == 0
-                      ? const Color(0xFFFFE9E9)
-                      : const Color(0xFFE7F7EE),
-                ),
-                child: Text(
-                  availableCount == 0
-                      ? 'Currently unavailable'
-                      : availableCount == 1
-                          ? 'Only 1 left'
-                          : '$availableCount available',
-                  style: TextStyle(
-                    color:
-                        availableCount == 0 ? AppTheme.error : AppTheme.success,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
             const SizedBox(height: 14),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF103A86),
+                  backgroundColor: _ctaButtonColor,
                   foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(44),
+                  minimumSize: const Size.fromHeight(48),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
                   ),
                 ),
                 onPressed: canRent ? () => _handleRentNow(group) : null,
-                child: Text(unavailable ? 'Unavailable' : 'Rent Now'),
+                child: Text(unavailable ? 'Unavailable' : 'Reserve This Unit'),
               ),
             ),
           ],
@@ -683,24 +1268,90 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F5)),
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
+          const Text(
             'Why Rent Here?',
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w700,
             ),
           ),
-          SizedBox(height: 10),
-          Text('- Quick online reservation flow'),
-          SizedBox(height: 4),
-          Text('- Transparent pricing and availability'),
-          SizedBox(height: 4),
-          Text('- Friendly support when you need help'),
+          const SizedBox(height: 10),
+          _WhyRentItem(
+            text: _promiseSecurityText,
+            iconUrl: _promiseSecurityIconUrl,
+            fallbackIcon: Icons.shield_outlined,
+            accentColor: _ctaButtonColor,
+          ),
+          const SizedBox(height: 8),
+          _WhyRentItem(
+            text: _promiseServiceText,
+            iconUrl: _promiseServiceIconUrl,
+            fallbackIcon: Icons.support_agent_outlined,
+            accentColor: _ctaButtonColor,
+          ),
+          const SizedBox(height: 8),
+          _WhyRentItem(
+            text: _promiseConvenienceText,
+            iconUrl: _promiseConvenienceIconUrl,
+            fallbackIcon: Icons.flash_on_outlined,
+            accentColor: _ctaButtonColor,
+          ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSectionHeader({required String title, required String subtitle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 32,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+            letterSpacing: -0.8,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          subtitle,
+          style: const TextStyle(
+            color: AppTheme.textSecondary,
+            height: 1.35,
+            fontSize: 16,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInfoRail() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth >= 900) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: _buildWhyRentSection()),
+              const SizedBox(width: 12),
+              Expanded(child: _buildFaqSection()),
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildWhyRentSection(),
+            const SizedBox(height: 12),
+            _buildFaqSection(),
+          ],
+        );
+      },
     );
   }
 
@@ -1030,17 +1681,23 @@ class _StepChip extends StatelessWidget {
   final int index;
   final String label;
   final bool highlighted;
+  final Color accentColor;
+  final Color textColor;
+  final String? iconUrl;
 
   const _StepChip({
     required this.index,
     required this.label,
     this.highlighted = false,
+    required this.accentColor,
+    required this.textColor,
+    this.iconUrl,
   });
 
   @override
   Widget build(BuildContext context) {
     final labelColor =
-        highlighted ? const Color(0xFF0F172A) : Colors.white.withValues(alpha: 0.94);
+        highlighted ? const Color(0xFF0F172A) : textColor.withValues(alpha: 0.94);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOutCubic,
@@ -1067,26 +1724,23 @@ class _StepChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 22,
-            height: 22,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: highlighted
-                  ? const Color(0xFF143A8F)
-                  : Colors.white.withValues(alpha: 0.92),
-              shape: BoxShape.circle,
-            ),
-            child: Text(
-              '$index',
-              style: TextStyle(
-                color: highlighted ? Colors.white : const Color(0xFF143A8F),
-                fontWeight: FontWeight.w800,
-                fontSize: 11,
-                height: 1,
+          if (iconUrl != null && iconUrl!.trim().isNotEmpty)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: Container(
+                width: 22,
+                height: 22,
+                color: Colors.white.withValues(alpha: 0.92),
+                child: Image.network(
+                  iconUrl!,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) =>
+                      _buildIndexBubble(highlighted, accentColor, index),
+                ),
               ),
-            ),
-          ),
+            )
+          else
+            _buildIndexBubble(highlighted, accentColor, index),
           const SizedBox(width: 8),
           Text(
             label,
@@ -1101,16 +1755,163 @@ class _StepChip extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildIndexBubble(bool highlighted, Color accentColor, int index) {
+    return Container(
+      width: 22,
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: highlighted ? accentColor : Colors.white.withValues(alpha: 0.92),
+        shape: BoxShape.circle,
+      ),
+      child: Text(
+        '$index',
+        style: TextStyle(
+          color: highlighted ? Colors.white : accentColor,
+          fontWeight: FontWeight.w800,
+          fontSize: 11,
+          height: 1,
+        ),
+      ),
+    );
+  }
+}
+
+class _MetaPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color textColor;
+
+  const _MetaPill({
+    required this.icon,
+    required this.label,
+    required this.textColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: textColor.withValues(alpha: 0.95)),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: textColor.withValues(alpha: 0.96),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WhyRentItem extends StatelessWidget {
+  final String text;
+  final String? iconUrl;
+  final IconData fallbackIcon;
+  final Color accentColor;
+
+  const _WhyRentItem({
+    required this.text,
+    required this.iconUrl,
+    required this.fallbackIcon,
+    required this.accentColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 22,
+          height: 22,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: accentColor.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: (iconUrl != null && iconUrl!.trim().isNotEmpty)
+              ? ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: Image.network(
+                    iconUrl!,
+                    width: 22,
+                    height: 22,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(
+                      fallbackIcon,
+                      size: 14,
+                      color: accentColor,
+                    ),
+                  ),
+                )
+              : Icon(
+                  fallbackIcon,
+                  size: 14,
+                  color: accentColor,
+                ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Text(text)),
+      ],
+    );
+  }
+}
+
+class _PublicNavButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _PublicNavButton({
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        minimumSize: const Size(0, 36),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(999),
+        ),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Color(0xFF0F172A),
+        ),
+      ),
+    );
+  }
 }
 
 class _CategoryFilterChip extends StatelessWidget {
   final String label;
   final bool selected;
+  final Color selectedColor;
   final VoidCallback onTap;
 
   const _CategoryFilterChip({
     required this.label,
     required this.selected,
+    required this.selectedColor,
     required this.onTap,
   });
 
@@ -1126,12 +1927,10 @@ class _CategoryFilterChip extends StatelessWidget {
           curve: Curves.easeOut,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFF143A8F) : const Color(0xFFEEF2F6),
+            color: selected ? selectedColor : const Color(0xFFEEF2F6),
             borderRadius: BorderRadius.circular(999),
             border: Border.all(
-              color: selected
-                  ? const Color(0xFF143A8F)
-                  : const Color(0xFFDCE3ED),
+              color: selected ? selectedColor : const Color(0xFFDCE3ED),
             ),
           ),
           child: Row(
@@ -1147,7 +1946,7 @@ class _CategoryFilterChip extends StatelessWidget {
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.15,
-                  color: selected ? Colors.white : const Color(0xFF475569),
+                  color: selected ? Colors.white : selectedColor,
                 ),
               ),
             ],

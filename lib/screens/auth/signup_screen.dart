@@ -33,6 +33,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _referralCodeController = TextEditingController();
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   bool _acceptTerms = false;
@@ -43,6 +44,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     final pre = widget.initialEmail;
     if (pre != null && pre.trim().isNotEmpty) {
       _emailController.text = pre.trim();
+    }
+    final ref = widget.initialReferralCode?.trim();
+    if (ref != null && ref.isNotEmpty) {
+      _referralCodeController.text = ref;
     }
     ReferralProgramService.cachePendingCodeFromQuery(widget.initialReferralCode);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -56,6 +61,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _referralCodeController.dispose();
     HomeButtonService.instance.show();
     super.dispose();
   }
@@ -63,6 +69,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   void _handleSignUp() async {
     if (_formKey.currentState!.validate() && _acceptTerms) {
       final email = _emailController.text.trim();
+      final referral = _referralCodeController.text.trim();
+      if (referral.isNotEmpty && referral.length < 4) {
+        _showErrorSnackBar(
+            'Referral codes must be at least 4 characters. Leave blank if you do not have one.');
+        return;
+      }
+      if (referral.isNotEmpty) {
+        await ReferralProgramService.cachePendingCodeFromQuery(referral);
+      } else {
+        await ReferralProgramService.clearPendingReferralCode();
+      }
 
       try {
         await ref.read(signupStateProvider.notifier).signUp(
@@ -251,6 +268,40 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     });
                   },
                 ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const AuthFieldLabel('Referral code (optional)'),
+            const SizedBox(height: 6),
+            TextFormField(
+              controller: _referralCodeController,
+              textCapitalization: TextCapitalization.characters,
+              textInputAction: TextInputAction.next,
+              autocorrect: false,
+              style: const TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 15,
+              ),
+              decoration: authFieldDecoration(
+                hint: 'Friend or partner gave you a code',
+                icon: Icons.card_giftcard_outlined,
+              ),
+              validator: (value) {
+                final t = value?.trim() ?? '';
+                if (t.isEmpty) return null;
+                if (t.length < 4) {
+                  return 'At least 4 characters, or leave blank';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'If you used a signup link, your code may already appear here. Clear it if you are not using a referral.',
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: AppTheme.textSecondary.withValues(alpha: 0.95),
               ),
             ),
             const SizedBox(height: 20),

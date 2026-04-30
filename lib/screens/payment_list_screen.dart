@@ -23,6 +23,7 @@ import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../utils/breakpoints.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/setup_retry_controller.dart';
 import 'payment_detail_screen.dart';
 import 'payment_creation_screen.dart';
 import 'facility_creation_wizard.dart';
@@ -58,6 +59,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   bool _autopayToggleLoading = false;
   bool _autopayChargeDaySaving = false;
   bool _appliedRouteParams = false;
+  final SetupRetryController _setupRetry = SetupRetryController();
 
   @override
   void initState() {
@@ -178,13 +180,12 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             return; // Don't try to load facilities if account creation failed
           }
         }
-        
-        // Small delay to ensure account is fully created and permissions are set
-        await Future.delayed(const Duration(milliseconds: 500));
-        
-        // Now try to load facilities. Prefer active facility so Payments and Stripe Connect page stay in sync.
+
+        ref.invalidate(userFacilitiesProvider(user.uid));
+        // Prefer active facility so Payments and Stripe Connect page stay in sync.
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);
         final facilities = facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
+        _setupRetry.reset();
         if (facilities.isNotEmpty) {
           final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
           final initialId = (activeId != null && facilities.any((f) => f.id == activeId))
@@ -205,7 +206,16 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         final errorMessage = e.toString();
         final isPermissionError = errorMessage.contains('permission-denied') || 
                                   errorMessage.contains('Missing or insufficient permissions');
-        
+        if (isPermissionError && _setupRetry.canRetry) {
+          _setupRetry.schedule(
+            onRetry: () {
+              if (!mounted) return;
+              _loadUserFacilities();
+            },
+          );
+          return;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -223,6 +233,12 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         );
       }
     }
+  }
+
+  @override
+  void dispose() {
+    _setupRetry.cancel();
+    super.dispose();
   }
 
   @override

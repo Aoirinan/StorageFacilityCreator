@@ -41,6 +41,13 @@ class _OnlineRentalsManagementScreenState
   final TextEditingController _marketingContentController =
       TextEditingController();
   final TextEditingController _logoUrlController = TextEditingController();
+  final TextEditingController _heroGradientStartController =
+      TextEditingController();
+  final TextEditingController _heroGradientEndController =
+      TextEditingController();
+  final TextEditingController _heroTextColorController = TextEditingController();
+  final TextEditingController _ctaButtonColorController =
+      TextEditingController();
   final TextEditingController _insuranceAmountController =
       TextEditingController();
   final TextEditingController _securityDepositAmountController =
@@ -59,11 +66,13 @@ class _OnlineRentalsManagementScreenState
   Set<String> _availableUnitTypes = <String>{};
   Map<String, String> _unitTypeImageUrls = <String, String>{};
   bool _isUploadingLogo = false;
+  bool _isUploadingFeaturedImage = false;
   String? _uploadingUnitType;
   bool _isCheckingDomain = false;
   bool? _domainConnected;
   String? _domainCheckMessage;
   List<String> _domainRecords = const <String>[];
+  List<String> _featuredImages = const <String>[];
 
   @override
   void initState() {
@@ -85,6 +94,10 @@ class _OnlineRentalsManagementScreenState
     _customDomainController.dispose();
     _marketingContentController.dispose();
     _logoUrlController.dispose();
+    _heroGradientStartController.dispose();
+    _heroGradientEndController.dispose();
+    _heroTextColorController.dispose();
+    _ctaButtonColorController.dispose();
     _insuranceAmountController.dispose();
     _securityDepositAmountController.dispose();
     super.dispose();
@@ -104,6 +117,7 @@ class _OnlineRentalsManagementScreenState
           widget.facilityId);
       final units = await UnitService.getUnitsForFacility(widget.facilityId);
       final types = units.map((u) => u.unitType).toSet();
+      final customStyles = settings?.customStyles ?? const <String, dynamic>{};
 
       if (!mounted) return;
       setState(() {
@@ -129,6 +143,14 @@ class _OnlineRentalsManagementScreenState
         _marketingContentController.text =
             settings?.marketingContent ?? settings?.pageDescription ?? '';
         _logoUrlController.text = settings?.publicLogoUrl ?? '';
+        _heroGradientStartController.text =
+            (customStyles['heroGradientStart'] as String?) ?? '#0C1E4D';
+        _heroGradientEndController.text =
+            (customStyles['heroGradientEnd'] as String?) ?? '#1E5BD4';
+        _heroTextColorController.text =
+            (customStyles['heroTextColor'] as String?) ?? '#FFFFFF';
+        _ctaButtonColorController.text =
+            (customStyles['ctaButtonColor'] as String?) ?? '#103A86';
         _insuranceAmountController.text =
             (settings?.publicInsuranceAmount ?? 0) > 0
                 ? (settings!.publicInsuranceAmount!).toStringAsFixed(2)
@@ -141,6 +163,7 @@ class _OnlineRentalsManagementScreenState
             (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
                 ? settings!.publicRentalSlug!
                 : (publicSlug ?? widget.facilityId.toLowerCase());
+        _featuredImages = settings?.featuredImages ?? const <String>[];
         _isLoading = false;
       });
       if (_customDomainController.text.trim().isNotEmpty) {
@@ -204,6 +227,13 @@ class _OnlineRentalsManagementScreenState
         customDomain: customDomain.isEmpty ? null : customDomain,
         marketingContent: marketingContent.isEmpty ? null : marketingContent,
         publicLogoUrl: logoUrl.isEmpty ? null : logoUrl,
+        featuredImages: _featuredImages,
+        customStyles: <String, dynamic>{
+          'heroGradientStart': _normalizeHexColor(_heroGradientStartController.text),
+          'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text),
+          'heroTextColor': _normalizeHexColor(_heroTextColorController.text),
+          'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text),
+        },
         unitTypeImageUrls:
             _unitTypeImageUrls.isEmpty ? null : _unitTypeImageUrls,
       );
@@ -328,10 +358,75 @@ class _OnlineRentalsManagementScreenState
     }
   }
 
+  String _normalizeHexColor(String raw) {
+    var trimmed = raw.trim().replaceAll('#', '').toUpperCase();
+    if (trimmed.length == 3 && RegExp(r'^[0-9A-F]{3}$').hasMatch(trimmed)) {
+      trimmed =
+          '${trimmed[0]}${trimmed[0]}${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}';
+    }
+    if (trimmed.length == 6 && RegExp(r'^[0-9A-F]{6}$').hasMatch(trimmed)) {
+      return '#$trimmed';
+    }
+    return '#103A86';
+  }
+
+  Future<void> _uploadFeaturedImage() async {
+    setState(() {
+      _isUploadingFeaturedImage = true;
+      _error = null;
+    });
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) {
+        setState(() => _isUploadingFeaturedImage = false);
+        return;
+      }
+      final file = result.files.first;
+      if (file.bytes == null) {
+        throw Exception('Unable to read selected image data.');
+      }
+      final ext = (file.extension ?? 'png').toLowerCase();
+      final contentType = switch (ext) {
+        'jpg' || 'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        _ => 'image/png',
+      };
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final safeName = file.name.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+      final path =
+          'facilities/${widget.facilityId}/public-branding/featured/$stamp-$safeName';
+      final ref = FirebaseStorage.instance.ref(path);
+      await ref.putData(
+        file.bytes!,
+        SettableMetadata(contentType: contentType),
+      );
+      final url = await ref.getDownloadURL();
+      if (!mounted) return;
+      setState(() {
+        _featuredImages = <String>[..._featuredImages, url];
+        _isUploadingFeaturedImage = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUploadingFeaturedImage = false;
+        _error = 'Featured image upload failed: $e';
+      });
+    }
+  }
+
   String get _slugPreview {
     final slug = normalizePublicRentalSlug(_slugController.text);
     return slug.isEmpty ? widget.facilityId.toLowerCase() : slug;
   }
+
+  String get _publicRentPath => '/f/$_slugPreview/rent';
+  String get _publicUnitsPath => '/f/$_slugPreview/available-units';
+  String get _publicMapPath => '/public/$_slugPreview/map';
 
   Future<void> _copy(String label, String url) async {
     await Clipboard.setData(ClipboardData(text: url));
@@ -538,6 +633,15 @@ class _OnlineRentalsManagementScreenState
           style: TextStyle(color: AppTheme.textSecondary),
         ),
         const SizedBox(height: 16),
+        _WebsiteStyleHubPreview(
+          facilityName: _facility?.name ?? 'Your Facility',
+          marketingText: _marketingContentController.text.trim(),
+          logoUrl: _logoUrlController.text.trim(),
+          onViewUnits: () => context.push(_publicUnitsPath),
+          onViewMap: () => context.push(_publicMapPath),
+          onRentNow: () => context.push(_publicRentPath),
+        ),
+        const SizedBox(height: 16),
         TextField(
           controller: _customDomainController,
           onChanged: (_) {
@@ -674,6 +778,121 @@ class _OnlineRentalsManagementScreenState
           ),
         ],
         const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Public Theme & Images',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Match the public rental page to your landing site style.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 12),
+                _ColorFieldRow(
+                  label: 'Header gradient start',
+                  controller: _heroGradientStartController,
+                ),
+                const SizedBox(height: 8),
+                _ColorFieldRow(
+                  label: 'Header gradient end',
+                  controller: _heroGradientEndController,
+                ),
+                const SizedBox(height: 8),
+                _ColorFieldRow(
+                  label: 'Header text color',
+                  controller: _heroTextColorController,
+                ),
+                const SizedBox(height: 8),
+                _ColorFieldRow(
+                  label: 'Primary button color',
+                  controller: _ctaButtonColorController,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed:
+                          _isUploadingFeaturedImage ? null : _uploadFeaturedImage,
+                      icon: _isUploadingFeaturedImage
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.add_photo_alternate_outlined),
+                      label: const Text('Upload Hero / Featured Image'),
+                    ),
+                  ],
+                ),
+                if (_featuredImages.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (var i = 0; i < _featuredImages.length; i++)
+                        Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                _featuredImages[i],
+                                width: 110,
+                                height: 72,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(
+                                  width: 110,
+                                  height: 72,
+                                  color: const Color(0xFFF1F5F9),
+                                  alignment: Alignment.center,
+                                  child: const Icon(Icons.broken_image),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              right: 2,
+                              top: 2,
+                              child: Material(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(999),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(999),
+                                  onTap: () {
+                                    setState(() {
+                                      final next = [..._featuredImages];
+                                      next.removeAt(i);
+                                      _featuredImages = next;
+                                    });
+                                  },
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(4),
+                                    child: Icon(
+                                      Icons.close,
+                                      size: 14,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         TextField(
           controller: _slugController,
           decoration: const InputDecoration(
@@ -691,12 +910,12 @@ class _OnlineRentalsManagementScreenState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Website Setup (Cookie Cutter)',
+                  'Website Setup',
                   style: TextStyle(fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  'Each facility gets one cookie-cutter website. Template and layout are fixed.',
+                  'Each facility gets one public marketing website. Template and layout are fixed.',
                   style: TextStyle(
                     fontSize: 12,
                     color: AppTheme.textSecondary,
@@ -1202,11 +1421,173 @@ class _TemplateBadge extends StatelessWidget {
         border: Border.all(color: const Color(0xFF9EE7FF)),
       ),
       child: const Text(
-        'Template: Cookie Cutter v1 (Fixed)',
+        'Template: Public website v1 (fixed layout)',
         style: TextStyle(
           color: Color(0xFF0C4A6E),
           fontWeight: FontWeight.w700,
         ),
+      ),
+    );
+  }
+}
+
+class _ColorFieldRow extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+
+  const _ColorFieldRow({
+    required this.label,
+    required this.controller,
+  });
+
+  Color _colorFromHex(String raw) {
+    final cleaned = raw.trim().replaceAll('#', '');
+    if (cleaned.length == 6 && RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(cleaned)) {
+      return Color(int.parse('FF$cleaned', radix: 16));
+    }
+    return const Color(0xFF103A86);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: controller,
+            decoration: InputDecoration(
+              labelText: label,
+              hintText: '#103A86',
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: _colorFromHex(controller.text),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFD1D5DB)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _WebsiteStyleHubPreview extends StatelessWidget {
+  final String facilityName;
+  final String marketingText;
+  final String logoUrl;
+  final VoidCallback onViewUnits;
+  final VoidCallback onViewMap;
+  final VoidCallback onRentNow;
+
+  const _WebsiteStyleHubPreview({
+    required this.facilityName,
+    required this.marketingText,
+    required this.logoUrl,
+    required this.onViewUnits,
+    required this.onViewMap,
+    required this.onRentNow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final headline = marketingText.isEmpty
+        ? 'Reserve storage online in minutes'
+        : marketingText;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      margin: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFF0E3A8A), Color(0xFF1D4ED8)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    if (logoUrl.isNotEmpty)
+                      Container(
+                        width: 56,
+                        height: 56,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            logoUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(Icons.store),
+                          ),
+                        ),
+                      ),
+                    Expanded(
+                      child: Text(
+                        facilityName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  headline,
+                  style: const TextStyle(
+                    color: Color(0xFFE5EDFF),
+                    fontSize: 15,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onViewUnits,
+                  icon: const Icon(Icons.view_list),
+                  label: const Text('View Units'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onViewMap,
+                  icon: const Icon(Icons.map_outlined),
+                  label: const Text('View Map'),
+                ),
+                FilledButton.icon(
+                  onPressed: onRentNow,
+                  icon: const Icon(Icons.shopping_cart_checkout),
+                  label: const Text('Rent Now'),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
