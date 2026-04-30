@@ -9,7 +9,7 @@ This MVP adds a website layer without changing existing renter or operator flows
   - Returns public, website-safe JSON from `publicFacilityMaps`.
 - `GET /w/<slug>`
   - Firebase Hosting rewrite to `renderPublicWebsite`.
-  - Returns a minimal, cookie-cutter HTML page powered by the same public snapshot.
+  - Returns a minimal, templated public HTML page powered by the same public snapshot.
 
 ## Domain mapping support
 

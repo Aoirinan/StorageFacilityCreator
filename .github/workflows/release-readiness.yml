@@ -7,6 +7,16 @@ on:
     branches: [main]
 
 jobs:
+  repo-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: No tracked build / compiler output
+        run: node scripts/check_tracked_generated_artifacts.js
+
   email-limits-parity:
     runs-on: ubuntu-latest
     steps:
