@@ -100,6 +100,10 @@ async function resolveFacilitySlugFromInput(input: {
   throw new functions.https.HttpsError('invalid-argument', 'Provide facilityId, slug, or hostname.');
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function hostingApiRequest(path: string, init: RequestInit): Promise<any> {
   const auth = new GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/firebase', 'https://www.googleapis.com/auth/cloud-platform'],
@@ -123,6 +127,9 @@ async function hostingApiRequest(path: string, init: RequestInit): Promise<any> 
   const json = raw ? JSON.parse(raw) : {};
   if (!response.ok) {
     const message = String(json?.error?.message || `Firebase Hosting API error (${response.status}).`);
+    if (response.status === 404) {
+      throw new functions.https.HttpsError('not-found', message);
+    }
     throw new functions.https.HttpsError('internal', message);
   }
   return json;
@@ -170,6 +177,79 @@ async function getCustomDomain(hostname: string): Promise<any> {
   return hostingApiRequest(`projects/${projectId}/sites/${siteId}/customDomains/${encoded}`, { method: 'GET' });
 }
 
+/** `customDomains.create` returns a long-running Operation; poll until finished. */
+async function pollHostingOperation(operationName: string): Promise<any> {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const op = await hostingApiRequest(operationName, { method: 'GET' });
+    if (op?.done) {
+      if (op.error) {
+        const msg = String(op.error.message || JSON.stringify(op.error));
+        throw new functions.https.HttpsError('internal', msg);
+      }
+      return op.response || {};
+    }
+    await sleep(2000);
+  }
+  throw new functions.https.HttpsError(
+    'deadline-exceeded',
+    'Timed out waiting for Firebase Hosting custom domain operation.',
+  );
+}
+
+/**
+ * After `customDomains.create`, the API returns an Operation (not a CustomDomain).
+ * Resolve the CustomDomain payload for DNS / status fields.
+ */
+async function resolveCustomDomainAfterCreate(hostname: string, createResult: any): Promise<any> {
+  if (!createResult || typeof createResult !== 'object') {
+    throw new functions.https.HttpsError('internal', 'Unexpected response from Hosting customDomains.create.');
+  }
+
+  // Rare: already looks like a CustomDomain resource.
+  if (typeof createResult.name === 'string' && createResult.name.includes('/customDomains/') && !createResult.name.includes('/operations/')) {
+    if (createResult.requiredDnsUpdates != null || createResult.cert != null || createResult.status != null) {
+      return createResult;
+    }
+  }
+
+  const opName = typeof createResult.name === 'string' ? createResult.name : '';
+  const isOperation = opName.includes('/operations/') || createResult.done === false || createResult.done === true;
+
+  if (isOperation) {
+    const op = createResult;
+    if (op.done === true) {
+      if (op.error) {
+        const msg = String(op.error.message || JSON.stringify(op.error));
+        throw new functions.https.HttpsError('internal', msg);
+      }
+      if (op.response && typeof op.response === 'object') {
+        return op.response;
+      }
+    } else if (opName) {
+      const polled = await pollHostingOperation(opName);
+      if (polled && typeof polled === 'object' && Object.keys(polled).length > 0) {
+        return polled;
+      }
+    }
+  }
+
+  // Fallback: GET the CustomDomain by id (may lag briefly after create).
+  for (let i = 0; i < 20; i += 1) {
+    try {
+      return await getCustomDomain(hostname);
+    } catch (e: any) {
+      const code = e instanceof functions.https.HttpsError ? e.code : '';
+      if (code === 'not-found' && i < 19) {
+        await sleep(1500);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new functions.https.HttpsError('internal', 'Could not load custom domain after create.');
+}
+
 export const superAdminProvisionHostingCustomDomain = functions.https.onCall(
   async (
     data: {
@@ -201,17 +281,16 @@ export const superAdminProvisionHostingCustomDomain = functions.https.onCall(
     const projectId = HOSTING_PROJECT_ID.value().trim();
     const siteId = HOSTING_SITE_ID.value().trim();
     const parent = `projects/${projectId}/sites/${siteId}`;
-    const customDomainId = encodeURIComponent(hostname);
+    const query = new URLSearchParams({ customDomainId: hostname }).toString();
 
     let customDomain: any;
     try {
-      customDomain = await hostingApiRequest(
-        `${parent}/customDomains?customDomainId=${customDomainId}`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ hostName: hostname }),
-        },
-      );
+      const createResult = await hostingApiRequest(`${parent}/customDomains?${query}`, {
+        method: 'POST',
+        // Domain is specified by query param `customDomainId`; CustomDomain has no hostName field.
+        body: JSON.stringify({}),
+      });
+      customDomain = await resolveCustomDomainAfterCreate(hostname, createResult);
     } catch (error: any) {
       const msg = String(error?.message || '');
       const alreadyExists = msg.includes('already exists') || msg.includes('ALREADY_EXISTS');

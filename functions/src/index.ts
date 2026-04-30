@@ -21,6 +21,7 @@ import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformMess
 import { emailMonthlyLimitForAccount } from './constants/emailMonthlyLimits';
 import { runAllMigrations } from './migrations/phase2_migrations';
 import { backfillContractCompliance } from './migrations/backfill_contract_compliance';
+import { migratePublicWebsiteV4OptionalFields } from './migrations/public_website_v4_optional_fields';
 export {
   syncPublicFacilityMapInventoryOnTenantWrite,
   syncPublicFacilityMapInventoryOnUnitWrite,
@@ -596,6 +597,160 @@ export const superAdminDeleteFacilityCreatorAccount = functions
   });
 
 /**
+ * Remove all Firebase Storage objects under `facilities/{facilityId}/` (contracts,
+ * documents, branding, etc.). Best-effort: logs and does not throw so Firestore
+ * cleanup can still proceed if Storage is unavailable.
+ */
+async function deleteFacilityStoragePrefixBestEffort(facilityId: string): Promise<void> {
+  const prefix = `facilities/${facilityId}/`;
+  try {
+    const bucket = admin.storage().bucket();
+    await bucket.deleteFiles({ prefix, force: true });
+    functions.logger.info('deleteFacilityStoragePrefix: removed objects', { facilityId, prefix });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    functions.logger.warn('deleteFacilityStoragePrefix: failed (Firestore delete will still run)', {
+      facilityId,
+      prefix,
+      error: msg,
+    });
+  }
+}
+
+interface SuperAdminDeleteFacilityData {
+  facilityId: string;
+  facilityNameConfirmation: string;
+}
+
+/**
+ * Super admin only: permanently delete one facility (full Firestore subtree under
+ * `facilities/{facilityId}`), remove its id from the linked facility creator account,
+ * delete `publicFacilityMaps/{slug}` when it points at this facility, align Stripe
+ * subscription add-on quantity when the account has an active subscription, and
+ * best-effort delete all Storage files under `facilities/{facilityId}/`.
+ *
+ * Caller must type the facility's display name exactly (trimmed) as confirmation.
+ */
+export const superAdminDeleteFacility = functions
+  .runWith({ secrets: STRIPE_SECRETS })
+  .https.onCall(async (data: SuperAdminDeleteFacilityData, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError('permission-denied', 'Only super admins can delete facilities');
+    }
+
+    const facilityId = (data?.facilityId || '').toString().trim();
+    const facilityNameConfirmation = (data?.facilityNameConfirmation || '').toString().trim();
+    if (!facilityId) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+    if (!facilityNameConfirmation) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityNameConfirmation is required');
+    }
+
+    const db = admin.firestore();
+    const facilityRef = db.collection('facilities').doc(facilityId);
+    const facilitySnap = await facilityRef.get();
+    if (!facilitySnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Facility not found');
+    }
+
+    const facilityData = facilitySnap.data() as Record<string, unknown>;
+    const facilityName = String(facilityData.name || '').trim();
+    const confirmed = facilityNameConfirmation.trim();
+    const matchesName = facilityName.length > 0 && facilityName === confirmed;
+    const matchesIdForUnnamed = facilityName.length === 0 && facilityId === confirmed;
+    if (!matchesName && !matchesIdForUnnamed) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Confirmation must match the facility name exactly, or the facility ID if it has no name.',
+      );
+    }
+
+    const metaSnap = await facilityRef.collection('mapEngine').doc('meta').get();
+    const publicSlug = metaSnap.exists
+      ? String(metaSnap.get('publicSlug') || '').trim().toLowerCase()
+      : '';
+
+    if (publicSlug) {
+      const pubRef = db.collection('publicFacilityMaps').doc(publicSlug);
+      const pubSnap = await pubRef.get();
+      if (pubSnap.exists && String(pubSnap.get('facilityId') || '') === facilityId) {
+        await adminDeleteDocumentTree(pubRef);
+      }
+    }
+
+    const accountId = String(facilityData.facilityCreatorAccountId || '').trim();
+    if (accountId) {
+      const accRef = db.collection('facilityCreatorAccounts').doc(accountId);
+      const accSnap = await accRef.get();
+      if (accSnap.exists) {
+        const accountData = accSnap.data() as Record<string, unknown>;
+        const oldIds = (accountData.facilityIds as string[]) || [];
+        const newIds = oldIds.filter((id) => id !== facilityId);
+
+        const accUpdates: Record<string, unknown> = {
+          facilityIds: admin.firestore.FieldValue.arrayRemove(facilityId),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        if (accountData.referralRewardPreferredFacilityId === facilityId) {
+          accUpdates.referralRewardPreferredFacilityId = admin.firestore.FieldValue.delete();
+        }
+        await accRef.update(accUpdates);
+
+        const subscriptionId = (accountData.stripeSubscriptionId as string | undefined)?.trim();
+        if (subscriptionId) {
+          const stripe = getStripeClient();
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          const basePriceId = process.env.STRIPE_BASE_PRICE_ID || (await getOrCreateBasePriceId(stripe));
+          const addOnPriceId = process.env.STRIPE_ADDON_PRICE_ID || (await getOrCreateAddOnPriceId(stripe));
+          const facilityCount = newIds.length;
+          const additionalFacilityCount = Math.max(0, facilityCount - 1);
+          const baseItem = subscription.items.data.find((item: Stripe.SubscriptionItem) => item.price.id === basePriceId);
+          const addOnItem = subscription.items.data.find((item: Stripe.SubscriptionItem) => item.price.id === addOnPriceId);
+          const currentAddOnQty = addOnItem ? addOnItem.quantity : 0;
+          if (!(baseItem?.quantity === 1 && currentAddOnQty === additionalFacilityCount)) {
+            const updatesStripe: Stripe.SubscriptionUpdateParams = {
+              items: [],
+              proration_behavior: 'create_prorations',
+            };
+            if (baseItem) {
+              updatesStripe.items!.push({ id: baseItem.id, quantity: 1 });
+            } else {
+              updatesStripe.items!.push({ price: basePriceId, quantity: 1 });
+            }
+            if (additionalFacilityCount > 0) {
+              if (addOnItem) {
+                updatesStripe.items!.push({ id: addOnItem.id, quantity: additionalFacilityCount });
+              } else {
+                updatesStripe.items!.push({ price: addOnPriceId, quantity: additionalFacilityCount });
+              }
+            } else if (addOnItem) {
+              updatesStripe.items!.push({ id: addOnItem.id, deleted: true });
+            }
+            await stripe.subscriptions.update(subscriptionId, updatesStripe);
+          }
+        }
+      }
+    }
+
+    await deleteFacilityStoragePrefixBestEffort(facilityId);
+    await adminDeleteDocumentTree(facilityRef);
+
+    functions.logger.info('superAdminDeleteFacility', {
+      facilityId,
+      facilityName,
+      deletedBy: callerEmail,
+      accountId: accountId || null,
+    });
+
+    return { success: true };
+  });
+
+/**
  * Super admin only: disable a user in Firebase Auth (they cannot sign in).
  */
 export const superAdminDisableUser = functions.https.onCall(async (data: { uid: string }, context) => {
@@ -687,6 +842,216 @@ export const superAdminSendPasswordReset = functions.runWith({ secrets: SENDGRID
     return { success: true };
   },
 );
+
+/**
+ * Super admin only: email every unique facility owner (one email per owner email address).
+ * Uses platform SendGrid identity, respects configs/messagingGuard (same daily cap as staff sendEmail).
+ * Does not increment per-facility monthly email usage.
+ */
+export const superAdminBroadcastEmailToFacilityOwners = functions
+  .runWith({ secrets: SENDGRID_SECRETS, timeoutSeconds: 360, memory: '512MB' })
+  .https.onCall(
+    async (
+      data: {
+        subject?: string;
+        html?: string;
+        text?: string;
+        includeInactiveFacilities?: boolean;
+        acknowledgment?: string;
+        dryRun?: boolean;
+      },
+      context,
+    ) => {
+      if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      }
+      const callerEmail = context.auth.token?.email as string | undefined;
+      if (!isSuperAdmin(callerEmail)) {
+        throw new functions.https.HttpsError(
+          'permission-denied',
+          'Only super admins can broadcast email to facility owners',
+        );
+      }
+
+      const dryRun = data?.dryRun === true;
+      const subject = String(data?.subject || '').trim();
+      const htmlRaw = data?.html != null ? String(data.html) : '';
+      const textRaw = data?.text != null ? String(data.text) : '';
+      const ack = String(data?.acknowledgment || '').trim();
+
+      if (!dryRun) {
+        if (!subject || subject.length > 300) {
+          throw new functions.https.HttpsError(
+            'invalid-argument',
+            'subject is required (max 300 characters)',
+          );
+        }
+        if (!htmlRaw.trim() && !textRaw.trim()) {
+          throw new functions.https.HttpsError(
+            'invalid-argument',
+            'html or text body is required',
+          );
+        }
+        if (htmlRaw.length > 120_000 || textRaw.length > 120_000) {
+          throw new functions.https.HttpsError('invalid-argument', 'Body is too large');
+        }
+        if (ack !== 'BROADCAST') {
+          throw new functions.https.HttpsError(
+            'invalid-argument',
+            'Type BROADCAST in the confirmation field to send.',
+          );
+        }
+      }
+
+      const includeInactive = data?.includeInactiveFacilities === true;
+      const db = admin.firestore();
+      const facSnap = includeInactive
+        ? await db.collection('facilities').get()
+        : await db.collection('facilities').where('active', '==', true).get();
+
+      const ownerUids = new Set<string>();
+      for (const doc of facSnap.docs) {
+        const ou = String(doc.data()?.ownerUid || '').trim();
+        if (ou) ownerUids.add(ou);
+      }
+      const uidList = Array.from(ownerUids);
+
+      const recipients: { uid: string; email: string }[] = [];
+      const seenEmails = new Set<string>();
+
+      for (let i = 0; i < uidList.length; i += 10) {
+        const chunk = uidList.slice(i, i + 10);
+        const refs = chunk.map((uid) => db.collection('users').doc(uid));
+        const snaps = refs.length > 0 ? await db.getAll(...refs) : [];
+        const uidsNeedingAuth: string[] = [];
+        for (let j = 0; j < snaps.length; j++) {
+          const uid = chunk[j];
+          let email: string | null = null;
+          const snap = snaps[j];
+          if (snap.exists) {
+            const em = String(snap.data()?.email || '').trim();
+            if (em.includes('@')) email = em;
+          }
+          if (email) {
+            const lower = email.toLowerCase();
+            if (!seenEmails.has(lower)) {
+              seenEmails.add(lower);
+              recipients.push({ uid, email });
+            }
+          } else {
+            uidsNeedingAuth.push(uid);
+          }
+        }
+        for (const uid of uidsNeedingAuth) {
+          try {
+            const authUser = await admin.auth().getUser(uid);
+            const em = authUser.email?.trim();
+            if (!em || !em.includes('@')) continue;
+            const lower = em.toLowerCase();
+            if (seenEmails.has(lower)) continue;
+            seenEmails.add(lower);
+            recipients.push({ uid, email: em });
+          } catch {
+            // skip missing auth user
+          }
+        }
+      }
+
+      if (dryRun) {
+        return {
+          dryRun: true,
+          facilityDocuments: facSnap.size,
+          uniqueOwnerUids: uidList.length,
+          recipientCount: recipients.length,
+        };
+      }
+
+      let htmlBody = htmlRaw.trim();
+      let textBody = textRaw.trim();
+      if (!htmlBody && textBody) {
+        htmlBody = `<p>${escapeHtml(textBody).replace(/\n/g, '<br/>')}</p>`;
+      }
+      if (!textBody && htmlBody) {
+        textBody = htmlBody.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+
+      const { html: htmlWithFooter, text: textWithFooter } = appendPlatformAdminBroadcastFooter(
+        htmlBody,
+        textBody,
+      );
+
+      initializeSendGrid();
+      const sendGridFromEmail = SENDGRID_FROM_EMAIL.value();
+      const fromName = SENDGRID_FROM_NAME.value();
+
+      let sent = 0;
+      const failures: { uid: string; email: string; error: string }[] = [];
+
+      for (const { uid, email } of recipients) {
+        let reserved = false;
+        try {
+          await reservePlatformOutgoing('email');
+          reserved = true;
+          const msg = {
+            to: email,
+            from: { email: sendGridFromEmail, name: fromName },
+            subject,
+            html: htmlWithFooter,
+            text: textWithFooter,
+          };
+          await getSgMail().send(msg);
+          sent += 1;
+          reserved = false;
+        } catch (e: any) {
+          if (reserved) {
+            await releasePlatformOutgoing('email').catch((err) =>
+              functions.logger.warn('releasePlatformOutgoing after broadcast failure', err),
+            );
+          }
+          const errMsg =
+            e instanceof functions.https.HttpsError
+              ? e.message
+              : (e?.message || String(e));
+          failures.push({ uid, email, error: errMsg });
+          functions.logger.error('superAdminBroadcastEmailToFacilityOwners send failed', {
+            uid,
+            email,
+            error: errMsg,
+          });
+        }
+      }
+
+      functions.logger.info('superAdminBroadcastEmailToFacilityOwners complete', {
+        sentBy: callerEmail,
+        sent,
+        failureCount: failures.length,
+        totalRecipients: recipients.length,
+      });
+
+      await db.collection('superAdminBroadcastLogs').add({
+        type: 'facility_owner_email',
+        subject,
+        sent,
+        failureCount: failures.length,
+        totalRecipients: recipients.length,
+        facilityDocuments: facSnap.size,
+        uniqueOwnerUids: uidList.length,
+        includeInactiveFacilities: includeInactive,
+        sentByEmail: callerEmail,
+        sentByUid: context.auth.uid,
+        failures: failures.slice(0, 100),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return {
+        success: true,
+        sent,
+        failureCount: failures.length,
+        failures,
+        totalRecipients: recipients.length,
+      };
+    },
+  );
 
 function serializeAuthUserForSuperAdmin(
   user: admin.auth.UserRecord,
@@ -1374,6 +1739,18 @@ function appendPlatformSecurityEmailFooter(html: string, text: string): { html: 
   const textFooter =
     '\n\n---\nThis is an automated security message from Storage Facility Creator. ' +
     'These messages are not promotional and are sent only to protect your account.';
+  return { html: html + htmlFooter, text: text + textFooter };
+}
+
+/** Super-admin broadcast to facility owners — short notice footer (not tenant marketing). */
+function appendPlatformAdminBroadcastFooter(html: string, text: string): { html: string; text: string } {
+  const htmlFooter =
+    '<hr style="margin:24px 0;border:none;border-top:1px solid #e0e0e0;"/>' +
+    '<p style="font-size:12px;color:#666;line-height:1.5;">You are receiving this because your account owns at least one facility on Storage Facility Creator. ' +
+    'This is an administrative message from the platform, not billing or marketing from an individual site.</p>';
+  const textFooter =
+    '\n\n---\nYou are receiving this because your account owns at least one facility on Storage Facility Creator. ' +
+    'This is an administrative message from the platform, not billing or marketing from an individual site.';
   return { html: html + htmlFooter, text: text + textFooter };
 }
 
@@ -13278,7 +13655,7 @@ const DEFAULT_AI_ASSISTANT_CONFIG: AIAssistantConfig = {
   executeActionsEnabled: false,
   maxTokensPerRequest: 1000,
   maxMessagesPerDay: 30,  // Per facility (hard limit)
-  maxMessagesPerUser: 20, // Per user per day (hard limit)
+  maxMessagesPerUser: 10, // Per user per day (hard limit)
   maxConversationHistory: 10,
   maxMessageLength: 2000, // Characters
 };
@@ -13449,6 +13826,113 @@ async function enforceUserRateLimit(
       { merge: true },
     );
   });
+}
+
+const DAILY_AI_USER_LIMIT = 10;
+
+/**
+ * Atomically enforce and consume daily AI quota for both facility and user.
+ * TODO: Add integration tests with Firestore emulator:
+ * 1) 11 concurrent calls should allow exactly 10 successes per user/day.
+ * 2) aiAssistantChat OpenAI failure should trigger refund and preserve net quota.
+ */
+async function enforceAndConsumeDailyAiQuota(params: {
+  uid: string;
+  facilityId: string;
+  dailyLimitPerUser: number;
+  dailyLimitPerFacility: number;
+}): Promise<{ refund: () => Promise<void> }> {
+  const { uid, facilityId, dailyLimitPerUser, dailyLimitPerFacility } = params;
+  const today = new Date().toISOString().split('T')[0];
+  const db = admin.firestore();
+  const facilityUsageRef = db
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('aiUsage')
+    .doc(today);
+  const userUsageRef = db
+    .collection('users')
+    .doc(uid)
+    .collection('aiUsage')
+    .doc(today);
+
+  await db.runTransaction(async (tx) => {
+    const [facilityUsageDoc, userUsageDoc] = await Promise.all([
+      tx.get(facilityUsageRef),
+      tx.get(userUsageRef),
+    ]);
+
+    const facilityUsageCount = facilityUsageDoc.exists ? (facilityUsageDoc.data()?.count || 0) : 0;
+    const userUsageCount = userUsageDoc.exists ? (userUsageDoc.data()?.count || 0) : 0;
+
+    if (facilityUsageCount >= dailyLimitPerFacility) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        `Daily limit reached for this facility (${dailyLimitPerFacility} messages/day). Try again tomorrow.`,
+      );
+    }
+
+    if (userUsageCount >= dailyLimitPerUser) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        `Daily limit reached for your account (${dailyLimitPerUser} messages/day). Try again tomorrow.`,
+      );
+    }
+
+    tx.set(
+      facilityUsageRef,
+      {
+        count: facilityUsageCount + 1,
+        lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+        facilityId,
+      },
+      { merge: true },
+    );
+
+    tx.set(
+      userUsageRef,
+      {
+        count: userUsageCount + 1,
+        lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+        userId: uid,
+      },
+      { merge: true },
+    );
+  });
+
+  const refund = async (): Promise<void> => {
+    await db.runTransaction(async (tx) => {
+      const [facilityUsageDoc, userUsageDoc] = await Promise.all([
+        tx.get(facilityUsageRef),
+        tx.get(userUsageRef),
+      ]);
+
+      const facilityUsageCount = facilityUsageDoc.exists ? (facilityUsageDoc.data()?.count || 0) : 0;
+      const userUsageCount = userUsageDoc.exists ? (userUsageDoc.data()?.count || 0) : 0;
+
+      tx.set(
+        facilityUsageRef,
+        {
+          count: Math.max(0, facilityUsageCount - 1),
+          lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+          facilityId,
+        },
+        { merge: true },
+      );
+
+      tx.set(
+        userUsageRef,
+        {
+          count: Math.max(0, userUsageCount - 1),
+          lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+          userId: uid,
+        },
+        { merge: true },
+      );
+    });
+  };
+
+  return { refund };
 }
 
 function hashUserId(userId: string): string {
@@ -16450,6 +16934,30 @@ export const backfillContractComplianceFields = functions.https.onCall(async (da
   }
 });
 
+// Cloud Function to normalize public website optional v4 field containers
+export const migratePublicWebsiteTemplateV4OptionalFields = functions.https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+  }
+  const callerEmail = context.auth.token?.email as string | undefined;
+  if (!isSuperAdmin(callerEmail)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only super admins can run migrations');
+  }
+
+  try {
+    const result = await migratePublicWebsiteV4OptionalFields();
+    functions.logger.info('Public website v4 optional fields migration completed', result);
+    return {
+      success: true,
+      message: 'Public website v4 optional field migration completed',
+      ...result,
+    };
+  } catch (error: any) {
+    functions.logger.error('Migration error:', error);
+    throw new functions.https.HttpsError('internal', `Migration failed: ${error.message}`);
+  }
+});
+
 async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {
   try {
     const stripe = getStripeClient();
@@ -17691,55 +18199,14 @@ export const aiAssistant = functions.runWith({ secrets: AI_SECRETS }).https.onCa
       windowSeconds: 60,
     });
 
-    // Daily usage limits: Per facility
-    const today = new Date().toISOString().split('T')[0];
-    const facilityUsageRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('aiUsage')
-      .doc(today);
-
-    const facilityUsageDoc = await facilityUsageRef.get();
-    const facilityUsageCount = facilityUsageDoc.exists ? (facilityUsageDoc.data()?.count || 0) : 0;
-    const maxFacilityDaily = config.maxMessagesPerDay || 100;
-    
-    if (facilityUsageCount >= maxFacilityDaily) {
-      throw new functions.https.HttpsError(
-        'resource-exhausted',
-        `Daily limit reached for this facility (${maxFacilityDaily} messages/day). Try again tomorrow.`,
-      );
-    }
-
-    // Daily usage limits: Per user
-    const userUsageRef = admin.firestore()
-      .collection('users')
-      .doc(context.auth.uid)
-      .collection('aiUsage')
-      .doc(today);
-
-    const userUsageDoc = await userUsageRef.get();
-    const userUsageCount = userUsageDoc.exists ? (userUsageDoc.data()?.count || 0) : 0;
-    const maxUserDaily = config.maxMessagesPerUser || 50;
-    
-    if (userUsageCount >= maxUserDaily) {
-      throw new functions.https.HttpsError(
-        'resource-exhausted',
-        `Daily limit reached for your account (${maxUserDaily} messages/day). Try again tomorrow.`,
-      );
-    }
-
-    // Increment usage counters
-    await facilityUsageRef.set({
-      count: facilityUsageCount + 1,
-      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
+    const maxFacilityDaily = config.maxMessagesPerDay ?? DEFAULT_AI_ASSISTANT_CONFIG.maxMessagesPerDay!;
+    const maxUserDaily = DAILY_AI_USER_LIMIT;
+    await enforceAndConsumeDailyAiQuota({
+      uid: context.auth.uid,
       facilityId,
-    }, { merge: true });
-
-    await userUsageRef.set({
-      count: userUsageCount + 1,
-      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
-      userId: context.auth.uid,
-    }, { merge: true });
+      dailyLimitPerUser: maxUserDaily,
+      dailyLimitPerFacility: maxFacilityDaily,
+    });
 
     // Verify user has access to this facility
     const facilityDoc = await admin.firestore()
@@ -18231,52 +18698,14 @@ export const aiAssistantChat = functions
     // Rate limiting: Per user per minute
     await enforceUserRateLimit(uid, 'aiAssistantChat', MAX_REQUESTS_PER_USER_PER_MINUTE, 60);
 
-    // Daily usage limits: Per facility
-    const today = new Date().toISOString().split('T')[0];
-    const facilityUsageRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('aiUsage')
-      .doc(today);
-
-    const facilityUsageDoc = await facilityUsageRef.get();
-    const facilityUsageCount = facilityUsageDoc.exists ? (facilityUsageDoc.data()?.count || 0) : 0;
-    const maxFacilityDaily = config.maxMessagesPerDay ?? 30;
-    
-    if (facilityUsageCount >= maxFacilityDaily) {
-      functions.logger.warn('aiAssistantChat daily facility limit reached', {
-        facilityId,
-        count: facilityUsageCount,
-        limit: maxFacilityDaily,
-      });
-      throw new functions.https.HttpsError(
-        'resource-exhausted',
-        `Daily limit reached for this facility (${maxFacilityDaily} messages/day). Try again tomorrow.`,
-      );
-    }
-
-    // Daily usage limits: Per user
-    const userUsageRef = admin.firestore()
-      .collection('users')
-      .doc(uid)
-      .collection('aiUsage')
-      .doc(today);
-
-    const userUsageDoc = await userUsageRef.get();
-    const userUsageCount = userUsageDoc.exists ? (userUsageDoc.data()?.count || 0) : 0;
-    const maxUserDaily = config.maxMessagesPerUser ?? 20;
-    
-    if (userUsageCount >= maxUserDaily) {
-      functions.logger.warn('aiAssistantChat daily user limit reached', {
-        userId: uid,
-        count: userUsageCount,
-        limit: maxUserDaily,
-      });
-      throw new functions.https.HttpsError(
-        'resource-exhausted',
-        `Daily limit reached for your account (${maxUserDaily} messages/day). Try again tomorrow.`,
-      );
-    }
+    const maxFacilityDaily = config.maxMessagesPerDay ?? DEFAULT_AI_ASSISTANT_CONFIG.maxMessagesPerDay!;
+    const maxUserDaily = DAILY_AI_USER_LIMIT;
+    const { refund } = await enforceAndConsumeDailyAiQuota({
+      uid,
+      facilityId,
+      dailyLimitPerUser: maxUserDaily,
+      dailyLimitPerFacility: maxFacilityDaily,
+    });
 
     const facilityData = await getFacilityDataForUserOrThrow(uid, facilityId);
 
@@ -18356,25 +18785,22 @@ export const aiAssistantChat = functions
         (completion.usage?.completion_tokens ?? 0) +
         (completion.usage?.prompt_tokens ?? 0);
     } catch (apiErr: any) {
+      try {
+        await refund();
+      } catch (refundErr: any) {
+        functions.logger.error('aiAssistantChat quota refund failed', {
+          requestId,
+          facilityId,
+          userId: uid,
+          error: refundErr?.message,
+        });
+      }
       functions.logger.error('aiAssistantChat OpenAI error', { requestId, error: apiErr?.message });
       throw new functions.https.HttpsError(
         'internal',
         apiErr?.message?.includes('rate') ? 'Service is busy. Please try again shortly.' : 'Failed to get AI response. Please try again.',
       );
     }
-
-    // Increment usage counters (after successful OpenAI call)
-    await facilityUsageRef.set({
-      count: facilityUsageCount + 1,
-      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
-      facilityId,
-    }, { merge: true });
-
-    await userUsageRef.set({
-      count: userUsageCount + 1,
-      lastUsed: admin.firestore.FieldValue.serverTimestamp(),
-      userId: uid,
-    }, { merge: true });
 
     const latencyMs = Date.now() - startMs;
     const userIdHashed = hashUserId(uid);
@@ -18388,8 +18814,8 @@ export const aiAssistantChat = functions
       tokensUsed,
       latencyMs,
       allowlistPassed,
-      facilityUsageCount: facilityUsageCount + 1,
-      userUsageCount: userUsageCount + 1,
+      facilityUsageLimit: maxFacilityDaily,
+      userUsageLimit: maxUserDaily,
     });
 
     return {

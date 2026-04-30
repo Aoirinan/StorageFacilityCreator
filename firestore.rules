@@ -239,6 +239,10 @@ service cloud.firestore {
       // REMOVED: Global read access for invites (security issue)
       // Invite lookups now use Cloud Function: lookupUserByEmail
       // This ensures secure, controlled user lookups with minimal data exposure
+      // User-scoped rate limit counters - Cloud Functions only (Admin SDK bypasses rules)
+      match /rateLimits/{docId} {
+        allow read, write: if false;
+      }
     }
     
     // Facility Creator Accounts - users can only access their own account
@@ -421,10 +425,9 @@ service cloud.firestore {
         allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
       
-      // Rate limit counters (per facility)
+      // Rate limit counters (per facility) - Cloud Functions only (Admin SDK bypasses rules)
       match /rateLimits/{windowId} {
-        allow read: if isFacilityOwnerOrManager(facilityId);
-        allow write: if isFacilityOwnerOrManager(facilityId);
+        allow read, write: if false;
       }
       
       match /payments/{paymentId} {
