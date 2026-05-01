@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import type { Application, Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import type Stripe from 'stripe';
 import { defineString, defineSecret } from 'firebase-functions/params';
+import { registerHostingConfigProvider } from '@sfc/functions-shared';
 import * as Sentry from '@sentry/node';
 import * as stripeTenantBilling from './stripe/tenant_billing';
 import * as quickBooksAccounting from './accounting/quickbooks';
@@ -124,6 +125,13 @@ const SFC_LEAD_SMS_AUTO_REPLY = defineString(
   'SFC_LEAD_SMS_AUTO_REPLY',
   { default: 'Thanks for contacting Storage Facility Creator. We got your message and will follow up shortly.' },
 );
+
+const HOSTING_PROJECT_ID = defineString('HOSTING_PROJECT_ID', { default: 'storage-facility-creator' });
+const HOSTING_SITE_ID = defineString('HOSTING_SITE_ID', { default: 'storage-facility-creator' });
+registerHostingConfigProvider({
+  getProjectId: () => HOSTING_PROJECT_ID.value(),
+  getSiteId: () => HOSTING_SITE_ID.value(),
+});
 
 // Define parameters for AI Assistant (LLM)
 const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');

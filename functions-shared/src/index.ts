@@ -43,6 +43,8 @@ export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
+export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';
+export type { HostingConfig } from './hosting/hostingConfigRegistry';
 export { getTwilioClient, isTwilioDryRunEnabled } from './twilio/client';
 export { verifyTwilioWebhookSignature } from './twilio/webhooks';
 

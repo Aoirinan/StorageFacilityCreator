@@ -1,12 +1,9 @@
 import * as functions from 'firebase-functions/v1';
-import { defineString } from 'firebase-functions/params';
 import { GoogleAuth } from 'google-auth-library';
 import * as admin from 'firebase-admin';
 
 import { isSuperAdmin } from '../auth/superAdmin';
-
-const HOSTING_PROJECT_ID = defineString('HOSTING_PROJECT_ID', { default: 'storage-facility-creator' });
-const HOSTING_SITE_ID = defineString('HOSTING_SITE_ID', { default: 'storage-facility-creator' });
+import { requireHostingConfig } from './hostingConfigRegistry';
 
 function normalizeHostname(raw: string): string {
   return raw
@@ -154,8 +151,9 @@ function summarizeStatus(customDomain: any): string {
 }
 
 async function getCustomDomain(hostname: string): Promise<any> {
-  const projectId = HOSTING_PROJECT_ID.value().trim();
-  const siteId = HOSTING_SITE_ID.value().trim();
+  const { getProjectId, getSiteId } = requireHostingConfig();
+  const projectId = getProjectId().trim();
+  const siteId = getSiteId().trim();
   const encoded = encodeURIComponent(hostname);
   return hostingApiRequest(`projects/${projectId}/sites/${siteId}/customDomains/${encoded}`, { method: 'GET' });
 }
@@ -261,8 +259,9 @@ export const superAdminProvisionHostingCustomDomain = functions.https.onCall(
       hostname,
     });
 
-    const projectId = HOSTING_PROJECT_ID.value().trim();
-    const siteId = HOSTING_SITE_ID.value().trim();
+    const { getProjectId, getSiteId } = requireHostingConfig();
+    const projectId = getProjectId().trim();
+    const siteId = getSiteId().trim();
     const parent = `projects/${projectId}/sites/${siteId}`;
     const query = new URLSearchParams({ customDomainId: hostname }).toString();
 
