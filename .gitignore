@@ -35,6 +35,8 @@ migrate_working_dir/
 
 # Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
 functions/lib/
+functions-shared/lib/
+functions-shared/node_modules/
 
 # Firebase / local env
 .firebase/

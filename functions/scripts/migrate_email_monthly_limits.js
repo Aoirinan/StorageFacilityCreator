@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * One-off: set facilities/{id}/emailUsage/{YYYY-MM}.emailMonthlyLimit from
- * subscription status + functions/src/constants/emailMonthlyLimits.ts
+ * subscription status + functions-shared/src/constants/emailMonthlyLimits.ts
  * (does not change emailMonthlyCount).
  *
  * Usage (from repo functions/ — has firebase-admin):
@@ -30,12 +30,12 @@ if (monthOverride && !/^\d{4}-\d{2}$/.test(monthOverride)) {
 }
 
 function loadLimitsFromSource() {
-  const tsPath = path.join(__dirname, '..', 'src', 'constants', 'emailMonthlyLimits.ts');
+  const tsPath = path.join(__dirname, '..', '..', 'functions-shared', 'src', 'constants', 'emailMonthlyLimits.ts');
   const src = fs.readFileSync(tsPath, 'utf8');
   const trialingM = src.match(/EMAIL_MONTHLY_LIMIT_TRIALING\s*=\s*(\d+)/);
   const paidM = src.match(/EMAIL_MONTHLY_LIMIT_PAID\s*=\s*(\d+)/);
   if (!trialingM || !paidM) {
-    console.error('Could not parse limits from src/constants/emailMonthlyLimits.ts');
+    console.error('Could not parse limits from functions-shared/src/constants/emailMonthlyLimits.ts');
     process.exit(1);
   }
   const trialing = Number(trialingM[1]);
