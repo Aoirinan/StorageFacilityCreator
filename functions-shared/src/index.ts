@@ -65,3 +65,21 @@ export {
   EMAIL_MONTHLY_LIMIT_PAID,
   emailMonthlyLimitForAccount,
 } from './constants/emailMonthlyLimits';
+
+export { formatPhoneNumber } from './utils/phoneFormat';
+
+export { registerSfcLeadConfigProvider } from './marketing/sfcLeadConfigRegistry';
+export type { SfcLeadConfigProvider } from './marketing/sfcLeadConfigRegistry';
+export {
+  escapeXml,
+  getConfiguredSfcLeadLine,
+  isSfcLeadLineMatch,
+  upsertSfcLeadFromInboundContact,
+  processSfcLeadInboundSMSWebhook,
+} from './marketing/sfcLeads';
+
+export {
+  getRefereePlatformTrialDays,
+  processReferralOnPlatformInvoicePaid,
+  resolveReferralPendingItemForSuperAdmin,
+} from './referral/referralRewards';

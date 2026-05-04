@@ -1,0 +1,23 @@
+{
+  "name": "functions-marketing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SFC Cloud Functions \u2014 marketing codebase (referral callables, marketing lead capture, SFC lead webhooks)",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@sfc/functions-shared": "file:vendor/functions-shared",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.2.2",
+    "stripe": "^20.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -19,7 +19,7 @@
   },
   "main": "lib/index.js",
   "dependencies": {
-    "@sfc/functions-shared": "file:../functions-shared",
+    "@sfc/functions-shared": "file:vendor/functions-shared",
     "@sendgrid/mail": "^8.1.0",
     "@sentry/node": "^10.41.0",
     "dotenv": "^17.3.1",

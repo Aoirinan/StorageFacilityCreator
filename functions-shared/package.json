@@ -5,6 +5,64 @@
   "description": "Shared helpers for SFC Cloud Functions codebases",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./init": {
+      "types": "./lib/init.d.ts",
+      "default": "./lib/init.js"
+    },
+    "./auth/*": {
+      "types": "./lib/auth/*.d.ts",
+      "default": "./lib/auth/*.js"
+    },
+    "./rateLimits/*": {
+      "types": "./lib/rateLimits/*.d.ts",
+      "default": "./lib/rateLimits/*.js"
+    },
+    "./audit/*": {
+      "types": "./lib/audit/*.d.ts",
+      "default": "./lib/audit/*.js"
+    },
+    "./email/*": {
+      "types": "./lib/email/*.d.ts",
+      "default": "./lib/email/*.js"
+    },
+    "./stripe/*": {
+      "types": "./lib/stripe/*.d.ts",
+      "default": "./lib/stripe/*.js"
+    },
+    "./twilio/*": {
+      "types": "./lib/twilio/*.d.ts",
+      "default": "./lib/twilio/*.js"
+    },
+    "./platform/*": {
+      "types": "./lib/platform/*.d.ts",
+      "default": "./lib/platform/*.js"
+    },
+    "./hosting/*": {
+      "types": "./lib/hosting/*.d.ts",
+      "default": "./lib/hosting/*.js"
+    },
+    "./constants/*": {
+      "types": "./lib/constants/*.d.ts",
+      "default": "./lib/constants/*.js"
+    },
+    "./utils/*": {
+      "types": "./lib/utils/*.d.ts",
+      "default": "./lib/utils/*.js"
+    },
+    "./marketing/*": {
+      "types": "./lib/marketing/*.d.ts",
+      "default": "./lib/marketing/*.js"
+    },
+    "./referral/*": {
+      "types": "./lib/referral/*.d.ts",
+      "default": "./lib/referral/*.js"
+    }
+  },
   "engines": {
     "node": "22"
   },
