@@ -1,6 +1,6 @@
 /**
  * Firebase predeploy hook: vendor functions-shared, then npm install + build
- * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation).
+ * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation | functions-facility-ops).
  * Uses cwd-based npm — avoids broken `npm install --prefix <dir>` on Windows npm 10.
  */
 const fs = require('fs');
@@ -120,7 +120,7 @@ function ensureAutomationDotenv(root) {
 
 const pkgDir = process.argv[2];
 if (!pkgDir || /^-/.test(pkgDir)) {
-  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation>');
+  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation|functions-facility-ops>');
   process.exit(1);
 }
 

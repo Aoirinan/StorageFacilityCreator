@@ -42,12 +42,14 @@ functions-admin/vendor/
 functions-public-website/vendor/
 functions-tenant-lifecycle/vendor/
 functions-automation/vendor/
+functions-facility-ops/vendor/
 
 # Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
 functions/lib/
 functions-public-website/lib/
 functions-tenant-lifecycle/lib/
 functions-automation/lib/
+functions-facility-ops/lib/
 functions-shared/lib/
 functions-shared/node_modules/
 

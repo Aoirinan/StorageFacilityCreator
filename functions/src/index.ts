@@ -11981,17 +11981,3 @@ export const verifyOTP = functions.https.onCall(
     }
   },
 );
-
-// Export facility stats functions for automatic dashboard updates
-import * as facilityStatsModule from './facility_stats';
-export const onTenantWrite = facilityStatsModule.onTenantWrite;
-export const onUnitWrite = facilityStatsModule.onUnitWrite;
-export const updateAllFacilityStatsNightly = facilityStatsModule.updateAllFacilityStatsNightly;
-export const updateFacilityStatsManual = facilityStatsModule.updateFacilityStatsManual;
-
-// Manager Overlock callables (manager/admin only)
-import * as overlockModule from './overlock';
-export const setUnitOverlockStatus = overlockModule.setUnitOverlockStatus;
-export const setUnitsOverlockStatusBulk = overlockModule.setUnitsOverlockStatusBulk;
-export const overlockAllDelinquent = overlockModule.overlockAllDelinquent;
-export const clearOverlockByFilter = overlockModule.clearOverlockByFilter;

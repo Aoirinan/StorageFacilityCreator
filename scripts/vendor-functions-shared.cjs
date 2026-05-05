@@ -13,7 +13,7 @@ const sharedRoot = path.join(root, 'functions-shared');
 const libSrc = path.join(sharedRoot, 'lib');
 const pkgSrc = path.join(sharedRoot, 'package.json');
 
-const packages = ['functions', 'functions-ai', 'functions-marketing', 'functions-integrations', 'functions-admin', 'functions-public-website', 'functions-tenant-lifecycle', 'functions-automation'];
+const packages = ['functions', 'functions-ai', 'functions-marketing', 'functions-integrations', 'functions-admin', 'functions-public-website', 'functions-tenant-lifecycle', 'functions-automation', 'functions-facility-ops'];
 
 execSync('npm run build', { cwd: sharedRoot, stdio: 'inherit' });
 
