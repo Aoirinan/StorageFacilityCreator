@@ -56,11 +56,6 @@ export {
 export type { MessagingGuardConfig } from './platform/platformMessagingGuard';
 
 export {
-  superAdminGetHostingCustomDomainStatus,
-  superAdminProvisionHostingCustomDomain,
-} from './hosting/hostingCustomDomains';
-
-export {
   EMAIL_MONTHLY_LIMIT_TRIALING,
   EMAIL_MONTHLY_LIMIT_PAID,
   emailMonthlyLimitForAccount,

@@ -8,11 +8,6 @@
 
 import * as admin from 'firebase-admin';
 
-// Initialize Firebase Admin (should already be initialized in index.ts)
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
-
 const db = admin.firestore();
 
 /**
