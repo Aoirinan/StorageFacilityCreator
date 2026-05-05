@@ -1,6 +1,6 @@
 /**
  * Firebase predeploy hook: vendor functions-shared, then npm install + build
- * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation | functions-facility-ops).
+ * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation | functions-facility-ops | functions-account-security).
  * Uses cwd-based npm — avoids broken `npm install --prefix <dir>` on Windows npm 10.
  */
 const fs = require('fs');
@@ -120,7 +120,7 @@ function ensureAutomationDotenv(root) {
 
 const pkgDir = process.argv[2];
 if (!pkgDir || /^-/.test(pkgDir)) {
-  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation|functions-facility-ops>');
+  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation|functions-facility-ops|functions-account-security>');
   process.exit(1);
 }
 
@@ -140,6 +140,28 @@ if (pkgDir === 'functions-tenant-lifecycle') {
 }
 if (pkgDir === 'functions-automation') {
   ensureAutomationDotenv(root);
+}
+if (pkgDir === 'functions-account-security') {
+  ensureAccountSecurityDotenv(root);
+}
+
+function ensureAccountSecurityDotenv(root) {
+  const dest = path.join(root, 'functions-account-security', '.env');
+  if (fs.existsSync(dest)) return;
+  const src = path.join(root, 'functions', '.env');
+  let sender = '';
+  let fromName = 'Storage Facility Creator';
+  if (fs.existsSync(src)) {
+    const raw = fs.readFileSync(src, 'utf8');
+    const pick = (name) => {
+      const m = raw.match(new RegExp(`^${name}=(.*)$`, 'm'));
+      return m ? m[1].trim() : '';
+    };
+    sender = pick('SENDGRID_SENDER_EMAIL');
+    fromName = pick('SENDGRID_FROM_NAME') || fromName;
+  }
+  fs.writeFileSync(dest, `SENDGRID_SENDER_EMAIL=${sender}\nSENDGRID_FROM_NAME=${fromName}\n`, 'utf8');
+  console.log('predeploy: wrote functions-account-security/.env (from functions/.env or defaults)');
 }
 const cwd = path.join(root, pkgDir);
 execSync('npm install', { cwd, stdio: 'inherit', env: process.env });
