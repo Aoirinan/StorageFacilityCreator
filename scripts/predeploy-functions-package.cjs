@@ -146,6 +146,8 @@ function ensureMessagingTwilioDotenv(root) {
   let twilioSid = '';
   let twilioPhone = '';
   let publicAppUrl = '';
+  let sfcLeadLine = '';
+  let sfcLeadReply = '';
   if (fs.existsSync(src)) {
     const raw = fs.readFileSync(src, 'utf8');
     const pick = (name) => {
@@ -157,6 +159,8 @@ function ensureMessagingTwilioDotenv(root) {
     twilioSid = pick('TWILIO_ACCOUNT_SID');
     twilioPhone = pick('TWILIO_PHONE_NUMBER');
     publicAppUrl = pick('PUBLIC_APP_URL');
+    sfcLeadLine = pick('SFC_LEAD_LINE_NUMBER');
+    sfcLeadReply = pick('SFC_LEAD_SMS_AUTO_REPLY');
   }
   fs.writeFileSync(
     dest,
@@ -167,6 +171,8 @@ function ensureMessagingTwilioDotenv(root) {
       `TWILIO_PHONE_NUMBER=${twilioPhone}`,
       `TWILIO_DRY_RUN=false`,
       `PUBLIC_APP_URL=${publicAppUrl}`,
+      `SFC_LEAD_LINE_NUMBER=${sfcLeadLine}`,
+      `SFC_LEAD_SMS_AUTO_REPLY=${sfcLeadReply}`,
       '',
     ].join('\n'),
     'utf8',

@@ -3,12 +3,18 @@ import { ensureFirebaseAdminApp, ensureSentryForFunctions } from '@sfc/functions
 ensureFirebaseAdminApp();
 ensureSentryForFunctions();
 
-import { registerSendgridMailConfigProvider } from '@sfc/functions-shared';
-import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL } from './secrets';
+import { registerSendgridMailConfigProvider, registerSfcLeadConfigProvider } from '@sfc/functions-shared';
+import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SFC_LEAD_LINE_NUMBER, SFC_LEAD_SMS_AUTO_REPLY } from './secrets';
 
 registerSendgridMailConfigProvider({
   getApiKey: () => SENDGRID_API_KEY.value(),
   getFromEmail: () => SENDGRID_FROM_EMAIL.value(),
+});
+
+registerSfcLeadConfigProvider({
+  getLeadLine: () => SFC_LEAD_LINE_NUMBER.value(),
+  getSmsAutoReply: () => SFC_LEAD_SMS_AUTO_REPLY.value(),
+  getForwardTo: () => '',
 });
 
 export { sendSMS } from './twilioCallables';
@@ -27,3 +33,5 @@ export {
 } from './twilioCallables';
 
 export { getSMSUsageStatus, overrideSMSLimit } from './smsUsage';
+
+export { handleIncomingSMS } from './incomingSmsWebhook';
