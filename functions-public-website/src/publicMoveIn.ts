@@ -1,0 +1,1044 @@
+﻿import * as functions from 'firebase-functions/v1';
+import * as admin from 'firebase-admin';
+import * as crypto from 'crypto';
+import { getDownloadURL } from 'firebase-admin/storage';
+import {
+  escapeHtml,
+  getStripeClient,
+  sendFacilityEmailWithCompliance,
+} from '@sfc/functions-shared';
+import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
+import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
+import { generateAccessCode } from './accessCode';
+import { createAutopayNotificationAndEvent } from './autopayNotification';
+/**
+ * Public token lookup for reservation flow.
+ * This keeps unauthenticated move-in working while Firestore blocks anonymous list queries.
+ */
+export const getPublicReservationByToken = functions.https.onCall(async (data: any, _context) => {
+  const token = String(data?.token || '').trim();
+  if (!token || token.length < 16) {
+    throw new functions.https.HttpsError('invalid-argument', 'Valid token is required');
+  }
+
+  const snapshot = await admin.firestore()
+    .collection('publicReservations')
+    .where('moveInToken', '==', token)
+    .where('status', 'in', ['pending', 'confirmed'])
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    return { found: false };
+  }
+
+  const doc = snapshot.docs[0];
+  const reservation = doc.data() as Record<string, any>;
+  const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
+  if (expiresAt && expiresAt.toDate() < new Date()) {
+    await doc.ref.set(
+      {
+        status: 'expired',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+    return { found: false };
+  }
+
+  return {
+    found: true,
+    reservation: {
+      id: doc.id,
+      facilityId: reservation.facilityId || '',
+      unitId: reservation.unitId || null,
+      unitNumber: reservation.unitNumber || null,
+      email: reservation.email || '',
+      phone: reservation.phone || null,
+      name: reservation.name || null,
+      status: reservation.status || 'pending',
+      reservedAt: (reservation.reservedAt as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      expiresAt: expiresAt?.toDate().toISOString() || null,
+      moveInDate: (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      completedAt: (reservation.completedAt as admin.firestore.Timestamp | undefined)?.toDate().toISOString() || null,
+      moveInToken: reservation.moveInToken || null,
+      metadata: reservation.metadata || null,
+    },
+  };
+});
+
+/**
+ * Creates a short-lived public reservation hold for a unit.
+ * This reduces obvious double-booking races before move-in completion.
+ */
+export const createPublicReservationHold = functions.https.onCall(async (data: any, context) => {
+  const {
+    facilityId,
+    unitId,
+    unitNumber,
+    email,
+    phone,
+    name,
+    moveInDate,
+    metadata = {},
+    holdMinutes = 10,
+  } = data || {};
+
+  if (!facilityId || !unitId || !email) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId, unitId, and email are required');
+  }
+
+  const now = new Date();
+  const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 60));
+  const expiresAt = new Date(now.getTime() + boundedMinutes * 60 * 1000);
+  const moveInToken = crypto.randomBytes(24).toString('hex');
+
+  const unitRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units')
+    .doc(unitId);
+
+  const holdRef = admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('mapEngine')
+    .doc('activeHolds')
+    .collection('items')
+    .doc(unitId);
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc();
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const unitSnap = await tx.get(unitRef);
+    if (!unitSnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Unit not found');
+    }
+    const unitData = unitSnap.data() as Record<string, any>;
+    const unitStatus = String(unitData.status || '').toLowerCase();
+    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+
+    const holdSnap = await tx.get(holdRef);
+    if (holdSnap.exists) {
+      const holdData = holdSnap.data() as Record<string, any>;
+      const holdExpiresAt = holdData.expiresAt as admin.firestore.Timestamp | undefined;
+      if (holdExpiresAt && holdExpiresAt.toDate() > now) {
+        throw new functions.https.HttpsError('already-exists', 'Unit is currently in checkout');
+      }
+    }
+
+    tx.set(reservationRef, {
+      facilityId,
+      unitId,
+      unitNumber: unitNumber || unitData.unitNumber || '',
+      email: String(email).trim().toLowerCase(),
+      phone: phone ? String(phone).trim() : null,
+      name: name ? String(name).trim() : null,
+      status: 'pending',
+      reservedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      moveInDate: moveInDate ? admin.firestore.Timestamp.fromDate(new Date(moveInDate)) : null,
+      moveInToken,
+      metadata: {
+        ...(metadata || {}),
+        holdType: 'checkout',
+        holdMinutes: boundedMinutes,
+        source: (metadata && metadata.source) || 'publicMap',
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    tx.set(holdRef, {
+      facilityId,
+      unitId,
+      reservationId: reservationRef.id,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return {
+    success: true,
+    reservationId: reservationRef.id,
+    moveInToken,
+    expiresAt: expiresAt.toISOString(),
+  };
+});
+
+export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  const {
+    reservationId,
+    token,
+    amount,
+    description,
+  } = data || {};
+
+  if (!reservationId || !token || amount == null) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'reservationId, token, and amount are required',
+    );
+  }
+
+  const amountNumber = Number(amount);
+  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+    throw new functions.https.HttpsError('invalid-argument', 'amount must be greater than 0');
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(String(reservationId));
+  const reservationSnap = await reservationRef.get();
+  if (!reservationSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+  const reservation = reservationSnap.data() as Record<string, any>;
+  if (reservation.moveInToken !== token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+  if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+  }
+  const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
+  if (expiresAt && expiresAt.toDate() < new Date()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
+  }
+
+  const facilityId = reservation.facilityId as string | undefined;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
+  }
+
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data() as Record<string, any>;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  const onboardingComplete = facilityData.stripeConnectOnboardingComplete as boolean | undefined;
+  if (!connectAccountId || !onboardingComplete) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Facility owner must complete Stripe setup before online payments are enabled',
+    );
+  }
+
+  const safeToken = encodeURIComponent(String(token));
+  const safeReservationId = encodeURIComponent(String(reservationId));
+  const successUrl =
+    `https://app.storagefacilitycreator.com/#/public-move-in?token=${safeToken}` +
+    `&reservationId=${safeReservationId}` +
+    '&checkout=success&session_id={CHECKOUT_SESSION_ID}';
+  const cancelUrl =
+    `https://app.storagefacilitycreator.com/#/public-move-in?token=${safeToken}` +
+    `&reservationId=${safeReservationId}` +
+    '&checkout=cancel';
+
+  const cents = Math.round(amountNumber * 100);
+  if (cents < 50) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
+    );
+  }
+
+  const customerEmail = optionalStripeCheckoutCustomerEmail(reservation.email);
+  const rawLineName =
+    (description || `Move-in payment for ${facilityData.name || 'Facility'}`).toString();
+  const lineItemName = rawLineName.length > 200 ? `${rawLineName.slice(0, 197)}...` : rawLineName;
+
+  try {
+    const stripe = getStripeClient();
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: lineItemName,
+              },
+              unit_amount: cents,
+            },
+            quantity: 1,
+          },
+        ],
+        ...(customerEmail ? { customer_email: customerEmail } : {}),
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          type: 'public_move_in',
+          reservationId: String(reservationId),
+          moveInToken: String(token),
+          facilityId,
+        },
+      },
+      {
+        stripeAccount: connectAccountId,
+      },
+    );
+
+    if (!session.url) {
+      functions.logger.error('createPublicMoveInCheckout: session missing url', {
+        sessionId: session.id,
+        facilityId,
+      });
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Stripe did not return a checkout link. The facility owner should confirm Stripe Checkout is enabled for their account.',
+      );
+    }
+
+    return {
+      checkoutUrl: session.url,
+      sessionId: session.id,
+    };
+  } catch (err: unknown) {
+    if (err instanceof functions.https.HttpsError) {
+      throw err;
+    }
+    const e = err as { type?: string; code?: string; message?: string };
+    const rawMessage = typeof e.message === 'string' && e.message.trim() !== ''
+      ? e.message.trim()
+      : 'Payment could not be started.';
+    functions.logger.error('createPublicMoveInCheckout Stripe error', {
+      facilityId,
+      reservationId: String(reservationId),
+      stripeType: e.type,
+      stripeCode: e.code,
+      message: rawMessage,
+    });
+    const capped = rawMessage.length > 240 ? `${rawMessage.slice(0, 237)}...` : rawMessage;
+    throw new functions.https.HttpsError('failed-precondition', capped);
+  }
+});
+
+/**
+ * Confirm Stripe Checkout payment result for public move-in.
+ */
+export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+  const {
+    reservationId,
+    token,
+    sessionId,
+  } = data || {};
+
+  if (!reservationId || !token || !sessionId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'reservationId, token, and sessionId are required',
+    );
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(String(reservationId));
+  const reservationSnap = await reservationRef.get();
+  if (!reservationSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+  const reservation = reservationSnap.data() as Record<string, any>;
+  if (reservation.moveInToken !== token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+
+  const facilityId = reservation.facilityId as string | undefined;
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
+  }
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+  const facilityData = facilityDoc.data() as Record<string, any>;
+  const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
+  const onboardingComplete = facilityData.stripeConnectOnboardingComplete as boolean | undefined;
+  if (!connectAccountId || !onboardingComplete) {
+    throw new functions.https.HttpsError('failed-precondition', 'Stripe is not enabled for this facility');
+  }
+
+  const stripe = getStripeClient();
+  const session = await stripe.checkout.sessions.retrieve(
+    String(sessionId),
+    {
+      expand: ['payment_intent'],
+    },
+    {
+      stripeAccount: connectAccountId,
+    },
+  );
+
+  if (session.payment_status !== 'paid') {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      `Checkout is not paid (status: ${session.payment_status || 'unknown'})`,
+    );
+  }
+
+  const metaReservationId = session.metadata?.reservationId;
+  const metaToken = session.metadata?.moveInToken;
+  if (metaReservationId !== String(reservationId) || metaToken !== String(token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Checkout session does not match reservation');
+  }
+
+  const paymentIntentRaw = session.payment_intent;
+  const paymentIntentId = typeof paymentIntentRaw === 'string'
+    ? paymentIntentRaw
+    : paymentIntentRaw?.id;
+  if (!paymentIntentId) {
+    throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+
+  return {
+    success: true,
+    paymentIntentId,
+    amountPaid: (session.amount_total || 0) / 100,
+    currency: session.currency || 'usd',
+    sessionId: session.id,
+  };
+});
+
+/** One-page PDF for online move-in (signature + summary) for facility dashboard review. */
+async function buildPublicMoveInAgreementPdf(params: {
+  facilityName: string;
+  unitNumber: string;
+  tenantName: string;
+  tenantEmail: string;
+  signedAtLabel: string;
+  signaturePngBase64: string;
+}): Promise<Buffer> {
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([612, 792]);
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  let y = 720;
+  const left = 50;
+  const line = (text: string, opts?: { bold?: boolean; size?: number }) => {
+    const font = opts?.bold ? bold : regular;
+    const size = opts?.size ?? 11;
+    page.drawText(text, { x: left, y, size, font, color: rgb(0, 0, 0) });
+    y -= size + 6;
+  };
+  line('Storage Rental Agreement (Online Move-In)', { bold: true, size: 16 });
+  y -= 8;
+  line('This record was completed through self-service online move-in.', { size: 10 });
+  y -= 6;
+  line(`Facility: ${params.facilityName}`);
+  line(`Unit: ${params.unitNumber}`);
+  line(`Tenant: ${params.tenantName}`);
+  line(`Email: ${params.tenantEmail}`);
+  line(`Signed: ${params.signedAtLabel}`);
+  y -= 16;
+  line('Electronic signature', { bold: true });
+  y -= 4;
+  const pngBytes = Buffer.from(params.signaturePngBase64, 'base64');
+  const png = await pdf.embedPng(pngBytes);
+  const sigW = 240;
+  const sigH = 96;
+  page.drawImage(png, { x: left, y: y - sigH, width: sigW, height: sigH });
+  y -= sigH + 20;
+  line(
+    'By signing above, the tenant acknowledges the storage rental agreement associated with this move-in.',
+    { size: 9 },
+  );
+  return Buffer.from(await pdf.save());
+}
+
+/**
+ * Complete public move-in flow (no auth)
+ * - Validates reservation token
+ * - Creates tenant and contract
+ * - Creates ledger entries for move-in charges
+ * - Verifies payment intent (optional) and logs payment
+ * - Updates unit status and reservation status
+ * - Generates gate access code
+ */
+export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any) => {
+  // App Check enforced for public move-in flows
+  if (!(data as any)?._appCheckToken) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'App Check token required. Please refresh and try again.',
+    );
+  }
+  const {
+    reservationId,
+    token,
+    name,
+    email,
+    phone,
+    address,
+    emergencyContactName,
+    emergencyContactPhone,
+    paymentIntentId,
+    totalAmount,
+    lineItems = [],
+    skipPayment = false,
+    signaturePngBase64,
+    signatureSignedAt,
+    addressLine2,
+    city,
+    state,
+    zipCode,
+    country,
+    governmentIdType,
+    governmentIdNumber,
+    governmentIdState,
+    governmentIdCountry,
+    emergencyContactRelationship,
+    emergencyContactEmail,
+    enrollAutopayInterest,
+  } = data || {};
+
+  const enrollAutopay =
+    enrollAutopayInterest === true ||
+    enrollAutopayInterest === 'true' ||
+    (data as any)?.enrollAutopay === true;
+
+  const normalizedSignaturePngBase64 = (signaturePngBase64 || '').toString().trim();
+  const normalizedSignatureSignedAt = (signatureSignedAt || '').toString().trim();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const normalizedCountry = String(country || '').trim().toUpperCase();
+  const normalizedGovernmentIdType = String(governmentIdType || '').trim();
+  const normalizedGovernmentIdNumber = String(governmentIdNumber || '').trim();
+  const normalizedGovernmentIdState = String(governmentIdState || '').trim();
+  const normalizedGovernmentIdCountry = String(governmentIdCountry || '').trim().toUpperCase();
+  const normalizedEmergencyContactRelationship = String(emergencyContactRelationship || '').trim();
+  const normalizedEmergencyContactEmail = String(emergencyContactEmail || '').trim().toLowerCase();
+
+  if (!reservationId || !token || !name || !normalizedEmail || !phone || !normalizedSignaturePngBase64) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(reservationId);
+  const reservationSnap = await reservationRef.get();
+
+  if (!reservationSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+
+  const reservation = reservationSnap.data() as Record<string, any>;
+
+  if (reservation.moveInToken !== token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+
+  if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+  }
+
+  const nowTs = admin.firestore.FieldValue.serverTimestamp();
+  const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
+  if (expiresAt && expiresAt.toDate() < new Date()) {
+    await reservationRef.update({ status: 'expired', updatedAt: nowTs });
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
+  }
+
+  // Derive core context
+  const facilityId = reservation.facilityId as string | undefined;
+  const unitId = reservation.unitId as string | undefined;
+  const unitNumber = (reservation.unitNumber as string | undefined) || 'Unassigned';
+  const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
+  const reservationSource = String(reservationMetadata.source || '').trim();
+  const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
+  const moveInDate = (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+
+  if (!facilityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
+  }
+
+  // Optional unit validation
+  if (unitId) {
+    const unitSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('units')
+      .doc(unitId)
+      .get();
+
+    if (!unitSnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Reserved unit not found');
+    }
+
+    const unitData = unitSnap.data() as Record<string, any>;
+    const unitStatus = String(unitData.status || '').toLowerCase();
+    if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
+    }
+  }
+
+  // Verify payment intent if provided
+  if (!skipPayment && paymentIntentId && totalAmount && totalAmount > 0) {
+    try {
+      const stripe = getStripeClient();
+      const stripeAccount = reservationMetadata.stripeConnectAccountId as string | undefined;
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, stripeAccount ? {
+        stripeAccount,
+      } : undefined);
+
+      if (paymentIntent.amount_received < Math.round(totalAmount * 100)) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Payment not completed or amount mismatch',
+        );
+      }
+
+      if (paymentIntent.status !== 'succeeded' && paymentIntent.status !== 'requires_capture') {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          `Payment intent not successful: ${paymentIntent.status}`,
+        );
+      }
+    } catch (err: any) {
+      functions.logger.error('Payment intent validation failed', {
+        error: err?.message,
+        paymentIntentId,
+      });
+      throw err instanceof functions.https.HttpsError
+        ? err
+        : new functions.https.HttpsError('internal', 'Failed to validate payment intent');
+    }
+  }
+
+  // Helper to derive monthly rate from reservation metadata or line items
+  const deriveMonthlyRate = (): number => {
+    if (reservationMetadata.monthlyRate) return Number(reservationMetadata.monthlyRate);
+    const rentItem = (lineItems as any[]).find(
+      (item) => item?.type === 'rent' || item?.type === 'proratedRent',
+    );
+    if (rentItem?.amount) return Number(rentItem.amount);
+    return 0;
+  };
+
+  // Perform transactional writes for tenant/contract/unit/reservation/charges
+  const transactionResult = await admin.firestore().runTransaction(async (tx) => {
+    // Re-check reservation inside transaction
+    const freshReservation = await tx.get(reservationRef);
+    if (!freshReservation.exists) {
+      throw new functions.https.HttpsError('not-found', 'Reservation not found');
+    }
+    const freshData = freshReservation.data() as Record<string, any>;
+    if (freshData.moveInToken !== token) {
+      throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+    }
+    if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
+      throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+
+    const facilityDocRef = admin.firestore().collection('facilities').doc(facilityId);
+    const facilitySnap = await tx.get(facilityDocRef);
+    const facilityOwnerUid = (facilitySnap.data() as Record<string, any> | undefined)?.ownerUid || 'publicMoveIn';
+
+    // If this move-in originated from tenant portal, link the new tenant record
+    // to the same portal account identity as the source tenant.
+    let linkedPortalFields: Record<string, any> = {
+      portalEnabled: false,
+      portalAccessCode: null,
+      portalWelcomeMessage: null,
+      portalLastAccessAt: null,
+      portalVisitCount: 0,
+      portalAccountId: null,
+      primaryPortalTenant: false,
+    };
+    if (reservationSource === 'tenant_portal_additional_unit' && portalSourceTenantId) {
+      const sourceTenantRef = facilityDocRef.collection('tenants').doc(portalSourceTenantId);
+      const sourceTenantSnap = await tx.get(sourceTenantRef);
+      if (sourceTenantSnap.exists) {
+        const sourceTenantData = sourceTenantSnap.data() as Record<string, any>;
+        const sourceEmailLower = (sourceTenantData.emailLower || '').toString().trim().toLowerCase();
+        const sourcePortalEnabled = sourceTenantData.portalEnabled === true;
+        if (!sourcePortalEnabled || sourceEmailLower !== normalizedEmail) {
+          throw new functions.https.HttpsError(
+            'permission-denied',
+            'Portal-linked move-in validation failed',
+          );
+        }
+        const sourceAccessCode = (sourceTenantData.portalAccessCode || '').toString().trim();
+        const sourcePortalAccountId = (sourceTenantData.portalAccountId || '').toString().trim();
+        const resolvedPortalAccountId = sourcePortalAccountId || portalSourceTenantId;
+        linkedPortalFields = {
+          portalEnabled: true,
+          portalAccessCode: sourceAccessCode.length > 0 ? sourceAccessCode : null,
+          portalWelcomeMessage: sourceTenantData.portalWelcomeMessage ?? null,
+          portalLastAccessAt: null,
+          portalVisitCount: 0,
+          portalAccountId: resolvedPortalAccountId,
+          primaryPortalTenant: false,
+        };
+        // Backfill account id on the source tenant when missing so subsequent fetches link both.
+        if (!sourcePortalAccountId) {
+          tx.update(sourceTenantRef, {
+            portalAccountId: resolvedPortalAccountId,
+            updatedAt: nowTs,
+          });
+        }
+      }
+    }
+
+    // Create tenant
+    const tenantRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('tenants')
+      .doc();
+
+    const tenantData = {
+      facilityId,
+      name: name.trim(),
+      nameLower: name.trim().toLowerCase(),
+      email: normalizedEmail,
+      emailLower: normalizedEmail,
+      phone: phone.trim(),
+      phoneDigits: phone.replace(/[^\d]/g, ''),
+      unitNumber,
+      monthlyRate: deriveMonthlyRate(),
+      notes: String(data?.notes || '').trim(),
+      createdAt: nowTs,
+      createdBy: 'publicMoveIn',
+      isActive: true,
+      isOnDNR: false,
+      leadSource: 'onlineRental',
+      governmentIdType: normalizedGovernmentIdType.length > 0 ? normalizedGovernmentIdType : null,
+      governmentIdNumber: normalizedGovernmentIdNumber.length > 0 ? normalizedGovernmentIdNumber : null,
+      governmentIdState: normalizedGovernmentIdState.length > 0 ? normalizedGovernmentIdState : null,
+      governmentIdCountry: normalizedGovernmentIdCountry.length > 0 ? normalizedGovernmentIdCountry : null,
+      emergencyContacts: emergencyContactName
+        ? [{
+            name: emergencyContactName,
+            relationship: normalizedEmergencyContactRelationship || null,
+            phone: emergencyContactPhone || '',
+            email: normalizedEmergencyContactEmail || null,
+            isPrimary: true,
+            isEmergency: true,
+          }]
+        : [],
+      addresses: address
+        ? [{
+            id: '',
+            type: 'mailing',
+            street1: address,
+            street2: String(addressLine2 || '').trim(),
+            city: String(city || '').trim(),
+            state: String(state || '').trim(),
+            zipCode: String(zipCode || '').trim(),
+            country: normalizedCountry,
+            isPrimary: true,
+            notes: '',
+          }]
+        : [],
+      ...linkedPortalFields,
+      ...(enrollAutopay
+        ? {
+          autopay: {
+            requested: true,
+            enabled: false,
+            status: 'REQUESTED',
+            updatedBy: 'PUBLIC_MOVE_IN',
+            updatedAt: nowTs,
+          },
+        }
+        : {}),
+    };
+
+    tx.set(tenantRef, tenantData);
+
+    // Create contract (minimal signed agreement record)
+    const contractRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contracts')
+      .doc();
+
+    tx.set(contractRef, {
+      facilityId,
+      facilityOwnerUid,
+      tenantId: tenantRef.id,
+      title: 'Storage Rental Agreement',
+      description: 'Online self-service move-in',
+      type: 'storage',
+      status: 'signed',
+      templateId: null,
+      fileUrl: null,
+      signedFileUrl: null,
+      createdAt: nowTs,
+      updatedAt: nowTs,
+      createdBy: 'publicMoveIn',
+      sentAt: nowTs,
+      signedAt: nowTs,
+      expiresAt: null,
+      sentBy: 'publicMoveIn',
+      signedBy: name.trim(),
+      customFields: {
+        publicMoveInSignature: {
+          signaturePngBase64: normalizedSignaturePngBase64,
+          signedAt: normalizedSignatureSignedAt || new Date().toISOString(),
+          signerName: name.trim(),
+          signerEmail: email.trim().toLowerCase(),
+        },
+      },
+      notes: null,
+      isActive: true,
+    });
+
+    // Ledger entries for charges
+    (lineItems as any[]).forEach((item) => {
+      const ledgerRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .doc();
+
+      tx.set(ledgerRef, {
+        tenantId: tenantRef.id,
+        facilityId,
+        type: item?.type || 'moveInCharge',
+        amount: Number(item?.amount || 0),
+        description: item?.description || 'Move-in charge',
+        referenceId: contractRef.id,
+        entryDate: moveInDate,
+        dueDate: item?.dueDate ? new Date(item.dueDate) : null,
+        status: 'posted',
+        createdAt: nowTs,
+        createdBy: 'publicMoveIn',
+        metadata: {
+          lineItemId: item?.id || null,
+          isProrated: item?.isProrated ?? false,
+        },
+      });
+    });
+
+    // Update unit status
+    if (unitId) {
+      const unitRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('units')
+        .doc(unitId);
+
+      tx.update(unitRef, {
+        status: 'occupied',
+        tenantId: tenantRef.id,
+        tenantName: name,
+        moveInDate: moveInDate,
+        updatedAt: nowTs,
+        updatedBy: 'publicMoveIn',
+      });
+    }
+
+    // Update reservation status
+    tx.update(reservationRef, {
+      status: 'completed',
+      completedAt: nowTs,
+      updatedAt: nowTs,
+      tenantId: tenantRef.id,
+      contractId: contractRef.id,
+      completedBy: 'publicMoveIn',
+    });
+
+    return {
+      tenantId: tenantRef.id,
+      contractId: contractRef.id,
+    };
+  });
+
+  const { tenantId, contractId } = transactionResult;
+
+  // Generate and store a reviewable PDF (dashboard contract detail uses signedFileUrl / fileUrl).
+  try {
+    const facilitySnapForPdf = await admin.firestore().collection('facilities').doc(facilityId).get();
+    const facilityNameForPdf = String(facilitySnapForPdf.data()?.name || 'Storage Facility');
+    const pdfBuf = await buildPublicMoveInAgreementPdf({
+      facilityName: facilityNameForPdf,
+      unitNumber,
+      tenantName: name.trim(),
+      tenantEmail: normalizedEmail,
+      signedAtLabel: normalizedSignatureSignedAt || new Date().toISOString(),
+      signaturePngBase64: normalizedSignaturePngBase64,
+    });
+    const docHash = crypto.createHash('sha256').update(pdfBuf).digest('hex');
+    const storagePathPdf = `facilities/${facilityId}/contracts/${contractId}/signed_move_in_agreement.pdf`;
+    const bucketPdf = admin.storage().bucket();
+    const filePdf = bucketPdf.file(storagePathPdf);
+    const downloadTokenPdf = crypto.randomUUID();
+    await filePdf.save(pdfBuf, {
+      contentType: 'application/pdf',
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: { firebaseStorageDownloadTokens: downloadTokenPdf },
+      },
+    });
+    const signedPdfUrl = await getDownloadURL(filePdf);
+    await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contracts')
+      .doc(contractId)
+      .update({
+        signedFileUrl: signedPdfUrl,
+        fileUrl: signedPdfUrl,
+        storagePath: storagePathPdf,
+        documentSha256: docHash,
+        fileSize: pdfBuf.length,
+        contentType: 'application/pdf',
+        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+  } catch (pdfErr: any) {
+    functions.logger.error('Public move-in: contract PDF upload failed', { message: pdfErr?.message, contractId, facilityId });
+  }
+
+  if (enrollAutopay) {
+    try {
+      await createAutopayNotificationAndEvent(
+        facilityId,
+        tenantId,
+        name.trim(),
+        'AUTOPAY_REQUESTED',
+        'REQUESTED',
+        'SYSTEM',
+        `${name.trim()} requested automatic draft (autopay) during online move-in.`,
+        null,
+      );
+    } catch (apErr: any) {
+      functions.logger.warn('Public move-in: autopay notification failed', { message: apErr?.message });
+    }
+  }
+
+  // Best-effort cleanup of active checkout hold.
+  if (unitId) {
+    const holdRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('mapEngine')
+      .doc('activeHolds')
+      .collection('items')
+      .doc(unitId);
+    try {
+      await holdRef.delete();
+    } catch (e) {
+      functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
+    }
+  }
+
+  // Create payment ledger entry (outside transaction to avoid blocking)
+  if (!skipPayment && paymentIntentId && totalAmount && totalAmount > 0) {
+    const ledgerRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('ledgers')
+      .doc();
+
+    await ledgerRef.set({
+      tenantId,
+      facilityId,
+      type: 'payment',
+      amount: -Number(totalAmount),
+      description: 'Move-in payment',
+      referenceId: paymentIntentId,
+      entryDate: new Date(),
+      status: 'posted',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'publicMoveIn',
+      metadata: {
+        paymentIntentId,
+      },
+    });
+  }
+
+  // Create gate access code
+  let gateAccessCode: string | null = null;
+  try {
+    gateAccessCode = generateAccessCode();
+    const gateRef = admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('gateAccess')
+      .doc();
+
+    await gateRef.set({
+      facilityId,
+      tenantId,
+      tenantName: name,
+      accessCode: gateAccessCode,
+      isActive: true,
+      validFrom: null,
+      validUntil: null,
+      allowedDays: [],
+      allowedStartTime: null,
+      allowedEndTime: null,
+      notes: 'Auto-generated from public move-in',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'publicMoveIn',
+    });
+  } catch (gateError: any) {
+    functions.logger.error('Failed to create gate access', { error: gateError?.message });
+  }
+
+  functions.logger.info('Public move-in completed', {
+    reservationId,
+    facilityId,
+    tenantId,
+    contractId,
+    paymentIntentId,
+  });
+
+  // Best-effort email confirmation (do not fail move-in if email provider is unavailable).
+  try {
+    const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+    const facilityData = (facilitySnap.data() || {}) as Record<string, any>;
+    const facilityName = String(facilityData.name || 'Storage Facility');
+    const facilityAddress = String(facilityData.address || facilityData.location || '').trim() || null;
+    const facilityPhone = String(facilityData.phone || '').trim() || null;
+    const senderEmail = String(SENDGRID_FROM_EMAIL.value() || '').trim();
+    if (senderEmail) {
+      await sendFacilityEmailWithCompliance(
+        {
+          to: normalizedEmail,
+          from: { email: senderEmail, name: facilityName },
+          subject: `Move-in confirmed for ${facilityName}`,
+        },
+        `<p>Hi ${escapeHtml(name.trim())},</p>
+         <p>Your move-in request has been completed for <strong>${escapeHtml(facilityName)}</strong>.</p>
+         <p><strong>Unit:</strong> ${escapeHtml(unitNumber)}</p>
+         <p><strong>Move-in date:</strong> ${escapeHtml(moveInDate.toISOString().slice(0, 10))}</p>
+         <p>If you need help, reply to this email or contact the facility.</p>`,
+        `Hi ${name.trim()},
+
+Your move-in request has been completed for ${facilityName}.
+Unit: ${unitNumber}
+Move-in date: ${moveInDate.toISOString().slice(0, 10)}
+
+If you need help, contact the facility.`,
+        {
+          facilityId,
+          tenantId,
+          facilityName,
+          facilityAddress,
+          facilityPhone,
+        },
+      );
+    } else {
+      functions.logger.warn('Move-in confirmation email skipped: SENDGRID_SENDER_EMAIL is not configured');
+    }
+  } catch (emailError: any) {
+    functions.logger.error('Failed to send move-in confirmation email', {
+      reservationId,
+      tenantId,
+      error: emailError?.message || String(emailError),
+    });
+  }
+
+  return {
+    success: true,
+    tenantId,
+    contractId,
+    gateAccessCode,
+    reservationId,
+  };
+});
+

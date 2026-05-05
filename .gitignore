@@ -39,9 +39,11 @@ functions-ai/vendor/
 functions-marketing/vendor/
 functions-integrations/vendor/
 functions-admin/vendor/
+functions-public-website/vendor/
 
 # Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
 functions/lib/
+functions-public-website/lib/
 functions-shared/lib/
 functions-shared/node_modules/
 

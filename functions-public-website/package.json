@@ -1,0 +1,24 @@
+{
+  "name": "functions-public-website",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SFC Cloud Functions — public website, rental flow, hosting rewrites",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@sfc/functions-shared": "file:vendor/functions-shared",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.2.2",
+    "pdf-lib": "^1.17.1",
+    "stripe": "^20.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.0.0"
+  }
+}
