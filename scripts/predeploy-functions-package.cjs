@@ -1,6 +1,6 @@
 /**
  * Firebase predeploy hook: vendor functions-shared, then npm install + build
- * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation | functions-facility-ops | functions-account-security | functions-outbound-email).
+ * for one codebase directory (functions | functions-ai | functions-marketing | functions-integrations | functions-admin | functions-public-website | functions-tenant-lifecycle | functions-automation | functions-facility-ops | functions-account-security | functions-outbound-email | functions-messaging-twilio).
  * Uses cwd-based npm — avoids broken `npm install --prefix <dir>` on Windows npm 10.
  */
 const fs = require('fs');
@@ -137,9 +137,46 @@ function ensureOutboundEmailDotenv(root) {
   console.log('predeploy: wrote functions-outbound-email/.env (from functions/.env or defaults)');
 }
 
+function ensureMessagingTwilioDotenv(root) {
+  const dest = path.join(root, 'functions-messaging-twilio', '.env');
+  if (fs.existsSync(dest)) return;
+  const src = path.join(root, 'functions', '.env');
+  let sender = '';
+  let fromName = 'Storage Facility Creator';
+  let twilioSid = '';
+  let twilioPhone = '';
+  let publicAppUrl = '';
+  if (fs.existsSync(src)) {
+    const raw = fs.readFileSync(src, 'utf8');
+    const pick = (name) => {
+      const m = raw.match(new RegExp(`^${name}=(.*)$`, 'm'));
+      return m ? m[1].trim() : '';
+    };
+    sender = pick('SENDGRID_SENDER_EMAIL');
+    fromName = pick('SENDGRID_FROM_NAME') || fromName;
+    twilioSid = pick('TWILIO_ACCOUNT_SID');
+    twilioPhone = pick('TWILIO_PHONE_NUMBER');
+    publicAppUrl = pick('PUBLIC_APP_URL');
+  }
+  fs.writeFileSync(
+    dest,
+    [
+      `SENDGRID_SENDER_EMAIL=${sender}`,
+      `SENDGRID_FROM_NAME=${fromName}`,
+      `TWILIO_ACCOUNT_SID=${twilioSid}`,
+      `TWILIO_PHONE_NUMBER=${twilioPhone}`,
+      `TWILIO_DRY_RUN=false`,
+      `PUBLIC_APP_URL=${publicAppUrl}`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  console.log('predeploy: wrote functions-messaging-twilio/.env (from functions/.env or defaults)');
+}
+
 const pkgDir = process.argv[2];
 if (!pkgDir || /^-/.test(pkgDir)) {
-  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation|functions-facility-ops|functions-account-security|functions-outbound-email>');
+  console.error('Usage: node predeploy-functions-package.cjs <functions|functions-ai|functions-marketing|functions-integrations|functions-admin|functions-public-website|functions-tenant-lifecycle|functions-automation|functions-facility-ops|functions-account-security|functions-outbound-email|functions-messaging-twilio>');
   process.exit(1);
 }
 
@@ -165,6 +202,9 @@ if (pkgDir === 'functions-account-security') {
 }
 if (pkgDir === 'functions-outbound-email') {
   ensureOutboundEmailDotenv(root);
+}
+if (pkgDir === 'functions-messaging-twilio') {
+  ensureMessagingTwilioDotenv(root);
 }
 
 function ensureAccountSecurityDotenv(root) {
