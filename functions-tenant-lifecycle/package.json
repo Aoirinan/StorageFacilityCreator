@@ -1,0 +1,25 @@
+{
+  "name": "functions-tenant-lifecycle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SFC Cloud Functions — tenant portal, contracts/signing, move-out",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@sfc/functions-shared": "file:vendor/functions-shared",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.2.2",
+    "stripe": "^20.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^25.0.0",
+    "typescript": "^5.0.0"
+  }
+}
