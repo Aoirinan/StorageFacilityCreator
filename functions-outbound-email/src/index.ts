@@ -13,3 +13,9 @@ registerSendgridMailConfigProvider({
 });
 
 export { sendEmail, sendDigest, sendDailyDigests } from './outboundRaw';
+export {
+  submitClaim,
+  emailUnsubscribeHttp,
+  listFacilityEmailSuppressions,
+  removeFacilityEmailSuppression,
+} from './emailCompliance';
