@@ -44,6 +44,7 @@ functions-tenant-lifecycle/vendor/
 functions-automation/vendor/
 functions-facility-ops/vendor/
 functions-account-security/vendor/
+functions-outbound-email/vendor/
 
 # Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
 functions/lib/
@@ -52,6 +53,7 @@ functions-tenant-lifecycle/lib/
 functions-automation/lib/
 functions-facility-ops/lib/
 functions-account-security/lib/
+functions-outbound-email/lib/
 functions-shared/lib/
 functions-shared/node_modules/
 
