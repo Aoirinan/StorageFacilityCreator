@@ -1,0 +1,22 @@
+{
+  "name": "functions-integrations",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SFC Cloud Functions — integrations codebase (QuickBooks Online)",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@sfc/functions-shared": "file:vendor/functions-shared",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.0.0"
+  }
+}

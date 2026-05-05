@@ -17,7 +17,6 @@ import {
 } from '@sfc/functions-shared';
 import * as Sentry from '@sentry/node';
 import * as stripeTenantBilling from './stripe/tenant_billing';
-import * as quickBooksAccounting from './accounting/quickbooks';
 import { diagnosticFixOwnership } from './diagnostic_fix_ownership';
 import {
   computeA2PStatus,
@@ -140,21 +139,8 @@ registerHostingConfigProvider({
   getSiteId: () => HOSTING_SITE_ID.value(),
 });
 
-// Define parameters for QuickBooks Online Accounting integration
-const QUICKBOOKS_CLIENT_ID = defineSecret('QUICKBOOKS_CLIENT_ID');
-const QUICKBOOKS_CLIENT_SECRET = defineSecret('QUICKBOOKS_CLIENT_SECRET');
-const QUICKBOOKS_REDIRECT_URI = defineString('QUICKBOOKS_REDIRECT_URI');
-const QUICKBOOKS_ENV = defineString('QUICKBOOKS_ENV', { default: 'sandbox' });
-
 const SENDGRID_SECRETS = [SENDGRID_API_KEY];
 const TWILIO_SECRETS = [TWILIO_AUTH_TOKEN];
-const QUICKBOOKS_SECRETS = [QUICKBOOKS_CLIENT_ID, QUICKBOOKS_CLIENT_SECRET];
-
-/** Egress for Intuit OAuth + QBO API must match Cloud NAT static IP (Intuit "where hosted"). */
-const QUICKBOOKS_VPC_CONNECTOR = {
-  vpcConnector: 'sfc-serverless-connector',
-  vpcConnectorEgressSettings: 'ALL_TRAFFIC' as const,
-};
 
 let twilioClient: any = null;
 function isTwilioDryRunEnabled(): boolean {
@@ -641,6 +627,8 @@ export const superAdminBroadcastEmailToFacilityOwners = functions
         html?: string;
         text?: string;
         includeInactiveFacilities?: boolean;
+        /** 'allOwners' (default) or 'activePayingSubscribers' ($75/mo: active account sub or active per-facility platform sub) */
+        recipientScope?: string;
         acknowledgment?: string;
         dryRun?: boolean;
       },
@@ -688,15 +676,64 @@ export const superAdminBroadcastEmailToFacilityOwners = functions
       }
 
       const includeInactive = data?.includeInactiveFacilities === true;
+      const recipientScope = String(data?.recipientScope || 'allOwners').trim();
+      const payingOnly = recipientScope === 'activePayingSubscribers';
+      if (
+        recipientScope !== 'allOwners' &&
+        recipientScope !== 'activePayingSubscribers'
+      ) {
+        throw new functions.https.HttpsError(
+          'invalid-argument',
+          'recipientScope must be allOwners or activePayingSubscribers',
+        );
+      }
+
       const db = admin.firestore();
       const facSnap = includeInactive
         ? await db.collection('facilities').get()
         : await db.collection('facilities').where('active', '==', true).get();
 
       const ownerUids = new Set<string>();
-      for (const doc of facSnap.docs) {
-        const ou = String(doc.data()?.ownerUid || '').trim();
-        if (ou) ownerUids.add(ou);
+      if (!payingOnly) {
+        for (const doc of facSnap.docs) {
+          const ou = String(doc.data()?.ownerUid || '').trim();
+          if (ou) ownerUids.add(ou);
+        }
+      } else {
+        const accountIds = new Set<string>();
+        for (const doc of facSnap.docs) {
+          const aid = String(doc.data()?.facilityCreatorAccountId || '').trim();
+          if (aid) accountIds.add(aid);
+        }
+        const accountPaying = new Map<string, boolean>();
+        const idList = Array.from(accountIds);
+        for (let i = 0; i < idList.length; i += 10) {
+          const chunk = idList.slice(i, i + 10);
+          const refs = chunk.map((id) =>
+            db.collection('facilityCreatorAccounts').doc(id),
+          );
+          const snaps = refs.length > 0 ? await db.getAll(...refs) : [];
+          for (let j = 0; j < snaps.length; j++) {
+            const s = snaps[j];
+            if (!s.exists) continue;
+            const d = (s.data() || {}) as Record<string, unknown>;
+            const active = String(d.subscriptionStatus || '').trim() === 'active';
+            const suspended = d.suspended === true;
+            accountPaying.set(chunk[j], active && !suspended);
+          }
+        }
+        for (const doc of facSnap.docs) {
+          const d = doc.data() || {};
+          const ou = String(d.ownerUid || '').trim();
+          if (!ou) continue;
+          const platformActive =
+            String(d.platformSubscriptionStatus || '').trim() === 'active';
+          const aid = String(d.facilityCreatorAccountId || '').trim();
+          const accountActive = aid ? accountPaying.get(aid) === true : false;
+          if (platformActive || accountActive) {
+            ownerUids.add(ou);
+          }
+        }
       }
       const uidList = Array.from(ownerUids);
 
@@ -744,6 +781,7 @@ export const superAdminBroadcastEmailToFacilityOwners = functions
       if (dryRun) {
         return {
           dryRun: true,
+          recipientScope: payingOnly ? 'activePayingSubscribers' : 'allOwners',
           facilityDocuments: facSnap.size,
           uniqueOwnerUids: uidList.length,
           recipientCount: recipients.length,
@@ -821,6 +859,7 @@ export const superAdminBroadcastEmailToFacilityOwners = functions
         facilityDocuments: facSnap.size,
         uniqueOwnerUids: uidList.length,
         includeInactiveFacilities: includeInactive,
+        recipientScope: payingOnly ? 'activePayingSubscribers' : 'allOwners',
         sentByEmail: callerEmail,
         sentByUid: context.auth.uid,
         failures: failures.slice(0, 100),
@@ -1123,18 +1162,6 @@ function getStripeClient(): Stripe {
     });
   }
   return stripeClient;
-}
-
-function getQuickBooksConfig(): quickBooksAccounting.QuickBooksConfig {
-  const envRaw = (QUICKBOOKS_ENV.value() || 'sandbox').trim().toLowerCase();
-  const clientId = (QUICKBOOKS_CLIENT_ID.value() ?? '').trim();
-  const clientSecret = (QUICKBOOKS_CLIENT_SECRET.value() ?? '').trim();
-  return {
-    clientId,
-    clientSecret,
-    redirectUri: (QUICKBOOKS_REDIRECT_URI.value() || '').trim(),
-    environment: envRaw === 'production' ? 'production' : 'sandbox',
-  };
 }
 
 // Initialize Firebase Admin
@@ -6763,167 +6790,6 @@ export const detachPaymentMethod = functions.runWith({ secrets: STRIPE_SECRETS }
   enforceAppCheckOrThrow(context);
   return stripeTenantBilling.detachPaymentMethod(data, context, getStripeClient());
 });
-
-// ========== QuickBooks Accounting ==========
-/**
- * HTTP callback target for Intuit OAuth.
- * Redirects into the Flutter hash route while preserving OAuth params.
- */
-export const quickBooksOAuthCallback = functions.https.onRequest((req, res) => {
-  const code = typeof req.query.code === 'string' ? req.query.code.trim() : '';
-  const realmId = typeof req.query.realmId === 'string' ? req.query.realmId.trim() : '';
-  const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
-  const error = typeof req.query.error === 'string' ? req.query.error.trim() : '';
-
-  const params = new URLSearchParams();
-  params.set('tab', 'accounting');
-  if (code) params.set('code', code);
-  if (realmId) params.set('realmId', realmId);
-  if (state) params.set('state', state);
-  if (error) params.set('error', error);
-
-  const redirectUrl = `${getPublicAppUrl()}/#/subscription?${params.toString()}`;
-  res.set('Cache-Control', 'no-store');
-  res.redirect(302, redirectUrl);
-});
-
-/**
- * Returns connection status for facility QuickBooks integration.
- */
-export const getQuickBooksConnectionStatus = functions.https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.getQuickBooksConnectionStatus(data, context, getQuickBooksConfig());
-});
-
-/**
- * Creates an OAuth URL to connect facility QuickBooks account.
- */
-export const getQuickBooksConnectUrl = functions.runWith({ secrets: QUICKBOOKS_SECRETS }).https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.getQuickBooksConnectUrl(data, context, getQuickBooksConfig());
-});
-
-/**
- * Completes QuickBooks OAuth token exchange and stores connection.
- */
-export const completeQuickBooksConnect = functions
-  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
-  .https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.completeQuickBooksConnect(data, context, getQuickBooksConfig());
-});
-
-/**
- * Disconnects QuickBooks integration and clears stored tokens.
- */
-export const disconnectQuickBooks = functions.https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.disconnectQuickBooks(data, context);
-});
-
-/**
- * Manually syncs a facility invoice into QuickBooks.
- */
-export const syncInvoiceToQuickBooks = functions
-  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
-  .https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.syncInvoiceToQuickBooks(data, context, getQuickBooksConfig());
-});
-
-/**
- * Manually syncs a facility payment into QuickBooks.
- */
-export const syncPaymentToQuickBooks = functions
-  .runWith({ secrets: QUICKBOOKS_SECRETS, ...QUICKBOOKS_VPC_CONNECTOR })
-  .https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.syncPaymentToQuickBooks(data, context, getQuickBooksConfig());
-});
-
-/**
- * Enables/disables facility QuickBooks auto-sync.
- */
-export const setQuickBooksAutoSync = functions.https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
-  return quickBooksAccounting.setQuickBooksAutoSync(data, context);
-});
-
-/**
- * Auto-sync invoice changes into QuickBooks when integration is connected.
- */
-export const autoSyncInvoiceToQuickBooks = functions
-  .runWith({
-    secrets: QUICKBOOKS_SECRETS,
-    timeoutSeconds: 120,
-    memory: '256MB',
-    ...QUICKBOOKS_VPC_CONNECTOR,
-  })
-  .firestore
-  .document('facilities/{facilityId}/invoices/{invoiceId}')
-  .onWrite(async (change, context) => {
-    if (!change.after.exists) return;
-
-    const afterData = (change.after.data() || {}) as Record<string, any>;
-    const beforeData = (change.before.data() || {}) as Record<string, any>;
-    const afterQuickbooks = (afterData.quickbooks || {}) as Record<string, any>;
-
-    // Already synced; skip to avoid loops.
-    if (typeof afterQuickbooks.invoiceId === 'string' && afterQuickbooks.invoiceId.trim() !== '') return;
-
-    const status = String(afterData.status || '').toLowerCase();
-    // Sync non-draft invoices only.
-    if (status === '' || status === 'draft' || status === 'voided') return;
-
-    const beforeStatus = String(beforeData.status || '').toLowerCase();
-    const beforeQuickbooks = (beforeData.quickbooks || {}) as Record<string, any>;
-    const hadQboInvoiceId = typeof beforeQuickbooks.invoiceId === 'string' && beforeQuickbooks.invoiceId.trim() !== '';
-    const statusChanged = beforeStatus !== status;
-    const createdNow = !change.before.exists;
-    const lineItemsChanged = JSON.stringify(beforeData.lineItems || []) !== JSON.stringify(afterData.lineItems || []);
-    const totalChanged = Number(beforeData.total || 0) !== Number(afterData.total || 0);
-
-    if (!createdNow && !statusChanged && !lineItemsChanged && !totalChanged && !hadQboInvoiceId) return;
-
-    const facilityId = context.params.facilityId as string;
-    const invoiceId = context.params.invoiceId as string;
-    await quickBooksAccounting.autoSyncInvoiceIfEligible(facilityId, invoiceId, getQuickBooksConfig());
-  });
-
-/**
- * Auto-sync completed payments into QuickBooks when integration is connected.
- */
-export const autoSyncPaymentToQuickBooks = functions
-  .runWith({
-    secrets: QUICKBOOKS_SECRETS,
-    timeoutSeconds: 120,
-    memory: '256MB',
-    ...QUICKBOOKS_VPC_CONNECTOR,
-  })
-  .firestore
-  .document('facilities/{facilityId}/payments/{paymentId}')
-  .onWrite(async (change, context) => {
-    if (!change.after.exists) return;
-
-    const afterData = (change.after.data() || {}) as Record<string, any>;
-    const beforeData = (change.before.data() || {}) as Record<string, any>;
-    const afterQuickbooks = (afterData.quickbooks || {}) as Record<string, any>;
-
-    // Already synced; skip to avoid loops.
-    if (typeof afterQuickbooks.paymentId === 'string' && afterQuickbooks.paymentId.trim() !== '') return;
-
-    const status = String(afterData.status || '').toLowerCase();
-    const isPaidStatus = status === 'paid' || status === 'completed';
-    if (!isPaidStatus) return;
-
-    const beforeStatus = String(beforeData.status || '').toLowerCase();
-    const becamePaid = beforeStatus !== 'paid' && beforeStatus !== 'completed';
-    if (!change.before.exists || becamePaid) {
-      const facilityId = context.params.facilityId as string;
-      const paymentId = context.params.paymentId as string;
-      await quickBooksAccounting.autoSyncPaymentIfEligible(facilityId, paymentId, getQuickBooksConfig());
-    }
-  });
 
 /**
  * Create or get Stripe Customer for a facility (for SaaS billing)
