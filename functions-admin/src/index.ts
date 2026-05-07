@@ -40,3 +40,5 @@ export {
   superAdminGetHostingCustomDomainStatus,
   superAdminProvisionHostingCustomDomain,
 } from '@sfc/functions-shared/hosting/hostingCustomDomains';
+
+export { enableStripeConnectAdmin } from './enableStripeConnectAdmin';
