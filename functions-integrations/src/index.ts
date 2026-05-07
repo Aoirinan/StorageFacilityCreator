@@ -3,6 +3,14 @@ import { ensureFirebaseAdminApp, ensureSentryForFunctions } from '@sfc/functions
 ensureFirebaseAdminApp();
 ensureSentryForFunctions();
 
+import { registerStripeKeysProvider } from '@sfc/functions-shared';
+import { STRIPE_PUBLISHABLE_KEY, STRIPE_SECRET_KEY } from './secrets';
+
+registerStripeKeysProvider({
+  getSecretKey: () => STRIPE_SECRET_KEY.value(),
+  getPublishableKey: () => STRIPE_PUBLISHABLE_KEY.value(),
+});
+
 import * as functions from 'firebase-functions/v1';
 import { enforceAppCheckOrThrow } from '@sfc/functions-shared';
 import * as quickBooksAccounting from './accounting/quickbooks';
@@ -77,6 +85,8 @@ export const setQuickBooksAutoSync = functions.https.onCall(async (data: any, co
   enforceAppCheckOrThrow(context);
   return quickBooksAccounting.setQuickBooksAutoSync(data, context);
 });
+
+export { reconcileStripePayment } from './reconcileStripePayment';
 
 export const autoSyncInvoiceToQuickBooks = functions
   .runWith({

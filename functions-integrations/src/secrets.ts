@@ -2,6 +2,12 @@ import { defineSecret, defineString } from 'firebase-functions/params';
 
 import type { QuickBooksConfig } from './accounting/quickbooks';
 
+/** Platform Stripe secrets (same names as default functions / admin). */
+export const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
+export const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
+export const STRIPE_PUBLISHABLE_KEY = defineSecret('STRIPE_PUBLISHABLE_KEY');
+export const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY];
+
 export const QUICKBOOKS_CLIENT_ID = defineSecret('QUICKBOOKS_CLIENT_ID');
 export const QUICKBOOKS_CLIENT_SECRET = defineSecret('QUICKBOOKS_CLIENT_SECRET');
 /** Intuit OAuth redirect URL; empty until set in Firebase params / `.env` for local discovery. */
