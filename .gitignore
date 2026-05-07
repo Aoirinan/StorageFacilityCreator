@@ -61,6 +61,8 @@ functions-shared/node_modules/
 .firebase/
 .env
 .env.*
+!.env.example
+!**/.env.example
 .env.storage-*
 .env.*.local
 *.local
