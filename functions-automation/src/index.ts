@@ -32,3 +32,5 @@ export { processAutopayPayments } from './autopayScheduled';
 export { resetMonthlySMSUsage } from './smsUsageReset';
 export { autoProtectMoveIn, autoProtectAudit, checkInsuranceCompliance } from './insuranceAutomation';
 export { processPaymentReminders } from './paymentRemindersScheduled';
+
+export { processExportJob } from './processExportJob';
