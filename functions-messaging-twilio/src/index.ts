@@ -34,4 +34,6 @@ export {
 
 export { getSMSUsageStatus, overrideSMSLimit } from './smsUsage';
 
+export { listFacilitySmsOptOuts, restoreFacilitySmsForPhone } from './smsStaffOptOut';
+
 export { handleIncomingSMS } from './incomingSmsWebhook';
