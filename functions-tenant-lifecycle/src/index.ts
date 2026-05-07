@@ -40,3 +40,5 @@ export {
 export { processMoveOut, createTenantPortalAdditionalUnitHold } from './moveOutPortalHold';
 
 export { computeDocumentHash, mergeSignatureIntoPdf } from './documentSigningCallables';
+
+export { backfillContractComplianceFields } from './backfillContractComplianceCallable';

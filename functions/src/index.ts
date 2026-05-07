@@ -15,8 +15,6 @@ import * as Sentry from '@sentry/node';
 import * as stripeTenantBilling from './stripe/tenant_billing';
 import { isHelpKeyword, isStartKeyword, isStopKeyword } from './texting_onboarding_helpers';
 import { emailMonthlyLimitForAccount } from './constants/emailMonthlyLimits';
-import { backfillContractCompliance } from './migrations/backfill_contract_compliance';
-
 // Stripe v20 types: Subscription/Invoice may have stricter Expandable types; these fields exist at runtime
 type SubscriptionWithPeriod = Stripe.Subscription & { current_period_end?: number; current_period_start?: number };
 function subPeriodEnd(sub: Stripe.Subscription): number | undefined {
@@ -5966,33 +5964,6 @@ async function handleConnectAccountUpdated(account: Stripe.Account) {
  * Lookup user by email for invite purposes
  * Returns minimal user data (uid, email, name) for security
  */
-// Cloud Function to backfill contract compliance fields
-export const backfillContractComplianceFields = functions.https.onCall(async (data: any, context) => {
-  // Only allow super admins to run migrations
-  if (!context.auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-  }
-
-  const callerEmail = context.auth.token?.email as string | undefined;
-  if (!isSuperAdmin(callerEmail)) {
-    throw new functions.https.HttpsError('permission-denied', 'Only super admins can run migrations');
-  }
-
-  try {
-    const result = await backfillContractCompliance();
-    functions.logger.info('Contract compliance backfill completed', result);
-    return {
-      success: true,
-      message: 'Contract compliance backfill completed',
-      ...result,
-    };
-  } catch (error: any) {
-    functions.logger.error('Migration error:', error);
-    throw new functions.https.HttpsError('internal', `Migration failed: ${error.message}`);
-  }
-});
-
-
 async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {
   try {
     const stripe = getStripeClient();
