@@ -87,6 +87,7 @@ export const setQuickBooksAutoSync = functions.https.onCall(async (data: any, co
 });
 
 export { reconcileStripePayment } from './reconcileStripePayment';
+export { reconcileAccountFacilityIds } from './reconcileAccountFacilityIds';
 
 export const autoSyncInvoiceToQuickBooks = functions
   .runWith({
