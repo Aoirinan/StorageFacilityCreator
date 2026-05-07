@@ -27,7 +27,6 @@
     "google-auth-library": "^10.6.2",
     "nodemailer": "^8.0.0",
     "openai": "^6.0.0",
-    "pdf-lib": "^1.17.1",
     "stripe": "^20.0.0"
   },
   "devDependencies": {
