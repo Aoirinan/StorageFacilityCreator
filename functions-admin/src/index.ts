@@ -42,3 +42,5 @@ export {
 } from '@sfc/functions-shared/hosting/hostingCustomDomains';
 
 export { enableStripeConnectAdmin } from './enableStripeConnectAdmin';
+
+export { getStripePublishableKey } from './getStripePublishableKey';
