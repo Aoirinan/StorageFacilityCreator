@@ -4,7 +4,7 @@ import {
   computeA2PStatus,
   ensureIdempotentResource,
   isStopKeyword,
-} from '../texting_onboarding_helpers';
+} from '@sfc/functions-shared';
 
 test('idempotent provisioning reuses existing sid', async () => {
   let created = 0;

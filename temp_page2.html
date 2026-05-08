@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Storage Facility | Self Storage</title>
+  <meta name="description" content="Browse available storage units and rent online." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg:#f4f6f8;
+      --surface:#ffffff;
+      --ink:#0f172a;
+      --muted:#64748b;
+      --line:#e2e8f0;
+      --accent:#0f7669;
+      --accent-2:#0d9488;
+      --hero-ink:#f8fafc;
+      --shadow:0 14px 40px rgba(15,23,42,.08);
+      --radius:14px;
+      --font:'DM Sans',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    }
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    /* Sticky header (~64px); keeps in-page anchors from hiding under the bar */
+    #home,#about,#units,#unit-list,#categories,#contact,#map,#promo{scroll-margin-top:88px}
+    body{margin:0;font-family:var(--font);background:var(--bg);color:var(--ink);line-height:1.55}
+    a{color:var(--accent-2)}
+    .wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+    .topbar{background:#0f172a;color:#e2e8f0;font-size:.9rem}
+    .topbar .wrap{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 22px}
+    .top-link{color:#f8fafc;text-decoration:none;font-weight:600}
+    .top-link:hover{text-decoration:underline}
+    .top-muted{opacity:.85}
+    .btn-pay{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:#fff;color:#0f172a;text-decoration:none;font-weight:700;font-size:.88rem}
+    .btn-pay:hover{filter:brightness(.97)}
+    .site-header{background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;backdrop-filter:saturate(1.2) blur(6px)}
+    .header-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;flex-wrap:wrap}
+    .brand-lockup{display:flex;align-items:center;gap:12px;min-width:200px}
+    .brand-logo{width:48px;height:48px;object-fit:contain;border-radius:10px;background:#f8fafc;border:1px solid var(--line)}
+    .brand-mark{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#134e4a);color:#fff;display:grid;place-items:center;font-weight:800;font-size:1.1rem}
+    .brand-text .name{margin:0;font-size:1.15rem;font-weight:800;letter-spacing:-.02em;line-height:1.2}
+    .site-tagline{margin:2px 0 0;font-size:.82rem;color:var(--muted);max-width:36ch}
+    nav{display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
+    nav a{color:var(--ink);text-decoration:none;font-weight:600;font-size:.9rem;padding:6px 2px;border-bottom:2px solid transparent}
+    nav a:hover{border-bottom-color:var(--accent-2);color:var(--accent-2)}
+    .hero-shell{margin:0;background:var(--surface)}
+    .hero{
+      --hero-image:linear-gradient(135deg,#0f7669 0%,#134e4a 55%,#0f172a 100%);
+      background-image:var(--hero-image);
+      background-size:cover;background-position:center;
+      position:relative;color:var(--hero-ink);padding:clamp(52px,10vw,96px) 0;
+    }
+    .hero::before{
+      content:'';position:absolute;inset:0;
+      background:linear-gradient(120deg,rgba(15,23,42,.82) 0%,rgba(15,118,105,.45) 48%,rgba(15,23,42,.55) 100%);
+    }
+    .hero .wrap{position:relative;z-index:1}
+    .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:.72rem;font-weight:700;opacity:.85;margin:0 0 10px}
+    .hero h1{margin:0;font-size:clamp(1.85rem,4vw,2.65rem);font-weight:800;letter-spacing:-.03em;line-height:1.1;max-width:18ch}
+    .hero .sub{margin:14px 0 0;font-size:1.05rem;max-width:52ch;opacity:.92}
+    .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px}
+    .btn{display:inline-flex;align-items:center;justify-content:center;padding:12px 20px;border-radius:999px;text-decoration:none;font-weight:700;font-size:.95rem;border:0;cursor:pointer;transition:transform .12s ease,box-shadow .12s ease}
+    .btn:active{transform:translateY(1px)}
+    .btn-primary{background:#f8fafc;color:#0f172a;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+    .btn-primary:hover{box-shadow:0 12px 34px rgba(0,0,0,.28)}
+    .btn-ghost{background:rgba(255,255,255,.12);color:#f8fafc;border:1px solid rgba(248,250,252,.35)}
+    .btn-ghost:hover{background:rgba(255,255,255,.18)}
+    .btn-light{background:#fff;color:#0f172a;border:1px solid var(--line)}
+    .section{padding:clamp(40px,6vw,72px) 0}
+    .section.alt{background:#eef2f6}
+    .section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+    .section-title{margin:0;font-size:clamp(1.35rem,2.4vw,1.75rem);font-weight:800;letter-spacing:-.02em}
+    .muted{color:var(--muted)}
+    .banner{
+      background:linear-gradient(135deg,#ecfeff,#f0fdfa);
+      border:1px solid #99f6e4;border-radius:var(--radius);
+      padding:22px 24px;box-shadow:var(--shadow);
+    }
+    .banner strong{display:block;font-size:1.05rem;margin-bottom:8px;color:#115e59}
+    .pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+    .price-card{
+      background:var(--surface);border-radius:var(--radius);padding:22px 22px 20px;
+      border:1px solid var(--line);box-shadow:var(--shadow);
+    }
+    .price-card h3{margin:0 0 6px;font-size:.95rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+    .price-big{margin:6px 0 14px;font-size:2.1rem;font-weight:800;letter-spacing:-.03em}
+    .price-card p{margin:0 0 14px;color:var(--muted);font-size:.95rem}
+    .cat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+    .cat-card{
+      background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+      padding:20px;box-shadow:0 8px 24px rgba(15,23,42,.06);
+    }
+    .cat-card h3{margin:0 0 8px;font-size:1.1rem}
+    .cat-meta{margin:0 0 12px;color:var(--muted);font-size:.92rem}
+    .text-link{font-weight:700;color:var(--accent);text-decoration:none}
+    .text-link:hover{text-decoration:underline}
+    .cat-actions{display:flex;gap:14px;flex-wrap:wrap}
+    .unit-list{display:grid;gap:12px}
+    .unit-row{
+      display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+      background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;
+      box-shadow:0 8px 24px rgba(15,23,42,.06);
+    }
+    .unit-row h3{margin:0 0 6px;font-size:1.03rem}
+    .unit-row-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    .unit-rate{margin:0;font-weight:800;font-size:1.03rem}
+    .chip-wrap{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    .chip{
+      display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;
+      background:#fff;border:1px solid var(--line);font-size:.85rem;font-weight:600;color:#334155
+    }
+    .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+    .feature-cell{
+      display:flex;align-items:flex-start;gap:10px;background:var(--surface);
+      border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-weight:600;font-size:.92rem
+    }
+    .tick{color:var(--accent);font-weight:800;margin-top:1px}
+    .promise-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
+    .promise-card{background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);box-shadow:var(--shadow)}
+    .promise-card h3{margin:0 0 10px;font-size:1.05rem}
+    .promise-card p{margin:0;color:var(--muted);font-size:.95rem}
+    .quotes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+    .quote-card{
+      background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);
+      box-shadow:var(--shadow);
+    }
+    .quote-text{margin:0;font-size:1.02rem;font-style:italic;color:#1e293b}
+    .quote-author{margin:12px 0 0;font-size:.88rem;font-weight:700;color:var(--muted)}
+    .stars{margin-top:10px;color:#ca8a04;font-size:.95rem;letter-spacing:.08em}
+    .promo-band{background:linear-gradient(120deg,#134e4a,#0f7669);color:#ecfeff}
+    .promo-inner{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:8px 0}
+    .promo-title{color:#f8fafc}
+    .promo-body{margin:8px 0 0;max-width:62ch;opacity:.95}
+    .contact-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:22px;align-items:stretch}
+    @media (max-width:880px){.contact-grid{grid-template-columns:1fr}}
+    .contact-card{background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);box-shadow:var(--shadow)}
+    .contact-card h3{margin-top:0}
+    .contact-line{margin:6px 0}
+    .hours-list{margin:0;padding-left:18px;color:var(--muted)}
+    .map-frame{border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);box-shadow:var(--shadow);min-height:280px;background:#e2e8f0}
+    .map-frame iframe{width:100%;height:320px;border:0;display:block}
+    .map-placeholder{
+      border-radius:var(--radius);border:1px dashed #cbd5e1;background:#f8fafc;
+      min-height:280px;display:grid;place-items:center;padding:20px;text-align:center
+    }
+    .site-footer{background:#0f172a;color:#94a3b8;padding:28px 0;margin-top:12px}
+    .footer-row{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between}
+    .footer-brand{color:#e2e8f0;font-weight:700}
+    .footer-link{color:#5eead4;text-decoration:none;font-weight:600}
+    .footer-link:hover{text-decoration:underline}
+    .fine{font-size:.85rem;opacity:.9}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="wrap">
+      <span class="top-muted">Call for details</span>
+      <a class="btn-pay" href="https://app.storagefacilitycreator.com/#/f/keepsakeonlinerentals/standard">Make a Payment/Login</a>
+    </div>
+  </div>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div class="brand-text">
+          <p class="name">Storage Facility</p>
+          <p class="site-tagline">Self storage with online rentals</p>
+        </div>
+      </div>
+      <nav aria-label="Primary">
+        <a href="#home">Home</a>
+        <a href="#about">About</a>
+        <a href="#units">Units</a>
+        <a href="#map">Map</a>
+        <a href="#contact">Contact</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="hero-shell" id="home">
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Reserve online</p>
+        <h1>Storage Facility</h1>
+        <p class="sub">Secure, convenient, and reliable storage with online rentals.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#unit-list">See Units</a>
+          <a class="btn btn-ghost" href="https://app.storagefacilitycreator.com/#/f/keepsakeonlinerentals/standard">Rent online</a>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <main>
+    <section class="section" id="about">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">Your self storage partner</h2>
+        </div>
+        <div class="banner">
+          <strong>Storage Facility</strong>
+          <p class="muted" style="margin:0;font-size:1.02rem">Browse available storage units and rent online.</p>
+          <div class="chip-wrap"><span class="chip">Online rentals</span><span class="chip">Online bill pay</span><span class="chip">Secure access</span><span class="chip">Variety of unit sizes</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="units">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">Our pricing guide</h2>
+          <a class="text-link" href="#unit-list">View all units</a>
+        </div>
+        <div class="pricing-grid">
+          <article class="price-card">
+            <h3>Starting at</h3>
+            <p class="price-big">$120.00</p>
+            <p>Live pricing from your published inventory. Sizes and rates update as your availability changes.</p>
+            <a class="btn btn-primary" style="border-radius:12px" href="#unit-list">See Units</a>
+          </article>
+          <article class="price-card">
+            <h3>Available now</h3>
+            <p class="price-big">1</p>
+            <p>Units currently marked available on your public map snapshot.</p>
+            <a class="btn btn-light" style="border-radius:12px" href="https://app.storagefacilitycreator.com/#/f/keepsakeonlinerentals/standard">Start a rental</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="unit-list">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">Live available units</h2>
+        </div>
+        <div class="unit-list"><article class="unit-row"><div><h3>102</h3><p class="cat-meta">standard · 12x20</p></div><div class="unit-row-right"><p class="unit-rate">$120.00/mo</p><a class="btn btn-light" style="border-radius:12px" href="https://app.storagefacilitycreator.com/#/f/keepsakeonlinerentals/standard">Rent this unit</a></div></article></div>
+      </div>
+    </section>
+
+    <section class="section" id="categories">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">Available categories</h2>
+        </div>
+        <div class="cat-grid"><article class="cat-card"><h3>standard</h3><p class="cat-meta">1 available · from <strong>$120.00</strong>/mo</p><div class="cat-actions"><a class="text-link" href="#unit-list">See units</a><a class="text-link" href="https://app.storagefacilitycreator.com/#/f/keepsakeonlinerentals/standard">Rent now</a></div></article></div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2 class="section-title" style="margin-bottom:16px">All the convenience and security you need</h2>
+        <div class="feature-grid"><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Online rentals</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Online bill pay</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Variety of unit sizes</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Secure facility access</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Live availability</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Fast move-in flow</div><div class="feature-cell"><span class="tick" aria-hidden="true">✓</span>Secure access</div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <h2 class="section-title" style="margin-bottom:18px">Our promise to you</h2>
+        <div class="promise-grid">
+          <article class="promise-card">
+            <h3>Security</h3>
+            <p>Robust security measures help keep your belongings protected while they are stored with us.</p>
+          </article>
+          <article class="promise-card">
+            <h3>Customer service</h3>
+            <p>Clean, move-in ready units and a friendly team focused on a smooth rental experience.</p>
+          </article>
+          <article class="promise-card">
+            <h3>Convenience</h3>
+            <p>Manage your storage online anytime—browse availability, rent, and stay on top of payments.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2 class="section-title" style="margin-bottom:16px">Testimonials</h2>
+        <div class="quotes"><article class="quote-card"><p class="quote-text">“Great facility and easy online rentals.”</p><div class="stars" aria-hidden="true">★★★★★</div></article></div>
+      </div>
+    </section>
+
+    
+
+    <section class="section" id="contact">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">Contact us</h2>
+        </div>
+        <div class="contact-grid" id="map">
+          <div class="contact-card">
+            <h3>Storage Facility</h3>
+            <p class="contact-line">Contact us for facility address details.</p>
+            <p class="contact-line"><strong>Phone</strong><br />Call for details</p>
+            
+            <h4 style="margin:18px 0 8px;font-size:1rem">Office hours</h4>
+            <ul class="hours-list"><li>Contact us for current hours</li></ul>
+          </div>
+          <div class="map-placeholder"><p class="muted">Add a Google Maps embed URL in Website Setup to show your map here.</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <div>
+        <div class="footer-brand">Powered by Storage Facility Creator</div>
+        <div class="fine">Storage Facility Creator — public website template v2</div>
+      </div>
+      <div class="fine" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        
+      </div>
+    </div>
+  </footer>
+  <script>
+    (function () {
+      function scrollToId(hash) {
+        if (!hash || hash === '#' || hash.length < 2) return;
+        var id = decodeURIComponent(hash.slice(1));
+        var el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      document.addEventListener(
+        'click',
+        function (e) {
+          var t = e.target;
+          if (!t || !t.closest) return;
+          var a = t.closest('a[href^="#"]');
+          if (!a) return;
+          var href = a.getAttribute('href');
+          if (!href || href === '#' || href.length < 2) return;
+          e.preventDefault();
+          if (location.hash !== href) {
+            history.pushState(null, '', href);
+          }
+          scrollToId(href);
+        },
+        false
+      );
+      function onHash() {
+        scrollToId(location.hash || '');
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', onHash);
+      } else {
+        onHash();
+      }
+      window.addEventListener('hashchange', onHash);
+      window.addEventListener('popstate', onHash);
+    })();
+  </script>
+</body>
+</html>

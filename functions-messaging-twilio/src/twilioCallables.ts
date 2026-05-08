@@ -2,7 +2,7 @@
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { formatPhoneNumber, isSuperAdmin } from '@sfc/functions-shared';
-import { computeA2PStatus, ensureIdempotentResource } from './texting_onboarding_helpers';
+import { computeA2PStatus, ensureIdempotentResource } from '@sfc/functions-shared';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';

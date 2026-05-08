@@ -8,9 +8,11 @@
     "node": "22"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\""
   },
   "dependencies": {
+    "@sentry/node": "^10.41.0",
     "@sfc/functions-shared": "file:vendor/functions-shared",
     "firebase-admin": "^13.6.0",
     "firebase-functions": "^7.2.2",

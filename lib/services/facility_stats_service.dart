@@ -356,7 +356,7 @@ class FacilityStatsService {
     await updateFacilityStats(facilityId);
   }
 
-  /// Recompute stats for all facilities; reconciles unit docs to capacity then updates stats. Idempotent.
+  /// Recompute stats for all facilities: heal orphan occupancy, then refresh stats. Does not create placeholder units.
   static Future<void> recomputeAllFacilitiesStats() async {
     final facilities = await FacilityService.getUserFacilities();
     for (final f in facilities) {
@@ -376,9 +376,22 @@ class FacilityStatsService {
     }
   }
 
-  /// Ensure unit doc count matches facility.totalUnits (capacity). Creates missing units; does not delete.
-  /// Call from "Sync counts" or after facility totalUnits edit. Idempotent.
+  /// Heal orphan occupancy and refresh stats. **Does not** create empty unit documents up to [FacilityModel.totalUnits].
+  /// Capacity stays on the facility document; add units explicitly in the unit list / map as you build or rent.
   static Future<({int created, int healed})> reconcileUnitsToCapacity(String facilityId) async {
+    final healed = await healOrphanedOccupancy(facilityId);
+    await updateFacilityStats(facilityId);
+    if (kDebugMode) {
+      print('✅ [FacilityStatsService] reconcileUnitsToCapacity: heal-only, healed=$healed for $facilityId');
+    }
+    return (created: 0, healed: healed);
+  }
+
+  /// Optional: create empty `units` documents (001, 002, …) until document count matches [FacilityModel.totalUnits].
+  /// Use after CSV import or when you intentionally want one row per slot. Not run from Sync counts or facility save.
+  static Future<({int created, int healed})> materializeMissingUnitDocumentsUpToCapacity(
+    String facilityId,
+  ) async {
     int created = 0;
     final healed = await healOrphanedOccupancy(facilityId);
     final facility = await FacilityService.getFacility(facilityId);
@@ -409,13 +422,13 @@ class FacilityStatsService {
         created++;
       } catch (e) {
         if (kDebugMode) {
-          print('❌ [FacilityStatsService] reconcile: failed to create unit $unitNumber: $e');
+          print('❌ [FacilityStatsService] materialize: failed to create unit $unitNumber: $e');
         }
       }
     }
     await updateFacilityStats(facilityId);
     if (kDebugMode) {
-      print('✅ [FacilityStatsService] reconcileUnitsToCapacity: created=$created, healed=$healed for $facilityId');
+      print('✅ [FacilityStatsService] materializeMissingUnitDocumentsUpToCapacity: created=$created, healed=$healed');
     }
     return (created: created, healed: healed);
   }

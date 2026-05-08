@@ -6,7 +6,7 @@ import {
   isSfcLeadLineMatch,
   processSfcLeadInboundSMSWebhook,
 } from '@sfc/functions-shared';
-import { isHelpKeyword, isStartKeyword, isStopKeyword } from './texting_onboarding_helpers';
+import { isHelpKeyword, isStartKeyword, isStopKeyword } from '@sfc/functions-shared';
 import {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,

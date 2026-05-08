@@ -47,6 +47,15 @@ export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';
 export type { HostingConfig } from './hosting/hostingConfigRegistry';
 export { getTwilioClient, isTwilioDryRunEnabled } from './twilio/client';
 export { verifyTwilioWebhookSignature } from './twilio/webhooks';
+export type { A2PStatus } from './twilio/textingOnboardingHelpers';
+export {
+  normalizeKeyword,
+  isStopKeyword,
+  isStartKeyword,
+  isHelpKeyword,
+  computeA2PStatus,
+  ensureIdempotentResource,
+} from './twilio/textingOnboardingHelpers';
 
 export {
   readMessagingGuardConfig,

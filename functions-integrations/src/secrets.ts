@@ -6,7 +6,17 @@ import type { QuickBooksConfig } from './accounting/quickbooks';
 export const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
 export const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
 export const STRIPE_PUBLISHABLE_KEY = defineSecret('STRIPE_PUBLISHABLE_KEY');
+/** Stripe Connect OAuth client id (`ca_…`); optional for `createStripeConnectAccount` logging / future OAuth. */
+export const STRIPE_CONNECT_CLIENT_ID = defineSecret('STRIPE_CONNECT_CLIENT_ID');
+
 export const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY];
+
+/** Platform Stripe secrets + Connect client id (no webhook secret required). */
+export const STRIPE_SECRETS_WITH_CONNECT = [
+  STRIPE_SECRET_KEY,
+  STRIPE_PUBLISHABLE_KEY,
+  STRIPE_CONNECT_CLIENT_ID,
+];
 
 export const QUICKBOOKS_CLIENT_ID = defineSecret('QUICKBOOKS_CLIENT_ID');
 export const QUICKBOOKS_CLIENT_SECRET = defineSecret('QUICKBOOKS_CLIENT_SECRET');

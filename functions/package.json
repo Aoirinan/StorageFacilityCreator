@@ -19,15 +19,10 @@
   },
   "main": "lib/index.js",
   "dependencies": {
-    "@sentry/node": "^10.41.0",
     "@sfc/functions-shared": "file:vendor/functions-shared",
     "dotenv": "^17.3.1",
     "firebase-admin": "^13.6.0",
-    "firebase-functions": "^7.2.2",
-    "google-auth-library": "^10.6.2",
-    "nodemailer": "^8.0.0",
-    "openai": "^6.0.0",
-    "stripe": "^20.0.0"
+    "firebase-functions": "^7.2.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

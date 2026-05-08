@@ -1,3 +1,5 @@
+/** SMS keyword normalization and Twilio A2P status helpers (shared by messaging + tests). */
+
 export type A2PStatus = 'draft' | 'submitted' | 'pending' | 'approved' | 'rejected';
 
 export function normalizeKeyword(input: string): string {

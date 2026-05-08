@@ -69,14 +69,16 @@ Check if SendGrid secrets are configured:
 ```bash
 cd functions
 firebase functions:secrets:access SENDGRID_API_KEY
-firebase functions:secrets:access SENDGRID_SENDER_EMAIL
-firebase functions:secrets:access SENDGRID_FROM_NAME
+# Sender identity is set as string params (defineString), not Secret Manager — see functions/.env.<project-id>
+# type .env.storage-facility-creator   (or open in editor) and confirm:
+#   SENDGRID_SENDER_EMAIL=...
+#   SENDGRID_FROM_NAME=...
 ```
 
 **Expected:**
-- `SENDGRID_API_KEY`: Should start with `SG.` and be ~69 characters
-- `SENDGRID_SENDER_EMAIL`: Should be a valid email address (verified in SendGrid)
-- `SENDGRID_FROM_NAME`: Should be a string (e.g., "Storage Facility Creator")
+- `SENDGRID_API_KEY` (secret): Should start with `SG.` and be ~69 characters
+- `SENDGRID_SENDER_EMAIL` (`.env.<project>`): Valid From address, verified in SendGrid
+- `SENDGRID_FROM_NAME` (`.env.<project>`): Display name string (e.g., "Storage Facility Creator")
 
 ### Step 4: Deploy Functions
 

@@ -115,23 +115,30 @@ class MessagingGuardTab extends StatelessWidget {
               return ListView(
                 children: [
                   Text(
-                    'Messaging guard',
+                    'Messaging',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Staff-triggered sends only: sendEmail, sendDigest, and sendSMS (including SMS→email fallback). '
-                    'Super-admin facility-owner broadcasts (below) also reserve one email slot per recipient. '
-                    'Scheduled automations that do not use those callables are not counted here. '
-                    'Counters reset at UTC midnight.',
+                    'Email paying facility owners from the first card. Below that: platform kill switch and daily send caps (sendEmail, sendDigest, sendSMS, and mass emails each use the email cap). '
+                    'Scheduled automations that do not use those callables are not counted here. Counters reset at UTC midnight.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: AppTheme.textSecondary,
                           height: 1.35,
                         ),
                   ),
                   const SizedBox(height: 20),
+                  const FacilityOwnerBroadcastSection(),
+                  const SizedBox(height: 28),
+                  Text(
+                    'Messaging guard',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
                   Card(
                     child: SwitchListTile(
                       title: const Text('Staff messaging enabled'),
@@ -186,8 +193,6 @@ class MessagingGuardTab extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 28),
-                  const FacilityOwnerBroadcastSection(),
                 ],
               );
             },
@@ -234,6 +239,8 @@ class _FacilityOwnerBroadcastSectionState
   final _confirm = TextEditingController();
 
   bool _includeInactive = false;
+  /// `activePayingSubscribers` = facility owners with active $75/mo platform billing (default). `allOwners` = any owner.
+  String _recipientScope = 'activePayingSubscribers';
   bool _loadingPreview = false;
   bool _sending = false;
   SuperAdminFacilityOwnerBroadcastPreview? _preview;
@@ -261,6 +268,7 @@ class _FacilityOwnerBroadcastSectionState
     try {
       final p = await SuperAdminDataService.previewFacilityOwnerBroadcast(
         includeInactiveFacilities: _includeInactive,
+        recipientScope: _recipientScope,
       );
       if (mounted) {
         setState(() {
@@ -316,6 +324,7 @@ class _FacilityOwnerBroadcastSectionState
         text: body,
         acknowledgment: _confirm.text.trim(),
         includeInactiveFacilities: _includeInactive,
+        recipientScope: _recipientScope,
       );
       if (!mounted) return;
       setState(() => _sending = false);
@@ -394,20 +403,47 @@ class _FacilityOwnerBroadcastSectionState
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Email all facility owners',
+              'Mass email to facility owners',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Sends one platform email per unique owner email (deduped across facilities). '
-              'Uses the same daily email cap as other callable sends; raise the cap here if needed. '
+              'Sends one platform email per unique owner address (deduped). '
+              'Default audience is paying subscribers only: account subscription status active, '
+              'or per-facility platform subscription active (the standard \$75/mo product). '
+              'Uses the same daily email cap as other callable sends; raise the cap above if needed. '
               'Does not use per-facility SendGrid footers or tenant unsubscribe lists.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: AppTheme.textSecondary,
                     height: 1.35,
                   ),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: _recipientScope,
+              decoration: const InputDecoration(
+                labelText: 'Who receives this',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'activePayingSubscribers',
+                  child: Text('Paying subscribers only (\$75/mo, active)'),
+                ),
+                DropdownMenuItem(
+                  value: 'allOwners',
+                  child: Text('All facility owners (any subscription state)'),
+                ),
+              ],
+              onChanged: _sending
+                  ? null
+                  : (v) {
+                      if (v == null) return;
+                      setState(() => _recipientScope = v);
+                      _refreshPreview();
+                    },
             ),
             const SizedBox(height: 16),
             SwitchListTile(
@@ -504,7 +540,13 @@ class _FacilityOwnerBroadcastSectionState
                       ),
                     )
                   : const Icon(Icons.send),
-              label: Text(_sending ? 'Sending…' : 'Send to all owners'),
+              label: Text(
+                _sending
+                    ? 'Sending…'
+                    : _recipientScope == 'activePayingSubscribers'
+                        ? 'Send to paying subscribers'
+                        : 'Send to all owners',
+              ),
             ),
           ],
         ),

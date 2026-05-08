@@ -22,27 +22,37 @@ if ($firebaseUser -match "No authorized accounts") {
 Write-Host "✅ Firebase CLI ready" -ForegroundColor Green
 Write-Host ""
 
-# Change to functions directory
-Set-Location functions
+# Resolve default Firebase project (for .env file hint)
+$firebasercPath = Join-Path (Split-Path -Parent $PSScriptRoot) '.firebaserc'
+$defaultProject = 'storage-facility-creator'
+if (Test-Path $firebasercPath) {
+  try {
+    $defaultProject = ((Get-Content $firebasercPath -Raw) | ConvertFrom-Json).projects.default
+  } catch { }
+}
+
+# Ensure cwd is the functions package (this script lives in functions/)
+Set-Location $PSScriptRoot
 
 Write-Host "📝 You'll be prompted to enter each secret value." -ForegroundColor Cyan
 Write-Host "   (You can paste the values when prompted)" -ForegroundColor Gray
 Write-Host ""
 
-# SendGrid secrets
+# SendGrid — only SENDGRID_API_KEY is defineSecret; sender/from-name are defineString (functions/.env.<project>)
 Write-Host "📧 SendGrid Configuration" -ForegroundColor Cyan
 firebase functions:secrets:set SENDGRID_API_KEY
-firebase functions:secrets:set SENDGRID_FROM_EMAIL
-firebase functions:secrets:set SENDGRID_FROM_NAME
-
+Write-Host "   Also set string params (not secrets) in:" -ForegroundColor DarkGray
+Write-Host "   functions\.env.$defaultProject" -ForegroundColor Yellow
+Write-Host "   SENDGRID_SENDER_EMAIL=verified-sender@yourdomain.com" -ForegroundColor DarkGray
+Write-Host "   SENDGRID_FROM_NAME=Your App Name   (optional; has a default)" -ForegroundColor DarkGray
 Write-Host ""
 
-# Twilio secrets
+# Twilio — only TWILIO_AUTH_TOKEN is defineSecret; Account SID and phone are defineString (same .env file)
 Write-Host "📱 Twilio Configuration" -ForegroundColor Cyan
-firebase functions:secrets:set TWILIO_ACCOUNT_SID
 firebase functions:secrets:set TWILIO_AUTH_TOKEN
-firebase functions:secrets:set TWILIO_PHONE_NUMBER
-
+Write-Host "   Set in functions\.env.$defaultProject :" -ForegroundColor DarkGray
+Write-Host "   TWILIO_ACCOUNT_SID=AC..." -ForegroundColor DarkGray
+Write-Host "   TWILIO_PHONE_NUMBER=+1..." -ForegroundColor DarkGray
 Write-Host ""
 
 # Stripe Platform secrets

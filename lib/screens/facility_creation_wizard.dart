@@ -895,15 +895,16 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                             ),
                             const SizedBox(height: 16),
                             
-                            // Total Units (required, capacity cap)
+                            // Site-wide capacity (max units); unit rows are added separately in the unit list.
                             TextFormField(
                               controller: _totalUnitsController,
                               decoration: InputDecoration(
-                                labelText: 'Total Units',
+                                labelText: 'Unit capacity (max)',
                                 hintText: 'e.g., 50',
                                 prefixIcon: const Icon(Icons.grid_view),
                                 helperText:
-                                    'Total physical capacity (1–$kMaxFacilityCapacityUnits). Used for occupancy calculations.',
+                                    'Maximum units this site can hold (1–$kMaxFacilityCapacityUnits). '
+                                    'You add individual units under Facilities → Units as you build or rent them.',
                               ),
                               keyboardType: TextInputType.number,
                               validator: (value) {

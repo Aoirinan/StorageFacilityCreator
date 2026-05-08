@@ -764,6 +764,8 @@ class SuperAdminDataService {
   static Future<SuperAdminFacilityOwnerBroadcastPreview>
       previewFacilityOwnerBroadcast({
     bool includeInactiveFacilities = false,
+    /// `allOwners` = any owner of an (active) facility; `activePayingSubscribers` = Stripe active only ($75/mo).
+    String recipientScope = 'activePayingSubscribers',
   }) async {
     final callable = _facilityOwnerBroadcastCallable(
       timeout: const Duration(seconds: 120),
@@ -771,6 +773,7 @@ class SuperAdminDataService {
     final result = await callable.call<Map<String, dynamic>>({
       'dryRun': true,
       'includeInactiveFacilities': includeInactiveFacilities,
+      'recipientScope': recipientScope,
     });
     final data = Map<String, dynamic>.from(result.data);
     return SuperAdminFacilityOwnerBroadcastPreview(
@@ -787,6 +790,7 @@ class SuperAdminDataService {
     String? text,
     required String acknowledgment,
     bool includeInactiveFacilities = false,
+    String recipientScope = 'activePayingSubscribers',
   }) async {
     final callable = _facilityOwnerBroadcastCallable();
     final result = await callable.call<Map<String, dynamic>>({
@@ -795,6 +799,7 @@ class SuperAdminDataService {
       if (text != null && text.trim().isNotEmpty) 'text': text,
       'acknowledgment': acknowledgment.trim(),
       'includeInactiveFacilities': includeInactiveFacilities,
+      'recipientScope': recipientScope,
     });
     final data = Map<String, dynamic>.from(result.data);
     final rawFailures = data['failures'] as List<dynamic>? ?? const [];

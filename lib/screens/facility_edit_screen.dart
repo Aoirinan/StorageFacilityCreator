@@ -444,16 +444,17 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Total Units (required, capacity cap)
+                  // Site-wide capacity (max units); unit rows are added in the unit list, not auto-created here.
                   TextFormField(
                     controller: _totalUnitsController,
                     decoration: InputDecoration(
-                      labelText: 'Total Units',
+                      labelText: 'Unit capacity (max)',
                       hintText: 'e.g., 50',
                       border: const OutlineInputBorder(),
                       prefixIcon: const Icon(Icons.grid_view),
                       helperText:
-                          'Total physical capacity (1–$kMaxFacilityCapacityUnits). Used for occupancy calculations.',
+                          'Maximum units this site can hold (1–$kMaxFacilityCapacityUnits). '
+                          'Change this when your build-out grows; add unit records under Units.',
                     ),
                     keyboardType: TextInputType.number,
                     validator: (value) {

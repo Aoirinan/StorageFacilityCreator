@@ -99,11 +99,16 @@
 3. If marketing site is affected: update Vercel env var, redeploy
 4. Verify functionality in production
 
+## SendGrid API key (rotation)
+- **Functions:** `firebase functions:secrets:set SENDGRID_API_KEY` then deploy. Code: `defineSecret('SENDGRID_API_KEY')` in `functions/src/index.ts`.
+- **Sender / from name:** `SENDGRID_SENDER_EMAIL` and `SENDGRID_FROM_NAME` are **string params** in `functions/.env.<project-id>`, not the API secret.
+- **Marketing (Vercel):** contact API uses `SENDGRID_API_KEY` in that project’s env (`marketing/.env.example`). Rotate there too if the contact form must keep working.
+- **Unsubscribe tokens** are derived from the API key (`getEmailUnsubscribeSecretKey`); rotating the key invalidates old unsubscribe links until you accept that tradeoff or redesign token storage.
+
 ## Known Issues / Tech Debt
 - VPC connector minInstances=2 could potentially be reduced to 1 to save ~$2/mo (untested under QuickBooks load)
-- `setup_secrets.ps1` references `SENDGRID_FROM_EMAIL`/`SENDGRID_FROM_NAME` as secrets, but `index.ts` uses `defineString('SENDGRID_SENDER_EMAIL')` — naming drift to align in future
 - No Terraform/IaC for cloud resources; all changes via console/gcloud
 - Network Intelligence Center cannot be disabled via gcloud; requires support ticket when credit expires
 
 ## Last Updated
-April 30, 2026 — Initial creation after cost investigation and Secret Manager pruning
+April 30, 2026 — SendGrid rotation notes + aligned `setup_secrets.ps1` with `defineSecret` / `defineString` in `functions/src/index.ts`
