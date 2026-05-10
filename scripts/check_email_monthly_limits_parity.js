@@ -9,7 +9,13 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const dartFile = path.join(root, 'lib', 'constants', 'email_monthly_limits.dart');
-const tsFile = path.join(root, 'functions', 'src', 'constants', 'emailMonthlyLimits.ts');
+const tsFile = path.join(
+  root,
+  'functions-shared',
+  'src',
+  'constants',
+  'emailMonthlyLimits.ts',
+);
 
 function read(p) {
   if (!fs.existsSync(p)) {
@@ -33,7 +39,9 @@ function parseTs(src) {
   const trialing = src.match(/EMAIL_MONTHLY_LIMIT_TRIALING\s*=\s*(\d+)/);
   const paid = src.match(/EMAIL_MONTHLY_LIMIT_PAID\s*=\s*(\d+)/);
   if (!trialing || !paid) {
-    console.error('Could not parse trial/paid ints from functions/src/constants/emailMonthlyLimits.ts');
+    console.error(
+      'Could not parse trial/paid ints from functions-shared/src/constants/emailMonthlyLimits.ts',
+    );
     process.exit(1);
   }
   return { trialing: Number(trialing[1]), paid: Number(paid[1]) };
@@ -47,7 +55,7 @@ if (dart.trialing !== ts.trialing || dart.paid !== ts.paid) {
   console.error(`  Dart:  trialing=${dart.trialing}, paid=${dart.paid}`);
   console.error(`  TS:    trialing=${ts.trialing}, paid=${ts.paid}`);
   console.error('\nUpdate lib/constants/email_monthly_limits.dart and');
-  console.error('functions/src/constants/emailMonthlyLimits.ts to match.');
+  console.error('functions-shared/src/constants/emailMonthlyLimits.ts to match.');
   process.exit(1);
 }
 

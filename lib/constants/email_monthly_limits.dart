@@ -1,7 +1,7 @@
 /// Canonical monthly caps for transactional email volume (per facility).
 ///
 /// Cloud Functions enforce the same values in
-/// `functions/src/constants/emailMonthlyLimits.ts` — update both when changing policy.
+/// `functions-shared/src/constants/emailMonthlyLimits.ts` — update both when changing policy.
 /// CI: `node scripts/check_email_monthly_limits_parity.js` (repo root)
 /// Firestore backfill: `cd functions && npm run migrate:email-limits -- --dry-run`
 library;
