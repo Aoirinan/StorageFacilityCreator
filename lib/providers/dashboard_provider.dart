@@ -26,6 +26,8 @@ class DashboardStats {
   final int availableUnits;
   final double occupancyRate;
   final double monthlyRevenue;
+  /// Subset of [monthlyRevenue] from tenants with autopay ON (cached stats field).
+  final double autopayMonthlyRevenue;
   final int pastDueCount;
   final int openLeads;
   final List<TopDelinquentTenant> topDelinquentTenants; // Top 5
@@ -39,6 +41,7 @@ class DashboardStats {
     required this.availableUnits,
     required this.occupancyRate,
     required this.monthlyRevenue,
+    this.autopayMonthlyRevenue = 0.0,
     required this.pastDueCount,
     required this.openLeads,
     this.topDelinquentTenants = const [],
@@ -104,6 +107,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       availableUnits: 0,
       occupancyRate: 0.0,
       monthlyRevenue: 0.0,
+      autopayMonthlyRevenue: 0.0,
       pastDueCount: 0,
       openLeads: 0,
     );
@@ -124,6 +128,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       availableUnits: 0,
       occupancyRate: 0.0,
       monthlyRevenue: 0.0,
+      autopayMonthlyRevenue: 0.0,
       pastDueCount: 0,
       openLeads: 0,
     );
@@ -173,6 +178,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       availableUnits: 0,
       occupancyRate: 0.0,
       monthlyRevenue: 0.0,
+      autopayMonthlyRevenue: 0.0,
       pastDueCount: 0,
       openLeads: 0,
     );
@@ -183,6 +189,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
   int occupiedUnits = 0;
   double monthlyRevenue = 0.0;
   int pastDueCount = 0;
+  double autopayMonthlyRevenue = 0.0;
 
   // Aggregate data across all facilities using FacilityStatsService
   for (final facility in facilities) {
@@ -203,19 +210,24 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       final statsOccupied =
           statsOccupiedRaw > statsUnits ? statsUnits : statsOccupiedRaw;
       final statsRevenue = (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
+      final statsAutopay =
+          (stats['autopayMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
       final statsPastDue = (stats['totalPastDue'] as int?) ?? 0;
 
       totalTenants += statsActive;
       totalUnits += statsUnits;
       occupiedUnits += statsOccupied;
       monthlyRevenue += statsRevenue;
+      autopayMonthlyRevenue += statsAutopay;
       pastDueCount += statsPastDue;
       
       if (kDebugMode) {
         print('📊 [Dashboard] Using cached stats for ${facility.name}:');
         print('   - Tenants: $statsActive');
         print('   - Units: $statsUnits (occupied: $statsOccupied)');
-        print('   - Revenue: \$${statsRevenue.toStringAsFixed(2)}');
+        print(
+          '   - Revenue: \$${statsRevenue.toStringAsFixed(2)} (autopay \$${statsAutopay.toStringAsFixed(2)})',
+        );
         print('   - Past due: $statsPastDue');
       }
     } else {
@@ -248,6 +260,8 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
         facilityRevenue += tenant.monthlyRate;
       }
       monthlyRevenue += facilityRevenue;
+      autopayMonthlyRevenue +=
+          FacilityStatsService.sumAutopayMonthlyRevenue(activeTenants);
       
       if (kDebugMode) {
         print('   - Facility revenue: \$${facilityRevenue.toStringAsFixed(2)}');
@@ -303,7 +317,9 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     print('📊 [Dashboard] FINAL TOTALS:');
     print('   - Total tenants: $totalTenants');
     print('   - Total units: $totalUnits (occupied: $occupiedUnits)');
-    print('   - Monthly revenue: \$${monthlyRevenue.toStringAsFixed(2)}');
+    print(
+      '   - Monthly revenue: \$${monthlyRevenue.toStringAsFixed(2)} (autopay \$${autopayMonthlyRevenue.toStringAsFixed(2)})',
+    );
     print('   - Past due: $pastDueCount');
   }
 
@@ -417,6 +433,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     availableUnits: availableUnits,
     occupancyRate: occupancyRate,
     monthlyRevenue: monthlyRevenue,
+    autopayMonthlyRevenue: autopayMonthlyRevenue,
     pastDueCount: pastDueCount,
     openLeads: await _getOpenLeadsCount(facilities.map((f) => f.id).toList()),
     topDelinquentTenants: top5Delinquent,

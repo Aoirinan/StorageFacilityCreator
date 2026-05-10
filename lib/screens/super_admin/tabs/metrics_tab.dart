@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
@@ -52,6 +53,7 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
     });
 
     final metricsAsync = ref.watch(platformMetricsProvider);
+    final revenueAsync = ref.watch(platformTenantRevenueAggregateProvider);
 
     return metricsAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -68,6 +70,8 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
                     ?.copyWith(fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             _MetricGrid(metrics: metrics),
+            const SizedBox(height: 20),
+            _PlatformTenantRevenueCard(revenueAsync: revenueAsync),
             const SizedBox(height: 32),
             Text('Subscription Breakdown',
                 style: Theme.of(context)
@@ -79,6 +83,99 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PlatformTenantRevenueCard extends StatelessWidget {
+  final AsyncValue<PlatformTenantRevenueSnapshot> revenueAsync;
+
+  const _PlatformTenantRevenueCard({required this.revenueAsync});
+
+  @override
+  Widget build(BuildContext context) {
+    return revenueAsync.when(
+      loading: () => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderLight),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Loading tenant MRR from facility stats…',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      error: (e, _) => Text(
+        'Tenant revenue aggregate failed: $e',
+        style: TextStyle(color: AppTheme.error, fontSize: 13),
+      ),
+      data: (rev) {
+        if (rev.scheduledMonthlyRevenue <= 0 &&
+            rev.autopayMonthlyRevenue <= 0) {
+          return const SizedBox.shrink();
+        }
+        final fmt = NumberFormat.currency(symbol: r'$', decimalDigits: 0);
+        final autopayPct = rev.scheduledMonthlyRevenue > 0
+            ? (100 * rev.autopayMonthlyRevenue / rev.scheduledMonthlyRevenue)
+                .clamp(0.0, 100.0)
+            : 0.0;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderLight),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Tenant recurring revenue',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Summed from each facility’s stats/current cache (active tenant rates).',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: AppTheme.textTertiary),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Scheduled MRR: ${fmt.format(rev.scheduledMonthlyRevenue)}',
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'On autopay: ${fmt.format(rev.autopayMonthlyRevenue)}'
+                '${rev.scheduledMonthlyRevenue > 0 ? ' (${autopayPct.toStringAsFixed(0)}% of scheduled)' : ''}',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: AppTheme.success),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

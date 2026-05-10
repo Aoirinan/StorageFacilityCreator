@@ -873,7 +873,9 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
             MetricCard(
               title: 'Monthly Revenue',
               value: '\$${stats.monthlyRevenue.toStringAsFixed(0)}',
-              subtitle: 'Recurring revenue',
+              subtitle: stats.autopayMonthlyRevenue > 0
+                  ? 'Recurring · \$${stats.autopayMonthlyRevenue.toStringAsFixed(0)} on autopay'
+                  : 'Recurring revenue',
               icon: Icons.attach_money,
               color: AppTheme.success,
             ),
@@ -1022,9 +1024,12 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     }
     
     if (stats.monthlyRevenue > 0) {
+      final ap = stats.autopayMonthlyRevenue;
       activities.add(activity.ActivityItem(
         title: 'Monthly Revenue',
-        subtitle: '\$${stats.monthlyRevenue.toStringAsFixed(0)} recurring revenue',
+        subtitle: ap > 0
+            ? '\$${stats.monthlyRevenue.toStringAsFixed(0)} scheduled · \$${ap.toStringAsFixed(0)} on autopay'
+            : '\$${stats.monthlyRevenue.toStringAsFixed(0)} recurring revenue',
         icon: Icons.attach_money,
         iconColor: AppTheme.success,
         timestamp: DateTime.now().subtract(const Duration(hours: 1)),

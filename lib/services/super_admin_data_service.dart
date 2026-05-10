@@ -6,6 +6,7 @@ import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/sms_usage_model.dart';
 import 'package:sfcapp/models/user_model.dart';
 import 'package:sfcapp/services/email_usage_service.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/sms_usage_service.dart';
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,44 @@ class PlatformMetrics {
   double get occupancyRate =>
       totalUnits == 0 ? 0 : (occupiedUnits / totalUnits * 100);
 }
+
+/// Sum of `facilities/{id}/stats/current` revenue fields across all facilities.
+class PlatformTenantRevenueSnapshot {
+  final double scheduledMonthlyRevenue;
+  final double autopayMonthlyRevenue;
+
+  const PlatformTenantRevenueSnapshot({
+    required this.scheduledMonthlyRevenue,
+    required this.autopayMonthlyRevenue,
+  });
+}
+
+/// Loads per-facility cached stats (N reads). Use on super-admin Metrics only.
+final platformTenantRevenueAggregateProvider =
+    FutureProvider<PlatformTenantRevenueSnapshot>((ref) async {
+  final facilities = ref.watch(allFacilitiesProvider).valueOrNull;
+  if (facilities == null || facilities.isEmpty) {
+    return const PlatformTenantRevenueSnapshot(
+      scheduledMonthlyRevenue: 0,
+      autopayMonthlyRevenue: 0,
+    );
+  }
+  var scheduled = 0.0;
+  var autopay = 0.0;
+  for (final f in facilities) {
+    final stats = await FacilityStatsService.getFacilityStats(f.id);
+    if (stats != null) {
+      scheduled +=
+          (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
+      autopay +=
+          (stats['autopayMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
+    }
+  }
+  return PlatformTenantRevenueSnapshot(
+    scheduledMonthlyRevenue: scheduled,
+    autopayMonthlyRevenue: autopay,
+  );
+});
 
 enum MarketingLeadStatus {
   newLead,
