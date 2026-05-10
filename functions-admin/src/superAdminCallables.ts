@@ -1,20 +1,13 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import {
-  isSuperAdmin,
-  getStripeClient,
-  getOrCreateBasePriceId,
-  getOrCreateAddOnPriceId,
-  appendPlatformSecurityEmailFooter,
-  appendPlatformAdminBroadcastFooter,
-  escapeHtml,
-  initializeSendGrid,
-  getSgMail,
-  reservePlatformOutgoing,
-  releasePlatformOutgoing,
-  resolveReferralPendingItemForSuperAdmin,
-} from '@sfc/functions-shared';
+import { isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
+import { appendPlatformAdminBroadcastFooter, appendPlatformSecurityEmailFooter, escapeHtml } from '@sfc/functions-shared/email/footers';
+import { getSgMail, initializeSendGrid } from '@sfc/functions-shared/email/sendgridLazy';
+import { releasePlatformOutgoing, reservePlatformOutgoing } from '@sfc/functions-shared/platform/platformMessagingGuard';
+import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/referral/referralRewards';
+import { getStripeClient } from '@sfc/functions-shared/stripe/client';
+import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 

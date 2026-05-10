@@ -1,6 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { isSuperAdmin } from '@sfc/functions-shared';
+import { isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
 
 /**
  * Maintenance-only: enable Stripe Connect in Firestore appConfig.

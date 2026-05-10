@@ -3,11 +3,9 @@ import { ensureFirebaseAdminApp, ensureSentryForFunctions } from '@sfc/functions
 ensureFirebaseAdminApp();
 ensureSentryForFunctions();
 
-import {
-  registerHostingConfigProvider,
-  registerSendgridMailConfigProvider,
-  registerStripeKeysProvider,
-} from '@sfc/functions-shared';
+import { registerSendgridMailConfigProvider } from '@sfc/functions-shared/email/sendgridRegistry';
+import { registerHostingConfigProvider } from '@sfc/functions-shared/hosting/hostingConfigRegistry';
+import { registerStripeKeysProvider } from '@sfc/functions-shared/stripe/keysRegistry';
 
 import {
   HOSTING_PROJECT_ID,

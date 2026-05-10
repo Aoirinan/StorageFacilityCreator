@@ -7,8 +7,7 @@
  */
 
 import * as admin from 'firebase-admin';
-
-const db = admin.firestore();
+import { getFirestore } from '@sfc/functions-shared/firestoreLazy';
 
 /**
  * Migration 1: Contract Templates
@@ -26,7 +25,7 @@ export async function migrateContractTemplates(): Promise<{
     console.log('🔄 Starting contract templates migration...');
 
     // Get all contract templates
-    const templatesSnapshot = await db.collection('contract_templates').get();
+    const templatesSnapshot = await getFirestore().collection('contract_templates').get();
 
     if (templatesSnapshot.empty) {
       console.log('✅ No contract templates to migrate');
@@ -46,7 +45,7 @@ export async function migrateContractTemplates(): Promise<{
         // Try to find facility by ownerUid
         const createdBy = templateData.createdBy;
         if (createdBy) {
-          const facilitiesSnapshot = await db
+          const facilitiesSnapshot = await getFirestore()
             .collection('facilities')
             .where('ownerUid', '==', createdBy)
             .limit(1)
@@ -80,10 +79,10 @@ export async function migrateContractTemplates(): Promise<{
 
     // Migrate templates to facility subcollections
     for (const [facilityId, templates] of templatesByFacility.entries()) {
-      const batch = db.batch();
+      const batch = getFirestore().batch();
 
       for (const template of templates) {
-        const newRef = db
+        const newRef = getFirestore()
           .collection('facilities')
           .doc(facilityId)
           .collection('contractTemplates')
@@ -137,7 +136,7 @@ export async function migrateSecurityCollections(): Promise<{
     // Helper: Get accountId from userId or facilityId
     async function getAccountId(userId?: string, facilityId?: string): Promise<string | null> {
       if (facilityId) {
-        const facilityDoc = await db.collection('facilities').doc(facilityId).get();
+        const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
         if (facilityDoc.exists) {
           const facilityData = facilityDoc.data();
           return facilityData?.facilityCreatorAccountId || null;
@@ -145,7 +144,7 @@ export async function migrateSecurityCollections(): Promise<{
       }
 
       if (userId) {
-        const accountsSnapshot = await db
+        const accountsSnapshot = await getFirestore()
           .collection('facilityCreatorAccounts')
           .where('ownerUid', '==', userId)
           .limit(1)
@@ -161,7 +160,7 @@ export async function migrateSecurityCollections(): Promise<{
 
     // Migrate security_events
     console.log('📦 Migrating security_events...');
-    const eventsSnapshot = await db.collection('security_events').get();
+    const eventsSnapshot = await getFirestore().collection('security_events').get();
 
     for (const eventDoc of eventsSnapshot.docs) {
       const eventData = eventDoc.data();
@@ -173,7 +172,7 @@ export async function migrateSecurityCollections(): Promise<{
       }
 
       try {
-        await db
+        await getFirestore()
           .collection('facilityCreatorAccounts')
           .doc(accountId)
           .collection('security_events')
@@ -191,7 +190,7 @@ export async function migrateSecurityCollections(): Promise<{
 
     // Migrate security_alerts
     console.log('📦 Migrating security_alerts...');
-    const alertsSnapshot = await db.collection('security_alerts').get();
+    const alertsSnapshot = await getFirestore().collection('security_alerts').get();
 
     for (const alertDoc of alertsSnapshot.docs) {
       const alertData = alertDoc.data();
@@ -203,7 +202,7 @@ export async function migrateSecurityCollections(): Promise<{
       }
 
       try {
-        await db
+        await getFirestore()
           .collection('facilityCreatorAccounts')
           .doc(accountId)
           .collection('security_alerts')
@@ -221,7 +220,7 @@ export async function migrateSecurityCollections(): Promise<{
 
     // Migrate security_settings
     console.log('📦 Migrating security_settings...');
-    const settingsSnapshot = await db.collection('security_settings').get();
+    const settingsSnapshot = await getFirestore().collection('security_settings').get();
 
     for (const settingDoc of settingsSnapshot.docs) {
       const settingData = settingDoc.data();
@@ -233,7 +232,7 @@ export async function migrateSecurityCollections(): Promise<{
       }
 
       try {
-        await db
+        await getFirestore()
           .collection('facilityCreatorAccounts')
           .doc(accountId)
           .collection('security_settings')
@@ -273,7 +272,7 @@ export async function migrateDNREntries(): Promise<{
     console.log('🔄 Starting DNR entries migration...');
 
     // Check if global dnr_entries collection exists
-    const dnrSnapshot = await db.collection('dnr_entries').limit(1).get();
+    const dnrSnapshot = await getFirestore().collection('dnr_entries').limit(1).get();
 
     if (dnrSnapshot.empty) {
       console.log('✅ No global DNR entries to migrate (collection may not exist)');
@@ -281,7 +280,7 @@ export async function migrateDNREntries(): Promise<{
     }
 
     // Get all DNR entries
-    const allDnrSnapshot = await db.collection('dnr_entries').get();
+    const allDnrSnapshot = await getFirestore().collection('dnr_entries').get();
 
     console.log(`📦 Found ${allDnrSnapshot.docs.length} DNR entries to migrate`);
 
@@ -295,7 +294,7 @@ export async function migrateDNREntries(): Promise<{
       }
 
       // Find facility by ownerUid
-      const facilitiesSnapshot = await db
+      const facilitiesSnapshot = await getFirestore()
         .collection('facilities')
         .where('ownerUid', '==', createdBy)
         .limit(1)
@@ -309,7 +308,7 @@ export async function migrateDNREntries(): Promise<{
       const facilityId = facilitiesSnapshot.docs[0].id;
 
       try {
-        await db
+        await getFirestore()
           .collection('facilities')
           .doc(facilityId)
           .collection('dnr')

@@ -1,4 +1,5 @@
 export { ensureFirebaseAdminApp, ensureSentryForFunctions } from './init';
+export { getFirestore } from './firestoreLazy';
 
 export {
   SUPER_ADMIN_EMAILS_HARDCODED,

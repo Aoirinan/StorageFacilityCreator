@@ -1,6 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { getFirestore } from './firestore_lazy';
+import { getFirestore } from '@sfc/functions-shared/firestoreLazy';
 
 /**
  * Delinquency Rules (consistent with Flutter app):

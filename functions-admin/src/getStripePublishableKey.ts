@@ -1,5 +1,5 @@
 import * as functions from 'firebase-functions/v1';
-import { getPlatformPublishableKey } from '@sfc/functions-shared';
+import { getPlatformPublishableKey } from '@sfc/functions-shared/stripe/client';
 import { STRIPE_SECRETS } from './secrets';
 
 /**

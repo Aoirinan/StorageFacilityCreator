@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 
-import { isSuperAdmin } from '@sfc/functions-shared';
+import { isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
 
 import { runAllMigrations } from './migrations/phase2_migrations';
 
