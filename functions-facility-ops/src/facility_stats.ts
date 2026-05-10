@@ -1,7 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-
-const db = admin.firestore();
+import { getFirestore } from './firestore_lazy';
 
 /**
  * Delinquency Rules (consistent with Flutter app):
@@ -89,10 +88,10 @@ async function getCanonicalOccupiedCountAndHeal(
   }
   const BATCH_LIMIT = 500;
   if (orphanIds.length > 0) {
-    const unitsRef = db.collection('facilities').doc(facilityId).collection('units');
+    const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
     for (let i = 0; i < orphanIds.length; i += BATCH_LIMIT) {
       const chunk = orphanIds.slice(i, i + BATCH_LIMIT);
-      const batch = db.batch();
+      const batch = getFirestore().batch();
       for (const unitId of chunk) {
         batch.update(unitsRef.doc(unitId), {
           status: 'available',
@@ -112,13 +111,13 @@ async function getCanonicalOccupiedCountAndHeal(
 async function persistFacilityStats(facilityId: string, stats: Record<string, unknown>): Promise<void> {
   const occupied = Number(stats.occupiedUnits ?? 0);
   const unitDocCount = Number(stats.totalUnits ?? 0);
-  await db
+  await getFirestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('stats')
     .doc('current')
     .set(stats, { merge: true });
-  await db.collection('facilities').doc(facilityId).update({
+  await getFirestore().collection('facilities').doc(facilityId).update({
     occupiedUnits: occupied,
     unitDocCount,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -131,13 +130,13 @@ async function persistFacilityStats(facilityId: string, stats: Record<string, un
  */
 async function computeFacilityStats(facilityId: string): Promise<Record<string, any>> {
   try {
-    const unitsSnapshot = await db
+    const unitsSnapshot = await getFirestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('units')
       .get();
 
-    const tenantsSnapshot = await db
+    const tenantsSnapshot = await getFirestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('tenants')
@@ -262,7 +261,7 @@ export const updateAllFacilityStatsNightly = functions.pubsub
     try {
       console.log('🕐 Starting nightly facility stats update');
       
-      const facilitiesSnapshot = await db.collection('facilities').get();
+      const facilitiesSnapshot = await getFirestore().collection('facilities').get();
       const updatePromises = [];
 
       for (const facilityDoc of facilitiesSnapshot.docs) {

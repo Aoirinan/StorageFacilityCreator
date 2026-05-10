@@ -1,7 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-
-const db = admin.firestore();
+import { getFirestore } from './firestore_lazy';
 
 interface SetUnitOverlockRequest {
   facilityId: string;
@@ -30,7 +29,7 @@ interface ClearOverlockByFilterRequest {
 
 /** Ensure caller is owner/manager/admin (not just employee) for the facility. */
 async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{ facilityData: Record<string, any>; userName: string }> {
-  const facilityDoc = await db.collection('facilities').doc(facilityId).get();
+  const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Facility not found');
   }
@@ -57,7 +56,7 @@ async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{
     managerFromMap;
 
   if (!isManagerOrAdmin) {
-    const userRolesSnap = await db
+    const userRolesSnap = await getFirestore()
       .collection('user_roles')
       .where('userId', '==', uid)
       .where('facilityId', '==', facilityId)
@@ -78,7 +77,7 @@ async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{
 
   let userName: string;
   try {
-    const userDoc = await db.collection('users').doc(uid).get();
+    const userDoc = await getFirestore().collection('users').doc(uid).get();
     userName = (userDoc.data()?.displayName as string) || (userDoc.data()?.email as string) || uid;
   } catch {
     userName = uid;
@@ -88,7 +87,7 @@ async function requireManagerOrAdmin(uid: string, facilityId: string): Promise<{
 
 /** Get ledger balance for a tenant (sum of posted ledger entries). */
 async function getTenantBalance(facilityId: string, tenantId: string): Promise<number> {
-  const snapshot = await db
+  const snapshot = await getFirestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('ledgers')
@@ -113,7 +112,7 @@ async function applyUnitOverlock(
   note: string | undefined,
   bulkBatchId?: string,
 ): Promise<{ updated: boolean; alreadyInState: boolean }> {
-  const unitRef = db.collection('facilities').doc(facilityId).collection('units').doc(unitId);
+  const unitRef = getFirestore().collection('facilities').doc(facilityId).collection('units').doc(unitId);
   const unitSnap = await unitRef.get();
   if (!unitSnap.exists) {
     throw new functions.https.HttpsError('not-found', `Unit ${unitId} not found`);
@@ -130,7 +129,7 @@ async function applyUnitOverlock(
   const tenantId = unitData.tenantId as string | undefined;
   const tenantName = unitData.tenantName as string | undefined;
 
-  await db.runTransaction(async (tx) => {
+  await getFirestore().runTransaction(async (tx) => {
     tx.update(unitRef, {
       overlock: {
         isOverlocked,
@@ -143,7 +142,7 @@ async function applyUnitOverlock(
       updatedAt: now,
     });
 
-    const eventRef = db
+    const eventRef = getFirestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('units')
@@ -162,7 +161,7 @@ async function applyUnitOverlock(
     });
 
     if (tenantId) {
-      const tenantRef = db.collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
+      const tenantRef = getFirestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId);
       tx.update(tenantRef, {
         overlockIsActive: isOverlocked,
         updatedAt: now,
@@ -261,7 +260,7 @@ export const setUnitsOverlockStatusBulk = functions.https.onCall(async (data: Se
 
 /** Get tenant IDs that have balance > 0 (delinquent) in this facility. */
 async function getDelinquentTenantIds(facilityId: string): Promise<Set<string>> {
-  const ledgersSnap = await db
+  const ledgersSnap = await getFirestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('ledgers')
@@ -290,7 +289,7 @@ async function getUnitIdsForTenants(facilityId: string, tenantIds: Set<string>):
   const unitIds: string[] = [];
   for (let i = 0; i < arr.length; i += 10) {
     const chunk = arr.slice(i, i + 10);
-    const snap = await db
+    const snap = await getFirestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('units')
@@ -361,7 +360,7 @@ export const clearOverlockByFilter = functions.https.onCall(async (data: ClearOv
 
   await requireManagerOrAdmin(context.auth.uid, facilityId);
 
-  const unitsSnap = await db
+  const unitsSnap = await getFirestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('units')
