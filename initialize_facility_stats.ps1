@@ -6,6 +6,10 @@ Write-Host "🚀 Initializing facility stats..." -ForegroundColor Cyan
 # This script triggers the manual stats update for all facilities.
 # Stats live at facilities/{facilityId}/stats/current; the facility root doc also
 # gets `occupiedUnits` and `unitDocCount` (actual unit-document total) mirrored.
+# Cached stats also include `scheduledMonthlyRevenue` and `autopayMonthlyRevenue`.
+#
+# Deploy the facility-ops codebase after changing stats logic:
+#   npx -y firebase-tools@latest deploy --only functions:facility-ops
 
 Write-Host ""
 Write-Host "OPTIONS TO INITIALIZE STATS:" -ForegroundColor Yellow
@@ -24,8 +28,8 @@ Write-Host "  5. Click 'Run the function'"
 Write-Host "  6. Repeat for each facility"
 Write-Host ""
 Write-Host "Option 3: Use Firebase CLI (Advanced)" -ForegroundColor Green
-Write-Host "  Run these commands for each facility ID:"
-Write-Host "  firebase functions:call updateFacilityStatsManual --data '{`"facilityId`":`"FACILITY_ID_HERE`"}'"
+Write-Host "  Run for each facility ID (from repo root, Firebase CLI logged in):"
+Write-Host "  npx -y firebase-tools@latest functions:call updateFacilityStatsManual --data '{`"facilityId`":`"FACILITY_ID_HERE`"}'"
 Write-Host ""
 Write-Host "Option 4: Create a Temporary One-Time Script (Bulk)" -ForegroundColor Green
 Write-Host "  1. Copy this code into Firebase Console > Firestore > Query"

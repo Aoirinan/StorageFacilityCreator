@@ -8,7 +8,7 @@
     "node": "22"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "npx tsc"
   },
   "dependencies": {
     "@sfc/functions-shared": "file:vendor/functions-shared",
