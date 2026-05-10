@@ -418,8 +418,10 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
         subtitle: FutureBuilder<({int totalUnits, int occupiedUnits})>(
           future: FacilityStatsService.computeUnitCounts(facility.id),
           builder: (context, snapshot) {
-            // Use facility.totalUnits as single source of truth when set; else fall back to computed count
-            final totalUnits = facility.totalUnits > 0 ? facility.totalUnits : (snapshot.data?.totalUnits ?? 0);
+            // Show the actual count of unit documents (live > cached field).
+            // `facility.totalUnits` is the user-set capacity max and is not used here.
+            final totalUnits =
+                snapshot.data?.totalUnits ?? facility.unitDocCount;
             final occupiedUnits = snapshot.data?.occupiedUnits ?? facility.occupiedUnits;
             final totalDisplay = totalUnits > 0 ? totalUnits.toString() : '—';
             

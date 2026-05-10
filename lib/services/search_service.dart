@@ -275,7 +275,7 @@ class SearchService {
             id: facility.id,
             type: 'facility',
             title: facility.name,
-            subtitle: '${facility.occupiedUnits}/${facility.totalUnits} units occupied',
+            subtitle: '${facility.occupiedUnits}/${facility.unitDocCount} units occupied',
             facilityName: facility.name,
             isOnDNR: false,
             data: facility.toFirestore(),

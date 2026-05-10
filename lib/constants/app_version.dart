@@ -1,18 +1,18 @@
 /// Fallback app version when [PackageInfo] is unavailable (tests, early frame).
 /// **Keep in sync with `pubspec.yaml`** `version:` line (`major.minor.patch+build`).
 class AppVersion {
-  static const String version = '2.10.64';
+  static const String version = '2.10.66';
 
-  static const String buildNumber = '20260504';
+  static const String buildNumber = '20260509';
 
   static const String fullVersion = '$version+$buildNumber';
 
-  static const String deploymentDate = '2026-05-04';
+  static const String deploymentDate = '2026-05-09';
   static const String deploymentTime =
-      'Dashboard unit capacity labeling; no auto-create placeholder unit rows on sync.';
+      'Autopay revenue in facility stats; CF triggers mirror unitDocCount; metrics backfill.';
 
   static const String featureTag =
-      'Facility capacity vs unit records; super admin messaging UX.';
+      'Facility stats: autopayMonthlyRevenue + server/client unit count parity.';
 
   static String get displayVersion => 'v$version (Build $buildNumber)';
 

@@ -635,7 +635,11 @@ final platformMetricsProvider = Provider<AsyncValue<PlatformMetrics>>((ref) {
               return AsyncValue.data(PlatformMetrics(
                 totalFacilities: facilities.length,
                 activeFacilities: active.length,
-                totalUnits: facilities.fold(0, (s, f) => s + f.totalUnits),
+                // `unitDocCount` is the count of actual unit documents under
+                // each facility, mirrored onto the facility doc by
+                // `FacilityStatsService.updateFacilityStats`. The user-set
+                // `totalUnits` (capacity max) is intentionally not summed here.
+                totalUnits: facilities.fold(0, (s, f) => s + f.unitDocCount),
                 occupiedUnits:
                     facilities.fold(0, (s, f) => s + f.occupiedUnits),
                 totalAccounts: accounts.length,

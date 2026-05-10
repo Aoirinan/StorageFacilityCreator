@@ -21,6 +21,33 @@ import 'late_logic_service.dart';
 class FacilityStatsService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  /// Portion of [scheduledMonthlyRevenue] that is on autopay (`autopay.status == ON`).
+  static double sumAutopayMonthlyRevenue(Iterable<TenantModel> activeTenants) {
+    var sum = 0.0;
+    for (final t in activeTenants) {
+      if (t.autopay.isOn) sum += t.monthlyRate;
+    }
+    return sum;
+  }
+
+  /// True if the facility has at least one unit document (cheap `limit(1)` probe).
+  static Future<bool> facilityHasAnyUnitDoc(String facilityId) async {
+    try {
+      final snap = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('units')
+          .limit(1)
+          .get();
+      return snap.docs.isNotEmpty;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [FacilityStatsService] facilityHasAnyUnitDoc failed: $e');
+      }
+      return false;
+    }
+  }
+
   /// Set of tenant IDs that exist for the facility (used for canonical occupancy).
   static Future<Set<String>> _getTenantIdsForFacility(String facilityId) async {
     final tenants = await TenantService.getTenantsForFacility(facilityId);
@@ -45,14 +72,14 @@ class FacilityStatsService {
   }
 
   /// Compute total and occupied unit counts using canonical rule (no heal).
-  /// Returns (totalUnits, occupiedUnits). Used by Facilities card and any live display.
+  /// Returns (totalUnits, occupiedUnits). `totalUnits` is the count of unit
+  /// documents that actually exist for the facility — the user-set capacity max
+  /// is never used here.
   static Future<({int totalUnits, int occupiedUnits})> computeUnitCounts(String facilityId) async {
     try {
       final units = await UnitService.getUnitsForFacility(facilityId);
       final tenantIds = await _getTenantIdsForFacility(facilityId);
-      final facility = await FacilityService.getFacility(facilityId);
-      final facilityCapacity = facility?.totalUnits ?? 0;
-      final totalUnits = count_helpers.effectiveTotalUnits(facilityCapacity, units.length);
+      final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
       final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
       return (totalUnits: totalUnits, occupiedUnits: occupiedUnits);
     } catch (e) {
@@ -97,29 +124,22 @@ class FacilityStatsService {
       }
 
       final facility = await FacilityService.getFacility(facilityId);
-      final facilityCapacity = facility?.totalUnits ?? 0;
       final units = await UnitService.getUnitsForFacility(facilityId);
       final tenantIds = await _getTenantIdsForFacility(facilityId);
       final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
-      final totalUnits = count_helpers.effectiveTotalUnits(facilityCapacity, units.length);
+      final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
       final availableUnits = (totalUnits - occupiedUnits).clamp(0, totalUnits);
 
       final tenants = await TenantService.getTenantsForFacility(facilityId);
       final activeTenants = tenants.where((t) => t.isActive == true).toList();
       final totalTenantsActive = activeTenants.length;
       
-      // Calculate scheduled monthly revenue (sum of all active tenant monthlyRate)
+      // Scheduled revenue = all active tenants; autopay subset uses Firestore `autopay.status` (ON).
       double scheduledMonthlyRevenue = 0.0;
-      double autopayMonthlyRevenue = 0.0;
-      
       for (final tenant in activeTenants) {
         scheduledMonthlyRevenue += tenant.monthlyRate;
-        
-        // For autopay revenue, check if tenant has autopay enabled
-        // (This would require checking payment methods - for now, assume based on field if it exists)
-        // You may need to query Stripe customer metadata or a separate autopay field
-        // For now, we'll just track scheduled revenue
       }
+      final autopayMonthlyRevenue = sumAutopayMonthlyRevenue(activeTenants);
       
       // Count delinquent tenants using facility's grace period (Billing Settings)
       final grace = facility?.billingSettings?['gracePeriodDays'];
@@ -146,7 +166,8 @@ class FacilityStatsService {
         print('✅ [FacilityStatsService] Computed stats for $facilityId:');
         print('   - Total units: $totalUnits (occupied: $occupiedUnits, available: $availableUnits)');
         print('   - Active tenants: $totalTenantsActive');
-        print('   - Scheduled monthly revenue: \$${scheduledMonthlyRevenue.toStringAsFixed(2)}');
+        print('   - Scheduled monthly revenue: \$${scheduledMonthlyRevenue.toStringAsFixed(2)} '
+            '(autopay: \$${autopayMonthlyRevenue.toStringAsFixed(2)})');
         print('   - Past due: $totalPastDue (late: $tenantsLate, overdue: $tenantsOverdue, severe: $tenantsSeverelyOverdue)');
       }
       
@@ -156,7 +177,7 @@ class FacilityStatsService {
         'availableUnits': availableUnits,
         'totalTenantsActive': totalTenantsActive,
         'scheduledMonthlyRevenue': scheduledMonthlyRevenue,
-        'autopayMonthlyRevenue': autopayMonthlyRevenue, // TODO: Implement autopay detection
+        'autopayMonthlyRevenue': autopayMonthlyRevenue,
         'tenantsLate': tenantsLate,
         'tenantsOverdue': tenantsOverdue,
         'tenantsSeverelyOverdue': tenantsSeverelyOverdue,
@@ -184,11 +205,14 @@ class FacilityStatsService {
   }
 
   /// Update facilityStats document with computed statistics (heals orphans first, then recomputes).
-  /// Also updates facility.occupiedUnits so facility doc and stats stay in sync.
+  /// Also mirrors the canonical unit counts (`occupiedUnits`, `unitDocCount`) onto the
+  /// facility document so the super admin metrics stream and other consumers can read
+  /// the actual unit-doc total without a sub-collection query.
   static Future<void> updateFacilityStats(String facilityId) async {
     try {
       final stats = await computeFacilityStats(facilityId, healFirst: true);
       final occupied = (stats['occupiedUnits'] as int?) ?? 0;
+      final unitDocCount = (stats['totalUnits'] as int?) ?? 0;
 
       await _firestore
           .collection('facilities')
@@ -199,11 +223,12 @@ class FacilityStatsService {
 
       await _firestore.collection('facilities').doc(facilityId).update({
         'occupiedUnits': occupied,
+        'unitDocCount': unitDocCount,
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
       if (kDebugMode) {
-        print('✅ [FacilityStatsService] Updated facility stats + occupied=$occupied for $facilityId');
+        print('✅ [FacilityStatsService] Updated facility stats + occupied=$occupied unitDocCount=$unitDocCount for $facilityId');
       }
     } catch (e) {
       if (kDebugMode) {
@@ -213,15 +238,16 @@ class FacilityStatsService {
     }
   }
 
-  /// Update facility document with occupied count only.
-  /// Does NOT overwrite totalUnits - that is the user-set capacity.
+  /// Update facility document with canonical occupied + unit-doc count mirrors.
+  /// Does not change `totalUnits` on the facility doc — that field remains the
+  /// user-set capacity max. Mirrors actual unit-document totals to `unitDocCount`.
   static Future<void> refreshFacilityCounts(String facilityId) async {
     try {
       final counts = await computeUnitCounts(facilityId);
       
-      // Only update occupiedUnits - totalUnits is user-set capacity and must not be overwritten
       await _firestore.collection('facilities').doc(facilityId).update({
         'occupiedUnits': counts.occupiedUnits,
+        'unitDocCount': counts.totalUnits,
         'updatedAt': FieldValue.serverTimestamp(),
       });
       
@@ -252,8 +278,8 @@ class FacilityStatsService {
         final cachedOccupied = (cached['occupiedUnits'] as int?) ?? 0;
         final cachedTenants = (cached['totalTenantsActive'] as int?) ?? 0;
 
-        // Cache often has unit capacity pre-seeded (e.g. imports) while tenant aggregates
-        // were never recomputed → dashboard shows 0 tenants but Tenants list has rows.
+        // Stale cache: stats show no tenants/occupancy while tenant docs exist
+        // (e.g. after imports or partial writes) → recompute.
         if (cachedTenants == 0 && cachedOccupied == 0) {
           final anyTenantSnap = await _firestore
               .collection('facilities')
@@ -293,12 +319,16 @@ class FacilityStatsService {
               .data();
         }
 
-        final facility = await FacilityService.getFacility(facilityId);
-        final facilityCapacity = facility?.totalUnits ?? 0;
+        // Cached `totalUnits` now reflects the actual count of unit documents.
+        // Compare against the live count and refresh if the cache drifted (e.g.
+        // unit docs were added/removed without triggering a recompute yet).
         final cachedTotalUnits = (cached['totalUnits'] as int?) ?? 0;
-        if (facilityCapacity > 0 && cachedTotalUnits != facilityCapacity) {
+        final units = await UnitService.getUnitsForFacility(facilityId);
+        if (cachedTotalUnits != units.length) {
           if (kDebugMode) {
-            print('🔄 [FacilityStatsService] Cached stats stale (capacity $cachedTotalUnits != facility $facilityCapacity), recomputing...');
+            print(
+              '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != ${units.length} unit docs, recomputing...',
+            );
           }
           await updateFacilityStats(facilityId);
           return (await _firestore
@@ -308,26 +338,6 @@ class FacilityStatsService {
                   .doc('current')
                   .get())
               .data();
-        }
-
-        // Capacity unset (0): effective total is unit-document count — refresh if cache drifted.
-        if (facilityCapacity == 0 && cachedTotalUnits > 0) {
-          final units = await UnitService.getUnitsForFacility(facilityId);
-          if (cachedTotalUnits != units.length) {
-            if (kDebugMode) {
-              print(
-                '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != ${units.length} unit docs (capacity 0), recomputing...',
-              );
-            }
-            await updateFacilityStats(facilityId);
-            return (await _firestore
-                    .collection('facilities')
-                    .doc(facilityId)
-                    .collection('stats')
-                    .doc('current')
-                    .get())
-                .data();
-          }
         }
         return cached;
       }

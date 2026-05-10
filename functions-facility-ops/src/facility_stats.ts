@@ -16,6 +16,12 @@ interface TenantData {
   monthlyRate: number;
   paidThrough?: admin.firestore.Timestamp | null;
   createdAt: admin.firestore.Timestamp;
+  /** Matches app `TenantAutopayModel`: revenue counts when status === 'ON'. */
+  autopay?: { status?: string; enabled?: boolean };
+}
+
+function tenantAutopayOn(tenant: TenantData): boolean {
+  return tenant.autopay?.status === 'ON';
 }
 
 interface UnitData {
@@ -102,6 +108,23 @@ async function getCanonicalOccupiedCountAndHeal(
   return { occupiedUnits, orphanIds };
 }
 
+/** Write stats doc and mirror occupied + unit-doc count onto the facility root doc. */
+async function persistFacilityStats(facilityId: string, stats: Record<string, unknown>): Promise<void> {
+  const occupied = Number(stats.occupiedUnits ?? 0);
+  const unitDocCount = Number(stats.totalUnits ?? 0);
+  await db
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('stats')
+    .doc('current')
+    .set(stats, { merge: true });
+  await db.collection('facilities').doc(facilityId).update({
+    occupiedUnits: occupied,
+    unitDocCount,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
 /**
  * Compute comprehensive facility statistics.
  * Uses canonical occupancy (only count occupied if tenant exists). Heals orphan units.
@@ -134,13 +157,18 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
 
     // Calculate revenue and delinquency
     let scheduledMonthlyRevenue = 0;
+    let autopayMonthlyRevenue = 0;
     let tenantsLate = 0; // 1-9 days
     let tenantsOverdue = 0; // 10-29 days
     let tenantsSeverelyOverdue = 0; // 30+ days
 
     for (const doc of tenantsSnapshot.docs) {
       const tenant = doc.data() as TenantData;
-      scheduledMonthlyRevenue += tenant.monthlyRate || 0;
+      const rate = tenant.monthlyRate || 0;
+      scheduledMonthlyRevenue += rate;
+      if (tenantAutopayOn(tenant)) {
+        autopayMonthlyRevenue += rate;
+      }
 
       const daysLate = calculateDaysLate(tenant);
       if (daysLate >= 30) {
@@ -160,7 +188,7 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
       availableUnits,
       totalTenantsActive,
       scheduledMonthlyRevenue,
-      autopayMonthlyRevenue: 0, // TODO: Implement autopay detection via Stripe
+      autopayMonthlyRevenue,
       tenantsLate,
       tenantsOverdue,
       tenantsSeverelyOverdue,
@@ -196,18 +224,7 @@ export const onTenantWrite = functions.firestore
     try {
       console.log(`📊 Updating facility stats for ${facilityId} after tenant change`);
       const stats = await computeFacilityStats(facilityId);
-      const occupied = (stats.occupiedUnits as number) ?? 0;
-
-      await db
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('stats')
-        .doc('current')
-        .set(stats, { merge: true });
-      await db.collection('facilities').doc(facilityId).update({
-        occupiedUnits: occupied,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      await persistFacilityStats(facilityId, stats);
 
       console.log(`✅ Stats updated for facility ${facilityId}`);
     } catch (error) {
@@ -226,18 +243,7 @@ export const onUnitWrite = functions.firestore
     try {
       console.log(`📊 Updating facility stats for ${facilityId} after unit change`);
       const stats = await computeFacilityStats(facilityId);
-      const occupied = (stats.occupiedUnits as number) ?? 0;
-
-      await db
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('stats')
-        .doc('current')
-        .set(stats, { merge: true });
-      await db.collection('facilities').doc(facilityId).update({
-        occupiedUnits: occupied,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      await persistFacilityStats(facilityId, stats);
 
       console.log(`✅ Stats updated for facility ${facilityId}`);
     } catch (error) {
@@ -261,19 +267,9 @@ export const updateAllFacilityStatsNightly = functions.pubsub
 
       for (const facilityDoc of facilitiesSnapshot.docs) {
         const facilityId = facilityDoc.id;
-        const promise = computeFacilityStats(facilityId).then(async (stats) => {
-          const occupied = (stats.occupiedUnits as number) ?? 0;
-          await db
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('stats')
-            .doc('current')
-            .set(stats, { merge: true });
-          await db.collection('facilities').doc(facilityId).update({
-            occupiedUnits: occupied,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        });
+        const promise = computeFacilityStats(facilityId).then((stats) =>
+          persistFacilityStats(facilityId, stats),
+        );
         updatePromises.push(promise);
       }
 
@@ -302,18 +298,7 @@ export const updateFacilityStatsManual = functions.https.onCall(async (data, con
   try {
     console.log(`📊 Manual stats update requested for facility ${facilityId}`);
     const stats = await computeFacilityStats(facilityId);
-    const occupied = (stats.occupiedUnits as number) ?? 0;
-
-    await db
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('stats')
-      .doc('current')
-      .set(stats, { merge: true });
-    await db.collection('facilities').doc(facilityId).update({
-      occupiedUnits: occupied,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    await persistFacilityStats(facilityId, stats);
 
     console.log(`✅ Manual stats update complete for facility ${facilityId}`);
     return { success: true, stats };

@@ -47,7 +47,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     }
   }
 
-  /// Total capacity = facility.totalUnits; occupied = canonical count. Used for Unit List denominator.
+  /// Denominator = actual unit-document count from [FacilityStatsService.computeUnitCounts];
+  /// occupied = canonical count. (Facility `totalUnits` is the editable capacity cap only.)
   Future<({int totalCapacity, int occupied})> _getUnitCountsForFacility(
     String facilityId,
     int fallbackTotal,

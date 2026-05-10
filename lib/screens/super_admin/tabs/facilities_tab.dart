@@ -201,9 +201,11 @@ class _FacilityRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final f = row.facility;
     final dateStr = DateFormat('MMM d, yyyy').format(f.createdAt);
-    final occupancy = f.totalUnits == 0
+    // Show actual unit-document count, not the editable capacity max.
+    final totalUnitsActual = f.unitDocCount;
+    final occupancy = totalUnitsActual == 0
         ? 0.0
-        : f.occupiedUnits / f.totalUnits;
+        : f.occupiedUnits / totalUnitsActual;
 
     return Container(
       decoration: BoxDecoration(
@@ -269,7 +271,7 @@ class _FacilityRow extends ConsumerWidget {
             _Detail('Phone', f.phone ?? '—'),
             _Detail('Email', f.email ?? '—'),
             _Detail('Units',
-                '${f.occupiedUnits} / ${f.totalUnits} (${(occupancy * 100).toStringAsFixed(0)}%)'),
+                '${f.occupiedUnits} / $totalUnitsActual (${(occupancy * 100).toStringAsFixed(0)}%)'),
             _Detail('Stripe Connect',
                 f.stripeConnectOnboardingComplete ? 'Connected' : 'Not connected'),
             if (row.subscriptionPeriodEnd != null)

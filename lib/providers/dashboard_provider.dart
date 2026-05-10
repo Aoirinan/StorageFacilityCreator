@@ -194,13 +194,12 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
     final stats = await FacilityStatsService.getFacilityStats(facility.id);
     
     if (stats != null) {
-      // Use precomputed stats (faster), but align **capacity** with the facility document —
-      // same rule as Facilities list / facility cards. Cached stats can lag after capacity edits.
+      // Cached stats now hold the actual unit-document count (not the user-set
+      // capacity max). Trust them directly — `FacilityStatsService` keeps them
+      // in sync with the unit list.
       final statsActive = (stats['totalTenantsActive'] as int?) ?? 0;
-      final cachedTotalUnits = (stats['totalUnits'] as int?) ?? 0;
+      final statsUnits = (stats['totalUnits'] as int?) ?? 0;
       final statsOccupiedRaw = (stats['occupiedUnits'] as int?) ?? 0;
-      final capacity = facility.totalUnits;
-      final statsUnits = capacity > 0 ? capacity : cachedTotalUnits;
       final statsOccupied =
           statsOccupiedRaw > statsUnits ? statsUnits : statsOccupiedRaw;
       final statsRevenue = (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
@@ -215,15 +214,9 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       if (kDebugMode) {
         print('📊 [Dashboard] Using cached stats for ${facility.name}:');
         print('   - Tenants: $statsActive');
-        print(
-          '   - Units: $statsUnits (occupied: $statsOccupied; cache had total $cachedTotalUnits, capacity field $capacity)',
-        );
+        print('   - Units: $statsUnits (occupied: $statsOccupied)');
         print('   - Revenue: \$${statsRevenue.toStringAsFixed(2)}');
         print('   - Past due: $statsPastDue');
-      }
-
-      if (capacity > 0 && cachedTotalUnits != capacity) {
-        FacilityStatsService.updateFacilityStats(facility.id);
       }
     } else {
       // Fallback to computing on-the-fly (slower)
@@ -268,8 +261,9 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
         u.tenantId != null &&
         tenantIds.contains(u.tenantId),
       ).length;
-      final facilityCapacity = facility.totalUnits;
-      totalUnits += facilityCapacity > 0 ? facilityCapacity : units.length;
+      // Total units = actual count of unit documents (capacity max is editable
+      // metadata; the dashboard reflects what's been built/added).
+      totalUnits += units.length;
       occupiedUnits += facilityOccupied;
       
       if (kDebugMode) {

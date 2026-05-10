@@ -1,13 +1,56 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
-class MetricsTab extends ConsumerWidget {
+class MetricsTab extends ConsumerStatefulWidget {
   const MetricsTab({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MetricsTab> createState() => _MetricsTabState();
+}
+
+class _MetricsTabState extends ConsumerState<MetricsTab> {
+  /// Facility ids we've already kicked off a stats refresh for this session,
+  /// so we don't re-trigger writes on every widget rebuild.
+  final Set<String> _backfilledFacilityIds = <String>{};
+
+  /// One-shot per widget instance: extended backfill does async unit probes.
+  bool _backfillScheduled = false;
+
+  /// Mirror `unitDocCount` onto older facility docs. Uses a cheap heuristic first,
+  /// then a `units` limit(1) probe when `unitDocCount` is still 0 so vacant-only
+  /// sites (capacity unset, no occupancy) still get fixed.
+  Future<void> _runUnitDocCountBackfill(List<FacilityModel> facilities) async {
+    for (final f in facilities) {
+      if (!mounted) return;
+      if (_backfilledFacilityIds.contains(f.id)) continue;
+      if (f.unitDocCount > 0) continue;
+
+      final quickStale = f.totalUnits > 0 || f.occupiedUnits > 0;
+      var needs = quickStale;
+      if (!needs) {
+        needs = await FacilityStatsService.facilityHasAnyUnitDoc(f.id);
+      }
+      if (!needs) continue;
+
+      _backfilledFacilityIds.add(f.id);
+      FacilityStatsService.updateFacilityStats(f.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.watch(allFacilitiesProvider).whenData((facilities) {
+      if (_backfillScheduled) return;
+      _backfillScheduled = true;
+      unawaited(_runUnitDocCountBackfill(facilities));
+    });
+
     final metricsAsync = ref.watch(platformMetricsProvider);
 
     return metricsAsync.when(

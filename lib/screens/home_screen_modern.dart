@@ -863,10 +863,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               color: AppTheme.primaryBlue,
             ),
             MetricCard(
-              title: 'Unit capacity',
+              title: 'Total Units',
               value: stats.totalUnits.toString(),
               subtitle:
-                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant (site max)',
+                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant',
               icon: Icons.home_work,
               color: AppTheme.info,
             ),
@@ -1011,10 +1011,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     
     if (stats.totalUnits > 0) {
       activities.add(activity.ActivityItem(
-        title: 'Unit capacity',
+        title: 'Total Units',
         subtitle: multiFacility
-            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} max (combined)'
-            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} max capacity',
+            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)'
+            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total',
         icon: Icons.home_work,
         iconColor: AppTheme.info,
         timestamp: DateTime.now().subtract(const Duration(minutes: 10)),

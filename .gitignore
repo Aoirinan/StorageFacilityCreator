@@ -84,3 +84,7 @@ app.*.map.json
 # Marketing site (Next.js)
 /marketing/node_modules/
 /marketing/.next/
+
+# Cloud Functions (each package has its own node_modules; never commit)
+functions/node_modules/
+functions-*/node_modules/

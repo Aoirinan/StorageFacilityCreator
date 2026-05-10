@@ -3,8 +3,9 @@
 
 Write-Host "🚀 Initializing facility stats..." -ForegroundColor Cyan
 
-# This script triggers the manual stats update for all facilities
-# Stats will be stored in facilities/{facilityId}/stats/current
+# This script triggers the manual stats update for all facilities.
+# Stats live at facilities/{facilityId}/stats/current; the facility root doc also
+# gets `occupiedUnits` and `unitDocCount` (actual unit-document total) mirrored.
 
 Write-Host ""
 Write-Host "OPTIONS TO INITIALIZE STATS:" -ForegroundColor Yellow

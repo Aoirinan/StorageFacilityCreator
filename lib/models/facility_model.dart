@@ -20,8 +20,17 @@ class FacilityModel {
   final String? phone;
   final String? email;
   final String? description;
+  /// User-set facility capacity (max units the site can hold). Edited from the
+  /// wizard / facility edit screen. NOT the same as how many unit documents
+  /// actually exist — see [unitDocCount].
   final int totalUnits;
   final int occupiedUnits;
+
+  /// Number of unit documents that actually exist under this facility.
+  /// Synced by `FacilityStatsService.updateFacilityStats` whenever stats refresh.
+  /// This is what dashboards display as "Total Units"; [totalUnits] is only
+  /// the editable capacity max.
+  final int unitDocCount;
   final bool active; // Added for soft delete
   final DateTime? archivedAt; // Added for soft delete
   final String? archivedByUid; // Added for soft delete
@@ -83,6 +92,7 @@ class FacilityModel {
     this.description,
     this.totalUnits = 0,
     this.occupiedUnits = 0,
+    this.unitDocCount = 0,
     this.active = true, // Default to active
     this.archivedAt,
     this.archivedByUid,
@@ -134,6 +144,7 @@ class FacilityModel {
       description: data?['description'],
       totalUnits: data?['totalUnits'] ?? 0,
       occupiedUnits: data?['occupiedUnits'] ?? 0,
+      unitDocCount: (data?['unitDocCount'] as num?)?.toInt() ?? 0,
       active: data?['active'] ?? true, // Default to active if not specified
       archivedAt: (data?['archivedAt'] as Timestamp?)?.toDate(),
       archivedByUid: data?['archivedByUid'],
@@ -204,6 +215,7 @@ class FacilityModel {
       'description': description,
       'totalUnits': totalUnits,
       'occupiedUnits': occupiedUnits,
+      'unitDocCount': unitDocCount,
       'active': active,
       'archivedAt': archivedAt != null ? Timestamp.fromDate(archivedAt!) : null,
       'archivedByUid': archivedByUid,
@@ -266,6 +278,7 @@ class FacilityModel {
     String? description,
     int? totalUnits,
     int? occupiedUnits,
+    int? unitDocCount,
     bool? active,
     DateTime? archivedAt,
     String? archivedByUid,
@@ -314,6 +327,7 @@ class FacilityModel {
       description: description ?? this.description,
       totalUnits: totalUnits ?? this.totalUnits,
       occupiedUnits: occupiedUnits ?? this.occupiedUnits,
+      unitDocCount: unitDocCount ?? this.unitDocCount,
       active: active ?? this.active,
       archivedAt: archivedAt ?? this.archivedAt,
       archivedByUid: archivedByUid ?? this.archivedByUid,
@@ -368,14 +382,19 @@ class FacilityModel {
       platformSubscriptionStatus == 'active' ||
       platformSubscriptionStatus == 'trialing';
 
-  // Calculate occupancy percentage
+  /// Occupancy vs **actual** unit documents when [unitDocCount] is known; otherwise
+  /// falls back to [totalUnits] (capacity max) for older docs not yet backfilled.
   double get occupancyPercentage {
-    if (totalUnits == 0) return 0.0;
-    return (occupiedUnits / totalUnits) * 100;
+    final denom = unitDocCount > 0 ? unitDocCount : totalUnits;
+    if (denom == 0) return 0.0;
+    return (occupiedUnits / denom) * 100;
   }
 
-  // Check if facility is full
-  bool get isFull => occupiedUnits >= totalUnits;
+  bool get isFull {
+    final cap = unitDocCount > 0 ? unitDocCount : totalUnits;
+    if (cap == 0) return false;
+    return occupiedUnits >= cap;
+  }
 
   @override
   String toString() {
