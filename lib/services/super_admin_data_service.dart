@@ -70,7 +70,8 @@ class PlatformTenantRevenueSnapshot {
 /// Loads per-facility cached stats (N reads). Use on super-admin Metrics only.
 final platformTenantRevenueAggregateProvider =
     FutureProvider<PlatformTenantRevenueSnapshot>((ref) async {
-  final facilities = ref.watch(allFacilitiesProvider).valueOrNull;
+  final facilities =
+      ref.watch(allFacilitiesProvider).whenOrNull(data: (d) => d);
   if (facilities == null || facilities.isEmpty) {
     return const PlatformTenantRevenueSnapshot(
       scheduledMonthlyRevenue: 0,
