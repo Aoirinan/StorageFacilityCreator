@@ -55,7 +55,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: functions/package-lock.json
+          cache-dependency-path: |
+            functions/package-lock.json
+            functions-shared/package-lock.json
+      # functions/vendor/functions-shared is gitignored; fresh clones need a built copy for file: deps.
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
       - run: npm ci
       - run: npm run build
       - run: npm run check:quickbooks
