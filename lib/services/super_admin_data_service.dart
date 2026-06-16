@@ -67,6 +67,109 @@ class PlatformTenantRevenueSnapshot {
   });
 }
 
+/// Estimated MRR from facilities paying for the SFC platform (Stripe), using
+/// the standard list price ($75/mo per subscribed facility). Combines legacy
+/// account-level subscriptions with per-facility platform subscriptions without
+/// double-counting facilities that bill per-facility.
+class PlatformSaasRevenueSnapshot {
+  /// List price MRR in USD (active subscriptions only; excludes trials).
+  final double estimatedMonthlyRevenue;
+  final double legacyAccountMrr;
+  final double perFacilityMrr;
+  /// Facilities with `platformSubscriptionStatus == active`.
+  final int perFacilityPayingCount;
+  /// Facilities billed through an active account-level Stripe subscription
+  /// (excluding those that also have an active per-facility sub).
+  final int legacyCoveredFacilityCount;
+  /// Accounts contributing [legacyAccountMrr] (active + `stripeSubscriptionId`).
+  final int legacyPayingAccountCount;
+
+  const PlatformSaasRevenueSnapshot({
+    required this.estimatedMonthlyRevenue,
+    required this.legacyAccountMrr,
+    required this.perFacilityMrr,
+    required this.perFacilityPayingCount,
+    required this.legacyCoveredFacilityCount,
+    required this.legacyPayingAccountCount,
+  });
+
+  int get payingFacilityCount =>
+      perFacilityPayingCount + legacyCoveredFacilityCount;
+}
+
+/// Standard platform list price (must match Stripe `sfc_*_monthly_75` products).
+const double kPlatformSubscriptionListPriceUsd = 75.0;
+
+/// Estimated platform SaaS MRR from Firestore subscription fields (super-admin).
+final platformSaasRevenueProvider =
+    Provider<AsyncValue<PlatformSaasRevenueSnapshot>>((ref) {
+  const price = kPlatformSubscriptionListPriceUsd;
+  final facilitiesAsync = ref.watch(allFacilitiesProvider);
+  final accountsAsync = ref.watch(allAccountsProvider);
+
+  return facilitiesAsync.when(
+    loading: () => const AsyncValue.loading(),
+    error: (e, s) => AsyncValue.error(e, s),
+    data: (facilities) {
+      return accountsAsync.when(
+        loading: () => const AsyncValue.loading(),
+        error: (e, s) => AsyncValue.error(e, s),
+        data: (accounts) {
+          final facById = {for (final f in facilities) f.id: f};
+
+          var perFacilityMrr = 0.0;
+          var perFacilityPayingCount = 0;
+          for (final f in facilities) {
+            if (!f.active) continue;
+            if (f.platformSubscriptionStatus == 'active') {
+              perFacilityMrr += price;
+              perFacilityPayingCount++;
+            }
+          }
+
+          var legacyMrr = 0.0;
+          var legacyCoveredFacilityCount = 0;
+          var legacyPayingAccountCount = 0;
+
+          for (final a in accounts) {
+            if (a.subscriptionStatus != SubscriptionStatus.active) continue;
+            final subId = a.stripeSubscriptionId?.trim();
+            if (subId == null || subId.isEmpty) continue;
+
+            var billable = 0;
+            for (final id in a.facilityIds) {
+              final f = facById[id];
+              if (f == null || !f.active) continue;
+              // Per-facility platform billing is counted separately.
+              if (f.platformSubscriptionStatus == 'active') continue;
+              billable++;
+            }
+
+            if (billable > 0) {
+              legacyMrr += price * billable;
+              legacyCoveredFacilityCount += billable;
+              legacyPayingAccountCount++;
+            } else if (a.facilityIds.isEmpty) {
+              // Active subscription with no facilities linked yet (base seat).
+              legacyMrr += price;
+              legacyPayingAccountCount++;
+            }
+          }
+
+          return AsyncValue.data(PlatformSaasRevenueSnapshot(
+            estimatedMonthlyRevenue: legacyMrr + perFacilityMrr,
+            legacyAccountMrr: legacyMrr,
+            perFacilityMrr: perFacilityMrr,
+            perFacilityPayingCount: perFacilityPayingCount,
+            legacyCoveredFacilityCount: legacyCoveredFacilityCount,
+            legacyPayingAccountCount: legacyPayingAccountCount,
+          ));
+        },
+      );
+    },
+  );
+});
+
 /// Loads per-facility cached stats (N reads). Use on super-admin Metrics only.
 final platformTenantRevenueAggregateProvider =
     FutureProvider<PlatformTenantRevenueSnapshot>((ref) async {
@@ -978,6 +1081,20 @@ class SuperAdminDataService {
       'facilityId': facilityId.trim(),
       'facilityNameConfirmation': facilityNameConfirmation.trim(),
     });
+  }
+
+  /// Super admin only: deactivate active `user_roles` for [facilityId] when the
+  /// corresponding `users/{userId}` document is missing (orphans after legacy deletes).
+  /// Returns how many role assignment rows were deactivated.
+  static Future<int> repairFacilityPermissionOrphans(String facilityId) async {
+    final callable =
+        _functions.httpsCallable('superAdminRepairFacilityPermissionOrphans');
+    final result = await callable.call<Map<String, dynamic>>({
+      'facilityId': facilityId.trim(),
+    });
+    final data = Map<String, dynamic>.from(result.data);
+    final n = data['deactivatedRoleAssignments'];
+    return n is int ? n : int.tryParse('$n') ?? 0;
   }
 
   /// Add an internal note for a facility, account, or user.

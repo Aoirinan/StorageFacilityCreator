@@ -16,6 +16,7 @@ import {
   SUPPORT_EMAIL,
   PRICE_MONTHLY,
   TRIAL_LINE,
+  ONLINE_RENTALS_ADDON_MONTHLY,
 } from '@/config/site';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
@@ -236,7 +237,7 @@ export default function HomePage() {
       <Script id="org-jsonld" type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }} />
       <Script id="software-jsonld" type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(appSchema) }} />
       {/* Hero */}
-      <Section className="pt-8 sm:pt-12 pb-12 sm:pb-16 bg-gradient-to-b from-blue-50 via-white to-indigo-50/50">
+      <Section className="pt-8 sm:pt-12 pb-12 sm:pb-16 bg-gradient-to-br from-sky-100/80 via-blue-50/70 to-violet-100/60">
         <div className="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center">
           <div>
             <span className="eyebrow">Self-Storage SaaS</span>
@@ -277,13 +278,13 @@ export default function HomePage() {
             </p>
 
             {/* Hero stats ribbon */}
-            <dl className="mt-8 grid max-w-lg grid-cols-2 gap-6 border-t border-slate-200 pt-6">
+            <dl className="mt-8 grid max-w-lg grid-cols-2 gap-6 rounded-xl border border-sky-200/80 bg-white/70 px-4 py-5 shadow-sm shadow-sky-900/5 backdrop-blur-sm sm:px-5">
               <div>
-                <dt className="text-xs uppercase tracking-wider text-slate-500">Users / facility</dt>
+                <dt className="text-xs uppercase tracking-wider text-sky-700/90">Users / facility</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">Unlimited</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase tracking-wider text-slate-500">Setup time</dt>
+                <dt className="text-xs uppercase tracking-wider text-sky-700/90">Setup time</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">
                   &lt;1<span className="text-slate-500 text-base font-semibold"> hour</span>
                 </dd>
@@ -297,7 +298,7 @@ export default function HomePage() {
       </Section>
 
       {/* Trust strip + integrations */}
-      <div className="border-y border-blue-100 bg-gradient-to-r from-blue-50/80 via-indigo-50/60 to-blue-50/80">
+      <div className="border-y border-sky-200/70 bg-gradient-to-r from-cyan-50/90 via-indigo-100/50 to-sky-100/90">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-6">
           <ul className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-sm text-slate-700" role="list">
             {TRUST_STRIP_ITEMS.map((item) => (
@@ -311,8 +312,62 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* Optional online rentals / local SEO upsell */}
+      <Section className="py-10 sm:py-12">
+        <div className="max-w-5xl mx-auto rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50/80 to-teal-50/60 p-6 sm:p-8 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-start gap-6">
+            <div
+              className="shrink-0 flex h-14 w-14 items-center justify-center rounded-xl bg-white shadow-sm border border-emerald-100"
+              aria-hidden
+            >
+              <svg className="h-8 w-8 text-emerald-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .53-.051 1.049-.147 1.546"
+                />
+              </svg>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="inline-block rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-white">
+                Add-on · ${ONLINE_RENTALS_ADDON_MONTHLY}/mo
+              </p>
+              <h2 className="mt-3 font-display text-2xl sm:text-3xl font-extrabold text-emerald-950 text-balance">
+                Turn searches into rentals with a public &quot;rent a unit&quot; page
+              </h2>
+              <p className="mt-3 text-base sm:text-lg text-emerald-900/90 leading-relaxed max-w-3xl">
+                Give nearby customers a fast path from &quot;self storage near me&quot; to a booked unit—without extra phone tag. Your
+                branded online rental flow showcases sizes, pricing, and availability so Google-friendly copy and clear calls-to-action
+                work together to capture demand after hours and during peak season.
+              </p>
+              <ul className="mt-4 flex flex-wrap gap-2" role="list">
+                {['Local search–friendly layout', 'Mobile-first checkout', '24/7 self-service move-ins'].map((label) => (
+                  <li
+                    key={label}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-emerald-900"
+                  >
+                    <span className="text-emerald-600" aria-hidden>
+                      ✓
+                    </span>
+                    {label}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-5">
+                <Link
+                  href="/contact?intent=demo"
+                  className="inline-flex items-center gap-2 text-sm font-bold text-emerald-800 hover:text-emerald-950 underline underline-offset-4"
+                >
+                  Ask how to enable website rentals →
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Section>
+
       {/* Key Features */}
-      <Section tint id="features" className="bg-gradient-to-b from-sky-50 to-blue-50/60">
+      <Section tint id="features" className="bg-gradient-to-b from-sky-100/70 via-cyan-50/40 to-blue-100/50">
         <Reveal>
           <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Everything you need to run your facility</h2>
           <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
@@ -346,7 +401,7 @@ export default function HomePage() {
       </Section>
 
       {/* Product tour */}
-      <Section className="bg-white">
+      <Section className="bg-gradient-to-b from-violet-50/70 via-white to-sky-50/60">
         <Reveal>
           <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Product tour highlights</h2>
           <p className="mt-3 text-slate-600 text-center max-w-2xl mx-auto">
@@ -435,11 +490,11 @@ export default function HomePage() {
               late payments, messy ledgers, lien timelines, scattered tenant communication. Every workflow is shaped
               by the operational reality of running a facility — not by enterprise software committee.
             </p>
-            <div className="mt-6 flex flex-wrap gap-2 text-xs font-medium text-slate-600">
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Independent operators</span>
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Multi-site portfolios</span>
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Self-service rentals</span>
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1">Manager-assisted move-ins</span>
+            <div className="mt-6 flex flex-wrap gap-2 text-xs font-semibold">
+              <span className="rounded-full border border-blue-200 bg-blue-50/90 px-3 py-1 text-blue-900">Independent operators</span>
+              <span className="rounded-full border border-indigo-200 bg-indigo-50/90 px-3 py-1 text-indigo-900">Multi-site portfolios</span>
+              <span className="rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1 text-amber-950">Self-service rentals</span>
+              <span className="rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-emerald-900">Manager-assisted move-ins</span>
             </div>
           </Reveal>
 
@@ -500,7 +555,7 @@ export default function HomePage() {
         <Reveal>
           <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">Why operators choose SFC</h2>
         </Reveal>
-        <ul className="mt-8 max-w-3xl mx-auto space-y-3 text-slate-700 rounded-2xl border border-blue-100 bg-white/90 p-6 shadow-sm">
+        <ul className="mt-8 max-w-3xl mx-auto space-y-3 text-slate-700 rounded-2xl border border-blue-200/80 border-l-4 border-l-primary bg-gradient-to-br from-white to-sky-50/50 p-6 shadow-md shadow-blue-900/5">
           {DIFFERENTIATORS.map((item) => (
             <li key={item} className="flex gap-2">
               <span className="text-primary" aria-hidden>
@@ -670,7 +725,7 @@ export default function HomePage() {
       </Section>
 
       {/* Home FAQ */}
-      <Section tint className="bg-gradient-to-b from-slate-50 to-white">
+      <Section tint className="bg-gradient-to-b from-indigo-50/80 via-sky-50/50 to-white">
         <Reveal>
           <h2 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 text-center">
             Questions operators ask us

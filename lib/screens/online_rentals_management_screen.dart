@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../models/contract_template_model.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
+import '../services/contract_service.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../services/facility_service.dart';
@@ -73,6 +75,8 @@ class _OnlineRentalsManagementScreenState
   String? _domainCheckMessage;
   List<String> _domainRecords = const <String>[];
   List<String> _featuredImages = const <String>[];
+  List<ContractTemplateModel> _contractTemplates = const <ContractTemplateModel>[];
+  String? _onlineMoveInContractTemplateId;
 
   @override
   void initState() {
@@ -118,6 +122,9 @@ class _OnlineRentalsManagementScreenState
       final units = await UnitService.getUnitsForFacility(widget.facilityId);
       final types = units.map((u) => u.unitType).toSet();
       final customStyles = settings?.customStyles ?? const <String, dynamic>{};
+      final templates = await ContractService.getContractTemplates(
+        widget.facilityId,
+      );
 
       if (!mounted) return;
       setState(() {
@@ -164,6 +171,18 @@ class _OnlineRentalsManagementScreenState
                 ? settings!.publicRentalSlug!
                 : (publicSlug ?? widget.facilityId.toLowerCase());
         _featuredImages = settings?.featuredImages ?? const <String>[];
+        _contractTemplates = templates;
+        final storedTemplateId = settings?.onlineMoveInContractTemplateId;
+        final eligIds = templates
+            .where((t) =>
+                (t.fileUrl ?? '').trim().isNotEmpty &&
+                t.complianceStatus == ComplianceStatus.active)
+            .map((t) => t.id)
+            .toSet();
+        _onlineMoveInContractTemplateId =
+            storedTemplateId != null && eligIds.contains(storedTemplateId)
+                ? storedTemplateId
+                : null;
         _isLoading = false;
       });
       if (_customDomainController.text.trim().isNotEmpty) {
@@ -236,6 +255,8 @@ class _OnlineRentalsManagementScreenState
         },
         unitTypeImageUrls:
             _unitTypeImageUrls.isEmpty ? null : _unitTypeImageUrls,
+        replaceOnlineMoveInContractTemplate: true,
+        onlineMoveInContractTemplateId: _onlineMoveInContractTemplateId,
       );
       await FacilityMapV2Service.setPublicSlug(
         facilityId: widget.facilityId,
@@ -1089,6 +1110,65 @@ class _OnlineRentalsManagementScreenState
               ),
             ),
           ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Online move-in lease (PDF)',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Choose which uploaded contract template is included when a renter completes online move-in. '
+                  'Their signed file will contain your lease PDF followed by a signature certificate page. '
+                  'Upload templates under Contracts → Contract templates.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String?>(
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'Lease for online move-in',
+                  ),
+                  value: _onlineMoveInContractTemplateId,
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('Built-in summary only'),
+                    ),
+                    ...() {
+                      final elig = _contractTemplates
+                          .where((t) =>
+                              (t.fileUrl ?? '').trim().isNotEmpty &&
+                              t.complianceStatus ==
+                                  ComplianceStatus.active)
+                          .toList()
+                        ..sort((a, b) => a.name.compareTo(b.name));
+                      return elig
+                          .map(
+                            (t) => DropdownMenuItem<String?>(
+                              value: t.id,
+                              child: Text(
+                                t.name.trim().isEmpty ? t.id : t.name,
+                              ),
+                            ),
+                          )
+                          .toList();
+                    }(),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _onlineMoveInContractTemplateId = v),
+                ),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(height: 8),
         const Text(
           'Publicly Visible Unit Types',

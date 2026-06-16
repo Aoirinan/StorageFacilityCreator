@@ -15,6 +15,10 @@ class ConversationModel {
   final String createdByName;
   final DateTime? lastMessageAt;
   final String? lastMessagePreview;
+  /// Denormalized on each new message; used with [employeeChatSeenAtByUid] for sidebar unread.
+  final String? lastMessageSenderUid;
+  /// Per-user "I opened this thread up to here" for employee chat badges (map uid -> seen time).
+  final Map<String, DateTime>? employeeChatSeenAtByUid;
   final bool isActive;
   
   // Private conversation fields (for 1-on-1 messaging)
@@ -34,6 +38,8 @@ class ConversationModel {
     required this.createdByName,
     this.lastMessageAt,
     this.lastMessagePreview,
+    this.lastMessageSenderUid,
+    this.employeeChatSeenAtByUid,
     this.isActive = true,
     this.isPrivate = false,
     this.participantUids = const [],
@@ -59,6 +65,18 @@ class ConversationModel {
     final participantUidsList = data['participantUids'];
     final participantNamesMap = data['participantNames'];
     final participantEmailsMap = data['participantEmails'];
+    final seenRaw = data['employeeChatSeenAtByUid'];
+    Map<String, DateTime>? employeeChatSeenAtByUid;
+    if (seenRaw is Map) {
+      employeeChatSeenAtByUid = {};
+      for (final e in seenRaw.entries) {
+        final v = e.value;
+        if (v is Timestamp) {
+          employeeChatSeenAtByUid[e.key.toString()] = v.toDate();
+        }
+      }
+      if (employeeChatSeenAtByUid.isEmpty) employeeChatSeenAtByUid = null;
+    }
 
     return ConversationModel(
       id: doc.id,
@@ -75,6 +93,8 @@ class ConversationModel {
           ? (data['lastMessageAt'] as Timestamp).toDate()
           : null,
       lastMessagePreview: data['lastMessagePreview'],
+      lastMessageSenderUid: data['lastMessageSenderUid'] as String?,
+      employeeChatSeenAtByUid: employeeChatSeenAtByUid,
       isActive: data['isActive'] ?? true,
       isPrivate: isPrivate,
       participantUids: participantUidsList != null 
@@ -103,6 +123,11 @@ class ConversationModel {
       'createdByName': createdByName,
       'lastMessageAt': lastMessageAt != null ? Timestamp.fromDate(lastMessageAt!) : null,
       'lastMessagePreview': lastMessagePreview,
+      if (lastMessageSenderUid != null) 'lastMessageSenderUid': lastMessageSenderUid,
+      if (employeeChatSeenAtByUid != null)
+        'employeeChatSeenAtByUid': employeeChatSeenAtByUid!.map(
+          (k, v) => MapEntry(k, Timestamp.fromDate(v)),
+        ),
       'isActive': isActive,
       'isPrivate': isPrivate,
       'participantUids': participantUids,
@@ -121,6 +146,8 @@ class ConversationModel {
     String? createdByName,
     DateTime? lastMessageAt,
     String? lastMessagePreview,
+    String? lastMessageSenderUid,
+    Map<String, DateTime>? employeeChatSeenAtByUid,
     bool? isActive,
     bool? isPrivate,
     List<String>? participantUids,
@@ -137,6 +164,8 @@ class ConversationModel {
       createdByName: createdByName ?? this.createdByName,
       lastMessageAt: lastMessageAt ?? this.lastMessageAt,
       lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
+      lastMessageSenderUid: lastMessageSenderUid ?? this.lastMessageSenderUid,
+      employeeChatSeenAtByUid: employeeChatSeenAtByUid ?? this.employeeChatSeenAtByUid,
       isActive: isActive ?? this.isActive,
       isPrivate: isPrivate ?? this.isPrivate,
       participantUids: participantUids ?? this.participantUids,
@@ -221,6 +250,18 @@ class ConversationModel {
 
     final tail = otherUid.length >= 6 ? otherUid.substring(otherUid.length - 6) : otherUid;
     return 'Teammate ($tail)';
+  }
+
+  /// Whether [viewerUid] should see an unread indicator for employee chat (sidebar / tabs).
+  bool hasUnreadEmployeeChatFor(String viewerUid) {
+    final last = lastMessageAt;
+    if (last == null) return false;
+    final sender = lastMessageSenderUid;
+    if (sender == null || sender.isEmpty) return false;
+    if (sender == viewerUid) return false;
+    final seen = employeeChatSeenAtByUid?[viewerUid];
+    if (seen == null) return true;
+    return last.isAfter(seen);
   }
 }
 

@@ -69,6 +69,10 @@ class _MarketingLandingPageState extends State<MarketingLandingPage> {
                     padding: const EdgeInsets.symmetric(vertical: 32),
                     child: _TrustStrip(),
                   ),
+                  _Section(
+                    padding: const EdgeInsets.symmetric(vertical: 40),
+                    child: _OnlineRentalsWebsiteUpsell(),
+                  ),
                   Container(
                     color: const Color(0xFFF7F9FC),
                     child: Column(
@@ -254,7 +258,19 @@ class _HeroSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.white,
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFFE0F2FE),
+            Color(0xFFF8FAFC),
+            Color(0xFFEEF2FF),
+          ],
+          stops: [0.0, 0.42, 1.0],
+        ),
+      ),
       padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 1200),
@@ -271,14 +287,23 @@ class _HeroSection extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text(
-                        'Run your storage facility from one place.',
-                        style: TextStyle(
-                          fontSize: 36,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -0.5,
-                          height: 1.2,
-                          color: Color(0xFF0F172A),
+                      const Text.rich(
+                        TextSpan(
+                          style: TextStyle(
+                            fontSize: 36,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.5,
+                            height: 1.2,
+                            color: Color(0xFF0F172A),
+                          ),
+                          children: [
+                            TextSpan(text: 'Run your storage facility from '),
+                            TextSpan(
+                              text: 'one place',
+                              style: TextStyle(color: Color(0xFF2563EB)),
+                            ),
+                            TextSpan(text: '.'),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -379,15 +404,20 @@ class _DemoFrame extends StatelessWidget {
               color: const Color(0xFFF8FAFC),
               child: Row(
                 children: [
-                  ...List.generate(3, (_) => Container(
-                    width: 12,
-                    height: 12,
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Color(0xFFCBD5E1),
+                  for (final c in const [
+                    Color(0xFFEF4444),
+                    Color(0xFFF59E0B),
+                    Color(0xFF22C55E),
+                  ])
+                    Container(
+                      width: 12,
+                      height: 12,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: c,
+                      ),
                     ),
-                  )),
                 ],
               ),
             ),
@@ -418,18 +448,25 @@ class _TrustStrip extends StatelessWidget {
     'Late notices & delinquency tools',
     'SMS/email reminders (opt-in, STOP/HELP)',
     'Reports & activity logs',
+    'Optional: rent units online on your site (+\$25/mo)',
   ];
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 16),
-      decoration: const BoxDecoration(
-        border: Border(
-          top: BorderSide(color: Color(0xFFE2E8F0)),
-          bottom: BorderSide(color: Color(0xFFE2E8F0)),
+      decoration: BoxDecoration(
+        border: const Border(
+          top: BorderSide(color: Color(0xFFBAE6FD)),
+          bottom: BorderSide(color: Color(0xFFC7D2FE)),
         ),
-        color: Color(0xFFF8FAFC),
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFFECFEFF).withOpacity(0.95),
+            const Color(0xFFEFF6FF).withOpacity(0.98),
+            const Color(0xFFEEF2FF).withOpacity(0.95),
+          ],
+        ),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 1200),
@@ -452,6 +489,170 @@ class _TrustStrip extends StatelessWidget {
             ],
           )).toList(),
         ),
+      ),
+    );
+  }
+}
+
+/// Public marketing / online rentals upsell with copy tuned for operators who care about local SEO and self-service move-ins.
+class _OnlineRentalsWebsiteUpsell extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 1100),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFFECFDF5),
+              const Color(0xFFD1FAE5).withOpacity(0.65),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF6EE7B7)),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = constraints.maxWidth > 720;
+            final iconBlock = Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Icon(
+                Icons.public_rounded,
+                size: 36,
+                color: Colors.green.shade800,
+              ),
+            );
+            final copyColumn = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF059669),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text(
+                    'ADD-ON · \$25/mo',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 11,
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Turn searches into rentals with a public “rent a unit” page',
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w800,
+                    height: 1.2,
+                    letterSpacing: -0.4,
+                    color: Color(0xFF064E3B),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Give nearby customers a fast path from “self storage near me” to a booked unit—without extra phone tag. Your branded online rental flow showcases sizes, pricing, and availability so Google-friendly copy and clear calls-to-action work together to capture demand after hours and during peak season.',
+                  style: TextStyle(
+                    fontSize: 16,
+                    height: 1.55,
+                    color: Color(0xFF14532D),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: const [
+                    _SeoChip(label: 'Local search–friendly layout'),
+                    _SeoChip(label: 'Mobile-first checkout'),
+                    _SeoChip(label: '24/7 self-service move-ins'),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                TextButton.icon(
+                  onPressed: () => context.go('/contact'),
+                  icon: const Icon(Icons.calendar_month_outlined, size: 20),
+                  label: const Text(
+                    'Ask how to enable website rentals',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF047857),
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
+              ],
+            );
+            if (isWide) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  iconBlock,
+                  const SizedBox(width: 24),
+                  Expanded(child: copyColumn),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                iconBlock,
+                const SizedBox(height: 20),
+                copyColumn,
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _SeoChip extends StatelessWidget {
+  final String label;
+
+  const _SeoChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFF86EFAC)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle_outline, size: 16, color: Colors.green.shade800),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.green.shade900,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -614,6 +815,53 @@ class _IntegrationsRow extends StatelessWidget {
               _IntegrationLogo(name: 'SendGrid', icon: Icons.email),
               _IntegrationLogo(name: 'Firebase', icon: Icons.cloud),
             ],
+          ),
+          const SizedBox(height: 28),
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.borderLight),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.extension_outlined, color: AppTheme.primaryBlue, size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        "We're open to new integrations and custom integrations—tell us what you need, or recommend a tool you already rely on, and we'll explore it with you.",
+                        style: const TextStyle(
+                          fontSize: 15,
+                          height: 1.5,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 34, top: 4),
+                  child: TextButton(
+                    onPressed: () => context.go('/contact'),
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      foregroundColor: AppTheme.primaryBlue,
+                    ),
+                    child: const Text(
+                      'Suggest or discuss an integration',
+                      style: TextStyle(fontWeight: FontWeight.w600, decoration: TextDecoration.underline),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -964,6 +1212,43 @@ class _PricingSection extends StatelessWidget {
                 const _PricingFeature(text: 'Unlimited users'),
                 const _PricingFeature(text: 'All features included'),
                 const _PricingFeature(text: 'Priority support'),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFBBF7D0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.add_circle_outline, color: Colors.green.shade800, size: 22),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Add-on: website rentals & SEO-ready pages',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 16,
+                              color: Colors.green.shade900,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Let customers reserve storage units online from your own public page—built to read well for local search and convert browsers into move-ins. +\$25/month.',
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.5,
+                          color: Colors.green.shade900.withOpacity(0.9),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 24),
                 ElevatedButton(
                   onPressed: () => context.go('/contact'),

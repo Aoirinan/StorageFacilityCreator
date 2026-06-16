@@ -172,6 +172,13 @@ class PublicRentalService {
             (s) => s.name == statusRaw,
             orElse: () => ReservationStatus.pending,
           );
+          String? leaseTitle;
+          String? leaseUrl;
+          final lease = payload['onlineMoveInLease'];
+          if (lease is Map) {
+            leaseTitle = lease['title']?.toString();
+            leaseUrl = lease['url']?.toString();
+          }
           return Reservation(
             id: reservationMap['id']?.toString() ?? '',
             facilityId: reservationMap['facilityId']?.toString() ?? '',
@@ -194,6 +201,14 @@ class PublicRentalService {
             metadata: reservationMap['metadata'] is Map
                 ? Map<String, dynamic>.from(reservationMap['metadata'] as Map)
                 : null,
+            onlineMoveInLeaseTitle:
+                (leaseTitle != null && leaseTitle.trim().isNotEmpty)
+                    ? leaseTitle.trim()
+                    : null,
+            onlineMoveInLeaseUrl:
+                (leaseUrl != null && leaseUrl.trim().isNotEmpty)
+                    ? leaseUrl.trim()
+                    : null,
           );
         }
         if (payload['found'] == false) return null;
@@ -481,6 +496,8 @@ extension ReservationExtension on Reservation {
     DateTime? completedAt,
     String? moveInToken,
     Map<String, dynamic>? metadata,
+    String? onlineMoveInLeaseTitle,
+    String? onlineMoveInLeaseUrl,
   }) {
     return Reservation(
       id: id ?? this.id,
@@ -497,6 +514,9 @@ extension ReservationExtension on Reservation {
       completedAt: completedAt ?? this.completedAt,
       moveInToken: moveInToken ?? this.moveInToken,
       metadata: metadata ?? this.metadata,
+      onlineMoveInLeaseTitle:
+          onlineMoveInLeaseTitle ?? this.onlineMoveInLeaseTitle,
+      onlineMoveInLeaseUrl: onlineMoveInLeaseUrl ?? this.onlineMoveInLeaseUrl,
     );
   }
 }

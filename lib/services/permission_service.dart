@@ -224,13 +224,17 @@ class PermissionService {
   }
 
   /// Find user ID by email using Cloud Function (for security - Phase 2)
-  /// This replaces direct Firestore queries to comply with user document read restrictions
-  static Future<String?> findUserIdByEmail(String email) async {
+  /// This replaces direct Firestore queries to comply with user document read restrictions.
+  /// Caller must have staff access to [facilityId].
+  static Future<String?> findUserIdByEmail(String email, {required String facilityId}) async {
     try {
       final functions = FirebaseFunctions.instance;
       final callable = functions.httpsCallable('lookupUserByEmail');
       
-      final result = await callable.call({'email': email});
+      final result = await callable.call({
+        'email': email,
+        'facilityId': facilityId,
+      });
       final data = result.data as Map<String, dynamic>?;
       
       if (data == null || data['found'] != true) {

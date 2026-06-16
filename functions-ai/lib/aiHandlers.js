@@ -40,8 +40,9 @@ const functions_shared_1 = require("@sfc/functions-shared");
 const aiConfig_1 = require("./aiConfig");
 const aiGuards_1 = require("./aiGuards");
 const secrets_1 = require("./secrets");
+const aiChatAuditLog_1 = require("./aiChatAuditLog");
 exports.aiAssistant = functions.runWith({ secrets: secrets_1.AI_SECRETS }).https.onCall(async (data, context) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     if (!context.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
     }
@@ -194,7 +195,7 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
                 response = parsed.response || aiResponse;
                 actions = parsed.actions || [];
             }
-            catch (_e) {
+            catch (_f) {
                 response = aiResponse;
                 actions = [];
             }
@@ -267,6 +268,22 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
             messages: admin.firestore.FieldValue.arrayUnion(userMessage, assistantMessage),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
+        const auditRequestId = `ai-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const callerEmail = (_e = context.auth.token) === null || _e === void 0 ? void 0 : _e.email;
+        void (0, aiChatAuditLog_1.appendAiChatAuditLog)({
+            facilityId,
+            facilityName,
+            userId: context.auth.uid,
+            userEmail: callerEmail !== null && callerEmail !== void 0 ? callerEmail : null,
+            userMessage: message,
+            assistantReply: response,
+            requestId: auditRequestId,
+            model: 'gpt-4o-mini',
+            tokensUsed: 0,
+            latencyMs: 0,
+            providerUsed: 'openai',
+            source: 'aiAssistant',
+        });
         return {
             conversationId: convId,
             response,
@@ -282,7 +299,7 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
 exports.aiAssistantChat = functions
     .runWith({ secrets: secrets_1.AI_SECRETS, timeoutSeconds: 60, memory: '256MB' })
     .https.onCall(async (data, context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
     const startMs = Date.now();
     const requestId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     if (!context.auth) {
@@ -444,6 +461,21 @@ exports.aiAssistantChat = functions
         allowlistPassed,
         facilityUsageLimit: maxFacilityDaily,
         userUsageLimit: maxUserDaily,
+    });
+    const callerEmail = (_q = context.auth.token) === null || _q === void 0 ? void 0 : _q.email;
+    void (0, aiChatAuditLog_1.appendAiChatAuditLog)({
+        facilityId,
+        facilityName: displayName,
+        userId: uid,
+        userEmail: callerEmail !== null && callerEmail !== void 0 ? callerEmail : null,
+        userMessage: message,
+        assistantReply: replyText,
+        requestId,
+        model,
+        tokensUsed,
+        latencyMs,
+        providerUsed,
+        source: 'aiAssistantChat',
     });
     return {
         replyText,

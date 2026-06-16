@@ -31,6 +31,9 @@ class FacilityPublicSettings {
   final bool chargeSecurityDepositAtMoveIn; // Charge deposit at move-in
   final double?
       publicSecurityDepositAmount; // Deposit amount override for move-in
+  /// When set, online move-in merges this [facilities/.../contractTemplates] PDF
+  /// with the tenant e-sign certificate. Null uses the built-in summary PDF only.
+  final String? onlineMoveInContractTemplateId;
   final Map<String, dynamic>? customStyles; // Custom CSS/styling
   final Map<String, dynamic>? widgets; // Widget configuration
   final DateTime? updatedAt;
@@ -63,6 +66,7 @@ class FacilityPublicSettings {
     this.publicInsuranceAmount,
     this.chargeSecurityDepositAtMoveIn = false,
     this.publicSecurityDepositAmount,
+    this.onlineMoveInContractTemplateId,
     this.customStyles,
     this.widgets,
     this.updatedAt,
@@ -97,6 +101,7 @@ class FacilityPublicSettings {
       'publicInsuranceAmount': publicInsuranceAmount,
       'chargeSecurityDepositAtMoveIn': chargeSecurityDepositAtMoveIn,
       'publicSecurityDepositAmount': publicSecurityDepositAmount,
+      'onlineMoveInContractTemplateId': onlineMoveInContractTemplateId,
       'customStyles': customStyles,
       'widgets': widgets,
       'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : null,
@@ -142,6 +147,8 @@ class FacilityPublicSettings {
           map['chargeSecurityDepositAtMoveIn'] as bool? ?? false,
       publicSecurityDepositAmount:
           (map['publicSecurityDepositAmount'] as num?)?.toDouble(),
+      onlineMoveInContractTemplateId:
+          map['onlineMoveInContractTemplateId'] as String?,
       customStyles: map['customStyles'] as Map<String, dynamic>?,
       widgets: map['widgets'] as Map<String, dynamic>?,
       updatedAt: (map['updatedAt'] as Timestamp?)?.toDate(),

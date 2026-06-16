@@ -64,6 +64,41 @@ service cloud.firestore {
         isFacilityViewer(facilityId);
     }
 
+    // Client-written manual payment row in tenants/{id}/payments (see PaymentService.recordManualPayment).
+    // Stripe/webhook rows stay server-only (different type / shape).
+    function isManualTenantPaymentCreate(facilityId, tenantId) {
+      return request.resource.data.keys().hasOnly([
+          'facilityId',
+          'tenantId',
+          'type',
+          'amountCents',
+          'currency',
+          'chargeType',
+          'status',
+          'description',
+          'createdAt',
+          'updatedAt',
+          'failureCode',
+          'failureMessage'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.tenantId == tenantId &&
+        request.resource.data.type == 'manual' &&
+        request.resource.data.amountCents is int &&
+        request.resource.data.amountCents >= 1 &&
+        request.resource.data.amountCents <= 1000000000 &&
+        request.resource.data.currency == 'usd' &&
+        request.resource.data.chargeType is string &&
+        request.resource.data.chargeType.matches('^manual_[a-zA-Z0-9_]+$') &&
+        request.resource.data.status == 'succeeded' &&
+        request.resource.data.description is string &&
+        request.resource.data.description.size() <= 4000 &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.updatedAt is timestamp &&
+        request.resource.data.failureCode == null &&
+        request.resource.data.failureMessage == null;
+    }
+
     function inviteDocPath(facilityId, inviteId) {
       return /databases/$(database)/documents/facilities/$(facilityId)/invites/$(inviteId);
     }
@@ -331,10 +366,11 @@ service cloud.firestore {
           allow write: if false; // Cloud Functions only
         }
 
-        // Tenant Stripe payment records (server-only writes; facility staff can read)
+        // Tenant payment rows: Stripe/webhook writes use Admin SDK. Staff may create manual-only rows.
         match /payments/{paymentId} {
           allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
-          allow write: if false; // Cloud Functions only
+          allow create: if isSuperAdmin() || (isFacilityStaff(facilityId) && isManualTenantPaymentCreate(facilityId, tenantId));
+          allow update, delete: if false;
         }
 
         // Contact logs subcollection
@@ -431,7 +467,9 @@ service cloud.firestore {
       }
       
       match /payments/{paymentId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow create: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
       match /contracts/{contractId} {
@@ -916,10 +954,16 @@ service cloud.firestore {
 
       // Message logs - unified logging for all outbound communications
       match /messageLogs/{messageLogId} {
-        // Read: Staff can read message logs for their facility
-        allow read: if isFacilityStaff(facilityId);
+        // Read: Staff for this facility; super admins (collection-group review in app)
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
         // Write: Only Cloud Functions can write message logs (client writes disallowed for security)
         allow write: if false; // All writes must go through Cloud Functions
+      }
+
+      // AI assistant audit (one document per user turn). Written only by Cloud Functions (Admin SDK).
+      match /aiChatAuditLogs/{logId} {
+        allow read: if isSuperAdmin();
+        allow write: if false;
       }
 
       match /ledgers/{ledgerId} {

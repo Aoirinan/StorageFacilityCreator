@@ -49,6 +49,8 @@ export const HERO_SUBHEADLINE =
   'Run operations, billing, delinquency workflows, messaging, reporting, and integrations from one modern, focused platform — not an enterprise suite you have to grow into.';
 
 export const PRICE_MONTHLY = 75;
+/** Optional public facility website: online unit rentals and SEO-oriented marketing pages. */
+export const ONLINE_RENTALS_ADDON_MONTHLY = 25;
 export const PRICE_UNIT = 'per facility';
 export const PRICE_LINE_SHORT = `$${PRICE_MONTHLY}/month per facility`;
 export const PRICE_LINE_LONG = `$${PRICE_MONTHLY} per facility, per month — unlimited users, all features included`;
@@ -71,6 +73,7 @@ export const TRUST_STRIP_ITEMS = [
   'E-sign ready',
   'Published legal/compliance pages',
   'Role-based access',
+  `Optional: rent units online on your site (+$${ONLINE_RENTALS_ADDON_MONTHLY}/mo)`,
 ] as const;
 
 export const NAV_LINKS = [

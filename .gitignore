@@ -81,6 +81,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# User manual PDF generator (Node)
+/docs/pdf-gen/node_modules/
+
 # Marketing site (Next.js)
 /marketing/node_modules/
 /marketing/.next/

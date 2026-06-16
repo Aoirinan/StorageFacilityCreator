@@ -122,6 +122,15 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
               _buildInfoRow('Status', contract.status.displayName),
               _buildInfoRow('Created', _formatDate(contract.createdAt)),
             ]),
+            if (contract.customFields?['onlineMoveInContext'] is Map) ...[
+              const SizedBox(height: 24),
+              _buildOnlineMoveInContextSection(
+                context,
+                Map<String, dynamic>.from(
+                  contract.customFields!['onlineMoveInContext'] as Map,
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             
             // Parties Information
@@ -352,6 +361,36 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildOnlineMoveInContextSection(
+    BuildContext context,
+    Map<String, dynamic> ctx,
+  ) {
+    String? pick(String k) {
+      final v = ctx[k];
+      if (v == null) return null;
+      final s = v.toString().trim();
+      return s.isEmpty ? null : s;
+    }
+
+    final rows = <Widget>[
+      _buildInfoRow('Unit number', pick('unitNumber') ?? '—'),
+      if (pick('unitTypeDisplay') != null)
+        _buildInfoRow('Unit type', pick('unitTypeDisplay')!),
+      if (pick('unitDescription') != null)
+        _buildInfoRow('Unit description', pick('unitDescription')!),
+      if (pick('facilityName') != null)
+        _buildInfoRow('Facility name', pick('facilityName')!),
+      if (pick('facilityAddress') != null)
+        _buildInfoRow('Facility address', pick('facilityAddress')!),
+      if (pick('facilityPhone') != null)
+        _buildInfoRow('Facility phone', pick('facilityPhone')!),
+      if (pick('facilityEmail') != null)
+        _buildInfoRow('Facility email', pick('facilityEmail')!),
+    ];
+
+    return _buildSection(context, 'Online move-in details', rows);
   }
 
   /// Online move-ins stored a PNG signature in customFields before PDF upload existed.

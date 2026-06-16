@@ -37,7 +37,11 @@ export {
   createTenantPortalPaymentCheckout,
 } from './contractsPortal';
 
-export { processMoveOut, createTenantPortalAdditionalUnitHold } from './moveOutPortalHold';
+export {
+  processMoveOut,
+  createTenantPortalAdditionalUnitHold,
+  tenantPortalListAvailableUnits,
+} from './moveOutPortalHold';
 
 export { computeDocumentHash, mergeSignatureIntoPdf } from './documentSigningCallables';
 

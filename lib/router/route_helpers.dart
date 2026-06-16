@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../providers/active_facility_provider.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
@@ -14,6 +13,7 @@ import '../widgets/subscription_lock_overlay.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/subscription_guard_service.dart';
 import '../widgets/modern_sidebar.dart';
+import '../providers/messaging_provider.dart';
 import '../widgets/facility_switcher.dart';
 import '../theme/app_theme.dart';
 import '../services/debug_logger.dart';
@@ -243,25 +243,33 @@ class _SubscriptionAwareSidebarState extends State<_SubscriptionAwareSidebar> {
 
   @override
   Widget build(BuildContext context) {
-    // If locked, completely disable sidebar - use AbsorbPointer to block all interactions
-    if (_isLocked) {
-      return AbsorbPointer(
-        absorbing: true,
-        child: Opacity(
-          opacity: 0.3,
-          child: ModernSidebar(
-            currentRoute: widget.currentRoute,
-            isCollapsed: false,
-            onNavigate: (_) {}, // No-op when locked
-          ),
-        ),
-      );
-    }
-    
-    return ModernSidebar(
-      currentRoute: widget.currentRoute,
-      isCollapsed: false,
-      onNavigate: _handleNavigate,
+    return Consumer(
+      builder: (context, ref, _) {
+        final unread = ref.watch(activeFacilityEmployeeChatUnreadCountProvider);
+
+        // If locked, completely disable sidebar - use AbsorbPointer to block all interactions
+        if (_isLocked) {
+          return AbsorbPointer(
+            absorbing: true,
+            child: Opacity(
+              opacity: 0.3,
+              child: ModernSidebar(
+                currentRoute: widget.currentRoute,
+                isCollapsed: false,
+                onNavigate: (_) {}, // No-op when locked
+                employeeChatUnreadCount: unread,
+              ),
+            ),
+          );
+        }
+
+        return ModernSidebar(
+          currentRoute: widget.currentRoute,
+          isCollapsed: false,
+          onNavigate: _handleNavigate,
+          employeeChatUnreadCount: unread,
+        );
+      },
     );
   }
 }

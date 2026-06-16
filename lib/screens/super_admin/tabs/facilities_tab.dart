@@ -197,6 +197,63 @@ class _FacilityRow extends ConsumerWidget {
     }
   }
 
+  Future<void> _onRepairPermissionOrphans(BuildContext context) async {
+    final f = row.facility;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Repair permission orphans?'),
+        content: Text(
+          'This deactivates active staff role rows for this facility when the '
+          'Firestore user profile no longer exists (for example after deleting '
+          'the user from super admin). It also removes their entry from the '
+          'facility roles map.',
+          style: Theme.of(ctx).textTheme.bodySmall,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Repair'),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed != true || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Repairing permissions…')),
+    );
+    try {
+      final n =
+          await SuperAdminDataService.repairFacilityPermissionOrphans(f.id);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            n == 0
+                ? 'No orphan role assignments found.'
+                : 'Deactivated $n orphan role assignment(s).',
+          ),
+          backgroundColor: n == 0 ? null : AppTheme.success,
+        ),
+      );
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Repair failed: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final f = row.facility;
@@ -308,6 +365,11 @@ class _FacilityRow extends ConsumerWidget {
                         duration: Duration(seconds: 1)),
                   );
                 },
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.badge_outlined, size: 16),
+                label: const Text('Repair permission orphans'),
+                onPressed: () => _onRepairPermissionOrphans(context),
               ),
               TextButton.icon(
                 icon: const Icon(Icons.delete_outline, size: 16),

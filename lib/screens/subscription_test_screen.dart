@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
@@ -46,6 +48,8 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
   bool _isStartingTrial = false;
   bool _isCancelling = false;
   bool _isRemovingFacility = false;
+  bool _isOpeningPortal = false;
+  StreamSubscription<FacilityCreatorAccountModel?>? _accountStreamSub;
   String? _checkoutUrl;
   WebViewController? _webViewController;
   bool _hasShownTrialExpiredDialog = false;
@@ -58,12 +62,22 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     _loadAccount();
   }
 
+  @override
+  void dispose() {
+    unawaited(_accountStreamSub?.cancel());
+    _accountStreamSub = null;
+    super.dispose();
+  }
+
   Future<void> _loadAccount() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
+      await _accountStreamSub?.cancel();
+      _accountStreamSub = null;
+
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         throw Exception('Not authenticated');
@@ -184,7 +198,9 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       }
 
       // Listen for account updates (e.g., after webhook processes payment)
-      FacilityCreatorAccountService.getAccountStream(account.accountId).listen((updatedAccount) {
+      await _accountStreamSub?.cancel();
+      _accountStreamSub = null;
+      _accountStreamSub = FacilityCreatorAccountService.getAccountStream(account.accountId).listen((updatedAccount) {
         if (updatedAccount != null && mounted) {
           String? link = _referralShareLink;
           final c = updatedAccount.referralCode?.trim().toUpperCase();
@@ -294,7 +310,6 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
 
       if (!mounted) return;
       if (checkoutResult.subscriptionUpdated) {
-        setState(() => _isCreatingCheckout = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(checkoutResult.message ?? 'Subscription updated to include your new facility.'),
@@ -313,7 +328,6 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
 
       setState(() {
         _checkoutUrl = checkoutUrl;
-        _isCreatingCheckout = false;
       });
 
       // On web, use url_launcher; on mobile, use WebView
@@ -386,10 +400,10 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
           print('❌ Subscription checkout error: $e');
           print('Stack trace: ${StackTrace.current}');
         }
-        
-        setState(() {
-          _isCreatingCheckout = false;
-        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCreatingCheckout = false);
       }
     }
   }
@@ -486,21 +500,46 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
   }
 
   Future<void> _openCustomerPortal() async {
-    if (_account == null) return;
+    if (_account == null || _isOpeningPortal) return;
 
+    setState(() => _isOpeningPortal = true);
     try {
       final portalUrl = await StripeService.createCustomerPortalSession(
         accountId: _account!.accountId,
         returnUrl: 'https://app.storagefacilitycreator.com/subscription/manage',
       );
 
-      // Open portal in webview
-      _showCheckoutWebView(portalUrl);
+      if (!mounted) return;
+
+      // Web: same as checkout — new tab. Mobile: in-app WebView.
+      if (kIsWeb) {
+        final uri = Uri.parse(portalUrl);
+        final canLaunch = await canLaunchUrl(uri);
+        if (!canLaunch) {
+          throw Exception('Browser blocked opening the portal. Please allow popups.');
+        }
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Opening Stripe Customer Portal in a new tab…'),
+              backgroundColor: AppTheme.success,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      } else {
+        _showCheckoutWebView(portalUrl);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error opening portal: $e')),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isOpeningPortal = false);
       }
     }
   }
@@ -524,7 +563,6 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       );
       if (!mounted) return;
       if (result.subscriptionUpdated) {
-        setState(() => _isCreatingCheckout = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(result.message ?? 'Facility already subscribed.'), backgroundColor: AppTheme.success),
         );
@@ -534,7 +572,6 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       final url = result.checkoutUrl!;
       setState(() {
         _checkoutUrl = url;
-        _isCreatingCheckout = false;
       });
       final uri = Uri.parse(url);
       if (await canLaunchUrl(uri)) {
@@ -553,10 +590,13 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isCreatingCheckout = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'), backgroundColor: AppTheme.error),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCreatingCheckout = false);
       }
     }
   }
@@ -824,7 +864,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             '• Their facility’s platform subscription checkout uses a longer trial before the first bill.\n\n'
             'What you get\n'
             '• After their first paid invoice on that referred facility’s platform subscription, you receive '
-            'three months at no charge on one of your own facility platform subscriptions (the one you pick above, '
+            'one month at no charge on one of your own facility platform subscriptions (the one you pick above, '
             'or the first eligible if you leave it on Automatic).\n'
             '• There is a limit of ten such rewards per calendar year for your account. If you reach the cap, '
             'we will queue the case for manual review.\n\n'
@@ -873,7 +913,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             const SizedBox(height: 10),
             Text(
               'Referred facilities get 60 days on the platform before their first bill. '
-              'After their first paid month on that facility’s subscription, you get 3 months free '
+              'After their first paid month on that facility’s subscription, you get 1 month free '
               'on one of your own facility subscriptions. Up to 10 rewards per calendar year.',
               style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
             ),
@@ -1261,9 +1301,15 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                               // Manage Subscription (Portal) — show when we have a Stripe customer (account or per-facility)
                               if (_account!.stripeCustomerId != null || _subscribedFacilities.any((f) => f.stripePlatformSubscriptionId != null)) ...[
                                 ElevatedButton.icon(
-                                  onPressed: _openCustomerPortal,
-                                  icon: const Icon(Icons.settings),
-                                  label: const Text('Manage Subscription'),
+                                  onPressed: _isOpeningPortal ? null : _openCustomerPortal,
+                                  icon: _isOpeningPortal
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.settings),
+                                  label: Text(_isOpeningPortal ? 'Opening portal…' : 'Manage Subscription'),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: AppTheme.primaryBlue,
                                     foregroundColor: AppTheme.textOnDark,
@@ -1328,9 +1374,11 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                           ),
                                           if (f.hasActivePlatformSubscription) ...[
                                             OutlinedButton.icon(
-                                              onPressed: (_isCancelling || _isRemovingFacility) ? null : _openCustomerPortal,
-                                              icon: const Icon(Icons.settings, size: 16),
-                                              label: const Text('Manage'),
+                                              onPressed: (_isCancelling || _isRemovingFacility || _isOpeningPortal) ? null : _openCustomerPortal,
+                                              icon: _isOpeningPortal
+                                                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                                                  : const Icon(Icons.settings, size: 16),
+                                              label: Text(_isOpeningPortal ? '…' : 'Manage'),
                                               style: OutlinedButton.styleFrom(
                                                 foregroundColor: AppTheme.primaryBlue,
                                                 padding: const EdgeInsets.symmetric(horizontal: 12),

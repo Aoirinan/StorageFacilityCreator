@@ -452,6 +452,7 @@ class MessagingService {
           .update({
         'lastMessageAt': FieldValue.serverTimestamp(),
         'lastMessagePreview': preview,
+        'lastMessageSenderUid': user.uid,
       });
 
       if (kDebugMode) {
@@ -655,6 +656,29 @@ class MessagingService {
     }
   }
 
+  /// Updates per-user seen time on the conversation for employee-chat unread badges.
+  static Future<void> recordEmployeeChatSeen({
+    required String facilityId,
+    required String conversationId,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null || facilityId.isEmpty || conversationId.isEmpty) return;
+    try {
+      await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('conversations')
+          .doc(conversationId)
+          .update({
+        'employeeChatSeenAtByUid.${user.uid}': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ recordEmployeeChatSeen: $e');
+      }
+    }
+  }
+
   // Mark messages as read
   static Future<void> markAsRead({
     required String facilityId,
@@ -695,6 +719,7 @@ class MessagingService {
           print('✅ Marked ${unreadMessages.docs.length} messages as read');
         }
       }
+      await recordEmployeeChatSeen(facilityId: facilityId, conversationId: conversationId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error marking messages as read: $e');

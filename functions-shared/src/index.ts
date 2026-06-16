@@ -9,6 +9,19 @@ export {
 export { enforceAppCheckOrThrow } from './auth/appCheck';
 export { getFacilityDataForUserOrThrow, canAccessFacility } from './auth/facilityAccess';
 
+export {
+  extractCallableClientIp,
+  validatePortalAccessCodeFormat,
+  enforcePortalAuthRateLimit,
+  recordPortalAuthFailure,
+  clearPortalAuthFailures,
+  authenticatePortalTenant,
+  authenticatePortalTenantForFacility,
+} from './portal/portalAuth';
+export type { PortalTenantSession } from './portal/portalAuth';
+
+export { isSigningTokenExpired, validateSigningTokenForContract } from './contracts/signingToken';
+
 export type { RateLimitConfig } from './rateLimits/facilityRateLimit';
 export { enforceRateLimit } from './rateLimits/facilityRateLimit';
 export { enforceUserRateLimit } from './rateLimits/userRateLimit';
