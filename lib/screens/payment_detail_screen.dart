@@ -9,6 +9,7 @@ import '../providers/tenant_provider.dart';
 import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import '../utils/error_message_helper.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
   final PaymentModel payment;
@@ -626,17 +627,26 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(paymentOperationsProvider.notifier).processPayment(
-                facilityId: widget.payment.facilityId,
-                paymentId: widget.payment.id,
-                method: widget.payment.method,
-              );
-              if (mounted) {
+              try {
+                await ref.read(paymentOperationsProvider.notifier).processPayment(
+                  facilityId: widget.payment.facilityId,
+                  paymentId: widget.payment.id,
+                  method: widget.payment.method,
+                );
+                if (!mounted) return;
                 context.go(AppRoute.payments);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment processed successfully'),
                     backgroundColor: AppTheme.success,
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+                    backgroundColor: AppTheme.error,
                   ),
                 );
               }
@@ -869,16 +879,25 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(paymentOperationsProvider.notifier).deletePayment(
-                widget.payment.facilityId,
-                widget.payment.id,
-              );
-              if (mounted) {
+              try {
+                await ref.read(paymentOperationsProvider.notifier).deletePayment(
+                  widget.payment.facilityId,
+                  widget.payment.id,
+                );
+                if (!mounted) return;
                 context.go(AppRoute.payments);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment deleted'),
                     backgroundColor: AppTheme.success,
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+                    backgroundColor: AppTheme.error,
                   ),
                 );
               }

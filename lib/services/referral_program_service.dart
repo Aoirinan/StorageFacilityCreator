@@ -71,7 +71,7 @@ class ReferralProgramService {
     return '${kAppWebOrigin}/signup?$referralSignupQueryParam=${Uri.encodeQueryComponent(c)}';
   }
 
-  /// Where to apply the 3-month referral reward (`null` / empty = first eligible facility).
+  /// Where to apply the 1-month referral reward (`null` / empty = first eligible facility).
   static Future<void> setPreferredRewardFacility(String? facilityId) async {
     if (FirebaseAuth.instance.currentUser == null) return;
     final functions = FirebaseFunctions.instance;

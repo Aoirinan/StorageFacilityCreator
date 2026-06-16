@@ -1,7 +1,7 @@
 ﻿import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
-import { sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
+import { sendFacilityEmailWithCompliance, authenticatePortalTenantForFacility, extractCallableClientIp } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
 /**
@@ -271,10 +271,79 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 });
 
 /**
+ * Lists units available for online/additional rental for a tenant portal session.
+ * Direct Firestore reads are blocked for portal users; this callable validates email + access code
+ * then reads inventory with the Admin SDK (same trust boundary as createTenantPortalAdditionalUnitHold).
+ */
+export const tenantPortalListAvailableUnits = functions.https.onCall(async (data: any, context) => {
+  const email = (data?.email || '').toString().trim().toLowerCase();
+  const accessCode = (data?.accessCode || '').toString().trim();
+  const facilityId = (data?.facilityId || '').toString().trim();
+  const clientIp = extractCallableClientIp(context.rawRequest);
+
+  if (!facilityId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'email, accessCode, and facilityId are required',
+    );
+  }
+
+  await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
+
+  const unitsSnap = await admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units')
+    .get();
+
+  const units: Array<{
+    id: string;
+    unitNumber: string;
+    unitType: string;
+    monthlyRate: number;
+  }> = [];
+
+  unitsSnap.forEach((doc) => {
+    const d = doc.data() as Record<string, any>;
+    if (d.isActive === false) {
+      return;
+    }
+    const st = String(d.status || '').toLowerCase();
+    if (st !== 'available') {
+      return;
+    }
+    const rawRate = d.monthlyRate;
+    const monthlyRate =
+      typeof rawRate === 'number'
+        ? rawRate
+        : typeof rawRate === 'string'
+          ? Number.parseFloat(rawRate) || 0
+          : 0;
+    units.push({
+      id: doc.id,
+      unitNumber: String(d.unitNumber ?? ''),
+      unitType: String(d.unitType ?? 'standard'),
+      monthlyRate,
+    });
+  });
+
+  units.sort((a, b) => {
+    const byRate = a.monthlyRate - b.monthlyRate;
+    if (byRate !== 0) {
+      return byRate;
+    }
+    return a.unitNumber.localeCompare(b.unitNumber, undefined, { numeric: true });
+  });
+
+  return { units };
+});
+
+/**
  * Creates a reservation hold for a logged-in tenant-portal user renting an additional unit.
  * Authenticates via tenant portal email + access code and stamps trusted linking metadata.
  */
-export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async (data: any) => {
+export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async (data: any, context) => {
   const email = (data?.email || '').toString().trim().toLowerCase();
   const accessCode = (data?.accessCode || '').toString().trim();
   const facilityId = (data?.facilityId || '').toString().trim();
@@ -283,37 +352,18 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
   const moveInDate = data?.moveInDate;
   const holdMinutesRaw = Number(data?.holdMinutes);
   const holdMinutes = Math.max(1, Math.min(Number.isFinite(holdMinutesRaw) ? holdMinutesRaw : 10, 60));
+  const clientIp = extractCallableClientIp(context.rawRequest);
 
-  if (!email || !accessCode || !facilityId || !unitId) {
+  if (!facilityId || !unitId) {
     throw new functions.https.HttpsError(
       'invalid-argument',
       'email, accessCode, facilityId, and unitId are required',
     );
   }
 
-  // Authenticate against tenant portal credentials.
-  const tenantSnapshot = await admin
-    .firestore()
-    .collectionGroup('tenants')
-    .where('emailLower', '==', email)
-    .where('portalEnabled', '==', true)
-    .where('portalAccessCode', '==', accessCode)
-    .limit(1)
-    .get();
-
-  if (tenantSnapshot.empty) {
-    throw new functions.https.HttpsError('not-found', 'Portal access not found');
-  }
-
-  const sourceTenantDoc = tenantSnapshot.docs[0];
-  const sourceTenantData = sourceTenantDoc.data() as Record<string, any>;
-  const sourceFacilityRef = sourceTenantDoc.ref.parent.parent;
-  if (!sourceFacilityRef || sourceFacilityRef.id !== facilityId) {
-    throw new functions.https.HttpsError(
-      'permission-denied',
-      'Unit facility does not match this portal account',
-    );
-  }
+  const session = await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
+  const sourceTenantDoc = session.tenantDoc;
+  const sourceTenantData = session.tenantData as Record<string, any>;
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + holdMinutes * 60 * 1000);

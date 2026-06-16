@@ -1,40 +1,23 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { getStripeClient } from '@sfc/functions-shared';
+import { authenticatePortalTenant, extractCallableClientIp, getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import { createAutopayNotificationAndEvent } from './stripeAutopayEvents';
 
 /**
  * setTenantAutopayFromPortal — For tenant portal (no Firebase Auth). Uses email + accessCode to identify tenant.
  */
-export const setTenantAutopayFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const setTenantAutopayFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
   const enabled = data.enabled === true;
+  const clientIp = extractCallableClientIp(context.rawRequest);
 
-  if (!email || !accessCode) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
-  }
-
-  const tenantSnapshot = await admin.firestore().collectionGroup('tenants')
-    .where('emailLower', '==', email)
-    .where('portalEnabled', '==', true)
-    .where('portalAccessCode', '==', accessCode)
-    .limit(1)
-    .get();
-
-  if (tenantSnapshot.empty) {
-    throw new functions.https.HttpsError('not-found', 'Portal access not found.');
-  }
-
-  const tenantDoc = tenantSnapshot.docs[0];
-  const facilityId = tenantDoc.ref.parent.parent?.id;
-  if (!facilityId) {
-    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
-  }
-
-  const tenantId = tenantDoc.id;
-  const tenantData = tenantDoc.data() as Record<string, any>;
+  const session = await authenticatePortalTenant(email, accessCode, clientIp);
+  const tenantDoc = session.tenantDoc;
+  const facilityId = session.facilityId;
+  const tenantId = session.tenantId;
+  const tenantData = session.tenantData as Record<string, any>;
   const tenantName = tenantData.name || 'Tenant';
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {

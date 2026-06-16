@@ -1713,14 +1713,24 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              await ref.read(paymentOperationsProvider.notifier).processPayment(
-                facilityId: _selectedFacilityId,
-                paymentId: payment.id,
-                method: payment.method,
-              );
-              // Refresh providers after processing payment
-              ref.invalidate(paymentListProvider(_selectedFacilityId));
-              ref.invalidate(paymentStatsProvider(_selectedFacilityId));
+              try {
+                await ref.read(paymentOperationsProvider.notifier).processPayment(
+                  facilityId: _selectedFacilityId,
+                  paymentId: payment.id,
+                  method: payment.method,
+                );
+                if (!context.mounted) return;
+                ref.invalidate(paymentListProvider(_selectedFacilityId));
+                ref.invalidate(paymentStatsProvider(_selectedFacilityId));
+              } catch (e) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+                    backgroundColor: AppTheme.error,
+                  ),
+                );
+              }
             },
             child: const Text('Process'),
           ),

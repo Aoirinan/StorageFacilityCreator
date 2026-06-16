@@ -962,9 +962,43 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                               _buildFormSection(
                                 title: 'Electronic Signature',
                                 children: [
-                                  const Text(
-                                    'Sign below to acknowledge and sign your move-in contract.',
-                                    style: TextStyle(color: muted, fontSize: 14, height: 1.4),
+                                  if (_reservation?.onlineMoveInLeaseUrl != null &&
+                                      _reservation!.onlineMoveInLeaseUrl!.isNotEmpty) ...[
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: TextButton.icon(
+                                        onPressed: () async {
+                                          final raw =
+                                              _reservation!.onlineMoveInLeaseUrl!;
+                                          final uri = Uri.tryParse(raw);
+                                          if (uri != null &&
+                                              await canLaunchUrl(uri)) {
+                                            await launchUrl(
+                                              uri,
+                                              mode: LaunchMode
+                                                  .externalApplication,
+                                            );
+                                          }
+                                        },
+                                        icon: const Icon(
+                                          Icons.picture_as_pdf_outlined,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          'Review ${_reservation!.onlineMoveInLeaseTitle ?? 'lease agreement'} (PDF)',
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                  ],
+                                  Text(
+                                    _reservation?.onlineMoveInLeaseUrl != null &&
+                                            _reservation!
+                                                .onlineMoveInLeaseUrl!.isNotEmpty
+                                        ? 'Sign below to acknowledge the lease you reviewed and complete your move-in.'
+                                        : 'Sign below to acknowledge and sign your move-in agreement.',
+                                    style: const TextStyle(
+                                        color: muted, fontSize: 14, height: 1.4),
                                   ),
                                   const SizedBox(height: 12),
                                   Container(

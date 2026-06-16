@@ -26,6 +26,7 @@ import {
   OPENAI_CHAT_MODEL,
 } from './aiGuards';
 import { AI_SECRETS, OPENAI_API_KEY } from './secrets';
+import { appendAiChatAuditLog } from './aiChatAuditLog';
 
 export const aiAssistant = functions.runWith({ secrets: AI_SECRETS }).https.onCall(async (data: unknown, context) => {
   if (!context.auth) {
@@ -293,6 +294,23 @@ Always be helpful, professional, and safety-conscious. Never execute actions wit
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    const auditRequestId = `ai-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const callerEmail = context.auth.token?.email as string | undefined;
+    void appendAiChatAuditLog({
+      facilityId,
+      facilityName,
+      userId: context.auth.uid,
+      userEmail: callerEmail ?? null,
+      userMessage: message,
+      assistantReply: response,
+      requestId: auditRequestId,
+      model: 'gpt-4o-mini',
+      tokensUsed: 0,
+      latencyMs: 0,
+      providerUsed: 'openai',
+      source: 'aiAssistant',
+    });
+
     return {
       conversationId: convId,
       response,
@@ -521,6 +539,22 @@ export const aiAssistantChat = functions
       allowlistPassed,
       facilityUsageLimit: maxFacilityDaily,
       userUsageLimit: maxUserDaily,
+    });
+
+    const callerEmail = context.auth.token?.email as string | undefined;
+    void appendAiChatAuditLog({
+      facilityId,
+      facilityName: displayName,
+      userId: uid,
+      userEmail: callerEmail ?? null,
+      userMessage: message,
+      assistantReply: replyText,
+      requestId,
+      model,
+      tokensUsed,
+      latencyMs,
+      providerUsed,
+      source: 'aiAssistantChat',
     });
 
     return {

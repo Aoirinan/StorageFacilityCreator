@@ -1,6 +1,6 @@
 /**
  * Referral program: referred facilities get 60 days platform trial; after first paid
- * invoice post-trial, referrer earns 100% off for 3 months on one platform subscription.
+ * invoice post-trial, referrer earns 100% off for 1 month on one platform subscription.
  *
  * This module hosts the pieces that BOTH the Stripe webhook (default codebase, until
  * payments-billing splits) AND the super-admin admin tools need. The marketing-facing
@@ -13,7 +13,7 @@ import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 
 const REFEREE_PLATFORM_TRIAL_DAYS = 60;
-const REFERRAL_REWARD_FREE_MONTHS = 3;
+const REFERRAL_REWARD_FREE_MONTHS = 1;
 const REFERRAL_MAX_REWARDS_PER_REFERRER_PER_YEAR = 10;
 
 /** Exported for createFacilitySubscriptionCheckout. */
@@ -77,7 +77,7 @@ async function pickReferrerTargetSubscriptionId(
   return null;
 }
 
-async function applyThreeMonthFullDiscount(
+async function applyReferralRewardFullDiscount(
   stripe: Stripe,
   subscriptionId: string,
   idempotencyKey: string,
@@ -88,7 +88,7 @@ async function applyThreeMonthFullDiscount(
       percent_off: 100,
       duration: 'repeating',
       duration_in_months: REFERRAL_REWARD_FREE_MONTHS,
-      name: 'Referral reward (3 months)',
+      name: `Referral reward (${REFERRAL_REWARD_FREE_MONTHS} month${REFERRAL_REWARD_FREE_MONTHS === 1 ? '' : 's'})`,
       metadata,
     },
     { idempotencyKey: `${idempotencyKey}_coupon` },
@@ -225,7 +225,7 @@ export async function processReferralOnPlatformInvoicePaid(
   }
 
   try {
-    await applyThreeMonthFullDiscount(stripe, target.subscriptionId, idempotencyBase, {
+    await applyReferralRewardFullDiscount(stripe, target.subscriptionId, idempotencyBase, {
       type: 'referral_reward',
       refereeFacilityId: facilityId,
       refereeAccountId,
@@ -346,7 +346,7 @@ export async function resolveReferralPendingItemForSuperAdmin(
   }
 
   const idempotencyBase = `manual_referral_reward_${pendingId}`;
-  await applyThreeMonthFullDiscount(stripe, target.subscriptionId, idempotencyBase, {
+  await applyReferralRewardFullDiscount(stripe, target.subscriptionId, idempotencyBase, {
     type: 'manual_referral_reward',
     referrerAccountId,
     refereeFacilityId,

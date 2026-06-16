@@ -134,7 +134,12 @@ class StripeService {
     try {
       if (kDebugMode) print('🔄 Cancelling facility subscription: $facilityId');
       final callable = _functions.httpsCallable('cancelFacilitySubscription');
-      await callable.call(<String, dynamic>{'facilityId': facilityId});
+      await callable.call(<String, dynamic>{'facilityId': facilityId}).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          throw Exception('Request timed out. Please try again.');
+        },
+      );
       if (kDebugMode)
         print('✅ Facility subscription set to cancel at period end');
     } catch (e) {
@@ -150,7 +155,12 @@ class StripeService {
         print('🔄 Cancelling subscription for account: $accountId');
       }
       final callable = _functions.httpsCallable('cancelSubscription');
-      await callable.call(<String, dynamic>{'accountId': accountId});
+      await callable.call(<String, dynamic>{'accountId': accountId}).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          throw Exception('Request timed out. Please try again.');
+        },
+      );
       if (kDebugMode) {
         print('✅ Subscription set to cancel at period end');
       }
@@ -178,7 +188,12 @@ class StripeService {
         'accountId': accountId,
         'returnUrl': returnUrl ??
             'https://app.storagefacilitycreator.com/subscription/manage',
-      });
+      }).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          throw Exception('Request timed out. Please try again.');
+        },
+      );
 
       final portalUrl = result.data['portalUrl'] as String?;
       if (portalUrl == null) {
@@ -433,7 +448,12 @@ class StripeService {
       final callable = _functions.httpsCallable('startTrial');
       final result = await callable.call(<String, dynamic>{
         'accountId': accountId,
-      });
+      }).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          throw Exception('Request timed out. Please try again.');
+        },
+      );
 
       if (kDebugMode) {
         print('✅ Trial started successfully');

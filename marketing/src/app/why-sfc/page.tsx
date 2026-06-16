@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
-import { PAGE_OG_IMAGES } from '@/config/site';
+import { ONLINE_RENTALS_ADDON_MONTHLY, PAGE_OG_IMAGES, PRICE_MONTHLY } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Why SFC',
@@ -13,9 +13,13 @@ export const metadata: Metadata = {
 };
 
 const rows = [
-  ['Pricing model', '$75/facility/month, published', 'Often quote-based with tiered modules'],
+  ['Pricing model', `$${PRICE_MONTHLY}/facility/month, published`, 'Often quote-based with tiered modules'],
   ['User seats', 'Unlimited users per facility', 'Often per-seat or plan-limited'],
-  ['Feature packaging', 'All features in the base rate', 'Often distributed across add-on modules'],
+  [
+    'Feature packaging',
+    `Core product in the base rate; optional website rentals (+$${ONLINE_RENTALS_ADDON_MONTHLY}/mo)`,
+    'Often distributed across add-on modules',
+  ],
   ['Compliance transparency', 'Published legal and compliance pages', 'Varies by vendor'],
   ['Operational focus', 'Built for practical storage workflows', 'May include broader, less focused suites'],
   ['Onboarding complexity', 'No onboarding fee, lightweight setup', 'Can involve heavier implementation overhead'],
@@ -38,7 +42,9 @@ export default function WhySfcPage() {
         <ul className="mt-5 space-y-2.5 text-slate-700 leading-relaxed">
           <li>• Published per-facility pricing for predictable budgeting as you add sites</li>
           <li>• Unlimited users per facility — no per-seat scaling costs</li>
-          <li>• All features included in the base rate — no add-on modules</li>
+          <li>
+            {`• Core product features in the base rate — optional public website for online unit rentals (+$${ONLINE_RENTALS_ADDON_MONTHLY}/mo per facility when enabled)`}
+          </li>
           <li>• Operational workflows designed for real storage teams</li>
           <li>• Clear legal/compliance documentation for buyer trust</li>
           <li>• Practical integrations for billing and communications</li>

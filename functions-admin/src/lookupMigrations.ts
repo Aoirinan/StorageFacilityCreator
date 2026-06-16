@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 
-import { isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
+import { getFacilityDataForUserOrThrow, isSuperAdmin } from '@sfc/functions-shared';
 
 import { runAllMigrations } from './migrations/phase2_migrations';
 
@@ -14,13 +14,17 @@ export const lookupUserByEmail = functions.https.onCall(async (data: any, contex
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
 
-  const { email } = data;
-  if (!email) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+  const email = (data?.email || '').toString().trim();
+  const facilityId = (data?.facilityId || '').toString().trim();
+
+  if (!email || !facilityId) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email and facilityId are required');
   }
 
+  await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+
   try {
-    const emailLower = email.toLowerCase().trim();
+    const emailLower = email.toLowerCase();
 
     const usersSnapshot = await admin
       .firestore()

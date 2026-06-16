@@ -332,3 +332,27 @@ class TenantPortalData {
     );
   }
 }
+
+/// One row from [TenantPortalService.listAvailableUnitsForAdditionalRental] for unit picker UI.
+class TenantPortalAvailableUnit {
+  final String id;
+  final String unitNumber;
+  final String unitType;
+  final double monthlyRate;
+
+  const TenantPortalAvailableUnit({
+    required this.id,
+    required this.unitNumber,
+    required this.unitType,
+    required this.monthlyRate,
+  });
+
+  factory TenantPortalAvailableUnit.fromMap(Map<String, dynamic> data) {
+    return TenantPortalAvailableUnit(
+      id: data['id']?.toString() ?? '',
+      unitNumber: data['unitNumber']?.toString() ?? '',
+      unitType: data['unitType']?.toString() ?? 'standard',
+      monthlyRate: (data['monthlyRate'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}

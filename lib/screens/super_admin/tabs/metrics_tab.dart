@@ -40,7 +40,7 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
       if (!needs) continue;
 
       _backfilledFacilityIds.add(f.id);
-      FacilityStatsService.updateFacilityStats(f.id);
+      unawaited(FacilityStatsService.updateFacilityStats(f.id));
     }
   }
 
@@ -53,6 +53,7 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
     });
 
     final metricsAsync = ref.watch(platformMetricsProvider);
+    final saasAsync = ref.watch(platformSaasRevenueProvider);
     final revenueAsync = ref.watch(platformTenantRevenueAggregateProvider);
 
     return metricsAsync.when(
@@ -71,6 +72,8 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
             const SizedBox(height: 20),
             _MetricGrid(metrics: metrics),
             const SizedBox(height: 20),
+            _PlatformSaasRevenueCard(saasAsync: saasAsync),
+            const SizedBox(height: 16),
             _PlatformTenantRevenueCard(revenueAsync: revenueAsync),
             const SizedBox(height: 32),
             Text('Subscription Breakdown',
@@ -83,6 +86,119 @@ class _MetricsTabState extends ConsumerState<MetricsTab> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PlatformSaasRevenueCard extends StatelessWidget {
+  final AsyncValue<PlatformSaasRevenueSnapshot> saasAsync;
+
+  const _PlatformSaasRevenueCard({required this.saasAsync});
+
+  @override
+  Widget build(BuildContext context) {
+    return saasAsync.when(
+      loading: () => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderLight),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Loading platform subscription revenue…',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      error: (e, _) => Text(
+        'Platform subscription revenue failed: $e',
+        style: TextStyle(color: AppTheme.error, fontSize: 13),
+      ),
+      data: (snap) {
+        final fmt = NumberFormat.currency(symbol: r'$', decimalDigits: 0);
+        final fmtCents = NumberFormat.currency(symbol: r'$', decimalDigits: 2);
+        final hasBreakdown = snap.legacyAccountMrr > 0 && snap.perFacilityMrr > 0;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderLight),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Platform subscription revenue (estimated MRR)',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'What onboarded facilities pay Storage Facility Creator via Stripe '
+                '(${fmtCents.format(kPlatformSubscriptionListPriceUsd)}/mo per active facility at list price). '
+                'Trials and past-due are excluded from the dollar total.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: AppTheme.textTertiary),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                fmt.format(snap.estimatedMonthlyRevenue),
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.accentOrange,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${snap.payingFacilityCount} paying '
+                    '${snap.payingFacilityCount == 1 ? 'facility' : 'facilities'}'
+                    '${snap.legacyPayingAccountCount > 0 ? ' · ${snap.legacyPayingAccountCount} legacy account ${snap.legacyPayingAccountCount == 1 ? 'subscription' : 'subscriptions'}' : ''}',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: AppTheme.textSecondary),
+              ),
+              if (hasBreakdown) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Per-facility billing: ${fmt.format(snap.perFacilityMrr)} '
+                  '(${snap.perFacilityPayingCount} ${snap.perFacilityPayingCount == 1 ? 'facility' : 'facilities'})',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Text(
+                  'Account-level billing: ${fmt.format(snap.legacyAccountMrr)} '
+                  '(${snap.legacyCoveredFacilityCount} ${snap.legacyCoveredFacilityCount == 1 ? 'facility' : 'facilities'})',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 }

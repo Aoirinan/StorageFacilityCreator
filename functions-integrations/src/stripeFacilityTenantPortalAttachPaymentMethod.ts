@@ -1,37 +1,29 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { getStripeClient, rejectClientSuppliedStripeKeys } from '@sfc/functions-shared';
+import { authenticatePortalTenant, extractCallableClientIp, getStripeClient, rejectClientSuppliedStripeKeys } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import { writeAutopayEvent } from './stripeAutopayEvents';
 
 /**
  * attachTenantPaymentMethodFromPortal — Portal (no Firebase Auth). Email + accessCode + paymentMethodId → attach PM.
  */
-export const attachTenantPaymentMethodFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const attachTenantPaymentMethodFromPortal = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   rejectClientSuppliedStripeKeys(data || {});
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
   const paymentMethodId = data.paymentMethodId as string;
   const setupIntentId = data.setupIntentId as string | undefined;
-  if (!email || !accessCode || !paymentMethodId) {
+  const clientIp = extractCallableClientIp(context.rawRequest);
+
+  if (!paymentMethodId) {
     throw new functions.https.HttpsError('invalid-argument', 'Email, access code, and paymentMethodId are required');
   }
-  const tenantSnapshot = await admin.firestore().collectionGroup('tenants')
-    .where('emailLower', '==', email)
-    .where('portalEnabled', '==', true)
-    .where('portalAccessCode', '==', accessCode)
-    .limit(1)
-    .get();
-  if (tenantSnapshot.empty) {
-    throw new functions.https.HttpsError('not-found', 'Portal access not found.');
-  }
-  const tenantDoc = tenantSnapshot.docs[0];
-  const facilityId = tenantDoc.ref.parent.parent?.id;
-  if (!facilityId) {
-    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
-  }
-  const tenantId = tenantDoc.id;
-  const tenantData = tenantDoc.data() as Record<string, any>;
+
+  const session = await authenticatePortalTenant(email, accessCode, clientIp);
+  const tenantDoc = session.tenantDoc;
+  const facilityId = session.facilityId;
+  const tenantId = session.tenantId;
+  const tenantData = session.tenantData as Record<string, any>;
   const connectAccountId = (await admin.firestore().collection('facilities').doc(facilityId).get()).data()?.stripeConnectAccountId as string | undefined;
   if (!connectAccountId) {
     throw new functions.https.HttpsError('failed-precondition', 'Facility must have a connected Stripe account');

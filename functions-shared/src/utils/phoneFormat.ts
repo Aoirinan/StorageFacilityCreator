@@ -6,7 +6,10 @@
  * - 11 digits starting with `1` → prefix `+`
  * - Already starts with `+` → returned untouched
  */
-export function formatPhoneNumber(phone: string): string | null {
+export function formatPhoneNumber(phone: string | null | undefined): string | null {
+  if (phone == null || typeof phone !== 'string') {
+    return null;
+  }
   const digits = phone.replace(/\D/g, '');
 
   if (digits.length === 11 && digits.startsWith('1')) {

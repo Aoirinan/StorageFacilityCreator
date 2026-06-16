@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as crypto from 'crypto';
+import { getFacilityDataForUserOrThrow, validateSigningTokenForContract } from '@sfc/functions-shared';
 import { enforceAppCheckOrThrow } from './guardrails';
 
 /**
@@ -47,7 +48,8 @@ export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, me
   async (
     data: {
       pdfBase64?: string;
-      fileUrl?: string;
+      facilityId?: string;
+      contractId?: string;
       signaturePngBase64?: string;
       signerName?: string;
       signerDate?: string;
@@ -67,10 +69,12 @@ export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, me
     context: functions.https.CallableContext,
   ) => {
     const pdfBase64 = (data?.pdfBase64 || '').toString().trim();
-    const fileUrl = (data?.fileUrl || '').toString().trim();
     const signaturePngBase64 = (data?.signaturePngBase64 || '').toString().trim();
     const signerName = (data?.signerName || '').toString().trim();
     const signerDate = (data?.signerDate || '').toString().trim();
+    const facilityId = (data?.facilityId || '').toString().trim();
+    const contractId = (data?.contractId || '').toString().trim();
+    const signingToken = (data?.signingToken || '').toString().trim();
     const placements = (data?.placements || []) as Array<{
       type: 'image' | 'text';
       pageIndex: number;
@@ -83,29 +87,33 @@ export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, me
       fontSize?: number;
     }>;
 
-    if (!pdfBase64 && !fileUrl) {
-      throw new functions.https.HttpsError('invalid-argument', 'pdfBase64 or fileUrl is required');
+    if (!pdfBase64) {
+      throw new functions.https.HttpsError('invalid-argument', 'pdfBase64 is required');
     }
 
-    const signingToken = (data as { signingToken?: string })?.signingToken?.toString?.()?.trim() || '';
-    if (!context.auth?.uid && !signingToken) {
+    if (context.auth?.uid) {
+      enforceAppCheckOrThrow(context);
+      if (!facilityId) {
+        throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      }
+      await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+    } else if (signingToken) {
+      if (!facilityId || !contractId) {
+        throw new functions.https.HttpsError(
+          'invalid-argument',
+          'facilityId, contractId, and signingToken are required',
+        );
+      }
+      const valid = await validateSigningTokenForContract(signingToken, facilityId, contractId);
+      if (!valid) {
+        throw new functions.https.HttpsError('permission-denied', 'Invalid or expired signing token');
+      }
+    } else {
       throw new functions.https.HttpsError('unauthenticated', 'Authentication or signing token required');
     }
 
     try {
-      let pdfBytes: Buffer;
-      if (pdfBase64) {
-        pdfBytes = Buffer.from(pdfBase64, 'base64');
-      } else if (fileUrl) {
-        const resp = await fetch(fileUrl);
-        if (!resp.ok) {
-          throw new functions.https.HttpsError('internal', `Failed to fetch PDF: ${resp.status} ${resp.statusText}`);
-        }
-        const arrayBuf = await resp.arrayBuffer();
-        pdfBytes = Buffer.from(arrayBuf);
-      } else {
-        throw new functions.https.HttpsError('invalid-argument', 'pdfBase64 or fileUrl is required');
-      }
+      const pdfBytes = Buffer.from(pdfBase64, 'base64');
       if (pdfBytes.length > 10 * 1024 * 1024) {
         throw new functions.https.HttpsError('invalid-argument', 'PDF too large (max 10MB)');
       }

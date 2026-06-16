@@ -15,13 +15,11 @@ import 'package:sfcapp/providers/tenant_portal_provider.dart';
 import 'package:sfcapp/services/autopay_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
-import 'package:sfcapp/services/public_rental_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/ui/payments/stripe_embedded_payment_dialog.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/auth/widgets/auth_shell.dart';
-import 'package:sfcapp/models/unit_model.dart';
 
 class TenantPortalScreen extends ConsumerStatefulWidget {
   final TenantPortalLookup lookup;
@@ -208,14 +206,18 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     final facilityId = data.facility.id;
 
     try {
-      final units = await PublicRentalService.getAvailableUnits(facilityId);
+      final units = await TenantPortalService.listAvailableUnitsForAdditionalRental(
+        email: widget.lookup.email,
+        accessCode: widget.lookup.accessCode,
+        facilityId: facilityId,
+      );
       if (!mounted) return;
       if (units.isEmpty) {
         _showSnack('No units are currently available to rent.', isError: true);
         return;
       }
 
-      final selected = await showModalBottomSheet<UnitModel>(
+      final selected = await showModalBottomSheet<TenantPortalAvailableUnit>(
         context: context,
         useSafeArea: true,
         isScrollControlled: true,
@@ -2030,7 +2032,7 @@ class _TenantPortalOrb extends StatelessWidget {
 }
 
 class _AvailableUnitsSheet extends StatelessWidget {
-  final List<UnitModel> units;
+  final List<TenantPortalAvailableUnit> units;
 
   const _AvailableUnitsSheet({required this.units});
 

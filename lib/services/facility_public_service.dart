@@ -62,6 +62,9 @@ class FacilityPublicService {
     double? publicInsuranceAmount,
     bool? chargeSecurityDepositAtMoveIn,
     double? publicSecurityDepositAmount,
+    String? onlineMoveInContractTemplateId,
+    /// When true, [onlineMoveInContractTemplateId] replaces the stored value (including null to clear).
+    bool replaceOnlineMoveInContractTemplate = false,
     Map<String, dynamic>? customStyles,
     Map<String, dynamic>? widgets,
   }) async {
@@ -125,6 +128,12 @@ class FacilityPublicService {
             false,
         publicSecurityDepositAmount: publicSecurityDepositAmount ??
             currentSettings?.publicSecurityDepositAmount,
+        onlineMoveInContractTemplateId: replaceOnlineMoveInContractTemplate
+            ? (onlineMoveInContractTemplateId != null &&
+                    onlineMoveInContractTemplateId.trim().isNotEmpty
+                ? onlineMoveInContractTemplateId.trim()
+                : null)
+            : currentSettings?.onlineMoveInContractTemplateId,
         customStyles: customStyles ?? currentSettings?.customStyles,
         widgets: widgets ?? currentSettings?.widgets,
         updatedAt: DateTime.now(),

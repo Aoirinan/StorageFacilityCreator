@@ -572,9 +572,18 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
       }
     }
 
+    final fetchUrl = ContractService.getPdfFetchUrl(_contract!.fileUrl!);
+    final pdfResponse = await http.get(Uri.parse(fetchUrl));
+    if (pdfResponse.statusCode != 200) {
+      throw Exception('Failed to download contract PDF for merge');
+    }
+    final pdfBase64 = base64Encode(pdfResponse.bodyBytes);
+
     final callable = FirebaseFunctions.instance.httpsCallable('mergeSignatureIntoPdf');
     final result = await callable.call({
-      'fileUrl': _contract!.fileUrl,
+      'pdfBase64': pdfBase64,
+      'facilityId': _contract!.facilityId,
+      'contractId': _contract!.id,
       'signaturePngBase64': signatureBase64,
       'signerName': signerName,
       'signerDate': signerDate,

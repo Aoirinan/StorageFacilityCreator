@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import { ONLINE_RENTALS_ADDON_MONTHLY, PRICE_MONTHLY, TRIAL_LINE } from '@/config/site';
 
 type Item = { q: string; a: string };
 
 const ITEMS: Item[] = [
   {
     q: 'What does SFC cost?',
-    a: '$75 per facility, per month. Each facility is a flat $75/month with unlimited users per facility and all features included — no add-on modules, no per-seat pricing, no onboarding fee. A 30-day trial + first month free is available so you can evaluate with real data before committing.',
+    a: `$${PRICE_MONTHLY} per facility, per month. Each facility is a flat $${PRICE_MONTHLY}/month with unlimited users per facility and all core features included — no tiered modules, no per-seat pricing, no onboarding fee. Optional public website rentals (SEO-friendly online move-ins) add $${ONLINE_RENTALS_ADDON_MONTHLY}/month per facility when enabled. A ${TRIAL_LINE} is available so you can evaluate with real data before committing.`,
   },
   {
     q: 'Can we migrate from our current software or from spreadsheets?',

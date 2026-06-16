@@ -8,6 +8,40 @@ class TenantPortalService {
 
   static final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
+  /// Available units for "Rent another unit" (server-side; portal users cannot read `units` in Firestore).
+  static Future<List<TenantPortalAvailableUnit>> listAvailableUnitsForAdditionalRental({
+    required String email,
+    required String accessCode,
+    required String facilityId,
+  }) async {
+    final callable = _functions.httpsCallable('tenantPortalListAvailableUnits');
+    try {
+      final result = await callable.call(<String, dynamic>{
+        'email': email.trim(),
+        'accessCode': accessCode.trim(),
+        'facilityId': facilityId.trim(),
+      });
+      final data = Map<String, dynamic>.from(result.data as Map);
+      final raw = data['units'] as List<dynamic>? ?? const [];
+      return raw
+          .map((e) => TenantPortalAvailableUnit.fromMap(
+                Map<String, dynamic>.from(e as Map),
+              ))
+          .where((u) => u.id.isNotEmpty)
+          .toList();
+    } on FirebaseFunctionsException catch (error) {
+      throw TenantPortalException(
+        message: error.message ?? 'Unable to load available units.',
+        code: error.code,
+      );
+    } catch (error) {
+      throw TenantPortalException(
+        message: error.toString(),
+        code: 'unknown',
+      );
+    }
+  }
+
   static Future<TenantPortalData> fetchPortalData({
     required String email,
     required String accessCode,

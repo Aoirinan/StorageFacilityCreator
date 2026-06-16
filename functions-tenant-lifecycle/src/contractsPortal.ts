@@ -4,9 +4,12 @@ import * as crypto from 'crypto';
 import { getDownloadURL } from 'firebase-admin/storage';
 import type { Application, Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import {
+  authenticatePortalTenant,
   escapeHtml,
+  extractCallableClientIp,
   getStripeClient,
   sendFacilityEmailWithCompliance,
+  validateSigningTokenForContract,
 } from '@sfc/functions-shared';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_SECRETS, STRIPE_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, writeAuditLog } from './guardrails';
@@ -185,14 +188,7 @@ export const uploadSignedContract = functions.https.onCall(async (data: {
   }
 
   if (!allowed && signingToken) {
-    const contractDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('contracts')
-      .doc(contractId)
-      .get();
-    const d = contractDoc.exists ? (contractDoc.data() as Record<string, any>) : null;
-    if (d?.signingToken === signingToken && d?.status === 'sent') allowed = true;
+    allowed = await validateSigningTokenForContract(signingToken, facilityId, contractId);
   }
 
   if (!allowed) {
@@ -289,14 +285,7 @@ function getUploadSignedContractApp(): Application {
     }
 
     if (!allowed && signingToken) {
-      const contractDoc = await admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('contracts')
-        .doc(contractId)
-        .get();
-      const d = contractDoc.exists ? (contractDoc.data() as Record<string, unknown>) : null;
-      if ((d?.signingToken as string) === signingToken && d?.status === 'sent') allowed = true;
+      allowed = await validateSigningTokenForContract(signingToken, facilityId, contractId);
     }
 
     if (!allowed) {
@@ -626,53 +615,16 @@ export const onContractSigned = functions.runWith({ secrets: SENDGRID_SECRETS })
  * Tenant portal lookup by email + access code. No Firebase Auth required.
  * App Check is not enforced here so unauthenticated tenants can access the portal.
  */
-export const tenantPortalFetch = functions.https.onCall(async (data: TenantPortalRequest) => {
+export const tenantPortalFetch = functions.https.onCall(async (data: TenantPortalRequest, context) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
-
-  if (!email || !accessCode) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
-  }
+  const clientIp = extractCallableClientIp(context.rawRequest);
 
   try {
-    let tenantSnapshot: admin.firestore.QuerySnapshot;
-    try {
-      tenantSnapshot = await admin
-        .firestore()
-        .collectionGroup('tenants')
-        .where('emailLower', '==', email)
-        .where('portalEnabled', '==', true)
-        .where('portalAccessCode', '==', accessCode)
-        .get();
-    } catch (indexError: any) {
-      if (indexError.code === 9 || (indexError.message ?? '').includes('indexes') || (indexError.message ?? '').includes('index')) {
-        functions.logger.warn('Missing composite index for tenant portal lookup. Falling back to email-only query.', indexError);
-        const fallbackSnapshot = await admin
-          .firestore()
-          .collectionGroup('tenants')
-          .where('emailLower', '==', email)
-          .get();
-        const matchingDocs = fallbackSnapshot.docs.filter((doc) => {
-          const d = doc.data();
-          return d.portalEnabled === true && d.portalAccessCode === accessCode;
-        });
-        tenantSnapshot = { docs: matchingDocs, empty: matchingDocs.length === 0 } as unknown as admin.firestore.QuerySnapshot;
-      } else {
-        throw indexError;
-      }
-    }
-
-    if (tenantSnapshot.empty) {
-      throw new functions.https.HttpsError('not-found', 'Portal access not found. Verify your email and access code.');
-    }
-
-    const primaryTenantDoc = tenantSnapshot.docs[0];
-    const primaryTenantData = primaryTenantDoc.data() as Record<string, any>;
-    const facilityRef = primaryTenantDoc.ref.parent.parent;
-
-    if (!facilityRef) {
-      throw new functions.https.HttpsError('failed-precondition', 'Facility reference missing for tenant');
-    }
+    const session = await authenticatePortalTenant(email, accessCode, clientIp);
+    const primaryTenantDoc = session.tenantDoc;
+    const primaryTenantData = session.tenantData as Record<string, any>;
+    const facilityRef = session.facilityRef;
 
     const facilityDoc = await facilityRef.get();
     if (!facilityDoc.exists) {
@@ -701,7 +653,7 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
       functions.logger.warn('tenantPortalFetch: insurance settings read failed', insErr);
     }
 
-    const allMatchingDocs = tenantSnapshot.docs.filter((d) => d.ref.parent.parent?.id === facilityRef.id);
+    const allMatchingDocs = [primaryTenantDoc];
     const portalAccountId = (primaryTenantData.portalAccountId || '').toString().trim();
 
     let linkedTenantDocs = allMatchingDocs;
@@ -886,44 +838,14 @@ export const tenantPortalFetch = functions.https.onCall(async (data: TenantPorta
  * Tenants can update: phone, emergencyContacts, vehicles.
  * All changes are written directly to the Firestore tenant document.
  */
-export const tenantUpdateProfile = functions.https.onCall(async (data: any) => {
+export const tenantUpdateProfile = functions.https.onCall(async (data: any, context) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
-
-  if (!email || !accessCode) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email and access code are required');
-  }
+  const clientIp = extractCallableClientIp(context.rawRequest);
 
   try {
-    // Authenticate tenant
-    let tenantSnapshot: admin.firestore.QuerySnapshot;
-    try {
-      tenantSnapshot = await admin
-        .firestore()
-        .collectionGroup('tenants')
-        .where('emailLower', '==', email)
-        .where('portalEnabled', '==', true)
-        .where('portalAccessCode', '==', accessCode)
-        .limit(1)
-        .get();
-    } catch (indexError: any) {
-      if (indexError.code === 9 || (indexError.message ?? '').includes('index')) {
-        const fallback = await admin.firestore().collectionGroup('tenants').where('emailLower', '==', email).get();
-        const matching = fallback.docs.filter((d) => {
-          const dd = d.data();
-          return dd.portalEnabled === true && dd.portalAccessCode === accessCode;
-        });
-        tenantSnapshot = { docs: matching, empty: matching.length === 0 } as unknown as admin.firestore.QuerySnapshot;
-      } else {
-        throw indexError;
-      }
-    }
-
-    if (tenantSnapshot.empty) {
-      throw new functions.https.HttpsError('not-found', 'Portal access not found. Verify your email and access code.');
-    }
-
-    const tenantDoc = tenantSnapshot.docs[0];
+    const session = await authenticatePortalTenant(email, accessCode, clientIp);
+    const tenantDoc = session.tenantDoc;
     const updateData: Record<string, any> = {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       portalLastProfileUpdateAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -979,38 +901,22 @@ export const tenantUpdateProfile = functions.https.onCall(async (data: any) => {
  * Create payment checkout from tenant portal (email + access code auth).
  * App Check not enforced so unauthenticated tenants can pay.
  */
-export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
   const requestedTenantId = (data.tenantId || '').toString().trim();
   const amount = data.amount as number;
+  const clientIp = extractCallableClientIp(context.rawRequest);
 
-  if (!email || !accessCode || !amount || amount <= 0) {
+  if (!amount || amount <= 0) {
     throw new functions.https.HttpsError('invalid-argument', 'email, accessCode, and amount are required');
   }
 
   try {
-    // Find tenant using email + accessCode (same logic as tenantPortalFetch)
-    const tenantSnapshot = await admin
-      .firestore()
-      .collectionGroup('tenants')
-      .where('emailLower', '==', email)
-      .where('portalEnabled', '==', true)
-      .where('portalAccessCode', '==', accessCode)
-      .limit(1)
-      .get();
-
-    if (tenantSnapshot.empty) {
-      throw new functions.https.HttpsError('not-found', 'Portal access not found');
-    }
-
-    const authTenantDoc = tenantSnapshot.docs[0];
-    const authTenantData = authTenantDoc.data() as Record<string, any>;
-    const facilityRef = authTenantDoc.ref.parent.parent;
-
-    if (!facilityRef) {
-      throw new functions.https.HttpsError('failed-precondition', 'Facility reference missing');
-    }
+    const portalSession = await authenticatePortalTenant(email, accessCode, clientIp);
+    const authTenantDoc = portalSession.tenantDoc;
+    const authTenantData = portalSession.tenantData as Record<string, any>;
+    const facilityRef = portalSession.facilityRef;
 
     const facilityDoc = await facilityRef.get();
     if (!facilityDoc.exists) {
@@ -1074,7 +980,7 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
     const stripe = getStripeClient();
 
     // Create checkout session on connected account
-    const session = await stripe.checkout.sessions.create({
+    const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'payment',
       payment_method_types: ['card'],
       line_items: [
@@ -1105,8 +1011,8 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
     });
 
     return {
-      checkoutUrl: session.url,
-      sessionId: session.id,
+      checkoutUrl: checkoutSession.url,
+      sessionId: checkoutSession.id,
     };
   } catch (error: any) {
     if (error instanceof functions.https.HttpsError) {

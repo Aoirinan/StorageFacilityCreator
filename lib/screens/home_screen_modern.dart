@@ -50,6 +50,8 @@ import 'home_screen_modern_helper.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../utils/error_message_helper.dart';
 import '../services/facility_stats_service.dart';
+import '../services/dashboard_owner_tips_service.dart';
+import '../widgets/dashboard_owner_tips_dialog.dart';
 
 class HomeScreenModern extends ConsumerWidget {
   const HomeScreenModern({super.key});
@@ -115,6 +117,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   bool _showSearchResults = false;
   bool _sidebarCollapsed = false;
   Timer? _searchDebounce;
+  bool _ownerDashboardTipsHandled = false;
 
   @override
   void initState() {
@@ -297,8 +300,41 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     }
   }
 
+  Future<void> _processOwnerDashboardTips(List<FacilityModel> facilities) async {
+    if (!mounted || _ownerDashboardTipsHandled) return;
+    final uid = widget.user.uid;
+    final teamOnly = facilities.isNotEmpty &&
+        facilities.every((f) => f.showsAsTeamMemberForViewer(uid));
+    if (teamOnly) {
+      _ownerDashboardTipsHandled = true;
+      return;
+    }
+    if (await DashboardOwnerTipsService.isDisabled()) {
+      _ownerDashboardTipsHandled = true;
+      return;
+    }
+    if (!mounted) return;
+    _ownerDashboardTipsHandled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final result = await showDialog<DashboardOwnerTipsDialogResult>(
+        context: context,
+        barrierDismissible: true,
+        builder: (context) => const DashboardOwnerTipsDialog(),
+      );
+      if (!mounted) return;
+      if (result?.neverShowAgain == true) {
+        await DashboardOwnerTipsService.setDisabled(true);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final facilitiesAsync = ref.watch(userFacilitiesProvider(widget.user.uid));
+    facilitiesAsync.whenData((facilities) {
+      unawaited(_processOwnerDashboardTips(facilities));
+    });
     return _buildDashboard();
   }
 
@@ -1107,6 +1143,18 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   AppTheme.warning,
                   () => ModernNavigationService.navigateToRoute(context, '/reports'),
                 ),
+                _buildQuickActionCard(
+                  'Contracts\n& E-Sign',
+                  Icons.draw_outlined,
+                  AppTheme.primaryBlue,
+                  () => ModernNavigationService.navigateToRoute(context, '/contracts'),
+                ),
+                _buildQuickActionCard(
+                  'Integrations',
+                  Icons.integration_instructions,
+                  AppTheme.info,
+                  () => context.go(AppRoute.subscription),
+                ),
               ],
             );
           },
@@ -1135,10 +1183,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               const SizedBox(height: 8),
               Text(
                 label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                   color: colorScheme.onSurface,
+                  height: 1.2,
                 ),
               ),
             ],

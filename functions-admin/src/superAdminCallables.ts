@@ -11,8 +11,59 @@ import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
+const USER_ROLES_COLLECTION = 'user_roles';
+
+/**
+ * Deactivate every `user_roles` row for [uid] and remove [uid] from each affected
+ * facility's `roles` map (matches client `PermissionService.removeRole`).
+ */
+async function deactivateAllUserRolesForUid(uid: string): Promise<{
+  roleDocumentsUpdated: number;
+  facilitiesRolesCleared: number;
+}> {
+  const db = admin.firestore();
+  const snap = await db.collection(USER_ROLES_COLLECTION).where('userId', '==', uid).get();
+  if (snap.empty) {
+    return { roleDocumentsUpdated: 0, facilitiesRolesCleared: 0 };
+  }
+
+  const facilityIdsToClearRolesMap = new Set<string>();
+  for (const doc of snap.docs) {
+    const data = doc.data();
+    const wasActive = data.isActive !== false;
+    const facilityId = typeof data.facilityId === 'string' ? data.facilityId.trim() : '';
+    if (wasActive && facilityId) {
+      facilityIdsToClearRolesMap.add(facilityId);
+    }
+  }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const docs = snap.docs;
+  for (let i = 0; i < docs.length; i += 400) {
+    const batch = db.batch();
+    for (const doc of docs.slice(i, i + 400)) {
+      batch.set(doc.ref, { isActive: false, updatedAt: now }, { merge: true });
+    }
+    await batch.commit();
+  }
+
+  for (const fid of facilityIdsToClearRolesMap) {
+    await db
+      .collection('facilities')
+      .doc(fid)
+      .set({ roles: { [uid]: admin.firestore.FieldValue.delete() } }, { merge: true });
+  }
+
+  return {
+    roleDocumentsUpdated: docs.length,
+    facilitiesRolesCleared: facilityIdsToClearRolesMap.size,
+  };
+}
+
 /**
  * Super admin only: delete a user from Firebase Auth and Firestore users collection.
+ * Also deactivates all `user_roles` for that uid and clears `facilities.*.roles[uid]`
+ * so permission lists do not show "Unknown email" orphans.
  */
 export const superAdminDeleteUser = functions.https.onCall(async (data: { uid: string }, context) => {
   if (!context.auth) {
@@ -30,11 +81,68 @@ export const superAdminDeleteUser = functions.https.onCall(async (data: { uid: s
   if (isSuperAdmin(targetUser.email)) {
     throw new functions.https.HttpsError('permission-denied', 'Cannot delete a super admin account');
   }
+  const roleCleanup = await deactivateAllUserRolesForUid(uid);
   await admin.auth().deleteUser(uid);
   await admin.firestore().collection('users').doc(uid).delete();
-  functions.logger.info('superAdminDeleteUser', { uid, deletedBy: callerEmail });
-  return { success: true };
+  functions.logger.info('superAdminDeleteUser', { uid, deletedBy: callerEmail, ...roleCleanup });
+  return { success: true, ...roleCleanup };
 });
+
+/**
+ * Super admin only: for one facility, deactivate active `user_roles` rows whose
+ * `users/{userId}` document is missing (e.g. after a pre-fix super-admin delete).
+ */
+export const superAdminRepairFacilityPermissionOrphans = functions.https.onCall(
+  async (data: { facilityId: string }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError('permission-denied', 'Only super admins can repair permissions');
+    }
+    const facilityId = (data?.facilityId || '').toString().trim();
+    if (!facilityId) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+
+    const db = admin.firestore();
+    const snap = await db.collection(USER_ROLES_COLLECTION).where('facilityId', '==', facilityId).get();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    let deactivatedRoleAssignments = 0;
+
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      const roleUserId = typeof d.userId === 'string' ? d.userId.trim() : '';
+      if (!roleUserId) {
+        continue;
+      }
+      if (d.isActive === false) {
+        continue;
+      }
+
+      const userSnap = await db.collection('users').doc(roleUserId).get();
+      if (userSnap.exists) {
+        continue;
+      }
+
+      await doc.ref.set({ isActive: false, updatedAt: now }, { merge: true });
+      await db
+        .collection('facilities')
+        .doc(facilityId)
+        .set({ roles: { [roleUserId]: admin.firestore.FieldValue.delete() } }, { merge: true });
+      deactivatedRoleAssignments += 1;
+    }
+
+    functions.logger.info('superAdminRepairFacilityPermissionOrphans', {
+      facilityId,
+      deactivatedRoleAssignments,
+      repairedBy: callerEmail,
+    });
+
+    return { success: true, deactivatedRoleAssignments };
+  },
+);
 
 interface SuperAdminDeleteFacilityCreatorAccountData {
   accountId: string;
@@ -807,7 +915,7 @@ export const superAdminListReferralRewardsPending = functions.https.onCall(
 /**
  * Super admin only: resolve one pending referral queue item.
  * - resolve_only: mark item closed with note
- * - apply_reward: apply manual 3-month reward then mark closed
+ * - apply_reward: apply manual 1-month referral reward then mark closed
  */
 export const superAdminResolveReferralPending = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(
   async (

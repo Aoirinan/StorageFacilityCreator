@@ -4,6 +4,27 @@ import { formatPhoneNumber, getFacilityDataForUserOrThrow } from '@sfc/functions
 import { enforceAppCheckOrThrow } from './appCheck';
 import { enforceRateLimit } from './rateLimit';
 
+/** Maps unexpected errors (e.g. Firestore index) to HttpsError so clients are not stuck on generic internal. */
+function rethrowStaffOptOutError(operation: string, error: unknown): never {
+  if (error instanceof functions.https.HttpsError) {
+    throw error;
+  }
+  const err = error as { message?: string; code?: string | number };
+  const message = typeof err?.message === 'string' ? err.message : String(error);
+  functions.logger.error(`[${operation}]`, { message, code: err?.code, stack: (error as Error)?.stack });
+  const lower = message.toLowerCase();
+  const codeStr = String(err?.code ?? '').toLowerCase();
+  const isFailedPrecondition =
+    codeStr === 'failed-precondition' ||
+    err?.code === 9 ||
+    lower.includes('requires an index') ||
+    lower.includes('the query requires an index');
+  if (isFailedPrecondition) {
+    throw new functions.https.HttpsError('failed-precondition', message);
+  }
+  throw new functions.https.HttpsError('internal', message);
+}
+
 function tenantSmsOptOutDisplayName(t: Record<string, unknown>): string {
   const n = t.name != null ? String(t.name).trim() : '';
   if (n) return n;
@@ -18,67 +39,71 @@ function tenantSmsOptOutDisplayName(t: Record<string, unknown>): string {
  * Staff: list SMS block list + tenants marked opted out (STOP / consent).
  */
 export const listFacilitySmsOptOuts = functions.https.onCall(async (data: { facilityId?: string }, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-  }
-  enforceAppCheckOrThrow(context);
-  const facilityId = data?.facilityId;
-  if (!facilityId || typeof facilityId !== 'string') {
-    throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
-  }
-  await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
-  await enforceRateLimit({
-    facilityId,
-    key: 'listFacilitySmsOptOuts',
-    limit: 60,
-    windowSeconds: 60,
-    userId: context.auth.uid,
-  });
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    enforceAppCheckOrThrow(context);
+    const facilityId = data?.facilityId;
+    if (!facilityId || typeof facilityId !== 'string') {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+    await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+    await enforceRateLimit({
+      facilityId,
+      key: 'listFacilitySmsOptOuts',
+      limit: 60,
+      windowSeconds: 60,
+      userId: context.auth.uid,
+    });
 
-  const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
-  if (!facilitySnap.exists) {
-    throw new functions.https.HttpsError('not-found', 'Facility not found');
+    const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+    if (!facilitySnap.exists) {
+      throw new functions.https.HttpsError('not-found', 'Facility not found');
+    }
+    const fd = facilitySnap.data() as Record<string, unknown>;
+    const blockList = Array.isArray((fd?.smsSettings as Record<string, unknown> | undefined)?.blockList)
+      ? ((fd.smsSettings as { blockList: unknown }).blockList as string[])
+      : [];
+
+    const tenantsRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants');
+    const [qOpt, qConsent] = await Promise.all([
+      tenantsRef.where('smsOptOut', '==', true).limit(400).get(),
+      tenantsRef.where('smsConsentStatus', '==', 'opted_out').limit(400).get(),
+    ]);
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const d of qOpt.docs) byId.set(d.id, d.data() as Record<string, unknown>);
+    for (const d of qConsent.docs) {
+      if (!byId.has(d.id)) byId.set(d.id, d.data() as Record<string, unknown>);
+    }
+
+    const optedOutTenants = Array.from(byId.entries()).map(([tenantId, t]) => ({
+      tenantId,
+      name: tenantSmsOptOutDisplayName(t),
+      phone: t.phone != null ? String(t.phone) : '',
+      smsOptOut: t.smsOptOut === true,
+      smsConsentStatus: t.smsConsentStatus != null ? String(t.smsConsentStatus) : null,
+      smsConsentSource: t.smsConsentSource != null ? String(t.smsConsentSource) : null,
+    }));
+
+    const tenantNormPhones = new Set<string>();
+    for (const row of optedOutTenants) {
+      const pn = formatPhoneNumber(row.phone);
+      if (pn) tenantNormPhones.add(pn);
+    }
+
+    const blockListOnly: { raw: string; normalized: string | null }[] = [];
+    for (const raw of blockList) {
+      const s = String(raw);
+      const n = formatPhoneNumber(s);
+      if (n && tenantNormPhones.has(n)) continue;
+      blockListOnly.push({ raw: s, normalized: n });
+    }
+
+    return { blockList, blockListOnly, optedOutTenants };
+  } catch (e: unknown) {
+    rethrowStaffOptOutError('listFacilitySmsOptOuts', e);
   }
-  const fd = facilitySnap.data() as Record<string, unknown>;
-  const blockList = Array.isArray((fd?.smsSettings as Record<string, unknown> | undefined)?.blockList)
-    ? ((fd.smsSettings as { blockList: unknown }).blockList as string[])
-    : [];
-
-  const tenantsRef = admin.firestore().collection('facilities').doc(facilityId).collection('tenants');
-  const [qOpt, qConsent] = await Promise.all([
-    tenantsRef.where('smsOptOut', '==', true).limit(400).get(),
-    tenantsRef.where('smsConsentStatus', '==', 'opted_out').limit(400).get(),
-  ]);
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const d of qOpt.docs) byId.set(d.id, d.data() as Record<string, unknown>);
-  for (const d of qConsent.docs) {
-    if (!byId.has(d.id)) byId.set(d.id, d.data() as Record<string, unknown>);
-  }
-
-  const optedOutTenants = Array.from(byId.entries()).map(([tenantId, t]) => ({
-    tenantId,
-    name: tenantSmsOptOutDisplayName(t),
-    phone: t.phone != null ? String(t.phone) : '',
-    smsOptOut: t.smsOptOut === true,
-    smsConsentStatus: t.smsConsentStatus != null ? String(t.smsConsentStatus) : null,
-    smsConsentSource: t.smsConsentSource != null ? String(t.smsConsentSource) : null,
-  }));
-
-  const tenantNormPhones = new Set<string>();
-  for (const row of optedOutTenants) {
-    const pn = formatPhoneNumber(row.phone);
-    if (pn) tenantNormPhones.add(pn);
-  }
-
-  const blockListOnly: { raw: string; normalized: string | null }[] = [];
-  for (const raw of blockList) {
-    const s = String(raw);
-    const n = formatPhoneNumber(s);
-    if (n && tenantNormPhones.has(n)) continue;
-    blockListOnly.push({ raw: s, normalized: n });
-  }
-
-  return { blockList, blockListOnly, optedOutTenants };
 });
 
 /** Scoped tenant lookup by normalized phone (facility-bound). */
@@ -121,6 +146,7 @@ async function findTenantByPhoneNumber(
  */
 export const restoreFacilitySmsForPhone = functions.https.onCall(
   async (data: { facilityId?: string; phone?: string; tenantId?: string | null }, context) => {
+    try {
     if (!context.auth) {
       throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
     }
@@ -249,5 +275,8 @@ export const restoreFacilitySmsForPhone = functions.https.onCall(
       tenantRecordUpdated: updatedTenantId != null,
       tenantId: updatedTenantId,
     };
+    } catch (e: unknown) {
+      rethrowStaffOptOutError('restoreFacilitySmsForPhone', e);
+    }
   },
 );

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,10 +13,8 @@ import '../providers/search_provider.dart';
 import '../services/permission_service.dart';
 import '../services/sms_conversation_service.dart';
 import '../services/sms_service.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../widgets/sms_conversation_widget.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
 import '../services/tenant_service.dart';
 import '../services/messaging_service.dart';
 import '../services/debug_logger.dart';
@@ -24,8 +24,6 @@ import '../providers/tenant_provider.dart';
 import '../providers/active_facility_provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
-import '../models/facility_model.dart';
-import '../router/app_route.dart';
 import '../utils/breakpoints.dart';
 import '../utils/renter_account_message.dart';
 import 'bulk_messaging_screen.dart';
@@ -83,6 +81,9 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
   final ScrollController _employeeChatScrollController = ScrollController();
   String? _lastChatScrollConversationId;
   int _lastChatScrollMessageCount = 0;
+  /// Avoid duplicate Firestore writes while the open thread’s message stream updates.
+  String? _lastSeenSyncConversationId;
+  String? _lastSeenSyncMessageId;
 
   @override
   void initState() {
@@ -105,6 +106,8 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.facilityId != widget.facilityId) {
       _phoneChatNotesSegment = 0;
+      _lastSeenSyncConversationId = null;
+      _lastSeenSyncMessageId = null;
       _checkPermissions();
     }
   }
@@ -136,6 +139,35 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
           data: (m) => m,
           orElse: () => <String, String>{},
         );
+  }
+
+  void _syncEmployeeChatSeenForSelection(String? conversationId) {
+    final fid = widget.facilityId;
+    if (fid.isEmpty || fid == 'all' || conversationId == null || conversationId.isEmpty) return;
+    unawaited(
+      MessagingService.recordEmployeeChatSeen(
+        facilityId: fid,
+        conversationId: conversationId,
+      ),
+    );
+  }
+
+  /// While a thread is open, clear unread when someone else’s messages arrive (no re-tap needed).
+  void _syncSeenWhileViewingThread(List<MessageModel> messages) {
+    final cid = _selectedConversationId;
+    if (cid == null || messages.isEmpty) return;
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isEmpty) return;
+    final last = messages.last;
+    if (_lastSeenSyncConversationId != cid) {
+      _lastSeenSyncConversationId = cid;
+      _lastSeenSyncMessageId = null;
+    }
+    if (_lastSeenSyncMessageId == last.id) return;
+    _lastSeenSyncMessageId = last.id;
+    if (last.senderUid != uid) {
+      _syncEmployeeChatSeenForSelection(cid);
+    }
   }
 
   String _conversationDisplayTitle(ConversationModel conversation) {
@@ -305,8 +337,12 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                 final cs = Theme.of(context).colorScheme;
                 final width = MediaQuery.of(context).size.width;
                 final isPhone = Breakpoints.isPhone(width);
+                final employeeUnread = widget.facilityId.isEmpty || widget.facilityId == 'all'
+                    ? 0
+                    : ref.watch(employeeChatUnreadConversationCountProvider(widget.facilityId));
                 final tabs = [
-                  _buildTab(0, isPhone ? 'Chat' : 'Employee Chat', Icons.chat_bubble_outline, isPhone),
+                  _buildTab(0, isPhone ? 'Chat' : 'Employee Chat', Icons.chat_bubble_outline, isPhone,
+                      employeeUnread),
                   _buildTab(1, isPhone ? 'Bulk' : 'Bulk Messaging', Icons.message_outlined, isPhone),
                   _buildTab(2, 'Email', Icons.email_outlined, isPhone),
                   _buildTab(3, 'SMS', Icons.sms, isPhone),
@@ -652,9 +688,11 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           if (!mounted) return;
                           if (_selectedConversationId == null) {
+                            final pickId = conversations.first.id;
                             setState(() {
-                              _selectedConversationId = conversations.first.id;
+                              _selectedConversationId = pickId;
                             });
+                            _syncEmployeeChatSeenForSelection(pickId);
                           }
                         });
                       }
@@ -781,31 +819,52 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                               ),
                             ],
                           ),
-                          trailing: _canManageConversations && !conversation.isPrivate
-                              ? PopupMenuButton(
-                                  itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: 'archive',
-                                      child: Text('Archive'),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'delete',
-                                      child: Text('Delete'),
-                                    ),
+                          trailing: (conversation.hasUnreadEmployeeChatFor(currentUserId) ||
+                                  (_canManageConversations && !conversation.isPrivate))
+                              ? Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (conversation.hasUnreadEmployeeChatFor(currentUserId))
+                                      Padding(
+                                        padding: const EdgeInsets.only(right: 8),
+                                        child: Container(
+                                          width: 10,
+                                          height: 10,
+                                          decoration: BoxDecoration(
+                                            color: cs.primary,
+                                            shape: BoxShape.circle,
+                                          ),
+                                        ),
+                                      ),
+                                    if (_canManageConversations && !conversation.isPrivate)
+                                      PopupMenuButton(
+                                        itemBuilder: (context) => const [
+                                          PopupMenuItem(
+                                            value: 'archive',
+                                            child: Text('Archive'),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'delete',
+                                            child: Text('Delete'),
+                                          ),
+                                        ],
+                                        onSelected: (value) {
+                                          if (value == 'archive') {
+                                            _archiveConversation(conversation);
+                                          } else if (value == 'delete') {
+                                            _deleteConversation(conversation);
+                                          }
+                                        },
+                                      ),
                                   ],
-                                  onSelected: (value) {
-                                    if (value == 'archive') {
-                                      _archiveConversation(conversation);
-                                    } else if (value == 'delete') {
-                                      _deleteConversation(conversation);
-                                    }
-                                  },
                                 )
                               : null,
                           onTap: () {
+                            final id = conversation.id;
                             setState(() {
-                              _selectedConversationId = conversation.id;
+                              _selectedConversationId = id;
                             });
+                            _syncEmployeeChatSeenForSelection(id);
                           },
                         );
                       },
@@ -979,6 +1038,7 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
                   }
 
                   _scheduleEmployeeChatScrollToEnd(messages);
+                  _syncSeenWhileViewingThread(messages);
 
                   return ListView.builder(
                     controller: _employeeChatScrollController,
@@ -1519,7 +1579,13 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
     );
   }
 
-  Widget _buildTab(int index, String label, IconData icon, [bool isPhone = false]) {
+  Widget _buildTab(
+    int index,
+    String label,
+    IconData icon, [
+    bool isPhone = false,
+    int employeeChatUnreadBadge = 0,
+  ]) {
     final cs = Theme.of(context).colorScheme;
     final isSelected = _selectedTab == index;
     return InkWell(
@@ -1554,11 +1620,29 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
             Text(
               label,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: isSelected ? cs.primary : cs.onSurfaceVariant,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                fontSize: isPhone ? 13 : null,
-              ),
+                    color: isSelected ? cs.primary : cs.onSurfaceVariant,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontSize: isPhone ? 13 : null,
+                  ),
             ),
+            if (employeeChatUnreadBadge > 0) ...[
+              SizedBox(width: isPhone ? 6 : 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppTheme.error,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  employeeChatUnreadBadge > 99 ? '99+' : '$employeeChatUnreadBadge',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

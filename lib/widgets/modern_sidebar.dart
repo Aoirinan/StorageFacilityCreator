@@ -26,12 +26,15 @@ class ModernSidebar extends StatelessWidget {
   final String currentRoute;
   final Function(String) onNavigate;
   final bool isCollapsed;
+  /// Unread employee-chat conversation count (shown on Messaging).
+  final int employeeChatUnreadCount;
 
   const ModernSidebar({
     super.key,
     required this.currentRoute,
     required this.onNavigate,
     this.isCollapsed = false,
+    this.employeeChatUnreadCount = 0,
   });
 
   @override
@@ -140,6 +143,7 @@ class ModernSidebar extends StatelessWidget {
                   isActive: isActive('/messaging'),
                   isCollapsed: isCollapsed,
                   onTap: () => onNavigate('/messaging'),
+                  badgeCount: employeeChatUnreadCount,
                 ),
                 _SidebarItem(
                   icon: Icons.payments_outlined,
@@ -398,11 +402,35 @@ class _SidebarItem extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(
-                isActive ? activeIcon : icon,
-                color: itemColor,
-                size: 20,
-              ),
+              if (isCollapsed && showBadge)
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Icon(
+                      isActive ? activeIcon : icon,
+                      color: itemColor,
+                      size: 20,
+                    ),
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: AppTheme.error,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Icon(
+                  isActive ? activeIcon : icon,
+                  color: itemColor,
+                  size: 20,
+                ),
               if (!isCollapsed) ...[
                 const SizedBox(width: 12),
                 Expanded(

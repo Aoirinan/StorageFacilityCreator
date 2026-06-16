@@ -11,6 +11,78 @@ import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
 import { generateAccessCode } from './accessCode';
 import { createAutopayNotificationAndEvent } from './autopayNotification';
+import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
+
+/** Public settings → active contract template with PDF, for online move-in. */
+async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
+  templateId: string;
+  title: string;
+  url: string;
+  description: string;
+  type: string;
+  complianceStatus: string;
+  isLicensedForm: boolean;
+  documentSha256: string | null;
+  fileSize: number | null;
+  contentType: string | null;
+} | null> {
+  try {
+    const publicSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('settings')
+      .doc('public')
+      .get();
+    const templateId = String(publicSnap.data()?.onlineMoveInContractTemplateId || '').trim();
+    if (!templateId) return null;
+    const tSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('contractTemplates')
+      .doc(templateId)
+      .get();
+    if (!tSnap.exists) return null;
+    const t = tSnap.data() as Record<string, any>;
+    if (t.isActive === false) return null;
+    const complianceStatus = String(t.complianceStatus || 'active');
+    if (complianceStatus !== 'active') return null;
+    const url = String(t.fileUrl || '').trim();
+    if (!url) return null;
+    return {
+      templateId,
+      title: (String(t.name || 'Lease agreement').trim()) || 'Lease agreement',
+      url,
+      description: String(t.description || 'Online self-service move-in').trim(),
+      type: (String(t.type || 'storage').trim()) || 'storage',
+      complianceStatus,
+      isLicensedForm: !!t.isLicensedForm,
+      documentSha256: t.documentSha256 != null ? String(t.documentSha256) : null,
+      fileSize: typeof t.fileSize === 'number' ? t.fileSize : null,
+      contentType: t.contentType != null ? String(t.contentType) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readOnlineMoveInLeaseForFacility(
+  facilityId: string,
+): Promise<{ title: string; url: string } | null> {
+  const b = await readOnlineMoveInTemplateBinding(facilityId);
+  if (!b) return null;
+  return { title: b.title, url: b.url };
+}
+
+async function downloadUrlToBuffer(url: string): Promise<Buffer | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Public token lookup for reservation flow.
  * This keeps unauthenticated move-in working while Firestore blocks anonymous list queries.
@@ -46,6 +118,11 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
     return { found: false };
   }
 
+  const facilityIdForLease = String(reservation.facilityId || '').trim();
+  const onlineMoveInLease = facilityIdForLease
+    ? await readOnlineMoveInLeaseForFacility(facilityIdForLease)
+    : null;
+
   return {
     found: true,
     reservation: {
@@ -64,6 +141,7 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
       moveInToken: reservation.moveInToken || null,
       metadata: reservation.metadata || null,
     },
+    ...(onlineMoveInLease ? { onlineMoveInLease } : {}),
   };
 });
 
@@ -87,6 +165,12 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
   if (!facilityId || !unitId || !email) {
     throw new functions.https.HttpsError('invalid-argument', 'facilityId, unitId, and email are required');
   }
+
+  await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+    name: name ? String(name).trim() : '',
+    email: String(email).trim().toLowerCase(),
+    phone: phone ? String(phone).trim() : '',
+  });
 
   const now = new Date();
   const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 60));
@@ -225,6 +309,12 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
       'Facility owner must complete Stripe setup before online payments are enabled',
     );
   }
+
+  await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+    name: reservation.name ? String(reservation.name).trim() : '',
+    email: String(reservation.email || '').trim().toLowerCase(),
+    phone: reservation.phone ? String(reservation.phone).trim() : '',
+  });
 
   const safeToken = encodeURIComponent(String(token));
   const safeReservationId = encodeURIComponent(String(reservationId));
@@ -401,14 +491,31 @@ export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_S
   };
 });
 
+function humanizeUnitType(unitTypeRaw: string): string {
+  const m: Record<string, string> = {
+    standard: 'Standard storage',
+    climateControlled: 'Climate controlled',
+    vehicle: 'Vehicle storage',
+    document: 'Document storage',
+    wine: 'Wine storage',
+    outdoor: 'Outdoor storage',
+  };
+  return m[unitTypeRaw] || unitTypeRaw;
+}
+
 /** One-page PDF for online move-in (signature + summary) for facility dashboard review. */
 async function buildPublicMoveInAgreementPdf(params: {
   facilityName: string;
   unitNumber: string;
+  unitTypeDisplay?: string;
+  facilityAddress?: string;
+  facilityPhone?: string;
   tenantName: string;
   tenantEmail: string;
   signedAtLabel: string;
   signaturePngBase64: string;
+  /** When set, certificate page title references this lease name. */
+  headerTitle?: string | null;
 }): Promise<Buffer> {
   const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
   const pdf = await PDFDocument.create();
@@ -423,12 +530,24 @@ async function buildPublicMoveInAgreementPdf(params: {
     page.drawText(text, { x: left, y, size, font, color: rgb(0, 0, 0) });
     y -= size + 6;
   };
-  line('Storage Rental Agreement (Online Move-In)', { bold: true, size: 16 });
+  const mainTitle = (params.headerTitle && params.headerTitle.trim())
+    ? `${params.headerTitle.trim()} (Online Move-In Certificate)`
+    : 'Storage Rental Agreement (Online Move-In)';
+  line(mainTitle, { bold: true, size: 16 });
   y -= 8;
   line('This record was completed through self-service online move-in.', { size: 10 });
   y -= 6;
   line(`Facility: ${params.facilityName}`);
-  line(`Unit: ${params.unitNumber}`);
+  if (params.facilityAddress) {
+    line(`Facility address: ${params.facilityAddress}`);
+  }
+  if (params.facilityPhone) {
+    line(`Facility phone: ${params.facilityPhone}`);
+  }
+  line(`Unit number: ${params.unitNumber}`);
+  if (params.unitTypeDisplay) {
+    line(`Unit type: ${params.unitTypeDisplay}`);
+  }
   line(`Tenant: ${params.tenantName}`);
   line(`Email: ${params.tenantEmail}`);
   line(`Signed: ${params.signedAtLabel}`);
@@ -446,6 +565,31 @@ async function buildPublicMoveInAgreementPdf(params: {
     { size: 9 },
   );
   return Buffer.from(await pdf.save());
+}
+
+/** Prepends facility lease PDF pages (when provided), then appends the signature certificate. */
+async function mergeTemplateWithCertificatePdf(
+  templateBytes: Buffer | null,
+  certParams: Parameters<typeof buildPublicMoveInAgreementPdf>[0],
+): Promise<Buffer> {
+  const { PDFDocument } = await import('pdf-lib');
+  const merged = await PDFDocument.create();
+  if (templateBytes && templateBytes.length > 0) {
+    try {
+      const tpl = await PDFDocument.load(templateBytes);
+      const copied = await merged.copyPages(tpl, tpl.getPageIndices());
+      for (const p of copied) merged.addPage(p);
+    } catch (e: any) {
+      functions.logger.warn('Public move-in: template PDF merge failed; certificate only', {
+        message: e?.message,
+      });
+    }
+  }
+  const certBytes = await buildPublicMoveInAgreementPdf(certParams);
+  const certDoc = await PDFDocument.load(certBytes);
+  const certCopied = await merged.copyPages(certDoc, certDoc.getPageIndices());
+  for (const p of certCopied) merged.addPage(p);
+  return Buffer.from(await merged.save());
 }
 
 /**
@@ -541,7 +685,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   // Derive core context
   const facilityId = reservation.facilityId as string | undefined;
   const unitId = reservation.unitId as string | undefined;
-  const unitNumber = (reservation.unitNumber as string | undefined) || 'Unassigned';
+  let displayUnitNumber = (reservation.unitNumber as string | undefined) || 'Unassigned';
   const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
   const reservationSource = String(reservationMetadata.source || '').trim();
   const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
@@ -551,6 +695,14 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
   }
 
+  const facilityPreSnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+  const facilityPre = (facilityPreSnap.data() || {}) as Record<string, any>;
+  const facilityNameForContext = String(facilityPre.name || 'Storage Facility').trim();
+  const facilityAddressForContext = String(facilityPre.address || '').trim();
+  const facilityPhoneForContext = String(facilityPre.phone || '').trim();
+  const facilityEmailForContext = String(facilityPre.email || '').trim();
+
+  let preloadedUnitData: Record<string, any> | null = null;
   // Optional unit validation
   if (unitId) {
     const unitSnap = await admin.firestore()
@@ -564,10 +716,14 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       throw new functions.https.HttpsError('not-found', 'Reserved unit not found');
     }
 
-    const unitData = unitSnap.data() as Record<string, any>;
-    const unitStatus = String(unitData.status || '').toLowerCase();
+    preloadedUnitData = unitSnap.data() as Record<string, any>;
+    const unitStatus = String(preloadedUnitData.status || '').toLowerCase();
     if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
+    }
+    const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
+    if (numFromUnit) {
+      displayUnitNumber = numFromUnit;
     }
   }
 
@@ -603,6 +759,61 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         : new functions.https.HttpsError('internal', 'Failed to validate payment intent');
     }
   }
+
+  await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+    name: name.trim(),
+    email: normalizedEmail,
+    phone: phone.trim(),
+  });
+
+  const unitTypeRaw = preloadedUnitData ? String(preloadedUnitData.unitType || 'standard') : 'standard';
+  const unitTypeDisplay = humanizeUnitType(unitTypeRaw);
+  const unitDescriptionForContext = preloadedUnitData
+    ? String(preloadedUnitData.description || '').trim()
+    : '';
+  const facilityInfoLines: string[] = [];
+  if (facilityAddressForContext) facilityInfoLines.push(`Address: ${facilityAddressForContext}`);
+  if (facilityPhoneForContext) facilityInfoLines.push(`Phone: ${facilityPhoneForContext}`);
+  if (facilityEmailForContext) facilityInfoLines.push(`Email: ${facilityEmailForContext}`);
+  const contractDescriptionParts: string[] = [
+    `Online self-service move-in for unit ${displayUnitNumber} (${unitTypeDisplay}) at ${facilityNameForContext}.`,
+    '',
+  ];
+  if (facilityInfoLines.length > 0) {
+    contractDescriptionParts.push('Facility information', ...facilityInfoLines);
+  }
+  if (unitDescriptionForContext) {
+    if (facilityInfoLines.length > 0) contractDescriptionParts.push('');
+    contractDescriptionParts.push(`Unit description: ${unitDescriptionForContext}`);
+  }
+  const contractDescription = contractDescriptionParts.join('\n');
+
+  const onlineMoveInContext = {
+    unitId: unitId || null,
+    unitNumber: displayUnitNumber,
+    unitType: unitTypeRaw,
+    unitTypeDisplay,
+    unitDescription: unitDescriptionForContext || null,
+    facilityName: facilityNameForContext,
+    facilityAddress: facilityAddressForContext || null,
+    facilityPhone: facilityPhoneForContext || null,
+    facilityEmail: facilityEmailForContext || null,
+  };
+
+  const templateBinding = await readOnlineMoveInTemplateBinding(facilityId);
+  let templatePdfBytes: Buffer | null = null;
+  if (templateBinding) {
+    templatePdfBytes = await downloadUrlToBuffer(templateBinding.url);
+    if (!templatePdfBytes) {
+      functions.logger.warn('Public move-in: could not download configured lease template PDF', {
+        facilityId,
+        templateId: templateBinding.templateId,
+      });
+    }
+  }
+  const activatedLeaseTemplate = templateBinding && templatePdfBytes
+    ? { ...templateBinding, pdfBytes: templatePdfBytes }
+    : null;
 
   // Helper to derive monthly rate from reservation metadata or line items
   const deriveMonthlyRate = (): number => {
@@ -694,7 +905,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       emailLower: normalizedEmail,
       phone: phone.trim(),
       phoneDigits: phone.replace(/[^\d]/g, ''),
-      unitNumber,
+      unitNumber: displayUnitNumber,
       monthlyRate: deriveMonthlyRate(),
       notes: String(data?.notes || '').trim(),
       createdAt: nowTs,
@@ -753,16 +964,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       .collection('contracts')
       .doc();
 
-    tx.set(contractRef, {
+    const contractPayload: Record<string, any> = {
       facilityId,
       facilityOwnerUid,
       tenantId: tenantRef.id,
-      title: 'Storage Rental Agreement',
-      description: 'Online self-service move-in',
-      type: 'storage',
+      title: activatedLeaseTemplate?.title || 'Storage Rental Agreement',
+      description: contractDescription,
+      type: activatedLeaseTemplate?.type || 'storage',
       status: 'signed',
-      templateId: null,
-      fileUrl: null,
+      templateId: activatedLeaseTemplate?.templateId || null,
+      fileUrl: activatedLeaseTemplate?.url || null,
       signedFileUrl: null,
       createdAt: nowTs,
       updatedAt: nowTs,
@@ -779,10 +990,26 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
           signerName: name.trim(),
           signerEmail: email.trim().toLowerCase(),
         },
+        onlineMoveInContext,
+        ...(activatedLeaseTemplate
+          ? { onlineMoveInContractTemplateId: activatedLeaseTemplate.templateId }
+          : {}),
       },
       notes: null,
       isActive: true,
-    });
+      complianceStatus: activatedLeaseTemplate?.complianceStatus || 'active',
+      isLicensedForm: activatedLeaseTemplate?.isLicensedForm ?? false,
+      ...(activatedLeaseTemplate?.documentSha256
+        ? { documentSha256: activatedLeaseTemplate.documentSha256 }
+        : {}),
+      ...(activatedLeaseTemplate?.fileSize != null
+        ? { fileSize: activatedLeaseTemplate.fileSize }
+        : {}),
+      ...(activatedLeaseTemplate?.contentType
+        ? { contentType: activatedLeaseTemplate.contentType }
+        : {}),
+    };
+    tx.set(contractRef, contractPayload);
 
     // Ledger entries for charges
     (lineItems as any[]).forEach((item) => {
@@ -849,16 +1076,22 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
 
   // Generate and store a reviewable PDF (dashboard contract detail uses signedFileUrl / fileUrl).
   try {
-    const facilitySnapForPdf = await admin.firestore().collection('facilities').doc(facilityId).get();
-    const facilityNameForPdf = String(facilitySnapForPdf.data()?.name || 'Storage Facility');
-    const pdfBuf = await buildPublicMoveInAgreementPdf({
-      facilityName: facilityNameForPdf,
-      unitNumber,
+    const certParams = {
+      facilityName: facilityNameForContext,
+      unitNumber: displayUnitNumber,
+      unitTypeDisplay,
+      facilityAddress: facilityAddressForContext || undefined,
+      facilityPhone: facilityPhoneForContext || undefined,
       tenantName: name.trim(),
       tenantEmail: normalizedEmail,
       signedAtLabel: normalizedSignatureSignedAt || new Date().toISOString(),
       signaturePngBase64: normalizedSignaturePngBase64,
-    });
+      headerTitle: activatedLeaseTemplate?.title ?? null,
+    };
+    const pdfBuf = await mergeTemplateWithCertificatePdf(
+      activatedLeaseTemplate?.pdfBytes ?? null,
+      certParams,
+    );
     const docHash = crypto.createHash('sha256').update(pdfBuf).digest('hex');
     const storagePathPdf = `facilities/${facilityId}/contracts/${contractId}/signed_move_in_agreement.pdf`;
     const bucketPdf = admin.storage().bucket();
@@ -872,6 +1105,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       },
     });
     const signedPdfUrl = await getDownloadURL(filePdf);
+    const originalLeaseUrl = activatedLeaseTemplate?.url || null;
     await admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -879,7 +1113,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       .doc(contractId)
       .update({
         signedFileUrl: signedPdfUrl,
-        fileUrl: signedPdfUrl,
+        fileUrl: originalLeaseUrl || signedPdfUrl,
         storagePath: storagePathPdf,
         documentSha256: docHash,
         fileSize: pdfBuf.length,
@@ -1004,13 +1238,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         },
         `<p>Hi ${escapeHtml(name.trim())},</p>
          <p>Your move-in request has been completed for <strong>${escapeHtml(facilityName)}</strong>.</p>
-         <p><strong>Unit:</strong> ${escapeHtml(unitNumber)}</p>
+         <p><strong>Unit:</strong> ${escapeHtml(displayUnitNumber)} (${escapeHtml(unitTypeDisplay)})</p>
          <p><strong>Move-in date:</strong> ${escapeHtml(moveInDate.toISOString().slice(0, 10))}</p>
          <p>If you need help, reply to this email or contact the facility.</p>`,
         `Hi ${name.trim()},
 
 Your move-in request has been completed for ${facilityName}.
-Unit: ${unitNumber}
+Unit: ${displayUnitNumber} (${unitTypeDisplay})
 Move-in date: ${moveInDate.toISOString().slice(0, 10)}
 
 If you need help, contact the facility.`,

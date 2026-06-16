@@ -2,6 +2,16 @@
 
 This feature adds a self-serve `Enable Texting` wizard for per-facility Twilio number provisioning and A2P registration.
 
+## Facility phone numbers and A2P compliance (timing)
+
+**When the facility gets a number (Twilio purchase + Firestore):** During the wizard, **before** Twilio/carrier campaign approval finishes. Step 3 calls `provisionPhoneNumber`, which buys a US local SMS-capable number (optional area code), stores `twilioPhoneNumberSid` and `twilioPhoneNumberE164` on `facilities/{facilityId}`, ensures a per-facility Messaging Service, and attaches that number to the service. `submitTextingOnboarding` calls the same provisioning helper again; if a number already exists, it is reused.
+
+**When outbound SMS uses that number as `From`:** Only when **all** of the following hold: the global feature flag is on, the facility has `textingOnboardingEnabled === true`, `a2pStatus` is `approved`, `textingPlatformApproved` is `true` (superadmin), and `twilioPhoneNumberE164` is set. Otherwise `sendSMS` either blocks or uses the legacy global `TWILIO_PHONE_NUMBER` when the per-facility onboarding path is not active for that facility.
+
+**Inbound SMS:** The webhook resolves the facility by matching the inbound `To` number to `twilioPhoneNumberE164` on a facility document.
+
+Primary implementation: `functions-messaging-twilio/src/twilioCallables.ts` (`provisionPhoneNumber`, `provisionFacilityPhoneNumber`, `submitTextingOnboarding`, `sendSMS`), `functions-messaging-twilio/src/incomingSmsWebhook.ts`, and the Flutter wizard `lib/screens/texting_setup_screen.dart`.
+
 ## Feature Flag
 
 - Flag key: `TEXTING_ONBOARDING_V1`
@@ -43,6 +53,7 @@ Dry run mode:
 - `submitTextingOnboarding`
 - `refreshTextingOnboardingStatus`
 - `resubmitTextingOnboarding`
+- `setTextingPlatformApproval` (superadmin only; grants or revokes sending after carrier A2P approval)
 
 ## Data Fields (Facility)
 
@@ -56,6 +67,7 @@ Stored in `facilities/{facilityId}`:
 - `twilioTrustProfileSid`, `twilioTrustProductSid`
 - `twilioBrandSid`, `twilioCampaignSid`
 - `twilioPhoneNumberSid`, `twilioPhoneNumberE164`
+- `textingPlatformApproved` (bool), `textingPlatformApprovedAt`, `textingPlatformApprovedBy` (superadmin gate for sending when onboarding is enabled)
 
 ## Data Fields (Tenant Consent)
 
@@ -81,11 +93,13 @@ Inbound STOP/START updates these fields automatically.
 3. Complete wizard with test facility.
 4. Verify status progression:
    - `draft` -> `submitted` -> `pending` -> `approved` (or `rejected`)
-5. Verify outbound SMS is blocked for that facility unless `a2pStatus=approved`.
-6. Send inbound STOP and confirm tenant:
+5. Verify outbound SMS is blocked for that facility unless `a2pStatus=approved` **and** `textingPlatformApproved=true` (when `textingOnboardingEnabled` is on). Before carrier approval, confirm the dedicated number appears on the facility after Step 3 but messages still do not send from it until approvals complete.
+6. After carrier approval, use a superadmin account to call `setTextingPlatformApproval` (or the in-app controls on the status card) so sending is allowed.
+7. With per-facility onboarding active, confirm outbound send succeeds only when the target tenant has `smsConsentStatus=opted_in` (unless using a forced/test path).
+8. Send inbound STOP and confirm tenant:
    - `smsOptOut=true`
    - `smsConsentStatus=opted_out`
-7. Send inbound START and confirm tenant:
+9. Send inbound START and confirm tenant:
    - `smsOptOut=false`
    - `smsConsentStatus=opted_in`
 

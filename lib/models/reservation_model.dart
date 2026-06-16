@@ -25,6 +25,9 @@ class Reservation {
   final DateTime? completedAt; // When move-in was completed
   final String? moveInToken; // Token for completing move-in
   final Map<String, dynamic>? metadata; // Additional data (pricing, etc.)
+  /// Lease PDF for online move-in (from facility contract template), when configured.
+  final String? onlineMoveInLeaseTitle;
+  final String? onlineMoveInLeaseUrl;
 
   const Reservation({
     required this.id,
@@ -41,6 +44,8 @@ class Reservation {
     this.completedAt,
     this.moveInToken,
     this.metadata,
+    this.onlineMoveInLeaseTitle,
+    this.onlineMoveInLeaseUrl,
   });
 
   Map<String, dynamic> toMap() {
@@ -58,6 +63,8 @@ class Reservation {
       'completedAt': completedAt != null ? Timestamp.fromDate(completedAt!) : null,
       'moveInToken': moveInToken,
       'metadata': metadata,
+      'onlineMoveInLeaseTitle': onlineMoveInLeaseTitle,
+      'onlineMoveInLeaseUrl': onlineMoveInLeaseUrl,
     };
   }
 
@@ -80,6 +87,8 @@ class Reservation {
       completedAt: (map['completedAt'] as Timestamp?)?.toDate(),
       moveInToken: map['moveInToken'] as String?,
       metadata: map['metadata'] as Map<String, dynamic>?,
+      onlineMoveInLeaseTitle: map['onlineMoveInLeaseTitle'] as String?,
+      onlineMoveInLeaseUrl: map['onlineMoveInLeaseUrl'] as String?,
     );
   }
 

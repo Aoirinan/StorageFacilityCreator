@@ -2,7 +2,14 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
-import { PAGE_OG_IMAGES, PRICE_MONTHLY, PRIMARY_CTA_HREF, SECONDARY_CTA_HREF, TRIAL_LINE } from '@/config/site';
+import {
+  ONLINE_RENTALS_ADDON_MONTHLY,
+  PAGE_OG_IMAGES,
+  PRICE_MONTHLY,
+  PRIMARY_CTA_HREF,
+  SECONDARY_CTA_HREF,
+  TRIAL_LINE,
+} from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Pricing',
@@ -18,7 +25,10 @@ export default function PricingPage() {
     ['Is pricing per unit or per user?', `No to both. Pricing is $${PRICE_MONTHLY} per facility, per month, with unlimited users per facility. Your bill scales with facility count, not with units or seats.`],
     ['How does pricing work if I have multiple facilities?', `Each facility is $${PRICE_MONTHLY}/month. Two facilities bill at $${PRICE_MONTHLY * 2}/month, three at $${PRICE_MONTHLY * 3}/month, and so on. All features and unlimited users are included at every site.`],
     ['Is there a contract?', 'Subscription terms are month-to-month unless otherwise agreed in writing.'],
-    ['What is included?', 'All core operations, billing workflows, messaging, reporting, e-sign, Stripe payments, Twilio SMS, SendGrid email, and QuickBooks integration — no add-on modules or feature-gated tiers.'],
+    [
+      'What is included?',
+      `All core operations, billing workflows, messaging, reporting, e-sign, Stripe payments, Twilio SMS, SendGrid email, and QuickBooks integration — no feature-gated tiers. Optional: a public facility page where customers rent units online with SEO-friendly structure is +$${ONLINE_RENTALS_ADDON_MONTHLY}/month per facility when enabled.`,
+    ],
     ['Does SFC support payments?', 'Yes. Stripe-backed payment workflows are supported in the product.'],
     ['Does SFC support SMS reminders?', 'Yes. Opt-in SMS messaging flows are supported with STOP/HELP handling.'],
     ['Does SFC integrate with QuickBooks?', 'Yes. QuickBooks integration paths are available for accounting sync workflows.'],
@@ -54,7 +64,7 @@ export default function PricingPage() {
             </li>
             <li className="flex gap-2">
               <span className="text-primary" aria-hidden>✓</span>
-              All features included — no add-on modules
+              All core features included — no tiered modules or per-seat fees
             </li>
             <li className="flex gap-2">
               <span className="text-primary" aria-hidden>✓</span>
@@ -69,6 +79,14 @@ export default function PricingPage() {
               Month-to-month — cancel anytime
             </li>
           </ul>
+          <div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50/80 p-4 text-left">
+            <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">Optional add-on</p>
+            <p className="mt-1 text-sm font-semibold text-emerald-950">Website rentals &amp; SEO-ready public pages</p>
+            <p className="mt-2 text-sm text-emerald-900/90 leading-relaxed">
+              Let tenants reserve storage units from your own branded page—structured for local search and mobile checkout. +
+              <strong>${ONLINE_RENTALS_ADDON_MONTHLY}</strong>/month per facility when you turn it on.
+            </p>
+          </div>
           <div className="mt-6 rounded-lg bg-slate-50 border border-slate-200 p-4">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Simple math</p>
             <p className="mt-2 text-sm text-slate-700">

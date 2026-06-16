@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import '../theme/app_theme.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'modern_sidebar.dart';
 import '../services/modern_navigation_service.dart';
+import '../providers/messaging_provider.dart';
 
 /// Modern page wrapper that provides consistent layout for all screens
 /// Includes sidebar, top bar, and modern styling
@@ -61,14 +62,20 @@ class ModernPageWrapper extends StatelessWidget {
         children: [
           // Sidebar
           if (!isMobile && showSidebar)
-            ModernSidebar(
-              currentRoute: activeRoute,
-              isCollapsed: false,
-              onNavigate: onNavigate ??
-                  (route) => ModernNavigationService.navigateToRoute(
-                        context,
-                        route,
-                      ),
+            Consumer(
+              builder: (context, ref, _) {
+                final unread = ref.watch(activeFacilityEmployeeChatUnreadCountProvider);
+                return ModernSidebar(
+                  currentRoute: activeRoute,
+                  isCollapsed: false,
+                  onNavigate: onNavigate ??
+                      (route) => ModernNavigationService.navigateToRoute(
+                            context,
+                            route,
+                          ),
+                  employeeChatUnreadCount: unread,
+                );
+              },
             ),
           
           // Main content
@@ -86,17 +93,26 @@ class ModernPageWrapper extends StatelessWidget {
         ],
       ),
       floatingActionButton: floatingActionButton,
-      drawer: isMobile && showSidebar ? Drawer(
-        child: ModernSidebar(
-          currentRoute: activeRoute,
-          isCollapsed: false,
-          onNavigate: (route) {
-            Navigator.of(context).pop();
-            (onNavigate ??
-                (r) => ModernNavigationService.navigateToRoute(context, r))(route);
-          },
-        ),
-      ) : null,
+      drawer: isMobile && showSidebar
+          ? Drawer(
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final unread = ref.watch(activeFacilityEmployeeChatUnreadCountProvider);
+                  return ModernSidebar(
+                    currentRoute: activeRoute,
+                    isCollapsed: false,
+                    onNavigate: (route) {
+                      Navigator.of(context).pop();
+                      (onNavigate ??
+                              (r) => ModernNavigationService.navigateToRoute(context, r))(
+                          route);
+                    },
+                    employeeChatUnreadCount: unread,
+                  );
+                },
+              ),
+            )
+          : null,
     );
   }
 

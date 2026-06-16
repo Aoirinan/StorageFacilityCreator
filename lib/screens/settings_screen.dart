@@ -287,25 +287,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               }
                             },
                           ),
-                          // Insurance Settings
-                          _SettingsTile(
-                            icon: Icons.shield_outlined,
-                            title: 'Insurance Settings',
-                            subtitle: 'Manage Tenant Protection Program',
-                            onTap: () {
-                              facilitiesAsync?.when(
-                                data: (facilities) {
-                                  if (facilities.isNotEmpty) {
-                                    final facilityId = facilities.first.id;
-                                    context.push(
-                                        '${AppRoute.insuranceSettings}?facilityId=$facilityId');
-                                  }
-                                },
-                                loading: () {},
-                                error: (_, __) {},
-                              );
-                            },
-                          ),
                           // Notifications (single entry - toggles persist via facility billingSettings)
                           _SettingsTile(
                             icon: Icons.notifications_outlined,

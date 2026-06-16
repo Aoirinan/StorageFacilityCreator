@@ -33,7 +33,6 @@ registerHostingConfigProvider({
 
 export * from './superAdminCallables';
 export { lookupUserByEmail, runPhase2Migrations } from './lookupMigrations';
-export { diagnosticFixOwnership } from './diagnostic_fix_ownership';
 export {
   superAdminGetHostingCustomDomainStatus,
   superAdminProvisionHostingCustomDomain,
