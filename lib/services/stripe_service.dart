@@ -661,12 +661,14 @@ class StripeService {
   static Future<Map<String, dynamic>> createTenantSetupIntentFromPortal({
     required String email,
     required String accessCode,
+    String? tenantId,
   }) async {
     final result = await _functions
         .httpsCallable('createTenantSetupIntentFromPortal')
         .call({
       'email': email.trim().toLowerCase(),
       'accessCode': accessCode.trim(),
+      if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
     });
     final data = result.data as Map<String, dynamic>;
     return {
@@ -683,12 +685,14 @@ class StripeService {
     required String accessCode,
     required String paymentMethodId,
     String? setupIntentId,
+    String? tenantId,
   }) async {
     await _functions.httpsCallable('attachTenantPaymentMethodFromPortal').call({
       'email': email.trim().toLowerCase(),
       'accessCode': accessCode.trim(),
       'paymentMethodId': paymentMethodId,
       'setupIntentId': setupIntentId,
+      if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
     });
   }
 

@@ -3,15 +3,22 @@ import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { getDownloadURL } from 'firebase-admin/storage';
 import {
+  enforceAppCheckOrThrow,
   escapeHtml,
   getStripeClient,
   sendFacilityEmailWithCompliance,
 } from '@sfc/functions-shared';
+import {
+  amountsMatchCents,
+  isPublicMoveInStripePaymentRequired,
+  loadPublicMoveInChargeQuote,
+} from './moveInCharges';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
 import { generateAccessCode } from './accessCode';
 import { createAutopayNotificationAndEvent } from './autopayNotification';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
+import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -73,12 +80,71 @@ async function readOnlineMoveInLeaseForFacility(
   return { title: b.title, url: b.url };
 }
 
-async function downloadUrlToBuffer(url: string): Promise<Buffer | null> {
+const MOVE_IN_TEMPLATE_ALLOWED_BUCKETS = [
+  'storage-facility-creator.firebasestorage.app',
+  'storage-facility-creator.appspot.com',
+];
+
+/** Parse Firebase Storage HTTPS URL → bucket + object path; facility-scoped templates/contracts only. */
+function parseAllowedFacilityStorageObject(
+  rawUrl: string,
+  facilityId: string,
+): { bucket: string; objectPath: string } | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
   try {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    return Buffer.from(await r.arrayBuffer());
+    parsed = new URL(trimmed);
   } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') return null;
+  const host = parsed.hostname || '';
+  if (host !== 'firebasestorage.googleapis.com' && host !== 'storage.googleapis.com') {
+    return null;
+  }
+  const pathname = parsed.pathname || '';
+  const bucketName = MOVE_IN_TEMPLATE_ALLOWED_BUCKETS.find((b) => pathname.includes(`/b/${b}/`));
+  if (!bucketName) return null;
+  const objectPathEncoded = pathname.includes('/o/') ? pathname.split('/o/')[1] : '';
+  let objectPath = objectPathEncoded || '';
+  try {
+    objectPath = decodeURIComponent(objectPathEncoded || '');
+  } catch {
+    objectPath = objectPathEncoded || '';
+  }
+  const facilityPrefix = `facilities/${facilityId}/`;
+  if (!objectPath.startsWith(facilityPrefix)) return null;
+  const isTemplateOrContract =
+    objectPath.includes('/contractTemplates/') || objectPath.includes('/contracts/');
+  if (!isTemplateOrContract) return null;
+  return { bucket: bucketName, objectPath };
+}
+
+/** Download lease template PDF via Admin SDK (no arbitrary server-side fetch). */
+async function downloadTemplatePdfToBuffer(
+  url: string,
+  facilityId: string,
+  expectedSha256: string | null,
+): Promise<Buffer | null> {
+  try {
+    const parsed = parseAllowedFacilityStorageObject(url, facilityId);
+    if (!parsed) return null;
+    const [buf] = await admin.storage().bucket(parsed.bucket).file(parsed.objectPath).download();
+    if (expectedSha256) {
+      const actual = crypto.createHash('sha256').update(buf).digest('hex');
+      if (actual.toLowerCase() !== expectedSha256.trim().toLowerCase()) {
+        functions.logger.warn('Public move-in: template PDF hash mismatch', {
+          facilityId,
+          expectedSha256,
+        });
+        return null;
+      }
+    }
+    return buf;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    functions.logger.warn('Public move-in: template PDF download failed', { facilityId, msg });
     return null;
   }
 }
@@ -316,6 +382,37 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
     phone: reservation.phone ? String(reservation.phone).trim() : '',
   });
 
+  const moveInDate =
+    (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  const chargeQuote = await loadPublicMoveInChargeQuote({
+    facilityId,
+    reservation,
+    moveInDate,
+  });
+
+  if (!amountsMatchCents(chargeQuote.totalCents, amountNumber)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Payment amount does not match required move-in charges. Refresh the page and try again.',
+    );
+  }
+
+  await reservationRef.set(
+    {
+      expectedCheckoutAmountCents: chargeQuote.totalCents,
+      checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  const cents = chargeQuote.totalCents;
+  if (cents < 50) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
+    );
+  }
+
   const safeToken = encodeURIComponent(String(token));
   const safeReservationId = encodeURIComponent(String(reservationId));
   const successUrl =
@@ -326,14 +423,6 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
     `https://app.storagefacilitycreator.com/#/public-move-in?token=${safeToken}` +
     `&reservationId=${safeReservationId}` +
     '&checkout=cancel';
-
-  const cents = Math.round(amountNumber * 100);
-  if (cents < 50) {
-    throw new functions.https.HttpsError(
-      'invalid-argument',
-      'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
-    );
-  }
 
   const customerEmail = optionalStripeCheckoutCustomerEmail(reservation.email);
   const rawLineName =
@@ -601,14 +690,9 @@ async function mergeTemplateWithCertificatePdf(
  * - Updates unit status and reservation status
  * - Generates gate access code
  */
-export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any) => {
-  // App Check enforced for public move-in flows
-  if (!(data as any)?._appCheckToken) {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      'App Check token required. Please refresh and try again.',
-    );
-  }
+export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+
   const {
     reservationId,
     token,
@@ -727,16 +811,57 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
   }
 
-  // Verify payment intent if provided
-  if (!skipPayment && paymentIntentId && totalAmount && totalAmount > 0) {
+  const chargeQuote = await loadPublicMoveInChargeQuote({
+    facilityId,
+    reservation,
+    moveInDate,
+  });
+  const requiredPaymentCents = chargeQuote.totalCents;
+  const paymentRequired = isPublicMoveInStripePaymentRequired(facilityPre, chargeQuote.totalAmount);
+
+  if (paymentRequired) {
+    if (skipPayment) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Payment is required to complete this move-in.',
+      );
+    }
+    if (!paymentIntentId) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Payment is required before completing move-in.',
+      );
+    }
+  }
+
+  const expectedFromReservation = Number(reservation.expectedCheckoutAmountCents);
+  const minimumPaymentCents =
+    Number.isFinite(expectedFromReservation) && expectedFromReservation > 0
+      ? expectedFromReservation
+      : requiredPaymentCents;
+
+  if (paymentRequired || (!skipPayment && paymentIntentId)) {
+    if (requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Move-in charges changed since checkout started. Refresh and try again.',
+      );
+    }
     try {
       const stripe = getStripeClient();
-      const stripeAccount = reservationMetadata.stripeConnectAccountId as string | undefined;
-      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, stripeAccount ? {
-        stripeAccount,
-      } : undefined);
+      const connectAccountId = resolveMoveInPaymentStripeAccountId(facilityPre);
+      if (!connectAccountId) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Facility must have Stripe Connect configured to verify payment',
+        );
+      }
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+        stripeAccount: connectAccountId,
+      });
 
-      if (paymentIntent.amount_received < Math.round(totalAmount * 100)) {
+      const requiredCents = Math.max(requiredPaymentCents, minimumPaymentCents);
+      if (paymentIntent.amount_received < requiredCents) {
         throw new functions.https.HttpsError(
           'failed-precondition',
           'Payment not completed or amount mismatch',
@@ -758,7 +883,14 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
         ? err
         : new functions.https.HttpsError('internal', 'Failed to validate payment intent');
     }
+  } else if (!skipPayment && requiredPaymentCents > 0) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Payment is required to complete this move-in.',
+    );
   }
+
+  const verifiedTotalAmount = chargeQuote.totalAmount;
 
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name.trim(),
@@ -803,7 +935,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const templateBinding = await readOnlineMoveInTemplateBinding(facilityId);
   let templatePdfBytes: Buffer | null = null;
   if (templateBinding) {
-    templatePdfBytes = await downloadUrlToBuffer(templateBinding.url);
+    templatePdfBytes = await downloadTemplatePdfToBuffer(
+      templateBinding.url,
+      facilityId,
+      templateBinding.documentSha256,
+    );
     if (!templatePdfBytes) {
       functions.logger.warn('Public move-in: could not download configured lease template PDF', {
         facilityId,
@@ -1159,7 +1295,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   }
 
   // Create payment ledger entry (outside transaction to avoid blocking)
-  if (!skipPayment && paymentIntentId && totalAmount && totalAmount > 0) {
+  if (!skipPayment && paymentIntentId && verifiedTotalAmount > 0) {
     const ledgerRef = admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -1170,7 +1306,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       tenantId,
       facilityId,
       type: 'payment',
-      amount: -Number(totalAmount),
+      amount: -Number(verifiedTotalAmount),
       description: 'Move-in payment',
       referenceId: paymentIntentId,
       entryDate: new Date(),

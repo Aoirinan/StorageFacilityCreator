@@ -1,6 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { authenticatePortalTenant, extractCallableClientIp, getStripeClient } from '@sfc/functions-shared';
+import { resolvePortalTenantSession, extractCallableClientIp, getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import { createAutopayNotificationAndEvent } from './stripeAutopayEvents';
 
@@ -11,9 +11,15 @@ export const setTenantAutopayFromPortal = functions.runWith({ secrets: STRIPE_SE
   const email = (data.email || '').toString().trim().toLowerCase();
   const accessCode = (data.accessCode || '').toString().trim();
   const enabled = data.enabled === true;
+  const requestedTenantId = (data.tenantId || '').toString().trim();
   const clientIp = extractCallableClientIp(context.rawRequest);
 
-  const session = await authenticatePortalTenant(email, accessCode, clientIp);
+  const session = await resolvePortalTenantSession(
+    email,
+    accessCode,
+    clientIp,
+    requestedTenantId || undefined,
+  );
   const tenantDoc = session.tenantDoc;
   const facilityId = session.facilityId;
   const tenantId = session.tenantId;

@@ -1723,13 +1723,16 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     );
   }
 
-  Future<void> _addCardFromPortal() async {
+  Future<void> _addCardFromPortal({String? tenantId}) async {
     if (!kIsWeb) return;
     setState(() => _isAutopayLoading = true);
     try {
+      final resolvedTenantId = tenantId ??
+          ref.read(tenantPortalProvider(widget.lookup)).whenOrNull(data: (d) => d.tenant.id);
       final result = await StripeService.createTenantSetupIntentFromPortal(
         email: widget.lookup.email,
         accessCode: widget.lookup.accessCode,
+        tenantId: resolvedTenantId,
       );
       final clientSecret = result['clientSecret'] as String?;
       final publishableKey = result['publishableKey'] as String?;
@@ -1755,6 +1758,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
             email: widget.lookup.email,
             accessCode: widget.lookup.accessCode,
             enabled: true,
+            tenantId: resolvedTenantId,
           );
           await _reloadTenantPortal();
           _showSnack('Autopay is now on.');
@@ -1841,6 +1845,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                               email: widget.lookup.email,
                               accessCode: widget.lookup.accessCode,
                               enabled: false,
+                              tenantId: data.tenant.id,
                             );
                             await _reloadTenantPortal();
                             _showSnack('Autopay turned off.');
@@ -1859,7 +1864,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                 const Text('Autopay requested — add a card to finish setup.'),
                 const SizedBox(height: 8),
                 FilledButton.icon(
-                  onPressed: _isAutopayLoading ? null : _addCardFromPortal,
+                  onPressed: _isAutopayLoading ? null : () => _addCardFromPortal(tenantId: data.tenant.id),
                   icon: _isAutopayLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_card),
                   label: const Text('Add card / Finish setup'),
                 ),
@@ -1869,7 +1874,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                 if (!stripe.hasPaymentMethod) ...[
                   const SizedBox(height: 8),
                   FilledButton.icon(
-                    onPressed: _isAutopayLoading ? null : _addCardFromPortal,
+                    onPressed: _isAutopayLoading ? null : () => _addCardFromPortal(tenantId: data.tenant.id),
                     icon: _isAutopayLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_card),
                     label: const Text('Add card'),
                   ),
@@ -1883,6 +1888,7 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
                           email: widget.lookup.email,
                           accessCode: widget.lookup.accessCode,
                           enabled: true,
+                          tenantId: data.tenant.id,
                         );
                         await _reloadTenantPortal();
                         _showSnack('Autopay is now on.');

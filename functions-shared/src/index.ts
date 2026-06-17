@@ -17,10 +17,20 @@ export {
   clearPortalAuthFailures,
   authenticatePortalTenant,
   authenticatePortalTenantForFacility,
+  resolvePortalTenantSession,
 } from './portal/portalAuth';
 export type { PortalTenantSession } from './portal/portalAuth';
+export {
+  tenantsSharePortalAccount,
+  buildTenantPortalPaymentIntentMetadata,
+} from './portal/portalAccountLink';
+export type { PortalAccountTenantFields } from './portal/portalAccountLink';
 
-export { isSigningTokenExpired, validateSigningTokenForContract } from './contracts/signingToken';
+export {
+  checkSigningTokenRateLimit,
+  isSigningTokenExpired,
+  validateSigningTokenForContract,
+} from './contracts/signingToken';
 
 export type { RateLimitConfig } from './rateLimits/facilityRateLimit';
 export { enforceRateLimit } from './rateLimits/facilityRateLimit';

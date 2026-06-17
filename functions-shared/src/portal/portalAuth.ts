@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import * as functions from 'firebase-functions/v1';
+import { tenantsSharePortalAccount } from './portalAccountLink';
 
 const PORTAL_AUTH_RATE_WINDOW_MS = 60 * 1000;
 const PORTAL_AUTH_RATE_MAX = 10;
@@ -16,11 +17,9 @@ export type PortalTenantSession = {
   facilityRef: admin.firestore.DocumentReference;
 };
 
-/** Extract client IP from a callable HTTP request (supports x-forwarded-for). */
+/** Extract client IP from a callable HTTP request (Firebase-trusted only; ignore spoofable X-Forwarded-For). */
 export function extractCallableClientIp(rawRequest?: functions.https.Request): string {
-  const ip = rawRequest?.ip || rawRequest?.connection?.remoteAddress || 'unknown';
-  const forwarded = rawRequest?.headers?.['x-forwarded-for'];
-  return (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) || ip;
+  return rawRequest?.ip || rawRequest?.connection?.remoteAddress || 'unknown';
 }
 
 /** Require portal access codes to meet minimum entropy (aligns with tenant UI generator). */
@@ -218,4 +217,60 @@ export async function authenticatePortalTenantForFacility(
     );
   }
   return session;
+}
+
+/**
+ * Authenticate portal session and optionally resolve a specific tenant within the same portal account
+ * (multi-unit tenants share email + access code).
+ */
+export async function resolvePortalTenantSession(
+  email: string,
+  accessCode: string,
+  clientIp: string,
+  requestedTenantId?: string,
+): Promise<PortalTenantSession> {
+  const emailLower = email.trim().toLowerCase();
+  const portalSession = await authenticatePortalTenant(email, accessCode, clientIp);
+  const authTenantDoc = portalSession.tenantDoc;
+  const authTenantData = portalSession.tenantData as Record<string, unknown>;
+  const facilityRef = portalSession.facilityRef;
+
+  const requested = (requestedTenantId || '').trim();
+  if (!requested || requested === authTenantDoc.id) {
+    return portalSession;
+  }
+
+  const requestedRef = facilityRef.collection('tenants').doc(requested);
+  const requestedSnap = await requestedRef.get();
+  if (!requestedSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Requested tenant account not found');
+  }
+
+  const requestedData = requestedSnap.data() as Record<string, unknown>;
+  const code = accessCode.trim();
+  const sameAccount = tenantsSharePortalAccount(
+    authTenantData,
+    requestedData,
+    emailLower,
+    code,
+  );
+  if (!sameAccount) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Requested unit is not linked to this portal account',
+    );
+  }
+
+  const requestedFacilityRef = requestedSnap.ref.parent?.parent;
+  if (!requestedFacilityRef) {
+    throw new functions.https.HttpsError('failed-precondition', 'Facility not found');
+  }
+
+  return {
+    tenantDoc: requestedSnap as admin.firestore.QueryDocumentSnapshot,
+    tenantId: requestedSnap.id,
+    tenantData: requestedData,
+    facilityId: requestedFacilityRef.id,
+    facilityRef: requestedFacilityRef,
+  };
 }

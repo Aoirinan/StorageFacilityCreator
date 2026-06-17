@@ -1,6 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { authenticatePortalTenant, extractCallableClientIp, getStripeClient, rejectClientSuppliedStripeKeys } from '@sfc/functions-shared';
+import { resolvePortalTenantSession, extractCallableClientIp, getStripeClient, rejectClientSuppliedStripeKeys } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import { writeAutopayEvent } from './stripeAutopayEvents';
 
@@ -13,13 +13,19 @@ export const attachTenantPaymentMethodFromPortal = functions.runWith({ secrets: 
   const accessCode = (data.accessCode || '').toString().trim();
   const paymentMethodId = data.paymentMethodId as string;
   const setupIntentId = data.setupIntentId as string | undefined;
+  const requestedTenantId = (data.tenantId || '').toString().trim();
   const clientIp = extractCallableClientIp(context.rawRequest);
 
   if (!paymentMethodId) {
     throw new functions.https.HttpsError('invalid-argument', 'Email, access code, and paymentMethodId are required');
   }
 
-  const session = await authenticatePortalTenant(email, accessCode, clientIp);
+  const session = await resolvePortalTenantSession(
+    email,
+    accessCode,
+    clientIp,
+    requestedTenantId || undefined,
+  );
   const tenantDoc = session.tenantDoc;
   const facilityId = session.facilityId;
   const tenantId = session.tenantId;

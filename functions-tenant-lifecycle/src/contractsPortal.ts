@@ -5,11 +5,15 @@ import { getDownloadURL } from 'firebase-admin/storage';
 import type { Application, Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import {
   authenticatePortalTenant,
+  buildTenantPortalPaymentIntentMetadata,
   escapeHtml,
   extractCallableClientIp,
   getStripeClient,
+  resolvePortalTenantSession,
   sendFacilityEmailWithCompliance,
   validateSigningTokenForContract,
+  checkSigningTokenRateLimit,
+  isSigningTokenExpired,
 } from '@sfc/functions-shared';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_SECRETS, STRIPE_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, writeAuditLog } from './guardrails';
@@ -25,34 +29,17 @@ function requireExpress(): any {
 // Signing token TTL in days (configurable for hardening)
 const SIGNING_TOKEN_TTL_DAYS = 14;
 
-/**
- * Rate limit helper: max 25 calls per IP per minute for getContractBySigningToken.
- * Uses Firestore for persistence. Returns true if allowed, false if rate limited.
- */
-async function checkSigningTokenRateLimit(ipKey: string): Promise<boolean> {
-  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-  const RATE_LIMIT_MAX = 25;
-  const docId = `signingToken_${crypto.createHash('sha256').update(ipKey).digest('hex').substring(0, 24)}`;
-  const ref = admin.firestore().collection('rateLimits').doc(docId);
-
-  const now = Date.now();
-  const doc = await ref.get();
-  const data = doc.exists ? (doc.data() as Record<string, any>) : null;
-  const windowStart = data?.windowStart ?? 0;
-
-  if (now - windowStart >= RATE_LIMIT_WINDOW_MS) {
-    // New window
-    await ref.set({ count: 1, windowStart: now });
-    return true;
+async function enforceSigningTokenRateLimit(context: functions.https.CallableContext): Promise<void> {
+  const ip = (context.rawRequest?.ip || context.rawRequest?.connection?.remoteAddress || 'unknown');
+  const forwarded = context.rawRequest?.headers?.['x-forwarded-for'];
+  const clientIp = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) || ip;
+  const allowed = await checkSigningTokenRateLimit(clientIp);
+  if (!allowed) {
+    throw new functions.https.HttpsError(
+      'resource-exhausted',
+      'Too many requests. Please wait a minute and try again.',
+    );
   }
-
-  const count = (data?.count ?? 0) + 1;
-  if (count > RATE_LIMIT_MAX) {
-    return false;
-  }
-
-  await ref.update({ count: admin.firestore.FieldValue.increment(1) });
-  return true;
 }
 
 /**
@@ -76,16 +63,7 @@ export const getContractBySigningToken = functions.https.onCall(async (data: { s
   }
 
   // Rate limit by IP
-  const ip = (context.rawRequest?.ip || context.rawRequest?.connection?.remoteAddress || 'unknown');
-  const forwarded = context.rawRequest?.headers?.['x-forwarded-for'];
-  const clientIp = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) || ip;
-  const allowed = await checkSigningTokenRateLimit(clientIp);
-  if (!allowed) {
-    throw new functions.https.HttpsError(
-      'resource-exhausted',
-      'Too many requests. Please wait a minute and try again.',
-    );
-  }
+  await enforceSigningTokenRateLimit(context);
 
   try {
     const snapshot = await admin.firestore()
@@ -102,9 +80,8 @@ export const getContractBySigningToken = functions.https.onCall(async (data: { s
     const doc = snapshot.docs[0];
     const d = doc.data() as Record<string, any>;
 
-    // Check token expiry
-    const expiresAt = d.signingTokenExpiresAt;
-    if (expiresAt && expiresAt.toDate && expiresAt.toDate() < new Date()) {
+    // Check token expiry (missing expiry is treated as expired)
+    if (isSigningTokenExpired(d.signingTokenExpiresAt as admin.firestore.Timestamp | undefined)) {
       return null;
     }
 
@@ -188,6 +165,7 @@ export const uploadSignedContract = functions.https.onCall(async (data: {
   }
 
   if (!allowed && signingToken) {
+    await enforceSigningTokenRateLimit(context);
     allowed = await validateSigningTokenForContract(signingToken, facilityId, contractId);
   }
 
@@ -285,6 +263,14 @@ function getUploadSignedContractApp(): Application {
     }
 
     if (!allowed && signingToken) {
+      const ip = (req.ip || req.socket?.remoteAddress || 'unknown').toString();
+      const forwarded = req.headers['x-forwarded-for'];
+      const clientIp = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) || ip;
+      const rateAllowed = await checkSigningTokenRateLimit(clientIp);
+      if (!rateAllowed) {
+        res.status(429).json({ error: { status: 'RESOURCE_EXHAUSTED', message: 'Too many requests. Please wait a minute and try again.' } });
+        return;
+      }
       allowed = await validateSigningTokenForContract(signingToken, facilityId, contractId);
     }
 
@@ -913,9 +899,14 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
   }
 
   try {
-    const portalSession = await authenticatePortalTenant(email, accessCode, clientIp);
-    const authTenantDoc = portalSession.tenantDoc;
-    const authTenantData = portalSession.tenantData as Record<string, any>;
+    const portalSession = await resolvePortalTenantSession(
+      email,
+      accessCode,
+      clientIp,
+      requestedTenantId || undefined,
+    );
+    const tenantId = portalSession.tenantId;
+    const tenantData = portalSession.tenantData as Record<string, any>;
     const facilityRef = portalSession.facilityRef;
 
     const facilityDoc = await facilityRef.get();
@@ -924,30 +915,6 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
     }
 
     const facilityId = facilityRef.id;
-    const portalAccountId = (authTenantData.portalAccountId || '').toString().trim();
-    let tenantId = authTenantDoc.id;
-    let tenantData = authTenantData;
-    if (requestedTenantId && requestedTenantId !== authTenantDoc.id) {
-      const requestedRef = facilityRef.collection('tenants').doc(requestedTenantId);
-      const requestedSnap = await requestedRef.get();
-      if (!requestedSnap.exists) {
-        throw new functions.https.HttpsError('not-found', 'Requested tenant account not found');
-      }
-      const requestedData = requestedSnap.data() as Record<string, any>;
-      const requestedPortalAccountId = (requestedData.portalAccountId || '').toString().trim();
-      const sameAccount = portalAccountId && requestedPortalAccountId
-        ? requestedPortalAccountId === portalAccountId
-        : (
-          requestedData.emailLower === email &&
-          requestedData.portalEnabled === true &&
-          requestedData.portalAccessCode === accessCode
-        );
-      if (!sameAccount) {
-        throw new functions.https.HttpsError('permission-denied', 'Requested unit is not linked to this portal account');
-      }
-      tenantId = requestedSnap.id;
-      tenantData = requestedData;
-    }
     const facilityData = facilityDoc.data()!;
 
     // Log portal access audit event
@@ -1005,6 +972,9 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
         unitNumber: (tenantData['unitNumber'] || '').toString(),
         type: 'tenant_portal_payment',
         portalEmail: email,
+      },
+      payment_intent_data: {
+        metadata: buildTenantPortalPaymentIntentMetadata(facilityId, tenantId),
       },
     }, {
       stripeAccount: connectAccountId, // Create session on connected account

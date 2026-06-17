@@ -63,11 +63,13 @@ class AutopayService {
     required String email,
     required String accessCode,
     required bool enabled,
+    String? tenantId,
   }) async {
     final result = await _functions.httpsCallable('setTenantAutopayFromPortal').call({
       'email': email.trim().toLowerCase(),
       'accessCode': accessCode.trim(),
       'enabled': enabled,
+      if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
     });
     return Map<String, dynamic>.from(result.data as Map);
   }
