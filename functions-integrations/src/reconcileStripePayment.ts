@@ -4,6 +4,18 @@ import type Stripe from 'stripe';
 import { enforceAppCheckOrThrow, getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 
+export function canReconcileStripePayment(
+  authUid: string,
+  ownerUid: string | undefined,
+  roles: Record<string, string>,
+): boolean {
+  return (
+    ownerUid === authUid ||
+    roles[authUid] === 'manager' ||
+    roles[authUid] === 'owner'
+  );
+}
+
 /**
  * Reconcile a Stripe payment with Firestore records
  * Used by payment reconciliation service
@@ -31,7 +43,7 @@ export const reconcileStripePayment = functions.runWith({ secrets: STRIPE_SECRET
     const ownerUid = facilityData?.ownerUid;
     const roles = facilityData?.roles || {};
 
-    if (ownerUid !== context.auth.uid && roles[context.auth.uid] !== 'manager' && roles[context.auth.uid] !== 'owner') {
+    if (!canReconcileStripePayment(context.auth.uid, ownerUid, roles)) {
       throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
     }
 

@@ -8,6 +8,16 @@ import {
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 
+export function facilityIdsInSync(current: string[], actual: string[]): boolean {
+  const currentSet = new Set(current);
+  const actualSet = new Set(actual);
+  return currentSet.size === actualSet.size && actual.every((id) => currentSet.has(id));
+}
+
+export function additionalFacilityAddonQuantity(facilityCount: number): number {
+  return Math.max(0, facilityCount - 1);
+}
+
 /**
  * Reconcile account.facilityIds with facilities linked to this account (server-side).
  * Uses facilityCreatorAccountId so intentionally-removed facilities stay removed.
@@ -36,9 +46,7 @@ export const reconcileAccountFacilityIds = functions.runWith({ secrets: STRIPE_S
   const actualIds = facilitiesSnap.docs.map((d) => d.id);
 
   const current = (accountData.facilityIds as string[]) || [];
-  const currentSet = new Set(current);
-  const actualSet = new Set(actualIds);
-  if (currentSet.size === actualSet.size && actualIds.every((id) => currentSet.has(id))) {
+  if (facilityIdsInSync(current, actualIds)) {
     functions.logger.info(`reconcileAccountFacilityIds: already in sync, facilityCount=${actualIds.length}`);
     return { success: true, facilityCount: actualIds.length, updated: false };
   }
@@ -56,7 +64,7 @@ export const reconcileAccountFacilityIds = functions.runWith({ secrets: STRIPE_S
     const basePriceId = process.env.STRIPE_BASE_PRICE_ID || (await getOrCreateBasePriceId(stripe));
     const addOnPriceId = process.env.STRIPE_ADDON_PRICE_ID || (await getOrCreateAddOnPriceId(stripe));
     const facilityCount = actualIds.length;
-    const additionalFacilityCount = Math.max(0, facilityCount - 1);
+    const additionalFacilityCount = additionalFacilityAddonQuantity(facilityCount);
     const baseItem = subscription.items.data.find((item) => item.price.id === basePriceId);
     const addOnItem = subscription.items.data.find((item) => item.price.id === addOnPriceId);
     const currentAddOnQty = addOnItem ? addOnItem.quantity : 0;

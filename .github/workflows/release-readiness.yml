@@ -72,6 +72,94 @@ jobs:
       - run: npm run check:quickbooks
       - run: npm test
 
+  functions-integrations:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions-integrations
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions-integrations/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm test
+
+  functions-ai:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions-ai
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions-ai/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm test
+
+  functions-facility-ops:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions-facility-ops
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions-facility-ops/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm test
+
+  functions-account-security:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions-account-security
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions-account-security/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm test
+
   flutter:
     runs-on: ubuntu-latest
     steps:

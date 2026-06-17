@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import { enforceAppCheckOrThrow } from '@sfc/functions-shared';
 import { getSgMail, initializeSendGrid } from '@sfc/functions-shared';
 import { appendPlatformSecurityEmailFooter } from './emailOtpFooter';
+import { getOtpCooldownRemainingSeconds, isValidOtpCodeFormat, OTP_COOLDOWN_SECONDS } from './otpHelpers';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 
 /**
@@ -35,16 +36,12 @@ export const generateOTP = functions.runWith({ secrets: SENDGRID_SECRETS }).http
       const userData = userDoc.data()!;
       const lastOTPSentAt = userData.lastOTPSentAt as admin.firestore.Timestamp | null;
 
-      const COOLDOWN_SECONDS = 45;
-      if (lastOTPSentAt) {
-        const secondsSinceLastOTP = (Date.now() - lastOTPSentAt.toMillis()) / 1000;
-        if (secondsSinceLastOTP < COOLDOWN_SECONDS) {
-          const remainingSeconds = Math.ceil(COOLDOWN_SECONDS - secondsSinceLastOTP);
-          throw new functions.https.HttpsError(
-            'resource-exhausted',
-            `Please wait ${remainingSeconds} seconds before requesting another OTP code. You can request a new code in ${remainingSeconds} second${remainingSeconds !== 1 ? 's' : ''}.`,
-          );
-        }
+      const remainingSeconds = getOtpCooldownRemainingSeconds(lastOTPSentAt, Date.now());
+      if (remainingSeconds > 0) {
+        throw new functions.https.HttpsError(
+          'resource-exhausted',
+          `Please wait ${remainingSeconds} seconds before requesting another OTP code. You can request a new code in ${remainingSeconds} second${remainingSeconds !== 1 ? 's' : ''}.`,
+        );
       }
 
       const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -126,7 +123,7 @@ export const verifyOTP = functions.https.onCall(async (data: { code: string; pur
     const userId = context.auth.uid;
     const { code, purpose } = data;
 
-    if (!code || code.length !== 6 || !/^\d+$/.test(code)) {
+    if (!isValidOtpCodeFormat(code)) {
       throw new functions.https.HttpsError('invalid-argument', 'OTP code must be a 6-digit number');
     }
 

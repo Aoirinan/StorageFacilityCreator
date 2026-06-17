@@ -23,16 +23,35 @@ function tenantAutopayOn(tenant: TenantData): boolean {
   return tenant.autopay?.status === 'ON';
 }
 
-interface UnitData {
+interface UnitInput {
+  id: string;
   status: string;
   tenantId?: string | null;
+}
+
+function countCanonicalOccupied(
+  units: UnitInput[],
+  tenantIds: Set<string>,
+): { occupiedUnits: number; orphanIds: string[] } {
+  const orphanIds: string[] = [];
+  let occupiedUnits = 0;
+  for (const unit of units) {
+    if (unit.status !== 'occupied') continue;
+    const tenantId = unit.tenantId ?? null;
+    const tenantExists = tenantId != null && tenantIds.has(tenantId);
+    if (tenantExists) {
+      occupiedUnits++;
+    } else {
+      orphanIds.push(unit.id);
+    }
+  }
+  return { occupiedUnits, orphanIds };
 }
 
 /**
  * Calculate days late for a tenant
  */
-function calculateDaysLate(tenant: TenantData): number {
-  const now = new Date();
+function calculateDaysLate(tenant: TenantData, now: Date = new Date()): number {
   const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const gracePeriodDays = 3;
   const paidThrough = tenant.paidThrough?.toDate();
@@ -64,6 +83,12 @@ function calculateDaysLate(tenant: TenantData): number {
   return 0;
 }
 
+export const facilityStatsTestUtils = {
+  tenantAutopayOn,
+  calculateDaysLate,
+  countCanonicalOccupied,
+};
+
 /**
  * Canonical occupancy: unit is occupied ONLY if status===occupied AND tenantId exists in facility.
  * Heals orphan units (status=occupied but tenant missing) by setting available and clearing tenantId.
@@ -73,19 +98,11 @@ async function getCanonicalOccupiedCountAndHeal(
   unitsSnapshot: admin.firestore.QuerySnapshot,
   tenantIds: Set<string>,
 ): Promise<{ occupiedUnits: number; orphanIds: string[] }> {
-  const orphanIds: string[] = [];
-  let occupiedUnits = 0;
-  for (const doc of unitsSnapshot.docs) {
-    const data = doc.data() as UnitData;
-    if (data.status !== 'occupied') continue;
-    const tenantId = data.tenantId ?? null;
-    const tenantExists = tenantId != null && tenantIds.has(tenantId);
-    if (tenantExists) {
-      occupiedUnits++;
-    } else {
-      orphanIds.push(doc.id);
-    }
-  }
+  const units = unitsSnapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...(doc.data() as { status: string; tenantId?: string | null }),
+  }));
+  const { occupiedUnits, orphanIds } = countCanonicalOccupied(units, tenantIds);
   const BATCH_LIMIT = 500;
   if (orphanIds.length > 0) {
     const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
@@ -136,14 +153,21 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
       .collection('units')
       .get();
 
-    const tenantsSnapshot = await getFirestore()
+    const allTenantsSnapshot = await getFirestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('tenants')
+      .get();
+
+    const activeTenantsSnapshot = await getFirestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('tenants')
       .where('isActive', '==', true)
       .get();
 
-    const tenantIds = new Set(tenantsSnapshot.docs.map((d) => d.id));
+    // Occupancy/healing: include archived tenants so their units are not freed incorrectly.
+    const tenantIds = new Set(allTenantsSnapshot.docs.map((d) => d.id));
     const { occupiedUnits } = await getCanonicalOccupiedCountAndHeal(
       facilityId,
       unitsSnapshot,
@@ -152,16 +176,16 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
 
     const totalUnits = unitsSnapshot.size;
     const availableUnits = Math.max(0, totalUnits - occupiedUnits);
-    const totalTenantsActive = tenantsSnapshot.size;
+    const totalTenantsActive = activeTenantsSnapshot.size;
 
-    // Calculate revenue and delinquency
+    // Calculate revenue and delinquency (active tenants only)
     let scheduledMonthlyRevenue = 0;
     let autopayMonthlyRevenue = 0;
     let tenantsLate = 0; // 1-9 days
     let tenantsOverdue = 0; // 10-29 days
     let tenantsSeverelyOverdue = 0; // 30+ days
 
-    for (const doc of tenantsSnapshot.docs) {
+    for (const doc of activeTenantsSnapshot.docs) {
       const tenant = doc.data() as TenantData;
       const rate = tenant.monthlyRate || 0;
       scheduledMonthlyRevenue += rate;

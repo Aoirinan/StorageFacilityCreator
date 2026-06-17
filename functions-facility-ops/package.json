@@ -8,7 +8,8 @@
     "node": "22"
   },
   "scripts": {
-    "build": "npx tsc"
+    "build": "npx tsc",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\""
   },
   "dependencies": {
     "@sfc/functions-shared": "file:vendor/functions-shared",
