@@ -84,6 +84,9 @@ app.*.map.json
 # User manual PDF generator (Node)
 /docs/pdf-gen/node_modules/
 
+# Firestore security rules unit tests
+/firestore-rules-test/node_modules/
+
 # Marketing site (Next.js)
 /marketing/node_modules/
 /marketing/.next/

@@ -1,9 +1,15 @@
 import * as admin from 'firebase-admin';
+import {
+  buildStripeEventProcessedFields,
+  shouldCheckStripeEventIdempotency,
+  STRIPE_WEBHOOK_EVENTS_COLLECTION,
+  isStripeEventAlreadyProcessed,
+} from './stripeWebhookIdempotencyHelpers';
 
 export async function isStripeEventProcessed(eventId: string): Promise<boolean> {
-  if (!eventId) return false;
-  const doc = await admin.firestore().collection('stripeWebhookEvents').doc(eventId).get();
-  return doc.exists;
+  if (!shouldCheckStripeEventIdempotency(eventId)) return false;
+  const doc = await admin.firestore().collection(STRIPE_WEBHOOK_EVENTS_COLLECTION).doc(eventId).get();
+  return isStripeEventAlreadyProcessed(doc.exists);
 }
 
 export async function markStripeEventProcessed(
@@ -13,13 +19,11 @@ export async function markStripeEventProcessed(
   facilityId?: string,
   tenantId?: string,
 ): Promise<void> {
-  if (!eventId) return;
-  await admin.firestore().collection('stripeWebhookEvents').doc(eventId).set(
+  if (!shouldCheckStripeEventIdempotency(eventId)) return;
+  const fields = buildStripeEventProcessedFields(eventType, account, facilityId, tenantId);
+  await admin.firestore().collection(STRIPE_WEBHOOK_EVENTS_COLLECTION).doc(eventId).set(
     {
-      eventType,
-      account: account || null,
-      facilityId: facilityId || null,
-      tenantId: tenantId || null,
+      ...fields,
       processedAt: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     },
