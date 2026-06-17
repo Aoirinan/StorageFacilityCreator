@@ -324,7 +324,7 @@ class PublicRentalService {
   /// Build public move-in URL
   static String buildMoveInUrl(String token, {String? baseUrl}) {
     final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
-    return '$base/move-in?token=$token';
+    return '$base/public-move-in?token=$token';
   }
 
   /// Complete public move-in (creates tenant, contract, processes payment)
@@ -400,7 +400,6 @@ class PublicRentalService {
         'emergencyContactEmail': emergencyContactEmail,
         'notes': notes,
         'enrollAutopayInterest': enrollAutopayInterest,
-        '_appCheckToken': 'public-move-in',
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () {

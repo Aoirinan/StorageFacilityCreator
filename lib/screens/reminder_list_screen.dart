@@ -213,7 +213,7 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen> {
                     const SizedBox(width: 8),
                     _statChip('Sent', stats['sent'] ?? 0, AppTheme.success),
                     const SizedBox(width: 8),
-                    _statChip('Overdue', stats['overdue'] ?? 0, AppTheme.error),
+                    _statChip('Past send date', stats['overdue'] ?? 0, AppTheme.error),
                   ],
                 ),
               ),
@@ -434,8 +434,12 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen> {
                           colorScheme.onSurfaceVariant,
                         ),
                         if (reminder.isOverdue)
-                          _chip('${reminder.daysUntilDue}d overdue',
-                              AppTheme.error),
+                          _chip(
+                            reminder.daysOverdue == 0
+                                ? 'Due today'
+                                : '${reminder.daysOverdue}d past send date',
+                            AppTheme.error,
+                          ),
                       ],
                     ),
                   ],

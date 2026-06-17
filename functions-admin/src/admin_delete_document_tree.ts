@@ -40,3 +40,32 @@ async function deleteCollectionDocumentsRecursive(
     last = snap.docs[snap.docs.length - 1];
   }
 }
+
+/** Delete every document (and nested subcollections) in a top-level collection. */
+export async function adminDeleteEntireCollection(
+  colRef: admin.firestore.CollectionReference,
+): Promise<number> {
+  let deleted = 0;
+  let last: admin.firestore.QueryDocumentSnapshot | undefined;
+  for (;;) {
+    let q: admin.firestore.Query = colRef
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .limit(PAGE_SIZE);
+    if (last) {
+      q = q.startAfter(last);
+    }
+    const snap = await q.get();
+    if (snap.empty) {
+      break;
+    }
+    for (const doc of snap.docs) {
+      await adminDeleteDocumentTree(doc.ref);
+      deleted += 1;
+    }
+    if (snap.size < PAGE_SIZE) {
+      break;
+    }
+    last = snap.docs[snap.docs.length - 1];
+  }
+  return deleted;
+}

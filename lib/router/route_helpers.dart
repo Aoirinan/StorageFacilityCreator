@@ -17,7 +17,6 @@ import '../providers/messaging_provider.dart';
 import '../widgets/facility_switcher.dart';
 import '../theme/app_theme.dart';
 import '../services/debug_logger.dart';
-import '../screens/late_dashboard_screen.dart';
 
 /// Simple wrapper to refresh go_router on auth stream changes.
 class GoRouterRefreshStream extends ChangeNotifier {
@@ -69,16 +68,6 @@ class NotFoundPage extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-/// Dedicated shell screen for delinquency tab routing.
-class DelinquencyShellScreen extends StatelessWidget {
-  const DelinquencyShellScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const LateDashboardScreen();
   }
 }
 

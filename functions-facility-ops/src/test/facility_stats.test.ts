@@ -23,17 +23,17 @@ test('calculateDaysLate returns 0 for new tenant without payment', () => {
     monthlyRate: 100,
     createdAt: ts(new Date('2026-05-20T12:00:00.000Z')),
   };
-  assert.equal(calculateDaysLate(tenant as any, now), 0);
+  assert.equal(calculateDaysLate(tenant as any, 3, now), 0);
 });
 
-test('calculateDaysLate returns days since creation when never paid and older than 30 days', () => {
+test('calculateDaysLate returns days past onboarding window when never paid and older than 30 days', () => {
   const now = new Date('2026-06-15T12:00:00.000Z');
   const tenant = {
     isActive: true,
     monthlyRate: 100,
     createdAt: ts(new Date('2026-04-01T12:00:00.000Z')),
   };
-  const daysLate = calculateDaysLate(tenant as any, now);
+  const daysLate = calculateDaysLate(tenant as any, 3, now);
   assert.equal(daysLate >= 30, true);
 });
 
@@ -45,7 +45,7 @@ test('calculateDaysLate buckets paid-through before grace boundary', () => {
     createdAt: ts(new Date('2025-01-01T12:00:00.000Z')),
     paidThrough: ts(new Date('2026-05-01T12:00:00.000Z')),
   };
-  const daysLate = calculateDaysLate(tenant as any, now);
+  const daysLate = calculateDaysLate(tenant as any, 3, now);
   assert.equal(daysLate >= 10, true);
   assert.equal(daysLate < 30, true);
 });

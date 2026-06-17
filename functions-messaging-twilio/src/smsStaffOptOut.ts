@@ -20,9 +20,12 @@ function rethrowStaffOptOutError(operation: string, error: unknown): never {
     lower.includes('requires an index') ||
     lower.includes('the query requires an index');
   if (isFailedPrecondition) {
-    throw new functions.https.HttpsError('failed-precondition', message);
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'This action is not available right now. Please try again later or contact support.',
+    );
   }
-  throw new functions.https.HttpsError('internal', message);
+  throw new functions.https.HttpsError('internal', 'An unexpected error occurred. Please try again later.');
 }
 
 function tenantSmsOptOutDisplayName(t: Record<string, unknown>): string {

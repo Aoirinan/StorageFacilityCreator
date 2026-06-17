@@ -40,7 +40,7 @@ final contractOperationsProvider = StateNotifierProvider<ContractOperationsNotif
 class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   ContractOperationsNotifier() : super(const AsyncValue.data(null));
 
-  Future<void> createContract({
+  Future<String> createContract({
     required String facilityId,
     required String tenantId,
     required String title,
@@ -55,7 +55,7 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     state = const AsyncValue.loading();
     
     try {
-      await ContractService.createContract(
+      final contractId = await ContractService.createContract(
         facilityId: facilityId,
         tenantId: tenantId,
         title: title,
@@ -68,11 +68,10 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         notes: notes,
       );
       
-      // Reset to data state after successful creation
       state = const AsyncValue.data(null);
+      return contractId;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
-      // Re-throw the error so the UI can handle it
       rethrow;
     }
   }

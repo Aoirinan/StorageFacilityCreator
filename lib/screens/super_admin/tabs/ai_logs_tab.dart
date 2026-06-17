@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/models/super_admin_ai_chat_log.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/firestore_index_error.dart';
+import 'package:sfcapp/widgets/firestore_index_building_panel.dart';
 
 /// Super-admin review of AI assistant turns (user + assistant), with facility and user identity.
 class AiLogsTab extends StatefulWidget {
@@ -14,6 +18,14 @@ class AiLogsTab extends StatefulWidget {
 
 class _AiLogsTabState extends State<AiLogsTab> {
   String _search = '';
+  int _streamGeneration = 0;
+  Timer? _indexRetryTimer;
+
+  @override
+  void dispose() {
+    _indexRetryTimer?.cancel();
+    super.dispose();
+  }
 
   Stream<List<SuperAdminAiChatLog>> get _stream {
     return FirebaseFirestore.instance
@@ -23,6 +35,21 @@ class _AiLogsTabState extends State<AiLogsTab> {
         .snapshots()
         .map((snap) =>
             snap.docs.map((d) => SuperAdminAiChatLog.fromFirestore(d)).toList());
+  }
+
+  void _retryStream() {
+    setState(() => _streamGeneration++);
+  }
+
+  void _scheduleIndexRetry() {
+    _indexRetryTimer ??= Timer.periodic(const Duration(seconds: 20), (_) {
+      if (mounted) _retryStream();
+    });
+  }
+
+  void _clearIndexRetry() {
+    _indexRetryTimer?.cancel();
+    _indexRetryTimer = null;
   }
 
   List<SuperAdminAiChatLog> _filter(List<SuperAdminAiChatLog> all) {
@@ -42,24 +69,33 @@ class _AiLogsTabState extends State<AiLogsTab> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<SuperAdminAiChatLog>>(
+      key: ValueKey(_streamGeneration),
       stream: _stream,
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
         if (snap.hasError) {
+          final error = snap.error!;
+          if (isFirestoreIndexBuildingError(error)) {
+            _scheduleIndexRetry();
+            return FirestoreIndexBuildingPanel(
+              collectionGroup: 'aiChatAuditLogs',
+              onRetry: _retryStream,
+            );
+          }
+          _clearIndexRetry();
           return Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Text(
-                'Could not load AI logs. Deploy the Firestore index for '
-                'collection group `aiChatAuditLogs` (createdAt desc) if this is a new query.\n\n'
-                '${snap.error}',
+                'Could not load AI logs.\n\n$error',
                 textAlign: TextAlign.center,
               ),
             ),
           );
         }
+        _clearIndexRetry();
         final all = snap.data ?? [];
         final filtered = _filter(all);
 

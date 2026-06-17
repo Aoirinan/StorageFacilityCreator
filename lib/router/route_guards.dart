@@ -49,6 +49,19 @@ Future<String?> routeGuard(
 
   final loc = state.matchedLocation;
   final path = state.uri.path;
+
+  // Legacy tenant move-in links used /move-in?token=...; redirect to the public flow.
+  if (loc == AppRoute.moveInWizard || path == AppRoute.moveInWizard) {
+    final token = state.uri.queryParameters['token'];
+    final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+    if (token != null && token.isNotEmpty && facilityId.isEmpty) {
+      return Uri(
+        path: AppRoute.publicMoveIn,
+        queryParameters: state.uri.queryParameters,
+      ).toString();
+    }
+  }
+
   // Legacy redirects: Autopay Activity and Notifications removed from sidebar; single source in Payments > Autopay and Settings > Notifications
   if (path == AppRoute.autopayActivity ||
       path.startsWith('${AppRoute.autopayActivity}?')) {

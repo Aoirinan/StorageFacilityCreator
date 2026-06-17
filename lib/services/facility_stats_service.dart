@@ -149,13 +149,16 @@ class FacilityStatsService {
       int tenantsSeverelyOverdue = 0;
 
       for (final tenant in activeTenants) {
-        if (!LateLogicService.isTenantLate(tenant, gracePeriodDays: graceDays)) continue;
-        final daysLate = LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: graceDays);
+        if (!LateLogicService.isTenantLate(tenant, gracePeriodDays: graceDays)) {
+          continue;
+        }
+        final daysLate =
+            LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: graceDays);
         if (daysLate >= 30) {
           tenantsSeverelyOverdue++;
         } else if (daysLate >= 10) {
           tenantsOverdue++;
-        } else if (daysLate >= 1) {
+        } else {
           tenantsLate++;
         }
       }
@@ -338,6 +341,36 @@ class FacilityStatsService {
                   .doc('current')
                   .get())
               .data();
+        }
+
+        // Stale past-due count (e.g. cloud stats written before a payment landed).
+        final cachedPastDue = (cached['totalPastDue'] as int?) ?? 0;
+        if (cachedPastDue > 0) {
+          final facility = await FacilityService.getFacility(facilityId);
+          final grace = facility?.billingSettings?['gracePeriodDays'];
+          final graceDays = (grace is int)
+              ? grace
+              : (grace != null ? int.tryParse(grace.toString()) : null) ?? 3;
+          final tenants = await TenantService.getTenantsForFacility(facilityId);
+          final livePastDue = LateLogicService.countLateTenants(
+            tenants.where((t) => t.isActive == true),
+            gracePeriodDays: graceDays,
+          );
+          if (livePastDue != cachedPastDue) {
+            if (kDebugMode) {
+              print(
+                '🔄 [FacilityStatsService] Stale past due ($cachedPastDue cached, $livePastDue live), recomputing...',
+              );
+            }
+            await updateFacilityStats(facilityId);
+            return (await _firestore
+                    .collection('facilities')
+                    .doc(facilityId)
+                    .collection('stats')
+                    .doc('current')
+                    .get())
+                .data();
+          }
         }
         return cached;
       }

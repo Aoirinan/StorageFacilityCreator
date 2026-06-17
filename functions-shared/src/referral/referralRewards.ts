@@ -1,5 +1,5 @@
 /**
- * Referral program: referred facilities get 60 days platform trial; after first paid
+ * Referral program: referred facilities use the standard platform trial; after first paid
  * invoice post-trial, referrer earns 100% off for 1 month on one platform subscription.
  *
  * This module hosts the pieces that BOTH the Stripe webhook (default codebase, until
@@ -12,7 +12,7 @@ import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 
-const REFEREE_PLATFORM_TRIAL_DAYS = 60;
+const REFEREE_PLATFORM_TRIAL_DAYS = 30;
 const REFERRAL_REWARD_FREE_MONTHS = 1;
 const REFERRAL_MAX_REWARDS_PER_REFERRER_PER_YEAR = 10;
 

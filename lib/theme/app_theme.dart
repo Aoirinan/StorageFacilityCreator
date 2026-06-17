@@ -23,10 +23,10 @@ TextTheme _textThemeWithFallback(TextTheme theme) {
   );
 }
 
-/// Modern theme inspired by Storable's professional interface
+/// Professional SaaS dashboard theme for facility operations
 class AppTheme {
-  // Storable-inspired color palette
-  static const Color primaryBlue = Color(0xFF1E3A8A); // Dark blue like Storable
+  // Primary brand blue palette
+  static const Color primaryBlue = Color(0xFF1E3A8A); // Primary brand blue
   static const Color primaryBlueLight = Color(0xFF3B82F6); // Lighter blue
   static const Color primaryBlueDark = Color(0xFF1E40AF); // Darker blue
   static const Color accentBlueLight = Color(0xFF60A5FA); // Accent blue light

@@ -303,7 +303,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       _chargesCalculated = true;
       _stripePaymentRequired =
           (_facility?.stripeConnectAccountId?.isNotEmpty ?? false) &&
-              (_facility?.stripeConnectOnboardingComplete ?? false) &&
+              (_facility?.canAcceptTenantPayments ?? false) &&
               _totalAmount > 0;
 
       if (mounted) {

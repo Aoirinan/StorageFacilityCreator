@@ -34,7 +34,6 @@ import 'facility_map_editor_screen.dart';
 import 'payment_list_screen.dart';
 import 'reminder_list_screen.dart';
 import 'messaging_screen.dart';
-import 'late_dashboard_screen.dart';
 import 'gate_access_screen.dart';
 import 'financial_reports_screen.dart';
 import 'tenant_creation_screen.dart';
@@ -164,7 +163,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Counts synced. Dashboard and facility cards will show correct occupancy.'),
+          content: Text('Counts synced. Dashboard, delinquency, and facility cards will show matching numbers.'),
           backgroundColor: AppTheme.success,
         ),
       );
@@ -421,7 +420,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           const SizedBox(width: 8),
           // Sync counts (recompute occupancy/tenant counts for all facilities)
           Tooltip(
-            message: 'Recompute occupancy and tenant counts for all facilities',
+            message: 'Recompute occupancy, tenant counts, and past-due totals for all facilities',
             child: IconButton(
               onPressed: () => _recomputeAllStats(context),
               icon: const Icon(Icons.refresh, size: 20),
@@ -839,7 +838,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     return Align(
       alignment: Alignment.centerLeft,
       child: Tooltip(
-        message: 'Recompute occupancy and tenant counts for all facilities',
+        message: 'Recompute occupancy, tenant counts, and past-due totals for all facilities',
         child: TextButton.icon(
           onPressed: () => _recomputeAllStats(context),
           icon: const Icon(Icons.refresh, size: 18),
@@ -918,11 +917,11 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
             MetricCard(
               title: 'Past Due',
               value: stats.pastDueCount.toString(),
-              subtitle: 'Overdue payments',
+              subtitle: 'Tenants behind on rent',
               icon: Icons.warning,
               color: stats.pastDueCount > 0 ? AppTheme.error : AppTheme.success,
               onTap: stats.pastDueCount > 0
-                  ? () => ModernNavigationService.navigateToRoute(context, '/delinquency')
+                  ? () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsPastDue)
                   : null,
             ),
           ],
@@ -1135,7 +1134,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   'Billing',
                   Icons.payment,
                   AppTheme.success,
-                  () => ModernNavigationService.navigateToRoute(context, '/billing'),
+                  () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsInvoices),
                 ),
                 _buildQuickActionCard(
                   'Reports',
@@ -1529,7 +1528,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 ),
                 const Spacer(),
                 TextButton(
-                  onPressed: () => ModernNavigationService.navigateToRoute(context, '/delinquency'),
+                  onPressed: () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsPastDue),
                   child: const Text('View All'),
                 ),
               ],

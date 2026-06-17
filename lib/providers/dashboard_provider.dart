@@ -219,7 +219,23 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
       occupiedUnits += statsOccupied;
       monthlyRevenue += statsRevenue;
       autopayMonthlyRevenue += statsAutopay;
-      pastDueCount += statsPastDue;
+
+      // Past due must match Delinquency — recompute live even when other stats are cached.
+      final grace = facility.billingSettings?['gracePeriodDays'];
+      final graceDays = (grace is int)
+          ? grace
+          : (grace != null ? int.tryParse(grace.toString()) : null) ?? 3;
+      final activeTenants =
+          await TenantService.getTenantsForFacility(facility.id);
+      final livePastDue = LateLogicService.countLateTenants(
+        activeTenants.where((t) => t.isActive == true),
+        gracePeriodDays: graceDays,
+      );
+      pastDueCount += livePastDue;
+
+      if (livePastDue != statsPastDue) {
+        FacilityStatsService.updateFacilityStats(facility.id);
+      }
       
       if (kDebugMode) {
         print('📊 [Dashboard] Using cached stats for ${facility.name}:');
@@ -228,7 +244,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
         print(
           '   - Revenue: \$${statsRevenue.toStringAsFixed(2)} (autopay \$${statsAutopay.toStringAsFixed(2)})',
         );
-        print('   - Past due: $statsPastDue');
+        print('   - Past due: $livePastDue (cached was $statsPastDue)');
       }
     } else {
       // Fallback to computing on-the-fly (slower)

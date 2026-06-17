@@ -228,9 +228,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
 
   Widget _buildPaymentInfo() {
     final cs = Theme.of(context).colorScheme;
-    final transactionId = widget.payment.transactionId ??
-        widget.payment.externalPaymentId ??
-        '—';
+    final reference = widget.payment.effectiveTransactionReference;
     final tenants = ref
         .watch(facilityTenantsProvider(widget.payment.facilityId))
         .whenOrNull(data: (v) => v);
@@ -247,9 +245,10 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     final tenantLabel = (snapName != null && snapName.isNotEmpty)
         ? snapName
         : (tenant?.name ??
-            (widget.payment.tenantId.isEmpty ? '—' : 'Unknown tenant (${widget.payment.tenantId})'));
+            (widget.payment.tenantId.isEmpty ? '—' : 'Unknown tenant'));
     final unitVal = (widget.payment.snapshotUnitNumber ?? tenant?.unitNumber ?? '').trim();
     final metadataPurpose = _paymentMetadataPurpose(widget.payment.metadata);
+    final notes = widget.payment.notes?.trim();
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -278,38 +277,15 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           const SizedBox(height: 20),
           _buildInfoRow('Tenant', tenantLabel),
           if (unitVal.isNotEmpty) _buildInfoRow('Unit', unitVal),
-          if (widget.payment.contractId.trim().isNotEmpty)
-            _buildInfoRow('Contract', widget.payment.contractId.trim()),
           if (metadataPurpose != null) _buildInfoRow('Details', metadataPurpose),
-          _buildInfoRow('Amount', widget.payment.formattedAmount),
           _buildInfoRow('Method', widget.payment.methodDisplayName),
-          _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),
-          if (widget.payment.paidDate != null)
+          if (notes != null && notes.isNotEmpty) _buildInfoRow('Notes', notes),
+          if (!widget.payment.isPaid)
+            _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),
+          if (widget.payment.isPaid && widget.payment.paidDate != null)
             _buildInfoRow('Paid Date', _formatDate(widget.payment.paidDate!)),
-          _buildInfoRow('Transaction ID', transactionId),
-          _buildInfoRow('Created', _formatDateTime(widget.payment.createdAt)),
-          _buildInfoRow('Updated', _formatDateTime(widget.payment.updatedAt)),
-          if (widget.payment.notes != null && widget.payment.notes!.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Text(
-              'Notes',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: cs.onSurface,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              widget.payment.notes!,
-              style: TextStyle(
-                fontSize: 14,
-                color: cs.onSurfaceVariant,
-              ),
-            ),
-          ],
-          if (metadataPurpose == null &&
-              (widget.payment.notes == null || widget.payment.notes!.trim().isEmpty)) ...[
+          if (reference != null) _buildInfoRow('Reference', reference),
+          if (metadataPurpose == null && (notes == null || notes.isEmpty)) ...[
             const SizedBox(height: 12),
             Text(
               'Without a linked invoice line item, this amount is credited to the tenant’s account. '

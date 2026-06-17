@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
+    "firebase-functions-test": "^3.4.1",
     "typescript": "^5.0.0"
   }
 }

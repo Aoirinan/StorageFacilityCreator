@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../models/contract_model.dart';
 import '../providers/contract_provider.dart';
@@ -16,7 +15,7 @@ import '../utils/error_message_helper.dart';
 import 'contract_detail_screen.dart';
 import 'contract_creation_screen.dart';
 import 'contract_template_management_screen.dart';
-import 'contract_signing_screen.dart';
+import '../services/contract_send_service.dart';
 import 'facility_map_editor_screen.dart';
 
 class ContractListScreen extends ConsumerStatefulWidget {
@@ -505,11 +504,16 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
               value: 'edit',
               child: Text('Edit'),
             ),
-            if (contract.status == ContractStatus.draft)
+            if (contract.status == ContractStatus.draft) ...[
+              const PopupMenuItem(
+                value: 'sign_in_person',
+                child: Text('Sign in person'),
+              ),
               const PopupMenuItem(
                 value: 'send',
                 child: Text('Send'),
               ),
+            ],
             if (contract.status == ContractStatus.sent) ...[
               const PopupMenuItem(
                 value: 'resend',
@@ -698,6 +702,9 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
       case 'send':
         _sendContract(contract);
         break;
+      case 'sign_in_person':
+        _signContractInPerson(contract);
+        break;
       case 'resend':
         _navigateToContractDetail(contract);
         break;
@@ -710,68 +717,39 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
     }
   }
 
-  void _sendContract(ContractModel contract) {
-    showDialog(
+  void _invalidateContractsList(ContractModel contract) {
+    ref.invalidate(contractsProvider(contract.facilityId));
+  }
+
+  Future<void> _sendContract(ContractModel contract) async {
+    final sentBy = ref.read(authStateProvider).value?.uid ?? '';
+    await ContractSendService.sendContractForSignature(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Send Contract'),
-        content: const Text('Are you sure you want to send this contract?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              ref.read(contractOperationsProvider.notifier).sendContract(
-                facilityId: _selectedFacilityId ?? '',
-                contractId: contract.id,
-                sentBy: ref.read(authStateProvider).value?.uid ?? '',
-              ).then((_) {
-                // Refresh providers after sending contract
-                if (_selectedFacilityId != null) {
-                  ref.invalidate(contractsProvider(_selectedFacilityId!));
-                }
-              });
-            },
-            child: const Text('Send'),
-          ),
-        ],
-      ),
+      contract: contract,
+      sentBy: sentBy,
+      onComplete: () => _invalidateContractsList(contract),
     );
   }
 
+  Future<void> _signContractInPerson(ContractModel contract) async {
+    final sentBy = ref.read(authStateProvider).value?.uid ?? '';
+    final signed = await ContractSendService.signContractInPerson(
+      context: context,
+      contract: contract,
+      sentBy: sentBy,
+    );
+    if (signed == true && mounted) {
+      _invalidateContractsList(contract);
+    }
+  }
+
   Future<void> _signContract(ContractModel contract) async {
-    // Check if contract has a signing token
-    try {
-      final contractDoc = await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(contract.facilityId)
-          .collection('contracts')
-          .doc(contract.id)
-          .get();
-
-      final signingToken = contractDoc.data()?['signingToken'] as String?;
-      if (signingToken == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Contract must be sent first to generate a signing link. Please use "Send Contract" option.'),
-            backgroundColor: AppTheme.warning,
-          ),
-        );
-        return;
-      }
-
-      // Navigate to signing screen - pass contract to skip Firestore lookup
-      context.push('${AppRoute.contractSign}?token=$signingToken', extra: contract);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error accessing contract: $e'),
-          backgroundColor: AppTheme.error,
-        ),
-      );
+    final signed = await ContractSendService.openSigningScreenFromContract(
+      context,
+      contract,
+    );
+    if (signed == true && mounted) {
+      _invalidateContractsList(contract);
     }
   }
 
@@ -789,11 +767,8 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop();
-              ref.read(contractOperationsProvider.notifier).deleteContract(_selectedFacilityId ?? '', contract.id).then((_) {
-                // Refresh providers after deleting contract
-                if (_selectedFacilityId != null) {
-                  ref.invalidate(contractsProvider(_selectedFacilityId!));
-                }
+              ref.read(contractOperationsProvider.notifier).deleteContract(contract.facilityId, contract.id).then((_) {
+                _invalidateContractsList(contract);
               });
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),

@@ -146,6 +146,7 @@ class _LeadRow extends StatefulWidget {
 
 class _LeadRowState extends State<_LeadRow> {
   bool _saving = false;
+  bool _deleting = false;
 
   String get _actorUid => FirebaseAuth.instance.currentUser?.uid ?? 'unknown';
   String get _actorEmail => FirebaseAuth.instance.currentUser?.email ?? 'unknown';
@@ -439,6 +440,56 @@ class _LeadRowState extends State<_LeadRow> {
     }
   }
 
+  Future<void> _deleteLead() async {
+    final lead = widget.lead;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete lead?'),
+        content: Text(
+          'Permanently remove “${lead.name}” (${lead.email})? '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _deleting = true);
+    try {
+      await SuperAdminDataService.deleteMarketingLead(lead.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Lead deleted'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Delete failed: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
+
   Future<void> _markOutcome({required bool won}) async {
     final amountController = TextEditingController();
     final noteController = TextEditingController();
@@ -639,7 +690,7 @@ class _LeadRowState extends State<_LeadRow> {
             ),
           ],
           const SizedBox(height: 8),
-          if (_saving)
+          if (_saving || _deleting)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
               child: SizedBox(
@@ -677,6 +728,12 @@ class _LeadRowState extends State<_LeadRow> {
                   icon: const Icon(Icons.cancel, size: 14),
                   label: const Text('Mark Lost'),
                   onPressed: () => _markOutcome(won: false),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.delete_outline, size: 14),
+                  label: const Text('Delete'),
+                  style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+                  onPressed: _deleteLead,
                 ),
               ],
             ),

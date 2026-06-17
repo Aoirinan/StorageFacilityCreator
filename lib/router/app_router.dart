@@ -24,7 +24,7 @@ import '../screens/manager_overlock_screen.dart';
 import '../screens/tenant_csv_import_wizard_screen.dart';
 import '../screens/home_screen_modern.dart';
 import '../screens/contract_list_screen.dart';
-import '../screens/payment_list_screen.dart';
+import '../screens/rent_payments_shell_screen.dart';
 import '../screens/insurance_screen.dart';
 import '../screens/messaging_screen.dart';
 import '../screens/sms_conversations_screen.dart';
@@ -37,7 +37,6 @@ import '../screens/stripe_connect_onboarding_screen.dart';
 import '../models/facility_model.dart';
 import '../screens/financial_reports_screen.dart';
 import '../screens/yield_management_screen.dart';
-import '../screens/reminder_list_screen.dart';
 import '../screens/dnr_list_screen.dart';
 import '../screens/facility_creation_wizard.dart';
 import '../widgets/global_home_overlay.dart';
@@ -66,7 +65,6 @@ import '../screens/data_integrity_screen.dart';
 import '../screens/contract_signing_test_screen.dart';
 import '../screens/ledger_screen.dart';
 import '../screens/move_in_wizard_screen.dart';
-import '../screens/invoice_list_screen.dart';
 import '../screens/invoice_detail_screen.dart';
 import '../models/invoice_model.dart';
 import '../screens/recurring_charges_screen.dart';
@@ -545,12 +543,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.billing,
             name: 'billing',
-            builder: (context, state) => const InvoiceListScreen(),
+            redirect: (context, state) => AppRoute.paymentsInvoices,
           ),
           GoRoute(
             path: AppRoute.payments,
             name: 'payments',
-            builder: (context, state) => const PaymentListScreen(),
+            builder: (context, state) => const RentPaymentsShellScreen(),
           ),
           GoRoute(
             path: AppRoute.paymentDetail,
@@ -579,7 +577,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.delinquency,
             name: 'delinquency',
-            builder: (context, state) => const DelinquencyShellScreen(),
+            redirect: (context, state) => AppRoute.paymentsPastDue,
           ),
           GoRoute(
             path: AppRoute.access,
@@ -1130,7 +1128,15 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.reminders,
             name: 'reminders',
-            builder: (context, state) => const ReminderListScreen(),
+            redirect: (context, state) {
+              final params = Map<String, String>.from(state.uri.queryParameters);
+              params['tab'] = 'reminders';
+              final query = params.entries
+                  .map((e) =>
+                      '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+                  .join('&');
+              return '${AppRoute.payments}?$query';
+            },
           ),
           GoRoute(
             path: AppRoute.reminderCreate,
@@ -1250,7 +1256,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: AppRoute.invoices,
             name: 'invoices',
-            builder: (context, state) => const InvoiceListScreen(),
+            redirect: (context, state) => AppRoute.paymentsInvoices,
           ),
           GoRoute(
             path: AppRoute.invoiceDetail,

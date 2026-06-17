@@ -216,7 +216,7 @@ class _CalendarContentState extends State<_CalendarContent> {
     final q = _dateQuery(day);
     final facilityId = widget.facilityId;
 
-    final bottomPadding = MediaQuery.of(context).size.height * 0.35;
+    final bottomPadding = MediaQuery.of(context).size.height * 0.22;
 
     showModalBottomSheet<void>(
       context: context,
@@ -302,65 +302,36 @@ class _CalendarContentState extends State<_CalendarContent> {
     );
   }
 
-  // ── Month view ─────────────────────────────────────────────────────────────
+  static const double _calendarRowHeight = 34;
+  static const double _calendarDaysOfWeekHeight = 12;
+
+  // ── Month / week split views ───────────────────────────────────────────────
 
   Widget _buildMonthView() {
-    final theme = Theme.of(context);
+    return _buildSplitCalendarView(
+      format: CalendarFormat.month,
+      outsideDaysVisible: false,
+    );
+  }
+
+  Widget _buildWeekView() {
+    return _buildSplitCalendarView(
+      format: CalendarFormat.week,
+      outsideDaysVisible: true,
+    );
+  }
+
+  Widget _buildSplitCalendarView({
+    required CalendarFormat format,
+    required bool outsideDaysVisible,
+  }) {
     final selectedEvents = _eventsForDay(_selectedDay);
 
     return Column(
       children: [
-        TableCalendar<CalendarEvent>(
-          firstDay: DateTime(2020),
-          lastDay: DateTime(2030),
-          focusedDay: _focusedDay,
-          selectedDayPredicate: (d) => isSameDay(d, _selectedDay),
-          eventLoader: _eventsForDay,
-          calendarFormat: CalendarFormat.month,
-          startingDayOfWeek: StartingDayOfWeek.sunday,
-          headerStyle: HeaderStyle(
-            formatButtonVisible: false,
-            titleCentered: true,
-            titleTextStyle: theme.textTheme.titleMedium!
-                .copyWith(fontWeight: FontWeight.w600),
-            leftChevronIcon:
-                Icon(Icons.chevron_left, color: theme.colorScheme.primary),
-            rightChevronIcon:
-                Icon(Icons.chevron_right, color: theme.colorScheme.primary),
-          ),
-          calendarStyle: CalendarStyle(
-            outsideDaysVisible: false,
-            selectedDecoration: BoxDecoration(
-              color: theme.colorScheme.primary,
-              shape: BoxShape.circle,
-            ),
-            todayDecoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
-            ),
-            todayTextStyle:
-                TextStyle(color: theme.colorScheme.primary, fontWeight: FontWeight.bold),
-            markerDecoration: const BoxDecoration(
-              color: Colors.transparent,
-            ),
-          ),
-          calendarBuilders: CalendarBuilders(
-            markerBuilder: (context, day, events) {
-              if (events.isEmpty) return const SizedBox.shrink();
-              return _EventDots(events: events.cast<CalendarEvent>());
-            },
-          ),
-          onDaySelected: (selected, focused) {
-            setState(() {
-              _selectedDay = selected;
-              _focusedDay = focused;
-            });
-            _showAddToDateMenu(context, selected);
-          },
-          onPageChanged: (focused) {
-            setState(() => _focusedDay = focused);
-            _loadEvents();
-          },
+        _buildSplitCalendar(
+          format: format,
+          outsideDaysVisible: outsideDaysVisible,
         ),
         const Divider(height: 1),
         Expanded(
@@ -374,72 +345,82 @@ class _CalendarContentState extends State<_CalendarContent> {
     );
   }
 
-  // ── Week view ──────────────────────────────────────────────────────────────
-
-  Widget _buildWeekView() {
+  Widget _buildSplitCalendar({
+    required CalendarFormat format,
+    required bool outsideDaysVisible,
+  }) {
     final theme = Theme.of(context);
-    final selectedEvents = _eventsForDay(_selectedDay);
+    const dayFontSize = 14.0;
+    final dayTextStyle = theme.textTheme.bodyMedium?.copyWith(fontSize: dayFontSize) ??
+        const TextStyle(fontSize: dayFontSize);
 
-    return Column(
-      children: [
-        TableCalendar<CalendarEvent>(
-          firstDay: DateTime(2020),
-          lastDay: DateTime(2030),
-          focusedDay: _focusedDay,
-          selectedDayPredicate: (d) => isSameDay(d, _selectedDay),
-          eventLoader: _eventsForDay,
-          calendarFormat: CalendarFormat.week,
-          startingDayOfWeek: StartingDayOfWeek.sunday,
-          headerStyle: HeaderStyle(
-            formatButtonVisible: false,
-            titleCentered: true,
-            titleTextStyle: theme.textTheme.titleMedium!
-                .copyWith(fontWeight: FontWeight.w600),
-            leftChevronIcon:
-                Icon(Icons.chevron_left, color: theme.colorScheme.primary),
-            rightChevronIcon:
-                Icon(Icons.chevron_right, color: theme.colorScheme.primary),
-          ),
-          calendarStyle: CalendarStyle(
-            outsideDaysVisible: true,
-            selectedDecoration: BoxDecoration(
-              color: theme.colorScheme.primary,
-              shape: BoxShape.circle,
-            ),
-            todayDecoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
-            ),
-            todayTextStyle:
-                TextStyle(color: theme.colorScheme.primary, fontWeight: FontWeight.bold),
-          ),
-          calendarBuilders: CalendarBuilders(
-            markerBuilder: (context, day, events) {
-              if (events.isEmpty) return const SizedBox.shrink();
-              return _EventDots(events: events.cast<CalendarEvent>());
-            },
-          ),
-          onDaySelected: (selected, focused) {
-            setState(() {
-              _selectedDay = selected;
-              _focusedDay = focused;
-            });
-            _showAddToDateMenu(context, selected);
-          },
-          onPageChanged: (focused) {
-            setState(() => _focusedDay = focused);
-            _loadEvents();
-          },
+    return TableCalendar<CalendarEvent>(
+      firstDay: DateTime(2020),
+      lastDay: DateTime(2030),
+      focusedDay: _focusedDay,
+      selectedDayPredicate: (d) => isSameDay(d, _selectedDay),
+      eventLoader: _eventsForDay,
+      calendarFormat: format,
+      startingDayOfWeek: StartingDayOfWeek.sunday,
+      rowHeight: _calendarRowHeight,
+      daysOfWeekHeight: _calendarDaysOfWeekHeight,
+      shouldFillViewport: false,
+      sixWeekMonthsEnforced: false,
+      headerStyle: HeaderStyle(
+        formatButtonVisible: false,
+        titleCentered: true,
+        titleTextStyle:
+            theme.textTheme.titleMedium!.copyWith(fontWeight: FontWeight.w600),
+        headerPadding: const EdgeInsets.symmetric(vertical: 4),
+        leftChevronPadding: const EdgeInsets.all(8),
+        rightChevronPadding: const EdgeInsets.all(8),
+        leftChevronIcon:
+            Icon(Icons.chevron_left, color: theme.colorScheme.primary),
+        rightChevronIcon:
+            Icon(Icons.chevron_right, color: theme.colorScheme.primary),
+      ),
+      calendarStyle: CalendarStyle(
+        outsideDaysVisible: outsideDaysVisible,
+        cellMargin: const EdgeInsets.all(2),
+        defaultTextStyle: dayTextStyle,
+        selectedTextStyle: dayTextStyle.copyWith(
+          color: theme.colorScheme.onPrimary,
+          fontWeight: FontWeight.w600,
         ),
-        const Divider(height: 1),
-        Expanded(
-          child: _DayEventList(
-            day: _selectedDay,
-            events: selectedEvents,
-            facilityId: widget.facilityId,
-          ),
+        selectedDecoration: BoxDecoration(
+          color: theme.colorScheme.primary,
+          shape: BoxShape.circle,
         ),
-      ],
+        todayDecoration: BoxDecoration(
+          color: theme.colorScheme.primary.withValues(alpha: 0.2),
+          shape: BoxShape.circle,
+        ),
+        todayTextStyle: TextStyle(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.bold,
+          fontSize: dayFontSize,
+        ),
+        markerDecoration: const BoxDecoration(
+          color: Colors.transparent,
+        ),
+      ),
+      calendarBuilders: CalendarBuilders(
+        markerBuilder: (context, day, events) {
+          if (events.isEmpty) return const SizedBox.shrink();
+          return _EventDots(events: events.cast<CalendarEvent>());
+        },
+      ),
+      onDaySelected: (selected, focused) {
+        setState(() {
+          _selectedDay = selected;
+          _focusedDay = focused;
+        });
+        _showAddToDateMenu(context, selected);
+      },
+      onPageChanged: (focused) {
+        setState(() => _focusedDay = focused);
+        _loadEvents();
+      },
     );
   }
 
@@ -540,7 +521,7 @@ class _DayEventList extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: Text(
             label,
             style: theme.textTheme.titleSmall

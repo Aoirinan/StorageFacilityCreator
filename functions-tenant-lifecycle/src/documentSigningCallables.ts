@@ -1,6 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as crypto from 'crypto';
-import { getFacilityDataForUserOrThrow, validateSigningTokenForContract } from '@sfc/functions-shared';
+import { getFacilityDataForUserOrThrow, validateSigningTokenForContract, checkSigningTokenRateLimit, extractCallableClientIp } from '@sfc/functions-shared';
 import { enforceAppCheckOrThrow } from './guardrails';
 
 /**
@@ -102,6 +102,14 @@ export const mergeSignatureIntoPdf = functions.runWith({ timeoutSeconds: 120, me
         throw new functions.https.HttpsError(
           'invalid-argument',
           'facilityId, contractId, and signingToken are required',
+        );
+      }
+      const clientIp = extractCallableClientIp(context.rawRequest);
+      const allowed = await checkSigningTokenRateLimit(clientIp);
+      if (!allowed) {
+        throw new functions.https.HttpsError(
+          'resource-exhausted',
+          'Too many requests. Please wait a minute and try again.',
         );
       }
       const valid = await validateSigningTokenForContract(signingToken, facilityId, contractId);

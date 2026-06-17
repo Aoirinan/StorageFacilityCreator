@@ -1,9 +1,4 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -11,19 +6,16 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/contract_model.dart';
 import '../providers/contract_provider.dart';
 import '../providers/auth_provider.dart';
-import '../services/contract_service.dart';
-import '../services/email_service.dart';
 import '../services/tenant_service.dart';
+import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
-import 'contract_signing_screen.dart';
 import 'contract_creation_screen.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../utils/error_message_helper.dart';
-import '../utils/email_send_feedback.dart';
 
 class ContractDetailScreen extends ConsumerStatefulWidget {
   final ContractModel contract;
@@ -568,7 +560,20 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
           ),
         ),
         const SizedBox(width: 16),
-        if (contract.status == ContractStatus.draft)
+        if (contract.status == ContractStatus.draft) ...[
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: () => _signContractInPerson(context, ref),
+              icon: const Icon(Icons.draw),
+              label: const Text('Sign in person'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.success,
+                foregroundColor: AppTheme.textOnDark,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
           Expanded(
             child: ElevatedButton.icon(
               onPressed: () => _sendContract(context, ref),
@@ -581,6 +586,7 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
               ),
             ),
           ),
+        ],
         if (contract.status == ContractStatus.sent) ...[
           Expanded(
             child: OutlinedButton.icon(
@@ -690,6 +696,9 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       case 'send':
         _sendContract(context, ref);
         break;
+      case 'sign_in_person':
+        _signContractInPerson(context, ref);
+        break;
       case 'resend':
         _resendContract(context, ref);
         break;
@@ -724,427 +733,40 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
   }
 
   Future<void> _sendContract(BuildContext context, WidgetRef ref) async {
-    // Get tenant email
-    String? tenantEmail;
-    try {
-      final tenant = await TenantService.getTenantById(contract.facilityId, contract.tenantId);
-      tenantEmail = tenant?.email;
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Could not load tenant email: $e');
-      }
-    }
-
-    if (tenantEmail == null || tenantEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Tenant email not found. Please add an email address for the tenant.'),
-          backgroundColor: AppTheme.warning,
-        ),
-      );
-      return;
-    }
-
-    // Show confirmation dialog
-    final shouldSend = await showDialog<bool>(
+    await ContractSendService.sendContractForSignature(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Send Contract for Signature'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('This will send the contract to the tenant for electronic signature.'),
-            const SizedBox(height: 16),
-            Text('Recipient: $tenantEmail'),
-            const SizedBox(height: 8),
-            const Text(
-              'The tenant will receive an email with a secure link to sign the contract.',
-              style: TextStyle(fontSize: 12, color: AppTheme.textTertiary),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Send'),
-          ),
-        ],
-      ),
+      contract: contract,
+      sentBy: ref.read(authStateProvider).value?.uid ?? '',
+      onComplete: () => ref.invalidate(contractsProvider(contract.facilityId)),
     );
-
-    if (shouldSend != true) return;
-
-    // Send contract and generate signing token
-    try {
-      await ContractService.sendContract(
-        facilityId: contract.facilityId,
-        contractId: contract.id,
-        sentBy: ref.read(authStateProvider).value?.uid ?? '',
-        tenantEmail: tenantEmail,
-      );
-
-      // Get the signing token (we'll need to fetch the contract again or store it)
-      final updatedContract = await ContractService.getContract(contract.facilityId, contract.id);
-      if (updatedContract == null) {
-        throw Exception('Could not retrieve contract after sending');
-      }
-
-      // Get signing token from Firestore
-      final contractDoc = await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(contract.facilityId)
-          .collection('contracts')
-          .doc(contract.id)
-          .get();
-      
-      final signingToken = contractDoc.data()?['signingToken'] as String?;
-      if (signingToken == null) {
-        throw Exception('Signing token not generated');
-      }
-
-      // Generate signing URL (in production, this would be a proper URL)
-      // For now, we'll construct a deep link or web URL
-      final signingUrl = _generateSigningUrl(signingToken);
-
-      // Send email with signing link
-      final emailResult = await EmailService.sendEmail(
-        to: tenantEmail,
-        subject: 'Contract Signature Required: ${contract.title}',
-        html: _generateSigningEmailHtml(contract, signingUrl),
-        text: _generateSigningEmailText(contract, signingUrl),
-        facilityId: contract.facilityId,
-      );
-
-      if (emailResult.success) {
-        // Show dialog with signing link for testing
-        showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Contract Sent Successfully!'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('The contract has been sent to the tenant.'),
-                    const SizedBox(height: 8),
-                    Text(
-                      'If the email doesn\'t arrive, check the spam/junk folder. You can also copy the signing link below and send it manually.',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                    ),
-                    const SizedBox(height: 16),
-                  const Text(
-                    'Signing Token (for testing):',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    signingToken,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      backgroundColor: AppTheme.textTertiary,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Test URL:',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    signingUrl,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            context.push('${AppRoute.contractSign}?token=$signingToken');
-                          },
-                          icon: const Icon(Icons.edit, size: 16),
-                          label: const Text('Open Signing Screen'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppTheme.primaryBlueDark,
-                            foregroundColor: AppTheme.textOnDark,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: signingUrl));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Signing link copied! Send it to the tenant if the email didn\'t arrive.'),
-                            backgroundColor: AppTheme.success,
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.copy, size: 16),
-                      label: const Text('Copy signing link (if email didn\'t arrive)'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Close'),
-                ),
-              ],
-            ),
-          );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Contract marked as sent, but email failed. ${EmailService.staffEmailFailureHint(emailResult)}',
-            ),
-            backgroundColor: recipientUnsubscribedEmailFailure(emailResult)
-                ? AppTheme.warning
-                : AppTheme.error,
-          ),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error sending contract: $e'),
-          backgroundColor: AppTheme.error,
-        ),
-      );
-    }
   }
 
   Future<void> _resendContract(BuildContext context, WidgetRef ref) async {
-    String? tenantEmail;
-    try {
-      final tenant = await TenantService.getTenantById(contract.facilityId, contract.tenantId);
-      tenantEmail = tenant?.email;
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Could not load tenant email: $e');
-      }
-    }
-
-    if (tenantEmail == null || tenantEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Tenant email not found. Please add an email address for the tenant.'),
-          backgroundColor: AppTheme.warning,
-        ),
-      );
-      return;
-    }
-
-    final shouldResend = await showDialog<bool>(
+    await ContractSendService.resendContractForSignature(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Resend Contract'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'This will send a new signing link to the tenant. The previous link will stop working.',
-            ),
-            const SizedBox(height: 16),
-            Text('Recipient: $tenantEmail'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Resend'),
-          ),
-        ],
-      ),
+      contract: contract,
+      onComplete: () => ref.invalidate(contractsProvider(contract.facilityId)),
     );
+  }
 
-    if (shouldResend != true) return;
-
-    try {
-      final signingToken = await ContractService.resendContract(
-        facilityId: contract.facilityId,
-        contractId: contract.id,
-      );
-
-      final signingUrl = _generateSigningUrl(signingToken);
-      final html = _generateSigningEmailHtml(contract, signingUrl);
-      final text = _generateSigningEmailText(contract, signingUrl);
-
-      // Retry once if first attempt fails (handles Cloud Function cold start)
-      EmailResult emailResult = await EmailService.sendEmail(
-        to: tenantEmail,
-        subject: 'Contract Signature Required (Resent): ${contract.title}',
-        html: html,
-        text: text,
-        facilityId: contract.facilityId,
-      );
-      if (!emailResult.success && context.mounted) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (context.mounted) {
-          emailResult = await EmailService.sendEmail(
-            to: tenantEmail,
-            subject: 'Contract Signature Required (Resent): ${contract.title}',
-            html: html,
-            text: text,
-            facilityId: contract.facilityId,
-          );
-        }
-      }
-
-      if (emailResult.success && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Contract resent successfully. The tenant will receive a new signing link.'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-      } else if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(EmailService.staffEmailFailureHint(emailResult)),
-            backgroundColor: recipientUnsubscribedEmailFailure(emailResult)
-                ? AppTheme.warning
-                : AppTheme.error,
-          ),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error resending contract: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
+  Future<void> _signContractInPerson(BuildContext context, WidgetRef ref) async {
+    final signed = await ContractSendService.signContractInPerson(
+      context: context,
+      contract: contract,
+      sentBy: ref.read(authStateProvider).value?.uid ?? '',
+    );
+    if (signed == true && context.mounted) {
+      ref.invalidate(contractsProvider(contract.facilityId));
     }
-  }
-
-  String _generateSigningUrl(String signingToken) {
-    // Must match AppRoute.contractSign (/contracts/sign). App uses hash routing (/#/) for web.
-    if (kIsWeb) {
-      final baseUrl = Uri.base.origin;
-      return '$baseUrl/#/contracts/sign?token=$signingToken';
-    } else {
-      return 'sfcapp://contracts/sign?token=$signingToken';
-    }
-  }
-
-  String _generateSigningEmailHtml(ContractModel contract, String signingUrl) {
-    return '''
-      <html>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #7B1FA2;">Contract Signature Required</h2>
-            <p>Dear Tenant,</p>
-            <p>You have been requested to sign the following contract:</p>
-            <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <h3 style="margin-top: 0;">${contract.title}</h3>
-              <p><strong>Type:</strong> ${contract.type.displayName}</p>
-              <p><strong>Description:</strong> ${contract.description}</p>
-            </div>
-            <p>Please click the button below to review and sign the contract electronically:</p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a clicktracking="off" href="$signingUrl" style="background-color: #7B1FA2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Sign Contract
-              </a>
-            </div>
-            <p style="font-size: 12px; color: #666;">
-              This link will expire in 30 days. If you have any questions, please contact your facility manager.
-            </p>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-            <p style="font-size: 11px; color: #999;">
-              This is an automated message. Please do not reply to this email.
-            </p>
-          </div>
-        </body>
-      </html>
-    ''';
-  }
-
-  String _generateSigningEmailText(ContractModel contract, String signingUrl) {
-    return '''
-Contract Signature Required
-
-Dear Tenant,
-
-You have been requested to sign the following contract:
-
-Title: ${contract.title}
-Type: ${contract.type.displayName}
-Description: ${contract.description}
-
-Please use the following link to review and sign the contract electronically:
-
-$signingUrl
-
-This link will expire in 30 days. If you have any questions, please contact your facility manager.
-
-This is an automated message. Please do not reply to this email.
-    ''';
   }
 
   Future<void> _signContract(BuildContext context, WidgetRef ref) async {
-    // Check if contract has a signing token
-    try {
-      final contractDoc = await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(contract.facilityId)
-          .collection('contracts')
-          .doc(contract.id)
-          .get();
-
-      final signingToken = contractDoc.data()?['signingToken'] as String?;
-      if (signingToken == null) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Contract must be sent first to generate a signing link. Please use "Send Contract" option.'),
-              backgroundColor: AppTheme.warning,
-            ),
-          );
-        }
-        return;
-      }
-
-      // Navigate to signing screen - pass contract so we skip Firestore lookup (works for managers)
-      if (context.mounted) {
-        context.push('${AppRoute.contractSign}?token=$signingToken', extra: contract);
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error accessing contract: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
+    final signed = await ContractSendService.openSigningScreenFromContract(
+      context,
+      contract,
+    );
+    if (signed == true && context.mounted) {
+      ref.invalidate(contractsProvider(contract.facilityId));
     }
   }
 

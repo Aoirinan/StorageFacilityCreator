@@ -82,7 +82,7 @@ export async function assertOnlineRentalNotOnDnrList(
       if (isDnrEntryExpired(row.expiresAt as admin.firestore.Timestamp | undefined)) continue;
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'Online move-in is not available for this contact information. Please contact the facility directly.',
+        'Online move-in is not available. Please contact the facility directly.',
       );
     }
   }
@@ -105,7 +105,7 @@ export async function assertOnlineRentalNotOnDnrList(
     if (globalEntryMatchesTenantSearch(entry, params.name, params.email, params.phone)) {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'Online move-in is not available for this contact information. Please contact the facility directly.',
+        'Online move-in is not available. Please contact the facility directly.',
       );
     }
   }

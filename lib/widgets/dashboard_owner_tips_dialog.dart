@@ -56,14 +56,14 @@ class _DashboardOwnerTipsDialogState extends State<DashboardOwnerTipsDialog> {
       title: 'Tenants and units',
       body:
           'Add tenants from Tenants, assign units from Units or the site map, and keep move-in dates current '
-          'so delinquency and billing stay accurate.',
+          'so Rent & payments past-due totals stay accurate.',
     ),
     _OwnerTip(
       icon: Icons.payments_outlined,
-      title: 'Payments and Billing',
+      title: 'Rent & payments',
       body:
-          'Record payments, invoices, and autopay from Payments and Billing. '
-          'Connect Stripe under billing settings when you are ready to take cards online.',
+          'Record transactions, collect autopay, and generate invoices from Rent & payments. '
+          'Connect Stripe under Settings → Billing & Payments when you are ready to take cards online.',
     ),
     _OwnerTip(
       icon: Icons.message_outlined,
@@ -74,9 +74,10 @@ class _DashboardOwnerTipsDialogState extends State<DashboardOwnerTipsDialog> {
     ),
     _OwnerTip(
       icon: Icons.warning_amber_outlined,
-      title: 'Delinquency and reports',
+      title: 'Rent & payments and reports',
       body:
-          'Use Delinquency for late balances and reminders, and open Reports for financial summaries. '
+          'Use Rent & payments → Past due for late balances and the Reminders tab for scheduled messages. '
+          'Open Reports for financial summaries. '
           'The sidebar groups everything by how you run day-to-day operations.',
     ),
   ];

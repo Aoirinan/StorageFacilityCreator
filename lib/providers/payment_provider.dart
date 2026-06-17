@@ -8,6 +8,58 @@ import '../services/payment_service.dart';
 import '../services/autopay_service.dart';
 import '../services/stripe_connect_service.dart';
 
+/// Hub section when [PaymentListScreen] is embedded in [RentPaymentsShellScreen].
+enum PaymentListSection { full, transactions, collect }
+
+/// Rent & payments hub top-level tab (0–4).
+enum RentPaymentsTab {
+  transactions,
+  collect,
+  pastDue,
+  invoices,
+  reminders,
+}
+
+extension RentPaymentsTabQuery on RentPaymentsTab {
+  static RentPaymentsTab fromQuery(String? tab) {
+    switch (tab) {
+      case 'collect':
+      case 'autopay':
+      case 'onetime':
+        return RentPaymentsTab.collect;
+      case 'past-due':
+        return RentPaymentsTab.pastDue;
+      case 'invoices':
+        return RentPaymentsTab.invoices;
+      case 'reminders':
+        return RentPaymentsTab.reminders;
+      default:
+        return RentPaymentsTab.transactions;
+    }
+  }
+
+  String get queryValue {
+    switch (this) {
+      case RentPaymentsTab.transactions:
+        return 'transactions';
+      case RentPaymentsTab.collect:
+        return 'collect';
+      case RentPaymentsTab.pastDue:
+        return 'past-due';
+      case RentPaymentsTab.invoices:
+        return 'invoices';
+      case RentPaymentsTab.reminders:
+        return 'reminders';
+    }
+  }
+
+  int get index => RentPaymentsTab.values.indexOf(this);
+}
+
+final rentPaymentsTabProvider = StateProvider<RentPaymentsTab>((ref) {
+  return RentPaymentsTab.transactions;
+});
+
 // Payments page: selected tab (0 = Transactions, 1 = Autopay, 2 = Take payment)
 final paymentsTabIndexProvider = StateProvider<int>((ref) => 0);
 

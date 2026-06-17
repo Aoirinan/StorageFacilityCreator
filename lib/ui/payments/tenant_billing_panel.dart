@@ -21,6 +21,7 @@ import '../../utils/print_util.dart';
 import '../../providers/tenant_provider.dart';
 import '../../providers/payment_provider.dart';
 import '../../router/app_route.dart';
+import '../../widgets/stripe_connect_requirements_checklist.dart';
 import 'stripe_embedded_payment_dialog.dart';
 
 /// Panel for tenant Stripe billing: Add Card, AutoPay, One-Time Payment, History
@@ -384,6 +385,14 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
                           "Payments aren't enabled yet for this facility.",
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
+                        if (_connectStatus!.status.currentlyDue.isNotEmpty ||
+                            _connectStatus!.status.pastDue.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          StripeConnectRequirementsChecklist(
+                            status: _connectStatus!.status,
+                            compact: true,
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         Wrap(
                           spacing: 8,

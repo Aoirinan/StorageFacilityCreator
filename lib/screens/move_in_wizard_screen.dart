@@ -11,7 +11,9 @@ import '../services/prorate_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../services/contract_service.dart';
+import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
+import '../providers/auth_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/unit_provider.dart';
 import '../models/facility_model.dart';
@@ -874,6 +876,31 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
     );
   }
 
+  Future<void> _openContractSigning() async {
+    final contract = _contract;
+    if (contract == null) return;
+
+    final sentBy = ref.read(authStateProvider).value?.uid ?? '';
+    final signed = await ContractSendService.signContractInPerson(
+      context: context,
+      contract: contract,
+      sentBy: sentBy,
+    );
+
+    if (!mounted) return;
+
+    if (signed == true) {
+      final updated = await ContractService.getContract(
+        widget.facilityId,
+        contract.id,
+      );
+      setState(() {
+        _contract = updated ?? contract;
+        _contractSigned = updated?.status == ContractStatus.signed;
+      });
+    }
+  }
+
   Step _buildStep3Contract() {
     return Step(
       title: const Text('Contract'),
@@ -889,31 +916,36 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         children: [
           if (_contract == null)
             ElevatedButton.icon(
-              onPressed: () async {
-                // Create contract
-                try {
-                  final contractId = await ContractService.createContract(
-                    facilityId: widget.facilityId,
-                    tenantId: _selectedTenant!.id,
-                    title: 'Storage Lease - ${_selectedUnit!.unitNumber}',
-                    description: 'Move-in contract for unit ${_selectedUnit!.unitNumber}',
-                    type: ContractType.lease,
-                  );
-                  final createdContract = await ContractService.getContract(widget.facilityId, contractId);
-                  setState(() {
-                    _contract = createdContract;
-                  });
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Error creating contract: $e'),
-                        backgroundColor: AppTheme.error,
-                      ),
-                    );
-                  }
-                }
-              },
+              onPressed: _selectedTenant == null || _selectedUnit == null
+                  ? null
+                  : () async {
+                      try {
+                        final created = await ContractService.createMoveInContract(
+                          facilityId: widget.facilityId,
+                          tenantId: _selectedTenant!.id,
+                          title:
+                              'Storage Lease - ${_selectedUnit!.unitNumber}',
+                          description:
+                              'Move-in contract for unit ${_selectedUnit!.unitNumber}',
+                          type: ContractType.lease,
+                        );
+                        if (!mounted) return;
+                        setState(() {
+                          _contract = created;
+                          _contractSigned =
+                              created?.status == ContractStatus.signed;
+                        });
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error creating contract: $e'),
+                              backgroundColor: AppTheme.error,
+                            ),
+                          );
+                        }
+                      }
+                    },
               icon: const Icon(Icons.description),
               label: const Text('Create Contract'),
             )
@@ -925,32 +957,24 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                 subtitle: Text('Status: ${_contract!.status.name}'),
                 trailing: _contractSigned
                     ? const Icon(Icons.check_circle, color: AppTheme.success)
-                    : IconButton(
-                        icon: const Icon(Icons.edit),
-                        onPressed: () async {
-                          // Navigate to contract signing
-                          final signed = await context.push<bool>(
-                            '/contracts/sign?contractId=${_contract!.id}',
-                          );
-                          if (signed == true) {
-                            setState(() {
-                              _contractSigned = true;
-                            });
-                          }
-                        },
-                      ),
+                    : null,
               ),
             ),
-            const SizedBox(height: 16),
-            CheckboxListTile(
-              title: const Text('Contract Signed'),
-              value: _contractSigned,
-              onChanged: (value) {
-                setState(() {
-                  _contractSigned = value ?? false;
-                });
-              },
-            ),
+            if (!_contractSigned) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _openContractSigning(),
+                  icon: const Icon(Icons.draw),
+                  label: const Text('Sign in person'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.success,
+                    foregroundColor: AppTheme.textOnDark,
+                  ),
+                ),
+              ),
+            ],
           ],
         ],
       ),

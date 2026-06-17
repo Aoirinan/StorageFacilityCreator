@@ -861,7 +861,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             '• You cannot refer yourself or your own company.\n'
             '• We may disqualify referrals that abuse the program or do not represent a good-faith customer.\n\n'
             'What referred operators get\n'
-            '• Their facility’s platform subscription checkout uses a longer trial before the first bill.\n\n'
+            '• Their facility’s platform subscription checkout uses the standard 30-day trial before the first bill.\n\n'
             'What you get\n'
             '• After their first paid invoice on that referred facility’s platform subscription, you receive '
             'one month at no charge on one of your own facility platform subscriptions (the one you pick above, '
@@ -912,7 +912,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
             ),
             const SizedBox(height: 10),
             Text(
-              'Referred facilities get 60 days on the platform before their first bill. '
+              'Referred operators use the standard 30-day platform trial. '
               'After their first paid month on that facility’s subscription, you get 1 month free '
               'on one of your own facility subscriptions. Up to 10 rewards per calendar year.',
               style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),

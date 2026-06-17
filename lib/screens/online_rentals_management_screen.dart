@@ -1124,6 +1124,7 @@ class _OnlineRentalsManagementScreenState
                 const Text(
                   'Choose which uploaded contract template is included when a renter completes online move-in. '
                   'Their signed file will contain your lease PDF followed by a signature certificate page. '
+                  'The same template is used for in-office move-ins in the staff move-in wizard. '
                   'Upload templates under Contracts → Contract templates.',
                   style: TextStyle(
                     fontSize: 12,

@@ -38,7 +38,7 @@ service cloud.firestore {
 
     function authEmailLower() {
       return request.auth != null && request.auth.token.email != null
-        ? request.auth.token.email
+        ? request.auth.token.email.lower()
         : null;
     }
 
@@ -47,7 +47,6 @@ service cloud.firestore {
       // Keep in sync with lib/services/superadmin_service.dart, storage.rules, and functions/src/index.ts
       return email != null && (
         email == 'russell_forsyth_1992@outlook.com' ||
-        email == 'russell_Forsyth_1992@outlook.com' ||
         email == 'russellforsyth09091992@gmail.com' ||
         email == 'kennethgriggs03@gmail.com'
       );
@@ -78,6 +77,7 @@ service cloud.firestore {
           'description',
           'createdAt',
           'updatedAt',
+          'createdBy',
           'failureCode',
           'failureMessage'
         ]) &&
@@ -93,11 +93,101 @@ service cloud.firestore {
         request.resource.data.status == 'succeeded' &&
         request.resource.data.description is string &&
         request.resource.data.description.size() <= 4000 &&
-        request.resource.data.createdAt is timestamp &&
-        request.resource.data.updatedAt is timestamp &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.updatedAt == request.time &&
+        request.resource.data.createdBy == request.auth.uid &&
         request.resource.data.failureCode == null &&
         request.resource.data.failureMessage == null;
     }
+
+    // Client-written facility payment row (see PaymentService.recordManualPayment / LateLogicService).
+  function facilityPaymentWriteForbiddenKeys() {
+    return [
+      'externalPaymentId',
+      'transactionId',
+      'quickbooksId',
+      'quickbooksSyncStatus',
+      'stripePaymentIntentId',
+      'stripeChargeId',
+      'type',
+      'amountCents',
+    ];
+  }
+
+  function isManualCompletedFacilityPaymentCreate(facilityId) {
+    return request.resource.data.keys().hasAll([
+        'tenantId',
+        'facilityId',
+        'contractId',
+        'amount',
+        'status',
+        'method',
+        'paidAt',
+        'paidDate',
+        'dueDate',
+        'createdAt',
+        'updatedAt',
+        'createdBy',
+        'isActive',
+      ]) &&
+      !request.resource.data.keys().hasAny(facilityPaymentWriteForbiddenKeys()) &&
+      request.resource.data.keys().size() >= 13 &&
+      request.resource.data.keys().size() <= 16 &&
+      request.resource.data.facilityId == facilityId &&
+      request.resource.data.tenantId is string &&
+      request.resource.data.contractId is string &&
+      request.resource.data.amount is number &&
+      request.resource.data.amount >= 0.01 &&
+      request.resource.data.amount <= 10000000 &&
+      request.resource.data.status == 'completed' &&
+      request.resource.data.method is string &&
+      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe)$') &&
+      request.resource.data.paidAt == request.time &&
+      request.resource.data.paidDate == request.time &&
+      request.resource.data.dueDate == request.time &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      request.resource.data.createdBy == request.auth.uid &&
+      request.resource.data.isActive == true &&
+      (!('tenantName' in request.resource.data) || request.resource.data.tenantName is string) &&
+      (!('unitNumber' in request.resource.data) || request.resource.data.unitNumber is string) &&
+      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000));
+  }
+
+  function isLateFeeFacilityPaymentCreate(facilityId) {
+    return request.resource.data.keys().hasOnly([
+        'tenantId',
+        'facilityId',
+        'contractId',
+        'amount',
+        'status',
+        'method',
+        'dueDate',
+        'notes',
+        'createdAt',
+        'updatedAt',
+        'createdBy'
+      ]) &&
+      request.resource.data.facilityId == facilityId &&
+      request.resource.data.tenantId is string &&
+      request.resource.data.contractId is string &&
+      request.resource.data.amount is number &&
+      request.resource.data.amount >= 0.01 &&
+      request.resource.data.amount <= 10000000 &&
+      request.resource.data.status == 'pending' &&
+      request.resource.data.method == 'cash' &&
+      request.resource.data.dueDate == request.time &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      request.resource.data.createdBy == request.auth.uid &&
+      request.resource.data.notes is string &&
+      request.resource.data.notes.size() <= 4000;
+  }
+
+  function isClientFacilityPaymentCreate(facilityId) {
+    return isManualCompletedFacilityPaymentCreate(facilityId) ||
+      isLateFeeFacilityPaymentCreate(facilityId);
+  }
 
     function inviteDocPath(facilityId, inviteId) {
       return /databases/$(database)/documents/facilities/$(facilityId)/invites/$(inviteId);
@@ -468,7 +558,7 @@ service cloud.firestore {
       
       match /payments/{paymentId} {
         allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
-        allow create: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow create: if isSuperAdmin() || (isFacilityStaff(facilityId) && isClientFacilityPaymentCreate(facilityId));
         allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
 
@@ -1164,6 +1254,16 @@ service cloud.firestore {
     // DNR entries are now facility-scoped: facilities/{facilityId}/dnr/{dnrId}
     // See facility-scoped DNR rules below
     
+    // Super-admin collection group queries (Platform Control → AI logs / Message logs tabs).
+    // Nested facility rules are not enough for collectionGroup() list queries; use path=**.
+    match /{path=**}/messageLogs/{messageLogId} {
+      allow read: if isSuperAdmin();
+    }
+
+    match /{path=**}/aiChatAuditLogs/{logId} {
+      allow read: if isSuperAdmin();
+    }
+
     // Collection group query for DNR entries across all facilities
     // Business requirement: All facilities should see DNR entries from other facilities
     // This allows cross-facility DNR visibility for all authenticated users with subscriptions

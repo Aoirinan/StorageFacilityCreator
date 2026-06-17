@@ -32,6 +32,7 @@ registerHostingConfigProvider({
 });
 
 export * from './superAdminCallables';
+export { superAdminPurgePlatformData } from './superAdminPlatformPurge';
 export { lookupUserByEmail, runPhase2Migrations } from './lookupMigrations';
 export {
   superAdminGetHostingCustomDomainStatus,

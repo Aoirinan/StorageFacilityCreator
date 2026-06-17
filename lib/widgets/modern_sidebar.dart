@@ -21,7 +21,7 @@ String _sidebarVersionLabel(PackageInfo p) {
   return 'v$version (Build $build)';
 }
 
-/// Modern sidebar navigation inspired by Storable's design
+/// Collapsible sidebar navigation for the facility operations dashboard
 class ModernSidebar extends StatelessWidget {
   final String currentRoute;
   final Function(String) onNavigate;
@@ -42,13 +42,19 @@ class ModernSidebar extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     // Enhanced route matching: exact match or starts with, and handle query parameters.
-    // Reminder sub-routes are treated as part of Delinquency so the sidebar stays highlighted.
+    // Rent & payments hub: highlight for payments and legacy redirect paths.
     final routeWithoutQuery = currentRoute.split('?').first;
+    final isRentPaymentsActive =
+        routeWithoutQuery == '/payments' ||
+        routeWithoutQuery.startsWith('/payments/') ||
+        routeWithoutQuery == '/delinquency' ||
+        routeWithoutQuery == '/billing' ||
+        routeWithoutQuery == '/reminders' ||
+        routeWithoutQuery.startsWith('/reminders/') ||
+        routeWithoutQuery == '/invoices';
     final isActive = (String route) {
-      if (route == '/delinquency' &&
-          (routeWithoutQuery == '/reminders' ||
-              routeWithoutQuery.startsWith('/reminders/'))) {
-        return true;
+      if (route == '/payments') {
+        return isRentPaymentsActive;
       }
       return routeWithoutQuery == route ||
           routeWithoutQuery.startsWith('$route/');
@@ -148,7 +154,7 @@ class ModernSidebar extends StatelessWidget {
                 _SidebarItem(
                   icon: Icons.payments_outlined,
                   activeIcon: Icons.payments,
-                  label: 'Payments',
+                  label: 'Rent & payments',
                   route: '/payments',
                   isActive: isActive('/payments'),
                   isCollapsed: isCollapsed,
@@ -165,22 +171,13 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate(AppRoute.retail),
                 ),
                 _SidebarItem(
-                  icon: Icons.warning_amber_outlined,
-                  activeIcon: Icons.warning_amber,
-                  label: 'Delinquency',
-                  route: '/delinquency',
-                  isActive: isActive('/delinquency'),
+                  icon: Icons.block_outlined,
+                  activeIcon: Icons.block,
+                  label: 'Do Not Rent',
+                  route: '/dnr',
+                  isActive: isActive('/dnr'),
                   isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/delinquency'),
-                ),
-                _SidebarItem(
-                  icon: Icons.receipt_long_outlined,
-                  activeIcon: Icons.receipt,
-                  label: 'Billing',
-                  route: '/billing',
-                  isActive: isActive('/billing'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/billing'),
+                  onTap: () => onNavigate('/dnr'),
                 ),
                 _SidebarItem(
                   icon: Icons.calendar_month_outlined,

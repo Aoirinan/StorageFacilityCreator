@@ -730,8 +730,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
     return facilitiesAsync.when(
       data: (facilities) {
         final hasFacility = facilities.isNotEmpty;
-        final stripeComplete =
-            facilities.any((f) => f.stripeConnectOnboardingComplete);
+        final facilitySubscribed = facilities.any((f) => f.hasActivePlatformSubscription);
+        final stripeComplete = facilities.any((f) => f.canAcceptTenantPayments);
 
         final firstFacilityId =
             facilities.isNotEmpty ? facilities.first.id : null;
@@ -741,6 +741,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
             hasFacility: hasFacility,
             totalUnits: stats.totalUnits,
             totalTenants: stats.totalTenants,
+            facilitySubscribed: facilitySubscribed,
             stripeComplete: stripeComplete,
             hasFacilities: hasFacility,
             firstFacilityId: firstFacilityId,
@@ -751,6 +752,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
             hasFacility: hasFacility,
             totalUnits: 0,
             totalTenants: 0,
+            facilitySubscribed: facilitySubscribed,
             stripeComplete: stripeComplete,
             hasFacilities: hasFacility,
             firstFacilityId: firstFacilityId,
@@ -763,6 +765,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
         hasFacility: false,
         totalUnits: 0,
         totalTenants: 0,
+        facilitySubscribed: false,
         stripeComplete: false,
         hasFacilities: false,
         firstFacilityId: null,
@@ -775,6 +778,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
     required bool hasFacility,
     required int totalUnits,
     required int totalTenants,
+    required bool facilitySubscribed,
     required bool stripeComplete,
     required bool hasFacilities,
     required String? firstFacilityId,
@@ -830,14 +834,22 @@ class _SettingsOnboardingTab extends ConsumerWidget {
         const SizedBox(height: 12),
         _OnboardingStep(
           number: 4,
-          title: 'Connect Stripe for payments',
-          subtitle: 'Receive rent and process payments securely.',
+          title: 'Subscribe your facility (\$75/mo)',
+          subtitle: 'Unlock the app for each facility with its own card (30-day trial).',
+          done: facilitySubscribed,
+          onTap: () => context.go('${AppRoute.subscription}?tab=0'),
+        ),
+        const SizedBox(height: 12),
+        _OnboardingStep(
+          number: 5,
+          title: 'Connect Stripe for tenant payments',
+          subtitle: 'Receive rent and autopay on your connected account (0% platform fee).',
           done: stripeComplete,
           onTap: () => context.go('${AppRoute.subscription}?tab=processing'),
         ),
         const SizedBox(height: 12),
         _OnboardingStep(
-          number: 5,
+          number: 6,
           title: 'Set up notifications (optional)',
           subtitle: 'Configure reminders and automated messages.',
           done: false,

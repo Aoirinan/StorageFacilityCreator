@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -521,7 +522,8 @@ class _AuthUserRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isSuperAdmin = SuperAdminService.isEmailSuperAdmin(user.email);
-    final canManage = !isSuperAdmin;
+    final isSelf = user.uid == FirebaseAuth.instance.currentUser?.uid;
+    final canManage = !isSelf;
 
     return Container(
       decoration: BoxDecoration(
@@ -806,6 +808,8 @@ class _UserRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isSuperAdmin = SuperAdminService.isEmailSuperAdmin(user.email);
+    final isSelf = user.uid == FirebaseAuth.instance.currentUser?.uid;
+    final canManage = !isSelf;
     final fmt = DateFormat('MMM d, yyyy');
     final lastLogin = user.lastLoginAt != null
         ? fmt.format(user.lastLoginAt!)
@@ -813,7 +817,6 @@ class _UserRow extends StatelessWidget {
     final joined = user.createdAt != null
         ? fmt.format(user.createdAt!)
         : '—';
-    final canManage = !isSuperAdmin;
 
     return Container(
       decoration: BoxDecoration(

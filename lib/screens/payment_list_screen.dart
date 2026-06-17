@@ -41,7 +41,12 @@ import '../utils/stripe_redirect_params.dart';
 import '../ui/payments/tenant_billing_panel.dart';
 
 class PaymentListScreen extends ConsumerStatefulWidget {
-  const PaymentListScreen({super.key});
+  final PaymentListSection hubSection;
+
+  const PaymentListScreen({
+    super.key,
+    this.hubSection = PaymentListSection.full,
+  });
 
   @override
   ConsumerState<PaymentListScreen> createState() => _PaymentListScreenState();
@@ -296,6 +301,46 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             }
             
             final tabIndex = ref.watch(paymentsTabIndexProvider);
+            final section = widget.hubSection;
+
+            if (section == PaymentListSection.transactions) {
+              return _buildTransactionsTab();
+            }
+
+            if (section == PaymentListSection.collect) {
+              final collectSubIndex = tabIndex == 2 ? 1 : 0;
+              return Column(
+                children: [
+                  Container(
+                    color: AppTheme.surface,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Row(
+                      children: [
+                        _TabButton(
+                          label: 'Autopay',
+                          selected: collectSubIndex == 0,
+                          onTap: () =>
+                              ref.read(paymentsTabIndexProvider.notifier).state = 1,
+                        ),
+                        const SizedBox(width: 8),
+                        _TabButton(
+                          label: 'Take payment',
+                          selected: collectSubIndex == 1,
+                          onTap: () =>
+                              ref.read(paymentsTabIndexProvider.notifier).state = 2,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: collectSubIndex == 1
+                        ? _buildOneTimePaymentTab()
+                        : _buildAutopayTab(),
+                  ),
+                ],
+              );
+            }
+
             return Column(
               children: [
                 Container(
@@ -1472,7 +1517,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                 return u.isNotEmpty ? '${t.name} · Unit $u' : t.name;
               }
               if (payment.tenantId.isEmpty) return null;
-              return 'Tenant ID: ${payment.tenantId}';
+              return 'Unknown tenant';
             }
 
             // Apply filters
@@ -1582,11 +1627,23 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             color: AppTheme.textOnDark,
           ),
         ),
-        title: Text(
-          payment.formattedAmount,
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
+        title: Row(
+          children: [
+            Text(
+              payment.formattedAmount,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              payment.statusDisplayName,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: _getStatusColor(payment.status),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1600,7 +1657,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
               ),
               const SizedBox(height: 4),
             ],
-            Text('Due: ${_formatDate(payment.dueDate)}'),
+            Text('${payment.displayDateLabel}: ${_formatDate(payment.displayDate)}'),
             if (payment.isOverdue)
               Text(
                 'Overdue by ${payment.daysOverdue} days',

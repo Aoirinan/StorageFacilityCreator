@@ -375,7 +375,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                     const SizedBox(height: 6),
                     Row(
                       children: [
-                        Expanded(child: _buildStatCard('Overdue', overdue.toString(), Icons.warning, AppTheme.error)),
+                        Expanded(child: _buildStatCard('Overdue Invoices', overdue.toString(), Icons.warning, AppTheme.error)),
                         const SizedBox(width: 6),
                         Expanded(child: _buildStatCard('Unpaid', '\$${unpaidAmount.toStringAsFixed(2)}', Icons.attach_money, AppTheme.warning)),
                       ],
@@ -388,7 +388,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                     const SizedBox(width: 16),
                     _buildStatCard('Paid', paid.toString(), Icons.check_circle, AppTheme.success),
                     const SizedBox(width: 16),
-                    _buildStatCard('Overdue', overdue.toString(), Icons.warning, AppTheme.error),
+                    _buildStatCard('Overdue Invoices', overdue.toString(), Icons.warning, AppTheme.error),
                     const SizedBox(width: 16),
                     _buildStatCard('Unpaid Amount', '\$${unpaidAmount.toStringAsFixed(2)}', Icons.attach_money, AppTheme.warning),
                   ],
@@ -489,6 +489,15 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                         : 'No invoices yet',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: AppTheme.textSecondary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Rent delinquency is tracked on Delinquency (paid-through dates). '
+                    'This page is for formal invoices generated from tenant ledgers.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: AppTheme.textTertiary,
                     ),
                     textAlign: TextAlign.center,
                   ),

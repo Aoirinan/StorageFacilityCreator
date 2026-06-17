@@ -104,7 +104,7 @@
 
 ### What to avoid
 - “#1” or unverifiable superlatives.
-- Competitor names or comparison tables naming others.
+- Named competitor comparison tables or product-specific superiority claims on public pages (use neutral “typical legacy pattern” framing on `/compare` instead).
 - Changing legal meaning in Privacy/Terms.
 
 ---

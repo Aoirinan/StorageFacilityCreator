@@ -49,42 +49,64 @@ function countCanonicalOccupied(
 }
 
 /**
- * Calculate days late for a tenant
+ * Calculate days late for a tenant (mirrors Flutter LateLogicService).
  */
-function calculateDaysLate(tenant: TenantData, now: Date = new Date()): number {
+function isTenantLate(
+  tenant: TenantData,
+  gracePeriodDays: number = 3,
+  now: Date = new Date(),
+): boolean {
   const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const gracePeriodDays = 3;
   const paidThrough = tenant.paidThrough?.toDate();
 
-  // If tenant has never paid
   if (!paidThrough) {
-    // If tenant was created recently (within 30 days), not late yet
     const daysSinceCreation = Math.floor(
       (now.getTime() - tenant.createdAt.toDate().getTime()) / (1000 * 60 * 60 * 24),
     );
     if (daysSinceCreation <= 30) {
-      return 0;
+      return false;
     }
-    // Tenant created more than 30 days ago with no payment - they are late
-    return Math.floor(
+    const created = tenant.createdAt.toDate();
+    if (created.getFullYear() === now.getFullYear() && created.getMonth() === now.getMonth()) {
+      return false;
+    }
+    return true;
+  }
+
+  const graceBoundary = new Date(
+    startOfCurrentMonth.getTime() - gracePeriodDays * 24 * 60 * 60 * 1000,
+  );
+  return paidThrough < graceBoundary;
+}
+
+function calculateDaysLate(
+  tenant: TenantData,
+  gracePeriodDays: number = 3,
+  now: Date = new Date(),
+): number {
+  if (!isTenantLate(tenant, gracePeriodDays, now)) {
+    return 0;
+  }
+
+  const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const paidThrough = tenant.paidThrough?.toDate();
+
+  if (!paidThrough) {
+    const daysSinceCreation = Math.floor(
       (now.getTime() - tenant.createdAt.toDate().getTime()) / (1000 * 60 * 60 * 24),
     );
+    return daysSinceCreation > 30 ? daysSinceCreation - 30 : 1;
   }
 
-  // Tenant has paid - check if payment is still valid
-  const graceBoundary = new Date(startOfCurrentMonth.getTime() - gracePeriodDays * 24 * 60 * 60 * 1000);
-  if (paidThrough < graceBoundary) {
-    const difference = Math.floor(
-      (startOfCurrentMonth.getTime() - paidThrough.getTime()) / (1000 * 60 * 60 * 24) - gracePeriodDays,
-    );
-    return difference < 0 ? 0 : difference;
-  }
-
-  return 0;
+  const difference = Math.floor(
+    (startOfCurrentMonth.getTime() - paidThrough.getTime()) / (1000 * 60 * 60 * 24) - gracePeriodDays,
+  );
+  return difference < 0 ? 0 : difference;
 }
 
 export const facilityStatsTestUtils = {
   tenantAutopayOn,
+  isTenantLate,
   calculateDaysLate,
   countCanonicalOccupied,
 };
@@ -147,6 +169,16 @@ async function persistFacilityStats(facilityId: string, stats: Record<string, un
  */
 async function computeFacilityStats(facilityId: string): Promise<Record<string, any>> {
   try {
+    const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
+    const billingSettings = facilityDoc.data()?.billingSettings as
+      | { gracePeriodDays?: number | string }
+      | undefined;
+    const rawGrace = billingSettings?.gracePeriodDays;
+    const gracePeriodDays =
+      typeof rawGrace === 'number'
+        ? rawGrace
+        : parseInt(String(rawGrace ?? ''), 10) || 3;
+
     const unitsSnapshot = await getFirestore()
       .collection('facilities')
       .doc(facilityId)
@@ -193,7 +225,7 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
         autopayMonthlyRevenue += rate;
       }
 
-      const daysLate = calculateDaysLate(tenant);
+      const daysLate = calculateDaysLate(tenant, gracePeriodDays);
       if (daysLate >= 30) {
         tenantsSeverelyOverdue++;
       } else if (daysLate >= 10) {

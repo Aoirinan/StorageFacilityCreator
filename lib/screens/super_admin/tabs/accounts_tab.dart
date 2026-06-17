@@ -6,7 +6,6 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/services/super_admin_user_service.dart';
-import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class AccountsTab extends ConsumerStatefulWidget {
@@ -211,7 +210,19 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
 
   Future<void> _deleteFacilityCreatorAccountPermanently() async {
     final a = widget.account;
-    if (SuperAdminService.isEmailSuperAdmin(a.ownerEmail)) return;
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid != null && currentUid == a.ownerUid) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'You cannot delete your own account while signed in as that owner.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
 
     final confirmationEmail = await showDialog<String>(
       context: context,
@@ -555,7 +566,6 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     final isTrialing = a.subscriptionStatus == SubscriptionStatus.trialing;
     final isPending = a.subscriptionStatus == SubscriptionStatus.pendingApproval;
     final isSuspended = a.suspended;
-    final ownerIsSuperAdmin = SuperAdminService.isEmailSuperAdmin(a.ownerEmail);
 
     return Container(
       decoration: BoxDecoration(
@@ -589,14 +599,13 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!ownerIsSuperAdmin)
-              IconButton(
-                icon: Icon(Icons.delete_forever_outlined,
-                    color: AppTheme.error, size: 22),
-                tooltip:
-                    'Delete facility creator account (Firestore + facilities + owner login)',
-                onPressed: _isBusy ? null : _deleteFacilityCreatorAccountPermanently,
-              ),
+            IconButton(
+              icon: Icon(Icons.delete_forever_outlined,
+                  color: AppTheme.error, size: 22),
+              tooltip:
+                  'Delete facility creator account (Firestore + facilities + owner login)',
+              onPressed: _isBusy ? null : _deleteFacilityCreatorAccountPermanently,
+            ),
             Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -761,17 +770,15 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     label: const Text('Enable Owner Login'),
                     onPressed: _enableOwnerLogin,
                   ),
-                if (!ownerIsSuperAdmin) ...[
-                  const SizedBox(width: 8),
-                  TextButton.icon(
-                    icon: Icon(Icons.delete_forever, size: 14, color: AppTheme.error),
-                    label: Text(
-                      'Delete account & data',
-                      style: TextStyle(color: AppTheme.error),
-                    ),
-                    onPressed: _deleteFacilityCreatorAccountPermanently,
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  icon: Icon(Icons.delete_forever, size: 14, color: AppTheme.error),
+                  label: Text(
+                    'Delete account & data',
+                    style: TextStyle(color: AppTheme.error),
                   ),
-                ],
+                  onPressed: _deleteFacilityCreatorAccountPermanently,
+                ),
               ],
             ),
         ],

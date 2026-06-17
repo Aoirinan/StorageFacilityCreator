@@ -225,6 +225,24 @@ class PaymentModel {
       DateTime.now().isAfter(dueDate);
   
   bool get isPaid => status == PaymentStatus.completed || status == PaymentStatus.paid;
+
+  /// Stripe/Square/card reference when present; null for cash/check with no external id.
+  String? get effectiveTransactionReference {
+    final txn = transactionId?.trim();
+    if (txn != null && txn.isNotEmpty) return txn;
+    final ext = externalPaymentId?.trim();
+    if (ext != null && ext.isNotEmpty) return ext;
+    return null;
+  }
+
+  /// Primary date label for list/detail display.
+  String get displayDateLabel => isPaid ? 'Paid' : 'Due';
+
+  /// Primary date for list/detail display.
+  DateTime get displayDate {
+    if (isPaid && paidDate != null) return paidDate!;
+    return dueDate;
+  }
   
   int get daysOverdue {
     if (!isOverdue) return 0;

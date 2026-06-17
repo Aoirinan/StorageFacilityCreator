@@ -459,15 +459,19 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
       );
 
       if (mounted) {
-        setState(() => _isSigning = false); // Stop spinner (popUntil may not work when arrived from email)
+        setState(() => _isSigning = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Contract signed successfully!'),
             backgroundColor: AppTheme.success,
           ),
         );
-        // Navigate away - context.go works when arrived from email (popUntil often doesn't)
-        context.go(AppRoute.landing);
+        // In-app flows (move-in wizard, staff "Sign in person") pass [contract] and expect pop.
+        if (widget.contract != null && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop(true);
+        } else {
+          context.go(AppRoute.landing);
+        }
       }
     } catch (e) {
       setState(() {

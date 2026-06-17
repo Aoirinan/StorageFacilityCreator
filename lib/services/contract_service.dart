@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -375,8 +376,23 @@ class ContractService {
     }
   }
 
+  /// Returns the generated signing token for immediate use (avoids read-after-write race).
+  static Future<String?> getSigningToken({
+    required String facilityId,
+    required String contractId,
+  }) async {
+    final doc = await _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('contracts')
+        .doc(contractId)
+        .get();
+    if (!doc.exists) return null;
+    return doc.data()?['signingToken'] as String?;
+  }
+
   // Send contract for signature
-  static Future<void> sendContract({
+  static Future<String> sendContract({
     required String facilityId,
     required String contractId,
     required String sentBy,
@@ -441,6 +457,7 @@ class ContractService {
         print('✅ Contract sent successfully: $contractId');
         print('📧 Signing token generated: $signingToken');
       }
+      return signingToken;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error sending contract: $e');
@@ -449,11 +466,72 @@ class ContractService {
     }
   }
 
+  /// Creates a move-in contract using the facility's online move-in template when configured.
+  static Future<ContractModel?> createMoveInContract({
+    required String facilityId,
+    required String tenantId,
+    required String title,
+    required String description,
+    ContractType type = ContractType.lease,
+  }) async {
+    String? templateId;
+    String? fileUrl;
+    Map<String, dynamic>? customFields;
+
+    try {
+      final settingsDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('settings')
+          .doc('public')
+          .get();
+      templateId = settingsDoc.data()?['onlineMoveInContractTemplateId'] as String?;
+    } catch (_) {
+      // Non-blocking: fall back to bare contract
+    }
+
+    if (templateId != null && templateId.trim().isNotEmpty) {
+      final template = await getContractTemplate(
+        facilityId: facilityId,
+        templateId: templateId,
+      );
+      if (template != null && (template.fileUrl ?? '').trim().isNotEmpty) {
+        fileUrl = template.fileUrl;
+        customFields = {
+          'signers': template.signers
+              .map((s) => {
+                    'id': s.id,
+                    'label': s.label,
+                    'role': s.role,
+                    'isTenantSigner': s.isTenantSigner,
+                    'isFacilitySigner': s.isFacilitySigner,
+                  })
+              .toList(),
+          'signaturePlaceholders':
+              template.signaturePlaceholders.map((f) => f.toMap()).toList(),
+          'templateSigners': template.signers.map((s) => s.toMap()).toList(),
+        };
+      }
+    }
+
+    final contractId = await createContract(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      title: title,
+      description: description,
+      type: type,
+      templateId: templateId,
+      fileUrl: fileUrl,
+      customFields: customFields,
+    );
+    return getContract(facilityId, contractId);
+  }
+
   // Generate a secure signing token for contract access
   static String _generateSigningToken(String contractId, String facilityId) {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final random = DateTime.now().microsecondsSinceEpoch;
-    return '${contractId}_${facilityId}_$timestamp$random';
+    final bytes = List<int>.generate(24, (_) => Random.secure().nextInt(256));
+    final randomPart = base64Url.encode(bytes).replaceAll('=', '');
+    return '${contractId}_${facilityId}_$randomPart';
   }
 
   /// Resend contract for signature (regenerates signing token and extends expiry).

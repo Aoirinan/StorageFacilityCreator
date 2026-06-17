@@ -14,6 +14,7 @@ import '../providers/auth_provider.dart';
 import '../services/facility_service.dart';
 import '../services/tenant_service.dart';
 import '../services/contract_service.dart';
+import '../services/contract_send_service.dart';
 import '../services/dnr_service.dart';
 import '../services/audit_service.dart';
 import '../services/compliance_service.dart';
@@ -1705,7 +1706,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           });
           await Future.microtask(() {});
           if (!mounted) return;
-          _showSuccessDialog();
+          _showPostCreateActionsDialog(contractId);
         }
         return;
       } catch (e) {
@@ -1886,7 +1887,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
               _uploadProgress = null;
               _isLoading = false;
             });
-            _showSuccessDialog();
+            _showPostCreateActionsDialog(contractId);
           }
           return;
         }
@@ -1969,7 +1970,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         throw Exception('User not authenticated');
       }
 
-      await ref.read(contractOperationsProvider.notifier).createContract(
+      final contractId = await ref.read(contractOperationsProvider.notifier).createContract(
         facilityId: _selectedFacilityId!,
         tenantId: _selectedTenantId!,
         title: _titleController.text.trim(),
@@ -2005,7 +2006,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       }
 
       if (mounted) {
-        _showSuccessDialog();
+        await _showPostCreateActionsDialog(contractId);
       }
     } catch (e) {
       if (mounted) {
@@ -2396,42 +2397,77 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     return null;
   }
   
-  void _showSuccessDialog() {
+  Future<void> _showPostCreateActionsDialog(String contractId) async {
     setState(() {
       _isLoading = false;
     });
-    
-    showDialog(
+
+    if (_selectedFacilityId == null) return;
+
+    final contract = await ContractService.getContract(
+      _selectedFacilityId!,
+      contractId,
+    );
+    if (contract == null || !mounted) return;
+
+    final action = await showDialog<String>(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.check_circle, color: AppTheme.success, size: 28),
-              SizedBox(width: 8),
-              Text('Success!'),
-            ],
-          ),
-          content: Text('Your contract "${_titleController.text}" has been created successfully!'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop(); // Close dialog
-                if (widget.facilityId != null && widget.facilityId!.isNotEmpty) {
-                  ref.invalidate(contractsProvider(widget.facilityId!));
-                }
-                // Explicit navigation avoids blank screen from Navigator.pop stack issues
-                final uri = widget.facilityId != null && widget.facilityId!.isNotEmpty
-                    ? '${AppRoute.contracts}?facilityId=${widget.facilityId}'
-                    : AppRoute.contracts;
-                context.go(uri);
-              },
-              child: const Text('Continue'),
-            ),
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle, color: AppTheme.success, size: 28),
+            SizedBox(width: 8),
+            Text('Contract created'),
           ],
-        );
-      },
+        ),
+        content: Text(
+          '"${contract.title}" is ready. What would you like to do next?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('draft'),
+            child: const Text('Save as draft'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('in_person'),
+            child: const Text('Sign in person'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop('send'),
+            child: const Text('Send for signature'),
+          ),
+        ],
+      ),
     );
+
+    if (!mounted) return;
+
+    final sentBy = ref.read(authStateProvider).value?.uid ?? '';
+    if (action == 'send') {
+      await ContractSendService.sendContractForSignature(
+        context: context,
+        contract: contract,
+        sentBy: sentBy,
+      );
+    } else if (action == 'in_person') {
+      await ContractSendService.signContractInPerson(
+        context: context,
+        contract: contract,
+        sentBy: sentBy,
+      );
+    }
+
+    _navigateToContractsList();
+  }
+
+  void _navigateToContractsList() {
+    if (widget.facilityId != null && widget.facilityId!.isNotEmpty) {
+      ref.invalidate(contractsProvider(widget.facilityId!));
+    }
+    final uri = widget.facilityId != null && widget.facilityId!.isNotEmpty
+        ? '${AppRoute.contracts}?facilityId=${widget.facilityId}'
+        : AppRoute.contracts;
+    context.go(uri);
   }
 }

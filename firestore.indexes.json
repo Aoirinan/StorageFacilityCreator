@@ -275,21 +275,22 @@
         { "fieldPath": "isPrivate", "order": "ASCENDING" },
         { "fieldPath": "participantUids", "arrayConfig": "CONTAINS" }
       ]
-    },
+    }
+  ],
+  "fieldOverrides": [
     {
       "collectionGroup": "aiChatAuditLogs",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "order": "DESCENDING", "queryScope": "COLLECTION_GROUP" }
       ]
     },
     {
       "collectionGroup": "messageLogs",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "order": "DESCENDING", "queryScope": "COLLECTION_GROUP" }
       ]
     }
-  ],
-  "fieldOverrides": []
+  ]
 }

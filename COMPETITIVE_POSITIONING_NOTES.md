@@ -74,7 +74,7 @@ Date: 2026-03-14
 - Reporting visibility
 - Security/compliance transparency
 - Stripe/Twilio/SendGrid/QuickBooks integrations
-- Comparison positioning via `/why-sfc` and `/compare` using neutral criteria language
+- Comparison positioning via `/why-sfc` and `/compare` using neutral criteria language (no named competitor claims on public pages).
 
 ### Market carefully (qualified language)
 
@@ -92,5 +92,6 @@ Date: 2026-03-14
 ## Copy Guardrails Applied
 
 - Keep competitor comparisons broad and neutral (no unsupported product-specific competitor claims).
+- Public `/compare` uses SFC vs. "typical legacy pattern" columns — no named vendor superiority tables.
 - Prefer "supports", "available", and "confirm in implementation review" wording where capability depth can vary by configuration.
 - Do not claim certifications, legal guarantees, or integration breadth beyond code-verified providers and workflows.

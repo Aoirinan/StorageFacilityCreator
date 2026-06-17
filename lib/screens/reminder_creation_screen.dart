@@ -526,7 +526,7 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
         );
         // Always go to reminders list so we never land on a blank screen
         // (e.g. when user arrived via calendar's "Add to date" which uses context.go)
-        context.go(AppRoute.reminders);
+        context.go(AppRoute.paymentsReminders);
       }
     } catch (e) {
       if (mounted) {

@@ -292,8 +292,8 @@ class _AIAssistantScreenState extends ConsumerState<AIAssistantScreen> {
           '${facilityContext != null ? "Context: $facilityContext" : ""}';
     } else if (lowerQuestion.contains('payment') || lowerQuestion.contains('billing') || lowerQuestion.contains('overdue')) {
       return 'Payment management:\n\n'
-          '• Check the Past Due page for overdue payments\n'
-          '• Send reminders directly from the Past Due screen\n'
+          '• Check Rent & payments → Past due for tenants behind on rent\n'
+          '• Send reminders from the Reminders tab\n'
           '• View all payments in the Billing section\n'
           '• Set up automatic late fees if needed\n\n'
           '${facilityContext != null ? "Context: $facilityContext" : ""}';

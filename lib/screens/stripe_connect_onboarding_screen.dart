@@ -9,10 +9,13 @@ import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/payment_provider.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
+import 'package:sfcapp/models/stripe_connect_status_model.dart';
+import 'package:sfcapp/services/stripe_connect_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/stripe_connect_requirements_checklist.dart';
 import 'package:sfcapp/utils/open_url_stub.dart' if (dart.library.html) 'package:sfcapp/utils/open_url_web.dart' as open_url;
 
 /// Screen for facility owners to connect their Stripe account
@@ -34,7 +37,7 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
   bool _isCreatingAccount = false;
   bool _isCreatingLink = false;
   String? _onboardingUrl;
-  Map<String, dynamic>? _accountStatus;
+  StripeConnectStatusResult? _connectStatus;
   WebViewController? _webViewController;
   /// Facility we're showing status for; stays in sync with the global facility dropdown.
   String _displayFacilityId = '';
@@ -62,20 +65,18 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
     if (id.isEmpty) return;
     // Show loading indicator only if we don't have status yet
     final wasLoading = _isLoading;
-    if (_accountStatus == null && !_isLoading) {
+    if (_connectStatus == null && !_isLoading) {
       setState(() {
         _isLoading = true;
       });
     }
 
     try {
-      final status = await StripeService.getStripeConnectAccountStatus(
-        facilityId: id,
-      );
+      final status = await StripeConnectService.refreshStatus(id);
 
       if (mounted && id == _displayFacilityId) {
         setState(() {
-          _accountStatus = status;
+          _connectStatus = status;
           _isLoading = false;
         });
         ref.invalidate(stripeConnectStatusProvider(id));
@@ -95,7 +96,7 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
             !errorMessage.contains('timed out') && 
             !errorMessage.contains('Request timed out')) {
           // Only show snackbar if this wasn't the initial silent load
-          if (wasLoading || _accountStatus != null) {
+          if (wasLoading || _connectStatus != null) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('Error checking status: $errorMessage'),
@@ -299,7 +300,7 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
       if (newId != null && newId != _displayFacilityId) {
         setState(() {
           _displayFacilityId = newId;
-          _accountStatus = null;
+          _connectStatus = null;
         });
         _checkAccountStatus(facilityId: newId);
       }
@@ -435,15 +436,46 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                   ),
                   const SizedBox(height: 16),
 
+                  if (_connectStatus != null && !_connectStatus!.isEnabled) ...[
+                    Card(
+                      color: AppTheme.warning.withValues(alpha: 0.12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(color: AppTheme.warning.withValues(alpha: 0.45)),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.block, color: AppTheme.warning, size: 22),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _paymentsBlockedMessage(_connectStatus!),
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  height: 1.35,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
                   // Status Card
-                  if (_accountStatus != null) ...[
+                  if (_connectStatus != null) ...[
                     Card(
                       elevation: 2,
                       color: AppTheme.surface,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                         side: BorderSide(
-                          color: _accountStatus!['onboardingComplete'] == true
+                          color: _connectStatus!.isEnabled
                               ? AppTheme.success
                               : AppTheme.primaryBlue,
                           width: 1,
@@ -459,7 +491,7 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                   decoration: BoxDecoration(
-                                    color: (_accountStatus!['onboardingComplete'] == true
+                                    color: (_connectStatus!.isEnabled
                                             ? AppTheme.success
                                             : AppTheme.primaryBlue)
                                         .withOpacity(0.12),
@@ -469,23 +501,21 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Icon(
-                                        _accountStatus!['onboardingComplete'] == true
+                                        _connectStatus!.isEnabled
                                             ? Icons.check_circle
                                             : Icons.info_outline,
                                         size: 16,
-                                        color: _accountStatus!['onboardingComplete'] == true
+                                        color: _connectStatus!.isEnabled
                                             ? AppTheme.success
                                             : AppTheme.primaryBlue,
                                       ),
                                       const SizedBox(width: 6),
                                       Text(
-                                        _accountStatus!['onboardingComplete'] == true
-                                            ? 'Account Connected'
-                                            : 'Onboarding Incomplete',
+                                        _connectStatusLabel(_connectStatus!),
                                         style: TextStyle(
                                           fontSize: 14,
                                           fontWeight: FontWeight.w600,
-                                          color: _accountStatus!['onboardingComplete'] == true
+                                          color: _connectStatus!.isEnabled
                                               ? AppTheme.success
                                               : AppTheme.primaryBlue,
                                         ),
@@ -495,14 +525,27 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                                 ),
                               ],
                             ),
-                            if (_accountStatus!['connected'] == true) ...[
+                            if (_connectStatus!.connectedAccountId != null) ...[
                               const SizedBox(height: 12),
-                              _buildStatusRow('Account ID', _accountStatus!['accountId'] ?? 'N/A'),
-                              _buildStatusRow('Charges Enabled', _accountStatus!['chargesEnabled'] == true ? 'Yes' : 'No'),
-                              _buildStatusRow('Payouts Enabled', _accountStatus!['payoutsEnabled'] == true ? 'Yes' : 'No'),
-                              _buildStatusRow('Details Submitted', _accountStatus!['detailsSubmitted'] == true ? 'Yes' : 'No'),
-                              if (_accountStatus!['email'] != null)
-                                _buildStatusRow('Email', _accountStatus!['email']),
+                              _buildStatusRow('Account ID', _connectStatus!.connectedAccountId!),
+                              _buildStatusRow(
+                                'Charges Enabled',
+                                _connectStatus!.status.chargesEnabled ? 'Yes' : 'No',
+                              ),
+                              _buildStatusRow(
+                                'Payouts Enabled',
+                                _connectStatus!.status.payoutsEnabled ? 'Yes' : 'No',
+                              ),
+                              _buildStatusRow(
+                                'Details Submitted',
+                                _connectStatus!.status.detailsSubmitted ? 'Yes' : 'No',
+                              ),
+                            ],
+                            if (!_connectStatus!.isEnabled &&
+                                (_connectStatus!.status.currentlyDue.isNotEmpty ||
+                                    _connectStatus!.status.pastDue.isNotEmpty)) ...[
+                              const SizedBox(height: 12),
+                              StripeConnectRequirementsChecklist(status: _connectStatus!.status),
                             ],
                           ],
                         ),
@@ -512,7 +555,8 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                   ],
 
                   // Action Buttons (only owners can create accounts / onboarding links — enforced on server too)
-                  if (_accountStatus == null || _accountStatus!['connected'] != true) ...[
+                  if (_connectStatus == null ||
+                      _connectStatus!.state == StripeConnectState.disconnected) ...[
                     if (_isFacilityOwner)
                       ElevatedButton.icon(
                         onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink)
@@ -538,7 +582,7 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                       _nonOwnerStripeCallout(
                         'Stripe is not connected for this facility yet. Only the facility owner can connect Stripe (Accounting → Payment Processing while signed in as owner).',
                       ),
-                  ] else if (_accountStatus!['onboardingComplete'] != true) ...[
+                  ] else if (!_connectStatus!.isEnabled) ...[
                     if (_isFacilityOwner)
                       ElevatedButton.icon(
                         onPressed: (_isLoading || _isCreatingAccount || _isCreatingLink)
@@ -553,7 +597,9 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                             : const Icon(Icons.arrow_forward),
                         label: Text(_isCreatingLink
                             ? 'Creating Link...'
-                            : 'Continue Onboarding'),
+                            : _connectStatus!.state == StripeConnectState.actionRequired
+                                ? 'Resolve requirements in Stripe'
+                                : 'Continue Onboarding'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppTheme.primaryBlue,
                           foregroundColor: AppTheme.textOnDark,
@@ -599,9 +645,9 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                             ],
                           ),
                           const SizedBox(height: 12),
-                          if (_accountStatus!['accountId'] != null)
+                          if (_connectStatus!.connectedAccountId != null)
                             Text(
-                              'Account ID: ${_accountStatus!['accountId']}',
+                              'Account ID: ${_connectStatus!.connectedAccountId}',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: AppTheme.textSecondary,
@@ -612,17 +658,17 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                           Row(
                             children: [
                               Icon(
-                                _accountStatus!['chargesEnabled'] == true
+                                _connectStatus!.status.chargesEnabled
                                     ? Icons.check_circle_outline
                                     : Icons.error_outline,
                                 size: 16,
-                                color: _accountStatus!['chargesEnabled'] == true
+                                color: _connectStatus!.status.chargesEnabled
                                     ? AppTheme.success
                                     : AppTheme.error,
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                'Charges: ${_accountStatus!['chargesEnabled'] == true ? 'Enabled' : 'Disabled'}',
+                                'Charges: ${_connectStatus!.status.chargesEnabled ? 'Enabled' : 'Disabled'}',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: AppTheme.textSecondary,
@@ -630,17 +676,17 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
                               ),
                               const SizedBox(width: 16),
                               Icon(
-                                _accountStatus!['payoutsEnabled'] == true
+                                _connectStatus!.status.payoutsEnabled
                                     ? Icons.check_circle_outline
                                     : Icons.error_outline,
                                 size: 16,
-                                color: _accountStatus!['payoutsEnabled'] == true
+                                color: _connectStatus!.status.payoutsEnabled
                                     ? AppTheme.success
                                     : AppTheme.error,
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                'Payouts: ${_accountStatus!['payoutsEnabled'] == true ? 'Enabled' : 'Disabled'}',
+                                'Payouts: ${_connectStatus!.status.payoutsEnabled ? 'Enabled' : 'Disabled'}',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: AppTheme.textSecondary,
@@ -689,6 +735,32 @@ class _StripeConnectOnboardingScreenState extends ConsumerState<StripeConnectOnb
             ),
           ),
     );
+  }
+
+  String _connectStatusLabel(StripeConnectStatusResult result) {
+    switch (result.state) {
+      case StripeConnectState.enabled:
+        return 'Ready to accept tenant payments';
+      case StripeConnectState.actionRequired:
+        return 'Action required';
+      case StripeConnectState.onboardingIncomplete:
+        return 'Onboarding incomplete';
+      case StripeConnectState.disconnected:
+        return 'Not connected';
+    }
+  }
+
+  String _paymentsBlockedMessage(StripeConnectStatusResult result) {
+    switch (result.state) {
+      case StripeConnectState.disconnected:
+        return 'Tenant card payments are not enabled. Connect Stripe to accept rent and autopay.';
+      case StripeConnectState.onboardingIncomplete:
+        return 'Tenant card payments are not live yet. Complete Stripe onboarding to start collecting rent.';
+      case StripeConnectState.actionRequired:
+        return 'Stripe needs more information before this facility can accept tenant card payments.';
+      case StripeConnectState.enabled:
+        return '';
+    }
   }
 
   Widget _nonOwnerStripeCallout(String message) {

@@ -43,6 +43,11 @@ class AppRoute {
   static const contractSigningTest = '/contracts/sign/test';
   static const leaseTemplates = '/lease-templates';
   static const payments = '/payments';
+  static String paymentsWithTab(String tab) => '/payments?tab=$tab';
+  static const paymentsPastDue = '/payments?tab=past-due';
+  static const paymentsInvoices = '/payments?tab=invoices';
+  static const paymentsReminders = '/payments?tab=reminders';
+  static const paymentsCollect = '/payments?tab=collect';
   static const paymentDetail = '/payments/detail';
   static const paymentCreate = '/payments/create';
   static const paymentReconciliation = '/payments/reconciliation';

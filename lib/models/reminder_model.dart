@@ -202,6 +202,12 @@ class ReminderModel {
     if (scheduledFor.isBefore(now)) return 0;
     return scheduledFor.difference(now).inDays;
   }
+
+  /// Days past the scheduled send date (for pending reminders only).
+  int get daysOverdue {
+    if (!isOverdue) return 0;
+    return DateTime.now().difference(scheduledFor).inDays;
+  }
   
   String get statusDisplayName {
     switch (status) {

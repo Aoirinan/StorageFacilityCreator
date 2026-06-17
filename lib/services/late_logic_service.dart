@@ -101,12 +101,31 @@ class LateLogicService {
     final now = DateTime.now();
     final startOfCurrentMonth = DateTime(now.year, now.month, 1);
     final paidThroughDate = tenant.paidThrough;
-    final referenceDate = paidThroughDate ??
-        ((tenant.createdAt.year == now.year && tenant.createdAt.month == now.month)
-            ? tenant.createdAt
-            : startOfCurrentMonth);
-    final difference = startOfCurrentMonth.difference(referenceDate).inDays - grace;
+
+    // Never paid: align with [isTenantLate] — late after the 30-day onboarding window.
+    if (paidThroughDate == null) {
+      final daysSinceCreation = now.difference(tenant.createdAt).inDays;
+      return daysSinceCreation > 30 ? daysSinceCreation - 30 : 1;
+    }
+
+    final difference =
+        startOfCurrentMonth.difference(paidThroughDate).inDays - grace;
     return difference < 0 ? 0 : difference;
+  }
+
+  /// Count active tenants whose paid-through date puts them past the grace period.
+  static int countLateTenants(
+    Iterable<TenantModel> tenants, {
+    int? gracePeriodDays,
+  }) {
+    var count = 0;
+    for (final tenant in tenants) {
+      if (tenant.isActive == true &&
+          isTenantLate(tenant, gracePeriodDays: gracePeriodDays)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   // --- Late Payment Detection ---
@@ -459,13 +478,19 @@ class LateLogicService {
             'tenantId': payment.tenantId,
             'facilityId': payment.facilityId,
             'contractId': payment.contractId,
+            if (payment.snapshotTenantName != null &&
+                payment.snapshotTenantName!.trim().isNotEmpty)
+              'tenantName': payment.snapshotTenantName!.trim(),
+            if (payment.snapshotUnitNumber != null &&
+                payment.snapshotUnitNumber!.trim().isNotEmpty)
+              'unitNumber': payment.snapshotUnitNumber!.trim(),
             'amount': lateFee,
             'status': PaymentStatus.pending.toString().split('.').last,
             'method': PaymentMethod.cash.toString().split('.').last,
-            'dueDate': Timestamp.fromDate(DateTime.now()),
+            'dueDate': FieldValue.serverTimestamp(),
             'notes': 'Late fee for payment due ${payment.dueDate}',
-            'createdAt': Timestamp.fromDate(DateTime.now()),
-            'updatedAt': Timestamp.fromDate(DateTime.now()),
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
             'createdBy': _auth.currentUser?.uid ?? '',
           });
 

@@ -1097,6 +1097,22 @@ class SuperAdminDataService {
     return n is int ? n : int.tryParse('$n') ?? 0;
   }
 
+  /// Super admin only: irreversibly wipe all customer/platform data except super-admin logins.
+  static Future<Map<String, dynamic>> purgePlatformData({
+    required String confirmationPhrase,
+    required String callerEmailConfirmation,
+  }) async {
+    final callable = _functions.httpsCallable(
+      'superAdminPurgePlatformData',
+      options: HttpsCallableOptions(timeout: const Duration(minutes: 9)),
+    );
+    final result = await callable.call<Map<String, dynamic>>({
+      'confirmationPhrase': confirmationPhrase.trim(),
+      'callerEmailConfirmation': callerEmailConfirmation.trim(),
+    });
+    return Map<String, dynamic>.from(result.data);
+  }
+
   /// Add an internal note for a facility, account, or user.
   static Future<void> addNote({
     required String targetId,
@@ -1292,6 +1308,21 @@ class SuperAdminDataService {
       'createdAt': FieldValue.serverTimestamp(),
     });
     await leadRef.update({'updatedAt': FieldValue.serverTimestamp()});
+  }
+
+  static Future<void> deleteMarketingLead(String leadId) async {
+    final leadRef = _db.collection('marketing_leads').doc(leadId);
+    while (true) {
+      final snapshot =
+          await leadRef.collection('activities').limit(200).get();
+      if (snapshot.docs.isEmpty) break;
+      final batch = _db.batch();
+      for (final doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+    }
+    await leadRef.delete();
   }
 
   static Future<FacilityCommunicationUsage> getFacilityCommunicationUsage(

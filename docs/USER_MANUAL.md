@@ -152,36 +152,35 @@ Open **Settings** from the sidebar. The screen has two top tabs:
 
 ## 9. Billing, payments, and money
 
-### Billing & Payments screen (tabs)
+### Rent & payments (sidebar)
 
-Accessible from **Settings → Billing & Payments** (and subscription redirects):
+**Rent & payments** is a single hub with **tabs**:
+
+- **Transactions** — payment history and reconciliation links.
+- **Collect** — Autopay management and one-time tenant payments.
+- **Past due** — who is behind on rent (paid-through dates and grace period).
+- **Invoices** — formal invoices generated from tenant ledgers (optional).
+- **Reminders** — scheduled payment and collection messages.
+
+Legacy URLs (`/delinquency`, `/billing`, `/reminders`) redirect into this hub.
+
+**Do Not Rent** is a separate sidebar item for the global DNR list.
+
+### Platform billing (Settings)
+
+Accessible from **Settings → Billing & Payments** (not the sidebar Rent & payments hub):
 
 1. **Your Subscription** — SFC platform subscription, trials, plan changes.
-2. **Payment Processing** — **Stripe Connect** onboarding and status for taking tenant card payments **per facility** (uses the **active facility** when a specific facility is required).
+2. **Payment Processing** — **Stripe Connect** onboarding and status for taking tenant card payments **per facility**.
 3. **Accounting** — QuickBooks-related integration entry points where configured.
 
-### Payments (sidebar)
+### Deposits, liens, recurring charges
 
-- Record and track **payments**, open **payment detail**, **create payment**, and **reconciliation** where your role allows.
-
-### Invoices, deposits, liens, recurring charges
-
-- Routes exist for **invoices**, **deposits**, **liens**, **recurring charges**, **autopay activity**, **transfers**, and **payment links** management — use the navigation or in-app links from Billing/Payments and tenant contexts to reach them.
+- Routes exist for **deposits**, **liens**, **recurring charges**, **autopay activity**, **transfers**, and **payment links** — use in-app links from Rent & payments and tenant contexts.
 
 ---
 
-## 10. Operations: delinquency, messaging, access, retail
-
-### Delinquency
-
-**Delinquency** is a single screen with **tabs**:
-
-- **Overview** — summary of late situation for the selected facility.
-- **Past Due** — accounts past due (ties into payment/tenant data).
-- **Reminders** — reminder management (sidebar also treats **Reminders** routes as part of this area for highlighting).
-- **Global DNR System** — Do Not Rent list at the configured scope.
-
-Facility selection aligns with the **active facility** when possible so it stays consistent with the Dashboard.
+## 10. Operations: messaging, access, retail
 
 ### Messaging
 

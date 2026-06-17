@@ -18,6 +18,7 @@ import 'package:sfcapp/screens/super_admin/tabs/messaging_guard_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/referrals_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/custom_domain_guide_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/ai_logs_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/platform_reset_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/message_logs_tab.dart';
 
 class SuperAdminScreen extends ConsumerStatefulWidget {
@@ -46,13 +47,14 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.chat_bubble, label: 'Messaging'),
     _TabDef(icon: Icons.group_add, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
-    _TabDef(icon: Icons.link, label: 'Custom domain'),
+    _TabDef(icon: Icons.link, label: 'Website address'),
+    _TabDef(icon: Icons.delete_forever, label: 'Reset'),
   ];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 13, vsync: this);
+    _tabController = TabController(length: 14, vsync: this);
     // Seed feature flags on first load (no-op if already seeded)
     FeatureFlagService.seedDefaults();
   }
@@ -246,6 +248,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           ReferralsTab(),
           BugReportsTab(),
           CustomDomainGuideTab(),
+          PlatformResetTab(),
         ],
       ),
     );

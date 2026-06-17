@@ -30,15 +30,17 @@ class _CustomDomainGuideTabState extends State<CustomDomainGuideTab> {
   }
 
   static const _emailDraft =
-      '''Subject: DNS needed for your Storage Facility Creator website
+      '''Subject: One step needed for your website address
 
 Hi,
 
-We're connecting your domain to your Storage Facility Creator public website. Please add the DNS records Firebase shows (we'll paste them below after adding your hostname in our Firebase project).
+We are setting up your custom website address (for example, rent.yourstorage.com) so it shows your Storage Facility Creator marketing site.
 
-[PASTE TXT + CNAME/A RECORDS FROM FIREBASE HOSTING — CUSTOM DOMAINS SCREEN HERE]
+Your domain provider (GoDaddy, Cloudflare, Namecheap, etc.) needs a few DNS records added. Please copy the records below into your domain settings, or forward this email to whoever manages your domain for you.
 
-If someone else manages your domain (GoDaddy, Cloudflare, etc.), forward this email to them. Nothing else is required on your side until DNS is saved.
+[PASTE THE DNS RECORDS FROM THE SETUP TOOL ABOVE HERE]
+
+After you save the records, it can take a few minutes to a few hours for the site to go live. You do not need to do anything else on our end.
 
 Thanks,
 Storage Facility Creator support''';
@@ -57,7 +59,7 @@ Storage Facility Creator support''';
   Future<void> _provision() async {
     final hostname = _hostnameCtrl.text.trim();
     if (hostname.isEmpty) {
-      setState(() => _error = 'Hostname is required.');
+      setState(() => _error = 'Enter the website address you want to connect.');
       return;
     }
 
@@ -117,37 +119,115 @@ Storage Facility Creator support''';
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'Custom domain (public website)',
+                    'Custom website address',
                     style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Use this when a facility wants their own address (e.g. rent.theirstorage.com) '
-                    'to show the same SFC-hosted marketing site as $kAppWebHostname/w/…',
+                    'Help a facility share their marketing website. They can use our standard link right away, '
+                    'or use their own address (like rent.theirstorage.com) after a short DNS setup.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                       height: 1.4,
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
+                  _GuideCard(
+                    icon: Icons.link,
+                    title: 'Option 1 — Use our link (no setup)',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          'Share this link with the facility. It works as soon as they publish Website Setup — '
+                          'no domain or DNS work needed.',
+                        ),
+                        const SizedBox(height: 12),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.borderLight),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: SelectableText(
+                              publicExample,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: () =>
+                              _copy(context, 'Example link', publicExample),
+                          icon: const Icon(Icons.copy, size: 18),
+                          label: const Text('Copy example link'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _GuideCard(
+                    icon: Icons.dns_outlined,
+                    title: 'Option 2 — Use their own website address',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Use this when they want visitors to type their own domain instead of our link. '
+                          'It takes three steps and usually involves their domain provider (GoDaddy, Cloudflare, etc.).',
+                        ),
+                        const SizedBox(height: 16),
+                        _NumberStep(
+                          n: 1,
+                          title: 'Facility sets up Website Setup',
+                          body:
+                              'In their account: **Settings → Website Setup**. Set **Website URL name** (the `/w/…` part). '
+                              'Enter the **exact** address they want (e.g. `rent.theirstorage.com`) in **Custom domain**, then save.',
+                        ),
+                        const SizedBox(height: 14),
+                        _NumberStep(
+                          n: 2,
+                          title: 'You connect the domain here',
+                          body:
+                              'Use **Connect a custom domain** below with the same website address. '
+                              'You will get DNS records to send to the customer.',
+                        ),
+                        const SizedBox(height: 14),
+                        _NumberStep(
+                          n: 3,
+                          title: 'Customer adds DNS records',
+                          body:
+                              'They (or their IT person) add those records at their domain provider. '
+                              'After DNS updates, the site usually goes live within a few minutes to a few hours.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   _GuideCard(
                     icon: Icons.cloud_sync_outlined,
-                    title: 'Provision on Firebase Hosting (API)',
+                    title: 'Connect a custom domain',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          'Creates/links the hostname on Firebase Hosting, then shows DNS records and SSL status.',
+                          'Step 2 of Option 2. Enter the facility\'s website address to register it and get the DNS records they need.',
                           style: theme.textTheme.bodyMedium,
                         ),
                         const SizedBox(height: 12),
                         TextField(
                           controller: _hostnameCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Hostname',
+                            labelText: 'Website address',
                             hintText: 'rent.theirstorage.com',
+                            helperText:
+                                'The domain only — no https:// or paths',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -155,8 +235,10 @@ Storage Facility Creator support''';
                         TextField(
                           controller: _facilityIdCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Facility ID (optional if slug set)',
+                            labelText: 'Facility ID (optional)',
                             hintText: 'abc123FacilityId',
+                            helperText:
+                                'Only if needed — find it on the Facilities tab',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -164,8 +246,10 @@ Storage Facility Creator support''';
                         TextField(
                           controller: _slugCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Public slug (optional)',
+                            labelText: 'Website URL name (optional)',
                             hintText: 'my-storage',
+                            helperText:
+                                'The /w/... name from Website Setup — can be used instead of Facility ID',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -186,12 +270,12 @@ Storage Facility Creator support''';
                                       ),
                                     )
                                   : const Icon(Icons.rocket_launch, size: 18),
-                              label: const Text('Provision'),
+                              label: const Text('Connect domain'),
                             ),
                             OutlinedButton.icon(
                               onPressed: _busy ? null : _refreshStatus,
                               icon: const Icon(Icons.refresh, size: 18),
-                              label: const Text('Refresh status'),
+                              label: const Text('Check progress'),
                             ),
                           ],
                         ),
@@ -218,84 +302,13 @@ Storage Facility Creator support''';
                   ),
                   const SizedBox(height: 16),
                   _GuideCard(
-                    icon: Icons.link,
-                    title: 'Option A — easiest (no DNS)',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text(
-                          'They use our link. It works as soon as the facility publishes Website Setup.',
-                        ),
-                        const SizedBox(height: 12),
-                        DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppTheme.borderLight),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: SelectableText(
-                              publicExample,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        OutlinedButton.icon(
-                          onPressed: () =>
-                              _copy(context, 'Example link', publicExample),
-                          icon: const Icon(Icons.copy, size: 18),
-                          label: const Text('Copy example'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _GuideCard(
-                    icon: Icons.dns_outlined,
-                    title: 'Option B — their domain (3 steps)',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _NumberStep(
-                          n: 1,
-                          title: 'In SFC (facility account)',
-                          body:
-                              'Settings → Website Setup. Set **Website URL name** (the `/w/…` slug). '
-                              'Put the **exact** hostname they want (e.g. `rent.theirstorage.com`) in **Custom domain**. Save.',
-                        ),
-                        const SizedBox(height: 14),
-                        _NumberStep(
-                          n: 2,
-                          title: 'Provision in SFC (Super Admin)',
-                          body:
-                              'Use **Provision on Firebase Hosting (API)** above with the same hostname. '
-                              'It returns TXT + A/CNAME records and status in-app.',
-                        ),
-                        const SizedBox(height: 14),
-                        _NumberStep(
-                          n: 3,
-                          title: 'Customer DNS (their registrar)',
-                          body:
-                              'They add those records at GoDaddy, Cloudflare, Namecheap, etc. '
-                              'When DNS propagates, Firebase finishes SSL. Then '
-                              '`https://their-host/` redirects to the published marketing page.',
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _GuideCard(
                     icon: Icons.mail_outline,
-                    title: 'Email draft for the customer',
+                    title: 'Email to send the customer',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         const Text(
-                          'Copy, paste records from Firebase into the bracket, then send.',
+                          'After connecting the domain, copy this draft, paste the DNS records into the bracket, and send it to the facility or their domain manager.',
                         ),
                         const SizedBox(height: 12),
                         OutlinedButton.icon(
@@ -310,30 +323,30 @@ Storage Facility Creator support''';
                   const SizedBox(height: 16),
                   _GuideCard(
                     icon: Icons.troubleshoot,
-                    title: 'Quick fixes',
+                    title: 'Common problems',
                     child: Column(
                       children: [
                         _Bullet(
-                          "**Site can't be reached / NXDOMAIN** — they never created DNS, "
-                          'or typo in hostname. Use Option A link until DNS is fixed.',
+                          "**Site can't be reached** — DNS records were never added, or the website address has a typo. "
+                          'Share the Option 1 link until DNS is fixed.',
                         ),
                         _Bullet(
-                          '**Certificate stuck / SSL pending** — records do not match Firebase, '
-                          'or wait up to a few hours. Turn off orange-cloud proxy while provisioning if unsure.',
+                          '**Security certificate still pending** — DNS records may not match yet, or propagation is still in progress. '
+                          'Wait a few hours and tap **Check progress**. If using Cloudflare, turn off the orange-cloud proxy while setting up.',
                         ),
                         _Bullet(
-                          '**Wrong facility or blank site** — Custom domain in Website Setup must '
-                          'match the hostname exactly; republish Website Setup.',
+                          '**Wrong facility or blank page** — the **Custom domain** in Website Setup must match exactly. '
+                          'Have the facility save Website Setup again.',
                         ),
                         _Bullet(
-                          '**Root shows operator app** — verify Hosting deploy includes `routeCustomDomainRoot` rewrite and function.',
+                          '**Root domain shows the operator app** — engineering issue: verify Hosting deploy includes the custom-domain redirect.',
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    'Engineering reference: docs/SUPERADMIN_CUSTOM_DOMAIN_WEBSITE.md in the repo.',
+                    'Technical reference: docs/SUPERADMIN_CUSTOM_DOMAIN_WEBSITE.md',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                     ),
@@ -510,9 +523,35 @@ class _ProvisionResultCard extends StatelessWidget {
   final HostingCustomDomainProvisionResult result;
   final ValueChanged<HostingDnsRecord> onCopyRecord;
 
+  static String _friendlyStatus(String status) {
+    switch (status.toLowerCase()) {
+      case 'connected':
+        return 'Live — website address is working';
+      case 'provisioning_ssl':
+        return 'Almost ready — finishing the security certificate';
+      case 'pending_dns':
+        return 'Waiting — customer still needs to add DNS records';
+      default:
+        return status.replaceAll('_', ' ');
+    }
+  }
+
+  static String? _friendlyCertHint(String? certState) {
+    if (certState == null || certState.isEmpty) return null;
+    switch (certState.toLowerCase()) {
+      case 'active':
+        return 'Security certificate is active';
+      case 'provisioning':
+        return 'Security certificate is being issued — can take up to a few hours';
+      default:
+        return 'Certificate: ${certState.replaceAll('_', ' ')}';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final certHint = _friendlyCertHint(result.certState);
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFFF8FAFC),
@@ -524,19 +563,47 @@ class _ProvisionResultCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Status: ${result.status} (${result.certState ?? 'unknown cert'})',
+            _friendlyStatus(result.status),
             style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 6),
+          if (certHint != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              certHint,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
           SelectableText(
-            'Facility: ${result.facilityId}    Slug: ${result.slug}\nHostname: ${result.hostname}',
+            'Website address: ${result.hostname}\n'
+            'Facility: ${result.facilityId.isEmpty ? '—' : result.facilityId}    '
+            'URL name: ${result.slug.isEmpty ? '—' : result.slug}',
             style: theme.textTheme.bodySmall,
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          Text(
+            'DNS records for the customer\'s domain provider',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Copy each row and add it in GoDaddy, Cloudflare, Namecheap, or wherever they manage their domain.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppTheme.textSecondary,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 8),
           if (result.records.isEmpty)
-            const Text('No DNS records returned yet. Use Refresh status.')
+            const Text(
+              'No DNS records yet. Tap Check progress in a minute or two.',
+            )
           else
             ...result.records.map(
               (record) => Padding(

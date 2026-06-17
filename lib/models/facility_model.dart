@@ -382,6 +382,11 @@ class FacilityModel {
       platformSubscriptionStatus == 'active' ||
       platformSubscriptionStatus == 'trialing';
 
+  /// True when Stripe Connect is ready to accept tenant card payments.
+  bool get canAcceptTenantPayments =>
+      stripeStatus?.isEnabled == true ||
+      (stripeStatus == null && stripeConnectOnboardingComplete);
+
   /// Occupancy vs **actual** unit documents when [unitDocCount] is known; otherwise
   /// falls back to [totalUnits] (capacity max) for older docs not yet backfilled.
   double get occupancyPercentage {

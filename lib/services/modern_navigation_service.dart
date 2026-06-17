@@ -102,7 +102,7 @@ class ModernNavigationService {
           _navigateToAccessWithFacilitySelection(context);
           break;
         case '/billing':
-          context.go('/billing');
+          context.go(AppRoute.paymentsInvoices);
           break;
         case '/stripe-connect':
           context.go('/stripe-connect');
@@ -123,7 +123,7 @@ class ModernNavigationService {
           context.go('/insurance');
           break;
         case '/delinquency':
-          context.go('/delinquency');
+          context.go(AppRoute.paymentsPastDue);
           break;
         case '/dnr':
           context.go('/dnr');
@@ -141,7 +141,7 @@ class ModernNavigationService {
           _navigateToRetailPosWithFacilitySelection(context);
           break;
         case '/reminders':
-          context.go('/reminders');
+          context.go(AppRoute.paymentsReminders);
           break;
         case '/settings':
           context.go('/settings');

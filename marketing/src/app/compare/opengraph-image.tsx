@@ -7,7 +7,7 @@ export const contentType = OG_CONTENT_TYPE;
 export default function Image() {
   return renderOgImage({
     eyebrow: 'Compare',
-    title: 'SFC vs. SiteLink, storEDGE, and Easy Storage Solutions.',
+    title: 'Compare self-storage management software options.',
     subtitle: 'A fair side-by-side on pricing model, deployment, and operator fit.',
     accent: 'amber',
   });

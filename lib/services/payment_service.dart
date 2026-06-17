@@ -30,6 +30,17 @@ class PaymentService {
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
       
+      final tenantDoc = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .doc(tenantId)
+          .get();
+
+      final tenantData = tenantDoc.data();
+      final snapshotName = (tenantData?['name'] as String?)?.trim() ?? '';
+      final snapshotUnit = (tenantData?['unitNumber'] as String?)?.trim() ?? '';
+
       final ref = _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -42,6 +53,8 @@ class PaymentService {
         'tenantId': tenantId,
         'facilityId': facilityId,
         'contractId': contractId,
+        if (snapshotName.isNotEmpty) 'tenantName': snapshotName,
+        if (snapshotUnit.isNotEmpty) 'unitNumber': snapshotUnit,
         'amount': amount,
         'status': 'pending',
         'method': method.name,
@@ -85,6 +98,8 @@ class PaymentService {
         dueDate: dueDate,
         notes: notes,
         metadata: metadata,
+        snapshotTenantName: snapshotName.isNotEmpty ? snapshotName : null,
+        snapshotUnitNumber: snapshotUnit.isNotEmpty ? snapshotUnit : null,
         createdAt: now,
         updatedAt: now,
         createdBy: user.uid,
@@ -517,8 +532,6 @@ class PaymentService {
       final contractId = tenantData['contractId'] as String? ?? '';
       final snapshotName = (tenantData['name'] as String?)?.trim() ?? '';
       final snapshotUnit = (tenantData['unitNumber'] as String?)?.trim() ?? '';
-      final now = DateTime.now();
-      final nowTimestamp = Timestamp.fromDate(now);
 
       // 1. Create facility-level payment (shows in main Payments screen)
       final facilityPaymentRef = await _firestore
@@ -534,12 +547,12 @@ class PaymentService {
         'amount': amount,
         'status': 'completed',
         'method': method.name,
-        'paidAt': nowTimestamp,
-        'paidDate': nowTimestamp,
-        'dueDate': nowTimestamp,
-        'notes': notes,
-        'createdAt': nowTimestamp,
-        'updatedAt': nowTimestamp,
+        'paidAt': FieldValue.serverTimestamp(),
+        'paidDate': FieldValue.serverTimestamp(),
+        'dueDate': FieldValue.serverTimestamp(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
         'isActive': true,
       });
@@ -560,8 +573,9 @@ class PaymentService {
         'chargeType': 'manual_${method.name}',
         'status': 'succeeded',
         'description': notes ?? '${method.displayName} payment',
-        'createdAt': nowTimestamp,
-        'updatedAt': nowTimestamp,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'createdBy': user.uid,
         'failureCode': null,
         'failureMessage': null,
       });
@@ -575,7 +589,7 @@ class PaymentService {
           amount: -amount,
           description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
           referenceId: facilityPaymentRef.id,
-          entryDate: now,
+          entryDate: DateTime.now(),
           status: LedgerEntryStatus.posted,
           metadata: {
             'paymentMethod': method.name,

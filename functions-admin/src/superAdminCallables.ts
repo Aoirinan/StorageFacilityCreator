@@ -78,8 +78,11 @@ export const superAdminDeleteUser = functions.https.onCall(async (data: { uid: s
     throw new functions.https.HttpsError('invalid-argument', 'uid is required');
   }
   const targetUser = await admin.auth().getUser(uid);
-  if (isSuperAdmin(targetUser.email)) {
-    throw new functions.https.HttpsError('permission-denied', 'Cannot delete a super admin account');
+  if (context.auth.uid === uid) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'You cannot delete your own account while signed in as that user',
+    );
   }
   const roleCleanup = await deactivateAllUserRolesForUid(uid);
   await admin.auth().deleteUser(uid);
@@ -202,21 +205,10 @@ export const superAdminDeleteFacilityCreatorAccount = functions
       );
     }
 
-    let ownerAuthEmail: string | undefined;
-    try {
-      const ownerUser = await admin.auth().getUser(ownerUid);
-      ownerAuthEmail = ownerUser.email;
-    } catch (e: unknown) {
-      const code = (e as { code?: string })?.code;
-      if (code !== 'auth/user-not-found') {
-        throw e;
-      }
-    }
-
-    if (isSuperAdmin(ownerAuthEmail ?? ownerEmail)) {
+    if (context.auth.uid === ownerUid) {
       throw new functions.https.HttpsError(
-        'permission-denied',
-        'Cannot delete an account owned by a super admin',
+        'failed-precondition',
+        'You cannot delete your own facility creator account while signed in as that owner',
       );
     }
 

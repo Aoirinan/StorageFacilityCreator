@@ -6,10 +6,8 @@ import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
-import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 /// Global overlay that disables all features when trial expired or no active subscription
 /// Blocks all user interactions until subscription is active
@@ -26,7 +24,6 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
   FacilityCreatorAccountModel? _account;
   bool _isLoading = true;
   bool _isLocked = false;
-  bool _isCreatingCheckout = false;
 
   @override
   void initState() {
@@ -116,85 +113,6 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
     }
   }
 
-  Future<void> _createSubscriptionCheckout() async {
-    if (_account == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Account not loaded. Please refresh the page.'),
-          backgroundColor: AppTheme.error,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isCreatingCheckout = true;
-    });
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user?.email == null) {
-        throw Exception('User email not available');
-      }
-
-      final checkoutResult = await StripeService.createSubscriptionCheckout(
-        accountId: _account!.accountId,
-        customerEmail: user!.email!,
-        successUrl: 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-        cancelUrl: 'https://app.storagefacilitycreator.com/subscription/cancel',
-      );
-
-      if (!mounted) return;
-      if (checkoutResult.subscriptionUpdated) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(checkoutResult.message ?? 'Subscription updated to include your new facility.'),
-            backgroundColor: AppTheme.success,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-        return;
-      }
-
-      final checkoutUrl = checkoutResult.checkoutUrl!;
-      if (kDebugMode) {
-        print('✅ Checkout URL received: $checkoutUrl');
-      }
-
-      // On web, open in new tab
-      final uri = Uri.parse(checkoutUrl);
-      final canLaunch = await canLaunchUrl(uri);
-      if (canLaunch) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Opening Stripe checkout in new tab...'),
-              backgroundColor: AppTheme.success,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-      } else {
-        throw Exception('Browser blocked opening checkout URL. Please allow popups.');
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error creating checkout: ${e.toString()}'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCreatingCheckout = false;
-        });
-      }
-    }
-  }
 
   String _getLockMessage() {
     if (_account == null) return 'Please subscribe to continue.';
@@ -295,15 +213,9 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
                         ),
                         const SizedBox(height: 32),
                         FilledButton.icon(
-                          onPressed: _isCreatingCheckout ? null : _createSubscriptionCheckout,
-                          icon: _isCreatingCheckout
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                )
-                              : const Icon(Icons.payment, size: 20),
-                          label: Text(_isCreatingCheckout ? 'Opening Checkout...' : 'Subscribe Now'),
+                          onPressed: () => context.go(AppRoute.subscription),
+                          icon: const Icon(Icons.payment, size: 20),
+                          label: const Text('Subscribe your facility (\$75/mo)'),
                           style: FilledButton.styleFrom(
                             backgroundColor: AppTheme.error,
                             foregroundColor: Colors.white,
