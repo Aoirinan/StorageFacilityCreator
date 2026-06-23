@@ -8,7 +8,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { Timestamp } from 'firebase/firestore';
+import { serverTimestamp } from 'firebase/firestore';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rulesPath = join(__dirname, '..', '..', 'firestore.rules');
@@ -103,7 +103,6 @@ test('facility staff can create valid manual tenant payment rows only', async ()
     .doc(TENANT_ID)
     .collection('payments');
 
-  const now = Timestamp.now();
   await assertSucceeds(
     payments.doc('manual-1').set({
       facilityId: FACILITY_ID,
@@ -114,8 +113,9 @@ test('facility staff can create valid manual tenant payment rows only', async ()
       chargeType: 'manual_cash',
       status: 'succeeded',
       description: 'Cash payment',
-      createdAt: now,
-      updatedAt: now,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: STAFF_UID,
       failureCode: null,
       failureMessage: null,
     }),
@@ -131,8 +131,9 @@ test('facility staff can create valid manual tenant payment rows only', async ()
       chargeType: 'manual_cash',
       status: 'succeeded',
       description: 'Should be blocked',
-      createdAt: now,
-      updatedAt: now,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: STAFF_UID,
       failureCode: null,
       failureMessage: null,
     }),
@@ -142,7 +143,6 @@ test('facility staff can create valid manual tenant payment rows only', async ()
 test('outsider cannot create manual tenant payments', async () => {
   await seedFacility();
   const outsider = testEnv.authenticatedContext(OUTSIDER_UID);
-  const now = Timestamp.now();
   await assertFails(
     outsider
       .firestore()
@@ -161,8 +161,9 @@ test('outsider cannot create manual tenant payments', async () => {
         chargeType: 'manual_check',
         status: 'succeeded',
         description: 'Blocked',
-        createdAt: now,
-        updatedAt: now,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: OUTSIDER_UID,
         failureCode: null,
         failureMessage: null,
       }),

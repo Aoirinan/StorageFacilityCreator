@@ -6,9 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..');
 
 const result = spawnSync(
-  'npx -y firebase-tools@latest emulators:exec --only firestore --project sfc-rules-test "node --test test/*.test.mjs"',
+  'npx -y firebase-tools@latest emulators:exec --only firestore --project sfc-rules-test "node --test firestore-rules-test/test/*.test.mjs"',
   {
-    cwd: join(repoRoot, 'firestore-rules-test'),
+    cwd: repoRoot,
     stdio: 'inherit',
     shell: true,
   },

@@ -171,6 +171,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - name: Verify Java 21 for Firestore emulator
+        run: java -version
       - uses: actions/setup-node@v6
         with:
           node-version: 22
