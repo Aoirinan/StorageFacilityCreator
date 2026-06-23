@@ -1383,11 +1383,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                                         ),
                                         children: [
                                           const TextSpan(
-                                            text: 'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Reply STOP to opt out. ',
+                                            text: 'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help. ',
                                             style: TextStyle(fontWeight: FontWeight.w500),
-                                          ),
-                                          const TextSpan(
-                                            text: 'Msg & data rates may apply. ',
                                           ),
                                           WidgetSpan(
                                             child: GestureDetector(

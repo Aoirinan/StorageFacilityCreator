@@ -10,8 +10,8 @@ export const metadata: Metadata = {
   description: `SMS terms for ${SITE_NAME}: consent, opt-out, message frequency, and carrier disclosures.`,
 };
 
-const LAST_UPDATED = 'February 26, 2026';
-const CONSENT_TEXT_VERSION = '2026-02-26-v1';
+const LAST_UPDATED = 'June 23, 2026';
+const CONSENT_TEXT_VERSION = '2026-06-23-v1';
 
 export default function SmsTermsPage() {
   return (
@@ -35,7 +35,7 @@ export default function SmsTermsPage() {
             Before any End User receives an SMS message through the Service, they must provide express written consent. Consent is obtained via an unchecked checkbox presented to the Customer during tenant creation or onboarding. The consent checkbox text reads:
           </p>
           <blockquote className="mt-4 p-4 bg-slate-50 border-l-4 border-primary rounded-r-lg text-slate-700 italic">
-            "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Reply STOP to opt out."
+            "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help."
           </blockquote>
           <p className="text-slate-600 mt-4">
             The checkbox is unchecked by default and must be actively checked by the Customer (on behalf of the tenant, with the tenant's knowledge) or by the tenant directly. Consent is not a condition of service.

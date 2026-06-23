@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: `Privacy policy for ${SITE_NAME}: data we collect, how we use it, sharing, retention, and your rights.`,
 };
 
-const LAST_UPDATED = 'February 26, 2026';
+const LAST_UPDATED = 'June 23, 2026';
 
 export default function PrivacyPage() {
   return (
@@ -76,6 +76,9 @@ export default function PrivacyPage() {
           <div className="mt-4 p-4 bg-slate-50 rounded-lg">
             <A2pSnippet />
           </div>
+          <p className="text-slate-600 mt-4">
+            Mobile opt-in information and SMS consent data are never sold, rented, or shared with third parties or affiliates for marketing or promotional purposes. Phone numbers are shared only with our messaging subprocessor (Twilio) solely to deliver the messages a Tenant has opted in to receive. No mobile information is shared with any third party for that party's own marketing.
+          </p>
           <p className="text-slate-600 mt-4">
             See our <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link> for full details on consent, opt-out, and message frequency.
           </p>
