@@ -1,4 +1,4 @@
-export const SITE_VERSION = '1.3.3';
+export const SITE_VERSION = '1.3.4';
 
 export const SITE_NAME = 'Storage Facility Creator';
 /** Canonical public marketing origin (www). Apex host should 308 to this URL. */
@@ -87,3 +87,12 @@ export const NAV_LINKS = [
 
 export const A2P_COMPLIANCE_PARAGRAPH =
   'If a tenant provides a phone number and opts in, they may receive account-related SMS messages such as payment reminders and important updates. Message frequency varies. Message and data rates may apply. Reply STOP to opt out at any time. Reply HELP for help. Consent is not a condition of purchase.';
+
+/**
+ * Exact SMS consent checkbox text shown to tenants during onboarding/move-in.
+ * Quoted verbatim on /sms-terms and reproduced on /sms-consent-demo for
+ * carrier (A2P 10DLC) review. Keep in sync with the Flutter tenant creation
+ * and public move-in screens.
+ */
+export const SMS_CONSENT_CHECKBOX_TEXT =
+  'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help.';

@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
-import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
+import { SITE_NAME, SUPPORT_EMAIL, SMS_CONSENT_CHECKBOX_TEXT } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'SMS Terms',
@@ -35,10 +35,18 @@ export default function SmsTermsPage() {
             Before any End User receives an SMS message through the Service, they must provide express written consent. Consent is obtained via an unchecked checkbox presented to the Customer during tenant creation or onboarding. The consent checkbox text reads:
           </p>
           <blockquote className="mt-4 p-4 bg-slate-50 border-l-4 border-primary rounded-r-lg text-slate-700 italic">
-            "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help."
+            "{SMS_CONSENT_CHECKBOX_TEXT}"
           </blockquote>
           <p className="text-slate-600 mt-4">
             The checkbox is unchecked by default and must be actively checked by the Customer (on behalf of the tenant, with the tenant's knowledge) or by the tenant directly. Consent is not a condition of service.
+          </p>
+          <p className="text-slate-600 mt-4">
+            A publicly accessible demonstration of this opt-in step — as tenants see it during
+            onboarding — is available at{' '}
+            <Link href="/sms-consent-demo" className="text-primary hover:underline">
+              /sms-consent-demo
+            </Link>{' '}
+            for carrier and compliance review.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">Consent Logging</h2>

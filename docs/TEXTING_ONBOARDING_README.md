@@ -2,6 +2,39 @@
 
 This feature adds a self-serve `Enable Texting` wizard for per-facility Twilio number provisioning and A2P registration.
 
+## Campaign rejection (30909) — resubmission checklist
+
+A campaign rejected with error 30909 means carriers could not verify the Call-to-Action / opt-in
+flow. The `messageFlow` and `description` submitted with every campaign are defined as
+`A2P_CAMPAIGN_MESSAGE_FLOW` / `A2P_CAMPAIGN_DESCRIPTION` in
+`functions-messaging-twilio/src/twilioCallables.ts` and must always include:
+
+1. Every opt-in path the facility actually uses (portal checkbox, public move-in form) with the
+   exact consent checkbox language, which must match `/sms-terms` on the marketing site. Do not
+   describe opt-in paths (e.g., in-person/paper) that a facility does not really offer.
+2. The disclosures: unchecked-by-default, consent not a condition of service, message frequency
+   varies, "message and data rates may apply", STOP/HELP.
+3. Publicly reviewable URLs (the live opt-in form is behind login, so reviewers need these):
+   - `https://www.storagefacilitycreator.com/sms-consent-demo` — exact public reproduction of the
+     opt-in checkbox screen (source: `marketing/src/app/sms-consent-demo/page.tsx`).
+   - `https://www.storagefacilitycreator.com/sms-terms` — full SMS program terms.
+
+Before resubmitting:
+
+- Deploy the marketing site so both URLs above resolve publicly.
+- Deploy `functions-messaging-twilio` so the campaign submission uses the current copy.
+- Verify sample messages identify the sender (facility DBA/legal name prefix) and include
+  "Reply STOP to opt out" — the wizard defaults in `lib/screens/texting_setup_screen.dart` do this.
+- Prefer editing the rejected campaign in Twilio Console (keeps the approved brand SID) over
+  `resubmitTextingOnboarding`, which deletes and re-creates both brand and campaign.
+
+Consent-text sources that must stay in sync:
+
+- `marketing/src/config/site.ts` → `SMS_CONSENT_CHECKBOX_TEXT` (used by `/sms-terms` and
+  `/sms-consent-demo`)
+- Flutter tenant creation / public move-in consent checkbox copy
+- `A2P_CAMPAIGN_MESSAGE_FLOW` quoted checkbox text
+
 ## Facility phone numbers and A2P compliance (timing)
 
 **When the facility gets a number (Twilio purchase + Firestore):** During the wizard, **before** Twilio/carrier campaign approval finishes. Step 3 calls `provisionPhoneNumber`, which buys a US local SMS-capable number (optional area code), stores `twilioPhoneNumberSid` and `twilioPhoneNumberE164` on `facilities/{facilityId}`, ensures a per-facility Messaging Service, and attaches that number to the service. `submitTextingOnboarding` calls the same provisioning helper again; if a number already exists, it is reused.

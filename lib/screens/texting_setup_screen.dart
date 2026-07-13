@@ -120,23 +120,35 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
     return _useCases.entries.where((e) => e.value).map((e) => e.key).toList();
   }
 
+  /// Brand name carriers see in sample messages. A2P reviewers reject samples
+  /// that do not identify the sender, so prefix each sample with the facility
+  /// DBA (or legal name) entered in the business info step.
+  String _sampleBrandName() {
+    final dba = _dba.text.trim();
+    if (dba.isNotEmpty) return dba;
+    final legal = _legalName.text.trim();
+    if (legal.isNotEmpty) return legal;
+    return 'Your storage facility';
+  }
+
   List<String> _sampleMessages() {
+    final brand = _sampleBrandName();
     final samples = <String>[];
     if (_useCases['Late notices'] == true) {
       samples.add(
-          'Your account is now past due. Please make payment to avoid late fees. Reply STOP to opt out.');
+          '$brand: Your account is now past due. Please make payment to avoid late fees. Reply STOP to opt out, HELP for help.');
     }
     if (_useCases['Payment reminders'] == true) {
       samples.add(
-          'Friendly reminder: your rent payment is due soon. Reply STOP to opt out.');
+          '$brand: Friendly reminder — your rent payment is due soon. Reply STOP to opt out, HELP for help.');
     }
     if (_useCases['Gate code reminders'] == true) {
       samples.add(
-          'Reminder: your access code has been updated. Contact support for help. Reply STOP to opt out.');
+          '$brand: Your access code has been updated. Contact the office for help. Reply STOP to opt out, HELP for help.');
     }
     if (_useCases['Operational notices'] == true) {
       samples.add(
-          'Important facility notice: office hours update this week. Reply STOP to opt out.');
+          '$brand: Important facility notice — office hours update this week. Reply STOP to opt out, HELP for help.');
     }
     return samples;
   }

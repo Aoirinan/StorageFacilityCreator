@@ -1356,6 +1356,20 @@ async function submitBrandRegistrationInternal(
   return sid;
 }
 
+/**
+ * A2P 10DLC campaign copy. The `messageFlow` (a.k.a. Call-to-Action / opt-in
+ * description) is the field carriers read to verify consent. It must describe
+ * every opt-in path, the exact consent language shown to tenants, the required
+ * disclosures (frequency, "message and data rates may apply", STOP/HELP), and a
+ * publicly accessible URL. A vague value here is the #1 cause of 30909
+ * rejections ("CTA / message flow could not be verified").
+ */
+const A2P_CAMPAIGN_DESCRIPTION =
+  'Per-facility account notifications sent by self-storage operators to their own tenants: payment and past-due reminders, gate/access code information, move-in and move-out confirmations, and other operational account notices. Recipients are existing tenants who provided their mobile number and expressly opted in to text messages.';
+
+const A2P_CAMPAIGN_MESSAGE_FLOW =
+  'Tenants opt in to SMS by checking an unchecked (opt-in) consent checkbox presented during tenant onboarding/move-in — in the operator\u2019s tenant management portal at https://app.storagefacilitycreator.com and on the public move-in/rental form the operator sends to the tenant. The consent checkbox reads: "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help." The box is unchecked by default and consent is not a condition of renting a unit or of any purchase. Because the live form is behind a login, a publicly accessible reproduction of the exact opt-in screen is hosted at https://www.storagefacilitycreator.com/sms-consent-demo for reviewer verification. The opt-in language and full program terms are publicly published at https://www.storagefacilitycreator.com/sms-terms . Messages are account notifications only (payment reminders, past-due notices, access codes, move-in/move-out confirmations). Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.';
+
 async function submitCampaignInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
@@ -1377,8 +1391,8 @@ async function submitCampaignInternal(
     const campaign = await twilio.messaging.v1.campaigns.create({
       brandRegistrationSid: facilityData.twilioBrandSid,
       usecase: 'ACCOUNT_NOTIFICATION',
-      description: 'Account notifications, collections reminders, and operational notices',
-      messageFlow: 'Two-way interactions with opted-in tenants',
+      description: A2P_CAMPAIGN_DESCRIPTION,
+      messageFlow: A2P_CAMPAIGN_MESSAGE_FLOW,
       sampleMessages: campaignData.sampleMessages,
       hasEmbeddedLinks: false,
       hasEmbeddedPhone: true,
