@@ -158,15 +158,15 @@ Risk is allocated contractually to the submitting facility:
   with user identity, account, timestamp, and terms version.
 
 We are seeking coverage in part for the residual platform risk associated with hosting
-this shared data — happy to discuss the feature's controls in more detail on a call.
+this shared data. If you need more detail on any of these controls, I'm happy to answer
+further questions by email.
 
 ---
 
 Our published policies are available for your review: Terms of Service (/terms), Privacy
 Policy (/privacy), Do Not Rent Data Policy (/dnr-policy), Subprocessor List
 (/subprocessors), and Security Overview (/security) on our website. Please let me know
-if you need any supporting documentation or would like to discuss any of these controls
-on a call.
+by reply if you need any supporting documentation.
 
 Thank you,
 Russell Forsyth
