@@ -30,6 +30,11 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
       currentRoute: '/dnr',
       title: 'DNR Entry \u2022 ${entry.fullName}',
       actions: [
+        IconButton(
+          icon: const Icon(Icons.attach_file),
+          tooltip: 'Add evidence (photo or document)',
+          onPressed: _isUpdating ? null : () => _pickAndUploadEvidence(entry.id),
+        ),
         if (entry.isActive)
           PopupMenuButton<String>(
             tooltip: 'Change status',
@@ -71,12 +76,6 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
             const Text('Evidence (photos/documents)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             _buildEvidenceSection(entry.id),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: _isUpdating ? null : () => _pickAndUploadEvidence(entry.id),
-              icon: const Icon(Icons.upload_file),
-              label: const Text('Upload photo or document'),
-            ),
           ],
             ),
           ),
@@ -153,7 +152,7 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
               border: Border.all(color: AppTheme.borderLight),
             ),
             child: const Center(
-              child: Text('No evidence yet. Upload photos or documents below.'),
+              child: Text('No evidence attached to this entry.'),
             ),
           );
         }
