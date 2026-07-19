@@ -122,6 +122,9 @@ class GlobalDNREntryModel {
   final String createdByFacilityId;
   final String? createdByFacilityName;
   final String? createdByState;
+  final String? reportedByName;
+  final String? reportedByEmail;
+  final String? linkedTenantId;
   final int evidenceCount;
   final List<String>? searchTokens;
 
@@ -143,6 +146,9 @@ class GlobalDNREntryModel {
     required this.createdByFacilityId,
     this.createdByFacilityName,
     this.createdByState,
+    this.reportedByName,
+    this.reportedByEmail,
+    this.linkedTenantId,
     this.evidenceCount = 0,
     this.searchTokens,
   });
@@ -171,6 +177,9 @@ class GlobalDNREntryModel {
       createdByFacilityId: data['createdByFacilityId'] as String? ?? '',
       createdByFacilityName: data['createdByFacilityName'] as String?,
       createdByState: data['createdByState'] as String?,
+      reportedByName: data['reportedByName'] as String?,
+      reportedByEmail: data['reportedByEmail'] as String?,
+      linkedTenantId: data['linkedTenantId'] as String?,
       evidenceCount: (data['evidenceCount'] as int?) ?? 0,
       searchTokens: data['searchTokens'] != null
           ? List<String>.from(data['searchTokens'] as List)
@@ -196,6 +205,9 @@ class GlobalDNREntryModel {
       'createdByFacilityId': createdByFacilityId,
       if (createdByFacilityName != null) 'createdByFacilityName': createdByFacilityName,
       if (createdByState != null) 'createdByState': createdByState,
+      if (reportedByName != null) 'reportedByName': reportedByName,
+      if (reportedByEmail != null) 'reportedByEmail': reportedByEmail,
+      if (linkedTenantId != null) 'linkedTenantId': linkedTenantId,
       'evidenceCount': evidenceCount,
       if (searchTokens != null) 'searchTokens': searchTokens,
     };
@@ -219,6 +231,9 @@ class GlobalDNREntryModel {
     String? createdByFacilityId,
     String? createdByFacilityName,
     String? createdByState,
+    String? reportedByName,
+    String? reportedByEmail,
+    String? linkedTenantId,
     int? evidenceCount,
     List<String>? searchTokens,
   }) {
@@ -240,6 +255,9 @@ class GlobalDNREntryModel {
       createdByFacilityId: createdByFacilityId ?? this.createdByFacilityId,
       createdByFacilityName: createdByFacilityName ?? this.createdByFacilityName,
       createdByState: createdByState ?? this.createdByState,
+      reportedByName: reportedByName ?? this.reportedByName,
+      reportedByEmail: reportedByEmail ?? this.reportedByEmail,
+      linkedTenantId: linkedTenantId ?? this.linkedTenantId,
       evidenceCount: evidenceCount ?? this.evidenceCount,
       searchTokens: searchTokens ?? this.searchTokens,
     );

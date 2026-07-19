@@ -105,6 +105,9 @@ class GlobalDNRService {
     String? createdByFacilityName,
     String? createdByState,
     bool accuracyAttested = false,
+    String? reportedByName,
+    String? reportedByEmail,
+    String? linkedTenantId,
   }) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('Not signed in');
@@ -146,6 +149,9 @@ class GlobalDNRService {
       'createdByFacilityId': createdByFacilityId,
       if (createdByFacilityName != null) 'createdByFacilityName': createdByFacilityName,
       if (createdByState != null) 'createdByState': createdByState,
+      if (reportedByName != null && reportedByName.isNotEmpty) 'reportedByName': reportedByName,
+      if (reportedByEmail != null && reportedByEmail.isNotEmpty) 'reportedByEmail': reportedByEmail,
+      if (linkedTenantId != null && linkedTenantId.isNotEmpty) 'linkedTenantId': linkedTenantId,
       'evidenceCount': 0,
       'searchTokens': searchTokens,
     };

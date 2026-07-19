@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/global_dnr_model.dart';
 import '../models/permission_model.dart';
+import '../models/tenant_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
+import '../providers/tenant_provider.dart';
 import '../models/facility_model.dart';
 import '../services/dnr_terms_service.dart';
 import '../services/global_dnr_service.dart';
@@ -12,7 +14,7 @@ import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 
-/// A selectable person (facility staff member) used to auto-fill the entry form.
+/// A facility staff member selectable as the reporter ("Reported by") of an entry.
 class _StaffOption {
   final String userId;
   final String displayName;
@@ -56,6 +58,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
   List<_StaffOption> _staffOptions = [];
   bool _staffLoading = false;
   String? _selectedStaffUserId;
+  String? _selectedTenantId;
 
   @override
   void initState() {
@@ -71,12 +74,13 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
     }
   }
 
-  /// Load the facility's staff (owner/manager/employee) for the person dropdown.
+  /// Load the facility's staff (owner/manager/employee) for the "Reported by" dropdown.
   Future<void> _loadStaffOptions(String facilityId) async {
     setState(() {
       _staffLoading = true;
       _staffOptions = [];
       _selectedStaffUserId = null;
+      _selectedTenantId = null;
     });
 
     final options = <_StaffOption>[];
@@ -128,26 +132,41 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
       setState(() {
         _staffOptions = options;
         _staffLoading = false;
+        // Default the reporter to the current user.
+        final authUser = ref.read(authStateProvider).value;
+        if (authUser != null &&
+            options.any((option) => option.userId == authUser.uid)) {
+          _selectedStaffUserId = authUser.uid;
+        } else if (options.isNotEmpty) {
+          _selectedStaffUserId = options.first.userId;
+        }
       });
     }
   }
 
-  void _applyStaffSelection(String? userId) {
-    setState(() => _selectedStaffUserId = userId);
-    if (userId == null) return;
-    _StaffOption? match;
+  _StaffOption? get _selectedStaffOption {
     for (final option in _staffOptions) {
-      if (option.userId == userId) {
-        match = option;
+      if (option.userId == _selectedStaffUserId) return option;
+    }
+    return null;
+  }
+
+  /// Tenant picked as the DNR subject — auto-fills their contact details.
+  void _applyTenantSelection(String? tenantId, List<TenantModel> tenants) {
+    setState(() => _selectedTenantId =
+        (tenantId == null || tenantId.isEmpty) ? null : tenantId);
+    if (tenantId == null || tenantId.isEmpty) return;
+    TenantModel? match;
+    for (final tenant in tenants) {
+      if (tenant.id == tenantId) {
+        match = tenant;
         break;
       }
     }
     if (match == null) return;
-    _fullNameController.text = match.displayName;
+    _fullNameController.text = match.name;
     _emailController.text = match.email;
-    if (match.phone != null && match.phone!.isNotEmpty) {
-      _phoneController.text = match.phone!;
-    }
+    _phoneController.text = match.phone;
   }
 
   @override
@@ -196,6 +215,8 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
       }
       if (facility == null) throw Exception('Facility not found');
 
+      final reporter = _selectedStaffOption;
+
       await GlobalDNRService.createGlobalDNREntry(
         fullName: _fullNameController.text.trim(),
         dob: _dobController.text.trim().isEmpty ? null : _dobController.text.trim(),
@@ -209,6 +230,9 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         createdByFacilityName: facility.name,
         createdByState: null,
         accuracyAttested: _accuracyAttested,
+        reportedByName: reporter?.displayName,
+        reportedByEmail: reporter?.email,
+        linkedTenantId: _selectedTenantId,
       );
 
       if (mounted) {
@@ -296,7 +320,9 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                   ],
                   _buildFacilityDropdown(user.uid),
                   const SizedBox(height: 16),
-                  _buildPersonDropdown(),
+                  _buildReportedByDropdown(),
+                  const SizedBox(height: 12),
+                  _buildTenantLinkDropdown(),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _fullNameController,
@@ -431,56 +457,120 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
     );
   }
 
-  Widget _buildPersonDropdown() {
+  /// Who is filing this entry — attribution only, does not touch the subject fields.
+  Widget _buildReportedByDropdown() {
     if (_staffLoading) {
       return const SizedBox(height: 4, child: LinearProgressIndicator());
+    }
+    if (_staffOptions.isEmpty) {
+      return const SizedBox.shrink();
     }
 
     final style = AppTheme.dropdownItemTextStyle.copyWith(
       color: Theme.of(context).colorScheme.onSurface,
     );
 
-    final items = <DropdownMenuItem<String?>>[
-      const DropdownMenuItem<String?>(
-        value: null,
-        child: Text('Manual entry'),
-      ),
-      ..._staffOptions.map(
-        (option) => DropdownMenuItem<String?>(
-          value: option.userId,
-          child: Text(
-            '${option.displayName} (${option.roleLabel})'
-            '${option.email.isNotEmpty ? ' \u2022 ${option.email}' : ''}',
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
-          ),
-        ),
-      ),
-    ];
-
-    return DropdownButtonFormField<String?>(
+    return DropdownButtonFormField<String>(
       value: _selectedStaffUserId,
       isExpanded: true,
       decoration: const InputDecoration(
-        labelText: 'Select person',
+        labelText: 'Reported by (staff member) *',
         helperText:
-            'Choose a staff member to auto-fill their details below, or use Manual entry.',
+            'The staff member filing this entry. Recorded with the entry for accountability.',
         border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.person_search),
+        prefixIcon: Icon(Icons.badge_outlined),
       ),
-      selectedItemBuilder: (context) => [
-        Text('Manual entry', style: style, overflow: TextOverflow.ellipsis, maxLines: 1),
-        ..._staffOptions.map(
-          (option) => Text(
-            '${option.displayName} (${option.roleLabel})',
-            style: style,
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
+      selectedItemBuilder: (context) => _staffOptions
+          .map(
+            (option) => Text(
+              '${option.displayName} (${option.roleLabel})',
+              style: style,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          )
+          .toList(),
+      items: _staffOptions
+          .map(
+            (option) => DropdownMenuItem<String>(
+              value: option.userId,
+              child: Text(
+                '${option.displayName} (${option.roleLabel})'
+                '${option.email.isNotEmpty ? ' \u2022 ${option.email}' : ''}',
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          )
+          .toList(),
+      onChanged: (value) => setState(() => _selectedStaffUserId = value),
+    );
+  }
+
+  /// The tenant being placed on the DNR list — auto-fills the subject fields below.
+  Widget _buildTenantLinkDropdown() {
+    final facilityId = _selectedFacilityId;
+    if (facilityId == null || facilityId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final tenantsAsync = ref.watch(facilityTenantsProvider(facilityId));
+
+    return tenantsAsync.when(
+      data: (tenants) {
+        final style = AppTheme.dropdownItemTextStyle.copyWith(
+          color: Theme.of(context).colorScheme.onSurface,
+        );
+
+        final hasSelectedTenant = _selectedTenantId != null &&
+            tenants.any((tenant) => tenant.id == _selectedTenantId);
+        final selectedValue = hasSelectedTenant ? _selectedTenantId! : '';
+
+        return DropdownButtonFormField<String>(
+          value: selectedValue,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Link to tenant (optional)',
+            helperText:
+                'Selecting a tenant auto-fills their details below. Use Manual entry for someone who was never a tenant.',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.person_search),
           ),
-        ),
-      ],
-      items: items,
-      onChanged: _applyStaffSelection,
+          selectedItemBuilder: (context) => [
+            Text('Manual entry', style: style, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ...tenants.map(
+              (tenant) => Text(
+                tenant.name,
+                style: style,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          ],
+          items: [
+            const DropdownMenuItem<String>(
+              value: '',
+              child: Text('Manual entry'),
+            ),
+            ...tenants.map(
+              (tenant) => DropdownMenuItem<String>(
+                value: tenant.id,
+                child: Text(
+                  '${tenant.name}${tenant.unitNumber.isNotEmpty ? ' \u2022 ${tenant.unitNumber}' : ''}',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          ],
+          onChanged: (value) => _applyTenantSelection(value, tenants),
+        );
+      },
+      loading: () => const SizedBox(height: 4, child: LinearProgressIndicator()),
+      error: (e, _) => Text(
+        'Error loading tenants: $e',
+        style: const TextStyle(color: AppTheme.error),
+      ),
     );
   }
 

@@ -114,6 +114,11 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
             if (entry.notes != null && entry.notes!.isNotEmpty) _row('Notes', entry.notes!),
             const Divider(height: 24),
             _row('Created by facility', entry.createdByFacilityName ?? entry.createdByFacilityId),
+            if (entry.reportedByName != null && entry.reportedByName!.isNotEmpty)
+              _row(
+                'Reported by',
+                '${entry.reportedByName}${entry.reportedByEmail != null && entry.reportedByEmail!.isNotEmpty ? ' (${entry.reportedByEmail})' : ''}',
+              ),
             if (entry.createdByState != null && entry.createdByState!.isNotEmpty) _row('State', entry.createdByState!),
             _row('Evidence count', '${entry.evidenceCount}'),
           ],
