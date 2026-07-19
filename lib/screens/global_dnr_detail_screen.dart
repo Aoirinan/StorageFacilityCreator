@@ -1,8 +1,6 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:image_picker/image_picker.dart';
 import '../models/global_dnr_model.dart';
 import '../providers/dnr_provider.dart';
 import '../services/global_dnr_service.dart';
@@ -202,66 +200,35 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
   }
 
   Future<void> _pickAndUploadEvidence(String entryId) async {
-    final source = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Choose from gallery'),
-              onTap: () => Navigator.pop(context, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.upload_file),
-              title: const Text('Choose file'),
-              onTap: () => Navigator.pop(context, 'file'),
-            ),
-          ],
-        ),
-      ),
+    // Single picker (photos and documents alike); photo-ness is detected from
+    // the file extension so images get thumbnails and correct content types.
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: true,
+      withData: true,
     );
-    if (source == null) return;
-
-    Uint8List? bytes;
-    String filename = 'evidence';
-
-    if (source == 'gallery') {
-      final picker = ImagePicker();
-      final xfile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-      if (xfile == null) return;
-      bytes = await xfile.readAsBytes();
-      filename = xfile.name;
-    } else {
-      final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.first;
-      if (file.bytes != null) {
-        bytes = file.bytes;
-        filename = file.name;
-      } else {
-        return;
-      }
-    }
-
-    if (bytes == null || bytes.isEmpty) {
-      return;
-    }
+    if (result == null || result.files.isEmpty) return;
 
     setState(() => _isUpdating = true);
+    var added = 0;
     try {
-      await GlobalDNRService.addEvidence(
-        entryId: entryId,
-        bytes: bytes,
-        filename: filename,
-        isPhoto: source == 'gallery',
-      );
-      if (mounted) {
+      for (final file in result.files) {
+        final bytes = file.bytes;
+        if (bytes == null || bytes.isEmpty) continue;
+        await GlobalDNRService.addEvidence(
+          entryId: entryId,
+          bytes: bytes,
+          filename: file.name,
+          isPhoto: GlobalDNRService.isPhotoFilename(file.name),
+        );
+        added++;
+      }
+      if (mounted && added > 0) {
         ref.invalidate(globalDnrEvidenceProvider(entryId));
         ref.invalidate(globalDnrEntryDetailProvider(entryId));
         ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Evidence added')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(added == 1 ? 'Evidence added' : '$added evidence files added')));
       }
     } catch (e) {
       if (mounted) setState(() => _errorMessage = e.toString());

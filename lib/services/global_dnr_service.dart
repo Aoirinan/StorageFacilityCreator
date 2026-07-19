@@ -449,6 +449,12 @@ class GlobalDNRService {
     return evidenceId;
   }
 
+  /// Whether a filename looks like a photo (used to pick icon/thumbnail and content type).
+  static bool isPhotoFilename(String filename) {
+    final ext = filename.split('.').last.toLowerCase();
+    return const {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp'}.contains(ext);
+  }
+
   static String _contentTypeFromFilename(String filename) {
     final ext = filename.split('.').last.toLowerCase();
     switch (ext) {

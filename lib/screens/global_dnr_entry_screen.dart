@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 import '../models/global_dnr_model.dart';
 import '../models/permission_model.dart';
 import '../models/tenant_model.dart';
@@ -203,54 +202,25 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
   }
 
   Future<void> _pickEvidence() async {
-    final source = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Choose from gallery'),
-              onTap: () => Navigator.pop(context, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.upload_file),
-              title: const Text('Choose file'),
-              onTap: () => Navigator.pop(context, 'file'),
-            ),
-          ],
-        ),
-      ),
+    // Single picker (photos and documents alike); photo-ness is detected from
+    // the file extension so images get thumbnails and correct content types.
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: true,
+      withData: true,
     );
-    if (source == null) return;
-
-    Uint8List? bytes;
-    String filename = 'evidence';
-
-    if (source == 'gallery') {
-      final picker = ImagePicker();
-      final xfile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-      if (xfile == null) return;
-      bytes = await xfile.readAsBytes();
-      filename = xfile.name;
-    } else {
-      final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.first;
-      if (file.bytes == null) return;
-      bytes = file.bytes;
-      filename = file.name;
-    }
-
-    if (bytes == null || bytes.isEmpty) return;
+    if (result == null || result.files.isEmpty) return;
 
     setState(() {
-      _pendingEvidence.add(_PendingEvidence(
-        filename: filename,
-        bytes: bytes!,
-        isPhoto: source == 'gallery',
-      ));
+      for (final file in result.files) {
+        final bytes = file.bytes;
+        if (bytes == null || bytes.isEmpty) continue;
+        _pendingEvidence.add(_PendingEvidence(
+          filename: file.name,
+          bytes: bytes,
+          isPhoto: GlobalDNRService.isPhotoFilename(file.name),
+        ));
+      }
     });
   }
 
