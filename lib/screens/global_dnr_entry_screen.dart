@@ -1,5 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import '../models/global_dnr_model.dart';
 import '../models/permission_model.dart';
 import '../models/tenant_model.dart';
@@ -7,12 +11,27 @@ import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../models/facility_model.dart';
+import '../router/app_route.dart';
 import '../services/dnr_terms_service.dart';
 import '../services/global_dnr_service.dart';
 import '../services/facility_service.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
+import 'global_dnr_detail_screen.dart';
+
+/// Evidence file picked in the form, held in memory until the entry is created.
+class _PendingEvidence {
+  final String filename;
+  final Uint8List bytes;
+  final bool isPhoto;
+
+  const _PendingEvidence({
+    required this.filename,
+    required this.bytes,
+    required this.isPhoto,
+  });
+}
 
 /// A facility staff member selectable as the reporter ("Reported by") of an entry.
 class _StaffOption {
@@ -59,6 +78,8 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
   bool _staffLoading = false;
   String? _selectedStaffUserId;
   String? _selectedTenantId;
+  final List<_PendingEvidence> _pendingEvidence = [];
+  String? _uploadStatus;
 
   @override
   void initState() {
@@ -181,6 +202,58 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
     super.dispose();
   }
 
+  Future<void> _pickEvidence() async {
+    final source = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(context, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.upload_file),
+              title: const Text('Choose file'),
+              onTap: () => Navigator.pop(context, 'file'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    Uint8List? bytes;
+    String filename = 'evidence';
+
+    if (source == 'gallery') {
+      final picker = ImagePicker();
+      final xfile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (xfile == null) return;
+      bytes = await xfile.readAsBytes();
+      filename = xfile.name;
+    } else {
+      final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      if (file.bytes == null) return;
+      bytes = file.bytes;
+      filename = file.name;
+    }
+
+    if (bytes == null || bytes.isEmpty) return;
+
+    setState(() {
+      _pendingEvidence.add(_PendingEvidence(
+        filename: filename,
+        bytes: bytes!,
+        isPhoto: source == 'gallery',
+      ));
+    });
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     final facilityId = _selectedFacilityId;
@@ -217,7 +290,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
 
       final reporter = _selectedStaffOption;
 
-      await GlobalDNRService.createGlobalDNREntry(
+      final entryId = await GlobalDNRService.createGlobalDNREntry(
         fullName: _fullNameController.text.trim(),
         dob: _dobController.text.trim().isEmpty ? null : _dobController.text.trim(),
         phone: _phoneController.text.trim(),
@@ -235,16 +308,67 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         linkedTenantId: _selectedTenantId,
       );
 
-      if (mounted) {
-        Navigator.of(context).pop(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Global DNR entry created'), backgroundColor: AppTheme.success),
-        );
+      // Upload any evidence picked in the form (entry must exist first —
+      // Storage rules authorize uploads against the created entry).
+      var uploadFailures = 0;
+      for (var i = 0; i < _pendingEvidence.length; i++) {
+        final evidence = _pendingEvidence[i];
+        if (mounted) {
+          setState(() =>
+              _uploadStatus = 'Uploading evidence ${i + 1} of ${_pendingEvidence.length}\u2026');
+        }
+        try {
+          await GlobalDNRService.addEvidence(
+            entryId: entryId,
+            bytes: evidence.bytes,
+            filename: evidence.filename,
+            isPhoto: evidence.isPhoto,
+          );
+        } catch (e) {
+          uploadFailures++;
+          if (kDebugMode) {
+            print('⚠️ Evidence upload failed for ${evidence.filename}: $e');
+          }
+        }
       }
+
+      if (!mounted) return;
+
+      if (uploadFailures > 0) {
+        // Entry exists; let the user retry uploads from the detail screen.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Entry created, but $uploadFailures evidence file(s) failed to upload. Retry from this screen.'),
+            backgroundColor: AppTheme.warning,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+        final entry = await GlobalDNRService.getGlobalDNREntry(entryId);
+        if (!mounted) return;
+        if (entry != null) {
+          context.pushReplacement(AppRoute.legacyScreen,
+              extra: GlobalDNRDetailScreen(entry: entry));
+        } else {
+          Navigator.of(context).pop(true);
+        }
+        return;
+      }
+
+      Navigator.of(context).pop(true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_pendingEvidence.isEmpty
+              ? 'Global DNR entry created'
+              : 'Global DNR entry created with ${_pendingEvidence.length} evidence file(s)'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
     } catch (e) {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _uploadStatus = null;
           _errorMessage = e.toString();
         });
       }
@@ -397,6 +521,8 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                     maxLines: 2,
                   ),
                   const SizedBox(height: 12),
+                  _buildEvidenceSection(),
+                  const SizedBox(height: 12),
                   DropdownButtonFormField<GlobalDnrSeverity>(
                     value: _severity,
                     decoration: const InputDecoration(
@@ -429,10 +555,18 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
                     child: _isLoading
-                        ? const SizedBox(
-                            height: 24,
-                            width: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.textOnDark),
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: AppTheme.textOnDark),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(_uploadStatus ?? 'Saving\u2026'),
+                            ],
                           )
                         : const Text('Add to Global DNR'),
                   ),
@@ -453,6 +587,71 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         currentRoute: '/dnr',
         title: 'Add to Global DNR',
         child: Center(child: Text('Error: $e')),
+      ),
+    );
+  }
+
+  /// Evidence picked before saving; uploaded automatically right after the
+  /// entry is created so the whole thing feels like one step.
+  Widget _buildEvidenceSection() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.borderLight),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Evidence (photos/documents)',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Attach records supporting this entry (photos of damage, notices, etc.). '
+            'Uploaded automatically when you save.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          if (_pendingEvidence.isNotEmpty) ...[
+            ..._pendingEvidence.asMap().entries.map((mapEntry) {
+              final index = mapEntry.key;
+              final evidence = mapEntry.value;
+              return ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  evidence.isPhoto ? Icons.image : Icons.description,
+                  color: AppTheme.primaryBlue,
+                ),
+                title: Text(
+                  evidence.filename,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: const TextStyle(fontSize: 13),
+                ),
+                subtitle: Text(
+                  '${(evidence.bytes.length / 1024).toStringAsFixed(0)} KB',
+                  style: const TextStyle(fontSize: 11),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove',
+                  onPressed: _isLoading
+                      ? null
+                      : () => setState(() => _pendingEvidence.removeAt(index)),
+                ),
+              );
+            }),
+            const SizedBox(height: 4),
+          ],
+          OutlinedButton.icon(
+            onPressed: _isLoading ? null : _pickEvidence,
+            icon: const Icon(Icons.attach_file),
+            label: const Text('Attach photo or document'),
+          ),
+        ],
       ),
     );
   }
