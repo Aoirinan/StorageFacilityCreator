@@ -49,9 +49,12 @@ class _StaffOption {
   });
 }
 
-/// Form to add a new entry to the Global DNR collection (shared platform-wide across all SFC operators).
+/// Form to add a new entry to the Global DNR collection (shared platform-wide
+/// across all SFC operators), or edit an existing one when [existing] is set.
 class GlobalDNREntryScreen extends ConsumerStatefulWidget {
-  const GlobalDNREntryScreen({super.key});
+  final GlobalDNREntryModel? existing;
+
+  const GlobalDNREntryScreen({super.key, this.existing});
 
   @override
   ConsumerState<GlobalDNREntryScreen> createState() => _GlobalDNREntryScreenState();
@@ -80,10 +83,26 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
   final List<_PendingEvidence> _pendingEvidence = [];
   String? _uploadStatus;
 
+  bool get _isEditing => widget.existing != null;
+
   @override
   void initState() {
     super.initState();
-    _setDefaultFacility();
+    final existing = widget.existing;
+    if (existing != null) {
+      _fullNameController.text = existing.fullName;
+      _dobController.text = existing.dob ?? '';
+      _phoneController.text = existing.phone;
+      _emailController.text = existing.email;
+      _reasonController.text = existing.reason;
+      _notesController.text = existing.notes ?? '';
+      _idLast4Controller.text =
+          existing.driversLicenseLast4 ?? existing.idLast4 ?? '';
+      _severity = existing.severity;
+      _selectedFacilityId = existing.createdByFacilityId;
+    } else {
+      _setDefaultFacility();
+    }
   }
 
   Future<void> _setDefaultFacility() async {
@@ -250,6 +269,39 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
       _errorMessage = null;
     });
 
+    if (_isEditing) {
+      try {
+        final idLast4 = _idLast4Controller.text.trim();
+        await GlobalDNRService.updateGlobalDNREntry(
+          entryId: widget.existing!.id,
+          fullName: _fullNameController.text.trim(),
+          dob: _dobController.text.trim(),
+          phone: _phoneController.text.trim(),
+          email: _emailController.text.trim(),
+          driversLicenseLast4: idLast4.length >= 4 ? idLast4 : null,
+          reason: _reasonController.text.trim(),
+          notes: _notesController.text.trim(),
+          severity: _severity,
+        );
+        if (mounted) {
+          Navigator.of(context).pop(true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Global DNR entry updated'),
+                backgroundColor: AppTheme.success),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _errorMessage = e.toString();
+          });
+        }
+      }
+      return;
+    }
+
     try {
       final facilities = await FacilityService.getUserFacilities();
       FacilityModel? facility;
@@ -359,11 +411,11 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         }
         return ModernPageWrapper(
           currentRoute: '/dnr',
-          title: 'Add to Global DNR',
+          title: _isEditing ? 'Edit Global DNR Entry' : 'Add to Global DNR',
           actions: [
             IconButton(
               icon: const Icon(Icons.close),
-              tooltip: 'Back to DNR list',
+              tooltip: 'Back',
               onPressed: () => Navigator.of(context).pop(),
             ),
           ],
@@ -412,12 +464,14 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                       child: Text(_errorMessage!, style: const TextStyle(color: AppTheme.error)),
                     ),
                   ],
-                  _buildFacilityDropdown(user.uid),
-                  const SizedBox(height: 16),
-                  _buildReportedByDropdown(),
-                  const SizedBox(height: 12),
-                  _buildTenantLinkDropdown(),
-                  const SizedBox(height: 12),
+                  if (!_isEditing) ...[
+                    _buildFacilityDropdown(user.uid),
+                    const SizedBox(height: 16),
+                    _buildReportedByDropdown(),
+                    const SizedBox(height: 12),
+                    _buildTenantLinkDropdown(),
+                    const SizedBox(height: 12),
+                  ],
                   TextFormField(
                     controller: _fullNameController,
                     decoration: const InputDecoration(
@@ -490,8 +544,10 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                     ),
                     maxLines: 2,
                   ),
-                  const SizedBox(height: 12),
-                  _buildEvidenceSection(),
+                  if (!_isEditing) ...[
+                    const SizedBox(height: 12),
+                    _buildEvidenceSection(),
+                  ],
                   const SizedBox(height: 12),
                   DropdownButtonFormField<GlobalDnrSeverity>(
                     value: _severity,
@@ -538,7 +594,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                               Text(_uploadStatus ?? 'Saving\u2026'),
                             ],
                           )
-                        : const Text('Add to Global DNR'),
+                        : Text(_isEditing ? 'Save Changes' : 'Add to Global DNR'),
                   ),
                 ],
               ),

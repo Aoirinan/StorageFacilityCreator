@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
 import '../models/global_dnr_model.dart';
 import '../providers/dnr_provider.dart';
+import '../router/app_route.dart';
 import '../services/global_dnr_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
+import 'global_dnr_entry_screen.dart';
 
 /// Detail view for a global DNR entry: full details, evidence gallery, upload, status change.
 class GlobalDNRDetailScreen extends ConsumerStatefulWidget {
@@ -33,16 +36,36 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
           tooltip: 'Add evidence (photo or document)',
           onPressed: _isUpdating ? null : () => _pickAndUploadEvidence(entry.id),
         ),
-        if (entry.isActive)
-          PopupMenuButton<String>(
-            tooltip: 'Change status',
-            icon: const Icon(Icons.more_vert),
-            onSelected: (v) => _handleStatusChange(v),
-            itemBuilder: (context) => [
+        PopupMenuButton<String>(
+          tooltip: 'Entry actions',
+          icon: const Icon(Icons.more_vert),
+          onSelected: (v) {
+            switch (v) {
+              case 'edit':
+                _openEdit(entry);
+                break;
+              case 'delete':
+                _confirmDelete(entry);
+                break;
+              default:
+                _handleStatusChange(v);
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem(value: 'edit', child: Text('Edit entry')),
+            if (entry.isActive) ...[
               const PopupMenuItem(value: 'inactive', child: Text('Mark inactive')),
               const PopupMenuItem(value: 'appealed', child: Text('Mark appealed')),
-            ],
-          ),
+            ] else
+              const PopupMenuItem(value: 'active', child: Text('Reactivate')),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 'delete',
+              child: Text('Delete entry',
+                  style: TextStyle(color: AppTheme.error)),
+            ),
+          ],
+        ),
         IconButton(
           icon: const Icon(Icons.close),
           tooltip: 'Back to DNR list',
@@ -238,7 +261,11 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
   }
 
   Future<void> _handleStatusChange(String value) async {
-    final status = value == 'appealed' ? GlobalDnrStatus.appealed : GlobalDnrStatus.inactive;
+    final status = switch (value) {
+      'appealed' => GlobalDnrStatus.appealed,
+      'active' => GlobalDnrStatus.active,
+      _ => GlobalDnrStatus.inactive,
+    };
     setState(() => _isUpdating = true);
     try {
       await GlobalDNRService.updateGlobalDNREntry(entryId: widget.entry.id, status: status);
@@ -252,6 +279,75 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
       if (mounted) setState(() => _errorMessage = e.toString());
     } finally {
       if (mounted) setState(() => _isUpdating = false);
+    }
+  }
+
+  Future<void> _openEdit(GlobalDNREntryModel entry) async {
+    final result = await context.push(
+      AppRoute.legacyScreen,
+      extra: GlobalDNREntryScreen(existing: entry),
+    );
+    if (result != true || !mounted) return;
+
+    ref.invalidate(globalDnrEntryDetailProvider(entry.id));
+    ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider);
+    ref.invalidate(globalDnrSearchProvider);
+
+    // Refresh this screen with the updated entry (widget.entry is stale).
+    final updated = await GlobalDNRService.getGlobalDNREntry(entry.id);
+    if (!mounted) return;
+    if (updated != null) {
+      context.pushReplacement(AppRoute.legacyScreen,
+          extra: GlobalDNRDetailScreen(entry: updated));
+    } else {
+      Navigator.of(context).pop(true);
+    }
+  }
+
+  Future<void> _confirmDelete(GlobalDNREntryModel entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete DNR entry'),
+        content: Text(
+            'Permanently delete "${entry.fullName}" from the Global DNR list?\n\n'
+            'This removes the entry and all attached evidence for every facility on the platform, and cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: AppTheme.textOnDark,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isUpdating = true);
+    try {
+      await GlobalDNRService.deleteGlobalDNREntry(entry.id);
+      if (mounted) {
+        ref.invalidate(globalDnrEntriesFromGlobalCollectionProvider);
+        ref.invalidate(globalDnrSearchProvider);
+        Navigator.of(context).pop(true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('"${entry.fullName}" deleted from Global DNR')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isUpdating = false;
+          _errorMessage = e.toString();
+        });
+      }
     }
   }
 }
