@@ -34,16 +34,46 @@ class DNRListScreen extends ConsumerStatefulWidget {
   ConsumerState<DNRListScreen> createState() => _DNRListScreenState();
 }
 
+/// DNR access levels resolved once per screen (not per rebuild), so typing in
+/// the search box doesn't re-trigger async checks and steal focus.
+enum _DnrAccess { noPremium, needsTerms, granted }
+
 class _DNRListScreenState extends ConsumerState<DNRListScreen> {
   final TextEditingController _searchController = TextEditingController();
   String? _selectedFacilityId;
   bool _showArchived = false;
+  Future<_DnrAccess>? _accessFuture;
+  String? _accessFutureUserId;
 
   @override
   void initState() {
     super.initState();
     _selectedFacilityId = widget.facilityId;
     _runBackfillIfNeeded();
+  }
+
+  Future<_DnrAccess> _resolveAccess(String userId) async {
+    final hasPremium = await _checkPremiumAccess(userId);
+    if (!hasPremium) return _DnrAccess.noPremium;
+    final termsAccepted = await DnrTermsService.hasAccepted();
+    if (!termsAccepted) return _DnrAccess.needsTerms;
+    return _DnrAccess.granted;
+  }
+
+  /// Cached access future — recomputed only on first build, user change, or
+  /// explicit refresh (e.g. after accepting the DNR terms).
+  Future<_DnrAccess> _accessFutureFor(String userId) {
+    if (_accessFuture == null || _accessFutureUserId != userId) {
+      _accessFutureUserId = userId;
+      _accessFuture = _resolveAccess(userId);
+    }
+    return _accessFuture!;
+  }
+
+  void _refreshAccess() {
+    setState(() {
+      _accessFuture = null;
+    });
   }
   
   Future<void> _runBackfillIfNeeded() async {
@@ -108,35 +138,23 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
   }
 
   Widget _buildBodyWithPremiumCheck(BuildContext context, String userId) {
-    return FutureBuilder(
-      future: _checkPremiumAccess(userId),
+    // The future is cached in state — creating it inline on every build made
+    // each keystroke (setState) flash a loading spinner and drop text focus.
+    return FutureBuilder<_DnrAccess>(
+      future: _accessFutureFor(userId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final hasAccess = snapshot.data ?? false;
-        if (!hasAccess) {
-          return _buildUpgradePrompt(context);
-        }
-
-        // Premium OK — also require one-time DNR terms acceptance (participation),
-        // which Firestore rules enforce for all shared DNR reads.
-        return FutureBuilder(
-          future: DnrTermsService.hasAccepted(),
-          builder: (context, termsSnapshot) {
-            if (termsSnapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final termsAccepted = termsSnapshot.data ?? false;
-            if (!termsAccepted) {
-              return _buildTermsAcceptancePrompt(context);
-            }
-
+        switch (snapshot.data ?? _DnrAccess.noPremium) {
+          case _DnrAccess.noPremium:
+            return _buildUpgradePrompt(context);
+          case _DnrAccess.needsTerms:
+            return _buildTermsAcceptancePrompt(context);
+          case _DnrAccess.granted:
             return _buildBody(userId);
-          },
-        );
+        }
       },
     );
   }
@@ -174,7 +192,7 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
               onPressed: () async {
                 final accepted = await DnrTermsService.ensureAccepted(context);
                 if (accepted && mounted) {
-                  setState(() {});
+                  _refreshAccess();
                 }
               },
               icon: const Icon(Icons.check_circle_outline),
