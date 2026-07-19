@@ -1,18 +1,18 @@
 /// Fallback app version when [PackageInfo] is unavailable (tests, early frame).
 /// **Keep in sync with `pubspec.yaml`** `version:` line (`major.minor.patch+build`).
 class AppVersion {
-  static const String version = '2.10.70';
+  static const String version = '2.11.0';
 
-  static const String buildNumber = '20260617';
+  static const String buildNumber = '20260718';
 
   static const String fullVersion = '$version+$buildNumber';
 
-  static const String deploymentDate = '2026-06-17';
+  static const String deploymentDate = '2026-07-18';
   static const String deploymentTime =
-      'Regression coverage, portal payments, facility stats healing, rent payments hub, super admin platform tools, neutral compare page, and IP-safe positioning cleanup.';
+      'DNR compliance release: accuracy attestation, participation terms gating, superadmin DNR moderation tab, modernized DNR screens, and audit-logged DNR changes.';
 
   static const String featureTag =
-      'Rent payments shell; Firestore index UX; Stripe Connect checklist; platform reset tab; facility stats fixes.';
+      'DNR attestation + participation gate; DNR moderation tab; staff person picker; modern DNR entry/detail UI; single facility selector.';
 
   static String get displayVersion => 'v$version (Build $buildNumber)';
 
