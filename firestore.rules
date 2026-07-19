@@ -1277,14 +1277,13 @@ service cloud.firestore {
     // Collection group query for DNR entries across all facilities
     // Business requirement: participating facilities see DNR entries from other facilities.
     // Cross-facility visibility is limited to DNR participants (active paid subscription
-    // + recorded DNR terms acceptance); a facility can always read its OWN entries via
-    // the facility-scoped rule above regardless of participation.
+    // + recorded DNR terms acceptance) and super admins; a facility can always read its
+    // OWN entries via the facility-scoped rule above regardless of participation.
+    // NOTE: no conditions on `path` here — collectionGroup() queries cannot evaluate
+    // path-based conditions and fail closed with permission-denied. 'dnr' subcollections
+    // only exist under facilities/{facilityId}, so the auth gate alone is sufficient.
     match /{path=**}/dnr/{dnrId} {
-      // The path pattern matches any document in facilities/{facilityId}/dnr/{dnrId}
-      allow read: if (isSuperAdmin() || isDnrParticipant()) && (
-        path.matches('facilities/.*') ||
-        path.matches('.*/facilities/.*')
-      );
+      allow read: if isSuperAdmin() || isDnrParticipant();
     }
     
     // REMOVED: Global contract_templates collection (security issue - line 655-658)
