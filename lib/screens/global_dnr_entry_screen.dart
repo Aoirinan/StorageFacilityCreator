@@ -1,13 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/global_dnr_model.dart';
+import '../models/permission_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../models/facility_model.dart';
 import '../services/dnr_terms_service.dart';
 import '../services/global_dnr_service.dart';
 import '../services/facility_service.dart';
+import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/modern_page_wrapper.dart';
+
+/// A selectable person (facility staff member) used to auto-fill the entry form.
+class _StaffOption {
+  final String userId;
+  final String displayName;
+  final String email;
+  final String? phone;
+  final String roleLabel;
+
+  const _StaffOption({
+    required this.userId,
+    required this.displayName,
+    required this.email,
+    this.phone,
+    required this.roleLabel,
+  });
+}
 
 /// Form to add a new entry to the Global DNR collection (shared platform-wide across all SFC operators).
 class GlobalDNREntryScreen extends ConsumerStatefulWidget {
@@ -33,6 +53,10 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
   bool _isLoading = false;
   String? _errorMessage;
 
+  List<_StaffOption> _staffOptions = [];
+  bool _staffLoading = false;
+  String? _selectedStaffUserId;
+
   @override
   void initState() {
     super.initState();
@@ -41,7 +65,89 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
 
   Future<void> _setDefaultFacility() async {
     final fid = await GlobalDNRService.getCurrentUserFirstFacilityId();
-    if (mounted && fid != null) setState(() => _selectedFacilityId = fid);
+    if (mounted && fid != null) {
+      setState(() => _selectedFacilityId = fid);
+      _loadStaffOptions(fid);
+    }
+  }
+
+  /// Load the facility's staff (owner/manager/employee) for the person dropdown.
+  Future<void> _loadStaffOptions(String facilityId) async {
+    setState(() {
+      _staffLoading = true;
+      _staffOptions = [];
+      _selectedStaffUserId = null;
+    });
+
+    final options = <_StaffOption>[];
+    final seenUserIds = <String>{};
+
+    try {
+      // Current user first — always available even if profile reads are restricted.
+      final authUser = ref.read(authStateProvider).value;
+      if (authUser != null) {
+        final profile = await PermissionService.getUserProfile(authUser.uid);
+        options.add(_StaffOption(
+          userId: authUser.uid,
+          displayName: (profile?['displayName'] as String?)?.trim().isNotEmpty == true
+              ? (profile!['displayName'] as String).trim()
+              : (authUser.email ?? 'Me').split('@').first,
+          email: authUser.email ?? (profile?['email'] as String? ?? ''),
+          phone: (profile?['phoneNumber'] ?? profile?['phone']) as String?,
+          roleLabel: 'You',
+        ));
+        seenUserIds.add(authUser.uid);
+      }
+
+      // Other staff with roles at this facility.
+      final userRoles = await PermissionService.getFacilityUsers(facilityId);
+      for (final userRole in userRoles) {
+        if (userRole.userId.isEmpty || seenUserIds.contains(userRole.userId)) {
+          continue;
+        }
+        seenUserIds.add(userRole.userId);
+        final profile = await PermissionService.getUserProfile(userRole.userId);
+        final email = profile?['email'] as String? ?? '';
+        final displayName =
+            (profile?['displayName'] as String?)?.trim().isNotEmpty == true
+                ? (profile!['displayName'] as String).trim()
+                : (email.isNotEmpty ? email.split('@').first : 'Staff member');
+        options.add(_StaffOption(
+          userId: userRole.userId,
+          displayName: displayName,
+          email: email,
+          phone: (profile?['phoneNumber'] ?? profile?['phone']) as String?,
+          roleLabel: userRole.roleType.displayName,
+        ));
+      }
+    } catch (_) {
+      // Staff lookup is best-effort; manual entry always remains available.
+    }
+
+    if (mounted) {
+      setState(() {
+        _staffOptions = options;
+        _staffLoading = false;
+      });
+    }
+  }
+
+  void _applyStaffSelection(String? userId) {
+    setState(() => _selectedStaffUserId = userId);
+    if (userId == null) return;
+    _StaffOption? match;
+    for (final option in _staffOptions) {
+      if (option.userId == userId) {
+        match = option;
+        break;
+      }
+    }
+    if (match == null) return;
+    _fullNameController.text = match.displayName;
+    _emailController.text = match.email;
+    if (match.phone != null && match.phone!.isNotEmpty) {
+      _phoneController.text = match.phone!;
+    }
   }
 
   @override
@@ -127,22 +233,28 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
     return authState.when(
       data: (user) {
         if (user == null) {
-          return Scaffold(
-            appBar: AppBar(title: const Text('Add to Global DNR')),
-            body: const Center(child: Text('Please sign in to add a Global DNR entry.')),
+          return ModernPageWrapper(
+            currentRoute: '/dnr',
+            title: 'Add to Global DNR',
+            child: const Center(child: Text('Please sign in to add a Global DNR entry.')),
           );
         }
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Add to Global DNR'),
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back),
+        return ModernPageWrapper(
+          currentRoute: '/dnr',
+          title: 'Add to Global DNR',
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Back to DNR list',
               onPressed: () => Navigator.of(context).pop(),
             ),
-          ),
-          body: SingleChildScrollView(
+          ],
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(16),
-            child: Form(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: Form(
               key: _formKey,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -184,6 +296,8 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                   ],
                   _buildFacilityDropdown(user.uid),
                   const SizedBox(height: 16),
+                  _buildPersonDropdown(),
+                  const SizedBox(height: 12),
                   TextFormField(
                     controller: _fullNameController,
                     decoration: const InputDecoration(
@@ -298,15 +412,75 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                   ),
                 ],
               ),
+                ),
+              ),
             ),
           ),
         );
       },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (e, _) => Scaffold(
-        appBar: AppBar(title: const Text('Add to Global DNR')),
-        body: Center(child: Text('Error: $e')),
+      loading: () => const ModernPageWrapper(
+        currentRoute: '/dnr',
+        title: 'Add to Global DNR',
+        child: Center(child: CircularProgressIndicator()),
       ),
+      error: (e, _) => ModernPageWrapper(
+        currentRoute: '/dnr',
+        title: 'Add to Global DNR',
+        child: Center(child: Text('Error: $e')),
+      ),
+    );
+  }
+
+  Widget _buildPersonDropdown() {
+    if (_staffLoading) {
+      return const SizedBox(height: 4, child: LinearProgressIndicator());
+    }
+
+    final style = AppTheme.dropdownItemTextStyle.copyWith(
+      color: Theme.of(context).colorScheme.onSurface,
+    );
+
+    final items = <DropdownMenuItem<String?>>[
+      const DropdownMenuItem<String?>(
+        value: null,
+        child: Text('Manual entry'),
+      ),
+      ..._staffOptions.map(
+        (option) => DropdownMenuItem<String?>(
+          value: option.userId,
+          child: Text(
+            '${option.displayName} (${option.roleLabel})'
+            '${option.email.isNotEmpty ? ' \u2022 ${option.email}' : ''}',
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
+      ),
+    ];
+
+    return DropdownButtonFormField<String?>(
+      value: _selectedStaffUserId,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Select person',
+        helperText:
+            'Choose a staff member to auto-fill their details below, or use Manual entry.',
+        border: OutlineInputBorder(),
+        prefixIcon: Icon(Icons.person_search),
+      ),
+      selectedItemBuilder: (context) => [
+        Text('Manual entry', style: style, overflow: TextOverflow.ellipsis, maxLines: 1),
+        ..._staffOptions.map(
+          (option) => Text(
+            '${option.displayName} (${option.roleLabel})',
+            style: style,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
+      ],
+      items: items,
+      onChanged: _applyStaffSelection,
     );
   }
 
@@ -331,7 +505,10 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         final value = _selectedFacilityId ?? facilities.first.id;
         if (_selectedFacilityId == null && facilities.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _selectedFacilityId = facilities.first.id);
+            if (mounted) {
+              setState(() => _selectedFacilityId = facilities.first.id);
+              _loadStaffOptions(facilities.first.id);
+            }
           });
         }
         final style = AppTheme.dropdownItemTextStyle.copyWith(
@@ -348,7 +525,12 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
               .map((f) => Text(f.name, style: style, overflow: TextOverflow.ellipsis, maxLines: 1))
               .toList(),
           items: facilities.map((f) => DropdownMenuItem(value: f.id, child: Text(f.name))).toList(),
-          onChanged: (v) => setState(() => _selectedFacilityId = v),
+          onChanged: (v) {
+            setState(() => _selectedFacilityId = v);
+            if (v != null && v.isNotEmpty) {
+              _loadStaffOptions(v);
+            }
+          },
         );
       },
       loading: () => const SizedBox(height: 4, child: LinearProgressIndicator()),

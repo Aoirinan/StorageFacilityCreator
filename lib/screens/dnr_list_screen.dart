@@ -377,59 +377,62 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
           );
         }
 
-        final selectedValue = _selectedFacilityId ?? '';
-        final items = <DropdownMenuItem<String>>[
-          DropdownMenuItem(
-            value: '',
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'All Facilities',
-                style: AppTheme.dropdownItemTextStyle,
-                softWrap: true,
-              ),
-            ),
+        // Scope banner only — the facility is switched with the single selector in
+        // the top bar (FacilitySwitcher). A second dropdown here previously
+        // duplicated it and rendered a broken, overlapping menu.
+        String scopeName = 'All Facilities';
+        if (_selectedFacilityId != null) {
+          for (final facility in facilities) {
+            if (facility.id == _selectedFacilityId) {
+              scopeName = facility.name;
+              break;
+            }
+          }
+        }
+        final isGlobalScope = _selectedFacilityId == null;
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: AppTheme.primaryBlue.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.25)),
           ),
-          ...facilities.map(
-            (facility) => DropdownMenuItem(
-              value: facility.id,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text(
-                  facility.name,
-                  style: AppTheme.dropdownItemTextStyle,
-                  softWrap: true,
+          child: Row(
+            children: [
+              Icon(
+                isGlobalScope ? Icons.public : Icons.business,
+                size: 20,
+                color: AppTheme.primaryBlue,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Viewing: $scopeName',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                    Text(
+                      isGlobalScope
+                          ? 'Platform-wide shared list. Switch facilities using the selector in the top bar.'
+                          : 'This facility\'s own list. Switch to "All Facilities" in the top bar for the shared list.',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
+            ],
           ),
-        ];
-
-        final colorScheme = Theme.of(context).colorScheme;
-        final style = AppTheme.dropdownItemTextStyle.copyWith(color: colorScheme.onSurface);
-        return DropdownButtonFormField<String>(
-          value: selectedValue,
-          isExpanded: true,
-          decoration: InputDecoration(
-            labelText: 'Facility',
-            prefixIcon: const Icon(Icons.business),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-          selectedItemBuilder: (context) => [
-            Text('All Facilities', style: style, overflow: TextOverflow.ellipsis, maxLines: 1),
-            ...facilities.map((f) => Text(f.name, style: style, overflow: TextOverflow.ellipsis, maxLines: 1)),
-          ],
-          items: items,
-          onChanged: (value) {
-            setState(() {
-              _selectedFacilityId = value != null && value.isNotEmpty ? value : null;
-            });
-            ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(
-              value != null && value.isNotEmpty ? value : null,
-            );
-          },
         );
       },
       loading: () => const SizedBox(

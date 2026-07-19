@@ -942,9 +942,22 @@ Enter this code in the SFC App to complete the DNR entry creation.
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
+    return ModernPageWrapper(
+      currentRoute: '/dnr',
+      title: widget.dnrEntry != null ? 'Edit DNR Entry' : 'Add DNR Entry',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: 'Back to DNR list',
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ],
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
-        child: Form(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1210,8 +1223,11 @@ Enter this code in the SFC App to complete the DNR entry creation.
               const SizedBox(height: 120),
             ],
           ),
+            ),
+          ),
         ),
-      );
+      ),
+    );
   }
 
 }

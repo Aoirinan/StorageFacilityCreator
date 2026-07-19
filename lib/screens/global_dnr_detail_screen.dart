@@ -7,6 +7,7 @@ import '../models/global_dnr_model.dart';
 import '../providers/dnr_provider.dart';
 import '../services/global_dnr_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/modern_page_wrapper.dart';
 
 /// Detail view for a global DNR entry: full details, evidence gallery, upload, status change.
 class GlobalDNRDetailScreen extends ConsumerStatefulWidget {
@@ -25,27 +26,32 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final entry = widget.entry;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(entry.fullName),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
+    return ModernPageWrapper(
+      currentRoute: '/dnr',
+      title: 'DNR Entry \u2022 ${entry.fullName}',
+      actions: [
+        if (entry.isActive)
+          PopupMenuButton<String>(
+            tooltip: 'Change status',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) => _handleStatusChange(v),
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'inactive', child: Text('Mark inactive')),
+              const PopupMenuItem(value: 'appealed', child: Text('Mark appealed')),
+            ],
+          ),
+        IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: 'Back to DNR list',
           onPressed: () => Navigator.of(context).pop(),
         ),
-        actions: [
-          if (entry.isActive)
-            PopupMenuButton<String>(
-              onSelected: (v) => _handleStatusChange(v),
-              itemBuilder: (context) => [
-                const PopupMenuItem(value: 'inactive', child: Text('Mark inactive')),
-                const PopupMenuItem(value: 'appealed', child: Text('Mark appealed')),
-              ],
-            ),
-        ],
-      ),
-      body: SingleChildScrollView(
+      ],
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
-        child: Column(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 900),
+            child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (_errorMessage != null) ...[
@@ -72,6 +78,8 @@ class _GlobalDNRDetailScreenState extends ConsumerState<GlobalDNRDetailScreen> {
               label: const Text('Upload photo or document'),
             ),
           ],
+            ),
+          ),
         ),
       ),
     );
