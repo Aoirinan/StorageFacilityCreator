@@ -889,9 +889,9 @@ service cloud.firestore {
         }
       }
 
-      match /dnr/{dnrId} {
-        allow read, write: if isFacilityOwnerOrManager(facilityId);
-      }
+      // DNR rules live in the granular "DNR Entries - facility-scoped (Phase 2)" block below.
+      // (A broad read/write rule here would OR with that block and bypass its create-time
+      // attestation requirement, so keep this spot rule-free.)
 
       // Shared team notes — readable by everyone who can use facility lists; editable by staff
       match /team_notes/{noteId} {
@@ -1238,14 +1238,24 @@ service cloud.firestore {
       }
 
       // DNR Entries - facility-scoped (Phase 2)
+      // Super admins have full read/update/delete for platform moderation
+      // (Do Not Rent Data Policy: SFC may deactivate or remove any entry).
       match /dnr/{dnrId} {
-        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
         allow create: if isFacilityOwnerOrManager(facilityId) &&
           request.resource.data.facilityId == facilityId &&
-          request.resource.data.keys().hasAll(['name', 'active', 'addedAt', 'addedByUid', 'facilityId']);
-        allow update: if isFacilityOwnerOrManager(facilityId) &&
-          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
-        allow delete: if isFacilityOwnerOrManager(facilityId);
+          request.resource.data.keys().hasAll(['name', 'active', 'addedAt', 'addedByUid', 'facilityId']) &&
+          // Submitter must attest the entry is factual, supported by records,
+          // and not based on a protected characteristic (recorded with the entry).
+          request.resource.data.accuracyAttestation == true &&
+          // Entries are shared with other participating facilities, so the
+          // submitter must be a registered DNR participant (terms + paid sub).
+          (isSuperAdmin() || isDnrParticipant());
+        allow update: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId)
+        );
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
     }
     
@@ -1265,13 +1275,13 @@ service cloud.firestore {
     }
 
     // Collection group query for DNR entries across all facilities
-    // Business requirement: All facilities should see DNR entries from other facilities
-    // This allows cross-facility DNR visibility for all authenticated users with subscriptions
+    // Business requirement: participating facilities see DNR entries from other facilities.
+    // Cross-facility visibility is limited to DNR participants (active paid subscription
+    // + recorded DNR terms acceptance); a facility can always read its OWN entries via
+    // the facility-scoped rule above regardless of participation.
     match /{path=**}/dnr/{dnrId} {
-      // Allow read if path contains 'facilities/' and user is authenticated
-      // This enables global DNR visibility across all facilities via collection group queries
       // The path pattern matches any document in facilities/{facilityId}/dnr/{dnrId}
-      allow read: if request.auth != null && (
+      allow read: if (isSuperAdmin() || isDnrParticipant()) && (
         path.matches('facilities/.*') ||
         path.matches('.*/facilities/.*')
       );
@@ -1294,9 +1304,91 @@ service cloud.firestore {
     // See account-scoped security rules below
     
     // -------------------------------------------------------------------------
+    // DNR participation (Do Not Rent terms acceptance + subscription gate)
+    // Shared DNR data (global_dnr_entries and cross-facility dnr collection-group
+    // reads) is limited to "participating" operators: users on an active paid
+    // subscription who have recorded a one-time acceptance of the DNR terms.
+    // The acceptance doc is validated against the subscription at create time and
+    // the subscription is re-checked on every read, so lapsed accounts lose access.
+    // -------------------------------------------------------------------------
+    function creatorAccountActiveOwnedBy(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        creatorAccountData(accountId).ownerUid == request.auth.uid &&
+        creatorAccountData(accountId).subscriptionStatus == 'active';
+    }
+
+    function creatorAccountActive(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        creatorAccountData(accountId).subscriptionStatus == 'active';
+    }
+
+    // DNR is premium-only: paid 'active' subscription (no trial), matching the
+    // app's hasPremiumAccess. Accepts either a per-facility platform sub or the
+    // linked creator account.
+    function dnrFacilityHasPremium(facilityId) {
+      return facilityExists(facilityId) && (
+        (
+          'platformSubscriptionStatus' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).platformSubscriptionStatus == 'active'
+        ) ||
+        (
+          'facilityCreatorAccountId' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).facilityCreatorAccountId is string &&
+          facilityDoc(facilityId).facilityCreatorAccountId.size() > 0 &&
+          creatorAccountActive(facilityDoc(facilityId).facilityCreatorAccountId)
+        )
+      );
+    }
+
+    function dnrParticipantDoc() {
+      return get(/databases/$(database)/documents/dnr_participants/$(request.auth.uid)).data;
+    }
+
+    function isDnrParticipant() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/dnr_participants/$(request.auth.uid)) &&
+        dnrParticipantDoc().accepted == true &&
+        (
+          (
+            'accountId' in dnrParticipantDoc() &&
+            dnrParticipantDoc().accountId is string &&
+            creatorAccountActive(dnrParticipantDoc().accountId)
+          ) ||
+          (
+            'facilityId' in dnrParticipantDoc() &&
+            dnrParticipantDoc().facilityId is string &&
+            dnrFacilityHasPremium(dnrParticipantDoc().facilityId)
+          )
+        );
+    }
+
+    match /dnr_participants/{uid} {
+      allow read: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == uid);
+      // Acceptance can only be recorded by the user themselves, and only while
+      // they hold an active paid subscription (via their own creator account or
+      // a facility they own/manage).
+      allow create, update: if isAuthenticated() && request.auth.uid == uid
+        && request.resource.data.accepted == true
+        && request.resource.data.termsVersion is string
+        && (
+          (
+            request.resource.data.accountId is string &&
+            creatorAccountActiveOwnedBy(request.resource.data.accountId)
+          ) ||
+          (
+            request.resource.data.facilityId is string &&
+            isFacilityOwnerOrManager(request.resource.data.facilityId) &&
+            dnrFacilityHasPremium(request.resource.data.facilityId)
+          )
+        );
+      allow delete: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == uid);
+    }
+
+    // -------------------------------------------------------------------------
     // Global DNR (Do Not Rent) - platform-wide across all SFC operator accounts
     // ADDITIVE: New collection only; does not change facility-scoped DNR rules.
-    // Read: any authenticated user (entire platform shares one list).
+    // Read: participating operators only (active paid subscription + recorded
+    // DNR terms acceptance) and super admins.
     // Write: facility owner/manager/admin only (enforced via createdByFacilityId).
     // -------------------------------------------------------------------------
     function isCreatorOrCreatorFacilityStaff(entryData) {
@@ -1306,18 +1398,23 @@ service cloud.firestore {
       );
     }
     match /global_dnr_entries/{entryId} {
-      allow read: if isAuthenticated();
+      allow read: if isSuperAdmin() || isDnrParticipant();
       allow create: if isAuthenticated()
         && request.resource.data.createdByUserId == request.auth.uid
         && request.resource.data.createdByFacilityId is string
         && request.resource.data.createdByFacilityId.size() > 0
         && isFacilityOwnerOrManager(request.resource.data.createdByFacilityId)
         && request.resource.data.reason is string
-        && request.resource.data.reason.size() > 0;
+        && request.resource.data.reason.size() > 0
+        // Submitter must attest the entry is factual, supported by records,
+        // and not based on a protected characteristic (recorded with the entry).
+        && request.resource.data.accuracyAttestation == true
+        // Submitter must be a registered DNR participant (terms accepted + paid sub).
+        && (isSuperAdmin() || isDnrParticipant());
       allow update, delete: if isSuperAdmin()
         || (resource != null && isCreatorOrCreatorFacilityStaff(resource.data));
       match /evidence/{evidenceId} {
-        allow read: if isAuthenticated();
+        allow read: if isSuperAdmin() || isDnrParticipant();
         allow create, update, delete: if isSuperAdmin()
           || (get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByUserId == request.auth.uid
               || isFacilityOwnerOrManager(get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByFacilityId));

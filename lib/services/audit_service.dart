@@ -156,7 +156,7 @@ class AuditService {
 
   static Future<void> logDNRAction({
     required String facilityId,
-    required String action, // 'dnr.create', 'dnr.toggle', 'dnr.override'
+    required String action, // 'dnr.create', 'dnr.update', 'dnr.delete', 'dnr.toggle', 'dnr.override', 'dnr.global.*'
     required String targetId, // DNR entry ID
     Map<String, dynamic>? details,
   }) async {

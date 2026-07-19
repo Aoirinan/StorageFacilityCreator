@@ -26,7 +26,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              'Last updated: January 28, 2026',
+              'Last updated: July 13, 2026',
               style: TextStyle(
                 fontSize: 14,
                 color: AppTheme.textSecondary,
@@ -125,7 +125,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '8. Limitation of Liability',
+              '8. Do Not Rent Entries',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -133,12 +133,38 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 8),
             Text(
-              'The service is provided "as is" without warranties of any kind. We shall not be liable for any indirect, incidental, special, or consequential damages.',
+              'If you use the Do Not Rent (DNR) features, you are solely responsible for the entries you or your staff submit. Entries must be factual, based on your facility\'s direct business experience, supported by your internal records, and lawful to share. You must not create entries based on race, color, religion, national origin, sex, familial status, disability, age, or any other protected characteristic, and you must promptly correct or deactivate entries you learn are inaccurate or unsupported.\n\nEntries created by other customers are provided "as is"; Storage Facility Creator does not verify, endorse, or adopt them. Storage Facility Creator is not a consumer reporting agency and DNR entries are not consumer reports under the Fair Credit Reporting Act. See the Do Not Rent Data Policy on our website for entry requirements and the dispute and correction process.',
               style: TextStyle(fontSize: 16),
             ),
             SizedBox(height: 16),
             Text(
-              '9. Termination',
+              '9. Limitation of Liability',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'The service is provided "as is" and "as available" without warranties of any kind, express or implied, including warranties of merchantability, fitness for a particular purpose, and non-infringement, to the maximum extent permitted by applicable law. We shall not be liable for any indirect, incidental, special, consequential, or punitive damages, including loss of profits, data, or business opportunities. Our total aggregate liability for any claim arising from the service is limited to the amount you paid us in the twelve (12) months preceding the claim. Some jurisdictions do not allow these limitations; in such cases, our liability is limited to the maximum extent permitted.',
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '10. Indemnification',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'You agree to indemnify and hold harmless Storage Facility Creator and its officers, employees, and agents from any claims, damages, losses, or expenses (including reasonable attorneys\' fees) arising from: (a) your use of the service in violation of these terms; (b) your violation of applicable law; (c) your customer data, including Do Not Rent entries submitted by you or your staff; or (d) your messaging activities, including any failure to obtain required consents.',
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Text(
+              '11. Termination',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -151,7 +177,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '10. Changes to Terms',
+              '12. Changes to Terms',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -164,7 +190,7 @@ class TermsScreen extends StatelessWidget {
             ),
             SizedBox(height: 16),
             Text(
-              '11. Contact Information',
+              '13. Contact Information',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,

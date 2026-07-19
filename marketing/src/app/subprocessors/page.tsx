@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   description: `Third-party subprocessors used by ${SITE_NAME} to deliver the Service.`,
 };
 
-const LAST_UPDATED = 'February 26, 2026';
+const LAST_UPDATED = 'July 13, 2026';
 
 const SUBPROCESSORS = [
   {
@@ -38,6 +38,20 @@ const SUBPROCESSORS = [
     website: 'https://sendgrid.com',
     purpose: 'Transactional and notification email delivery',
     dataCategories: 'Recipient email addresses, email message content, delivery status',
+    location: 'United States',
+  },
+  {
+    vendor: 'OpenAI',
+    website: 'https://openai.com',
+    purpose: 'Optional in-app AI assistant for facility staff questions',
+    dataCategories: 'Staff-submitted assistant messages and facility name; no bulk tenant records are transmitted',
+    location: 'United States',
+  },
+  {
+    vendor: 'Intuit (QuickBooks Online)',
+    website: 'https://quickbooks.intuit.com',
+    purpose: 'Optional accounting sync for Customers who connect their own QuickBooks account',
+    dataCategories: 'Tenant name, email, phone, and invoice/payment records synced at the Customer\u2019s direction',
     location: 'United States',
   },
 ];

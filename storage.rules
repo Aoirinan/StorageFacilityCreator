@@ -40,6 +40,14 @@ service firebase.storage {
       );
     }
 
+    // Shared DNR evidence readable only by participating operators (recorded DNR
+    // terms acceptance + active paid subscription), mirroring firestore.rules.
+    function isDnrParticipant() {
+      return signedIn() &&
+        firestore.exists(/databases/(default)/documents/dnr_participants/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/dnr_participants/$(request.auth.uid)).data.accepted == true;
+    }
+
     function globalDnrEntryAllowsEvidenceWrite(entryId) {
       return firestore.exists(/databases/(default)/documents/global_dnr_entries/$(entryId)) &&
         (
@@ -61,7 +69,7 @@ service firebase.storage {
     // Global DNR evidence — aligned with Firestore global_dnr_entries/{entryId}/evidence rules.
     // Path: dnrEvidence/{entryId}/{evidenceId}/{filename}
     match /dnrEvidence/{entryId}/{allPaths=**} {
-      allow read: if signedIn();
+      allow read: if isSuperAdmin() || isDnrParticipant();
       allow write: if signedIn() && (isSuperAdmin() || globalDnrEntryAllowsEvidenceWrite(entryId));
     }
 

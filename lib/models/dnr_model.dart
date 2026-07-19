@@ -14,6 +14,7 @@ class DNRModel {
   final String phone;
   final String phoneDigits;
   final String reason;
+  final String? notes;
   final bool active;
   final DateTime? expiresAt;
   final List<String>? evidenceUrls;
@@ -39,6 +40,7 @@ class DNRModel {
     required this.phone,
     required this.phoneDigits,
     required this.reason,
+    this.notes,
     required this.active,
     this.expiresAt,
     this.evidenceUrls,
@@ -71,6 +73,7 @@ class DNRModel {
       phone: e.phone,
       phoneDigits: phoneDigits,
       reason: e.reason,
+      notes: e.notes,
       active: e.isActive,
       expiresAt: null,
       evidenceUrls: null,
@@ -102,6 +105,7 @@ class DNRModel {
       phone: data['phone'] ?? '',
       phoneDigits: data['phoneDigits'] ?? '',
       reason: data['reason'] ?? '',
+      notes: data['notes'],
       active: data['active'] ?? true,
       expiresAt: data['expiresAt'] != null 
           ? (data['expiresAt'] as Timestamp).toDate()
@@ -135,6 +139,7 @@ class DNRModel {
       'phone': phone,
       'phoneDigits': phoneDigits,
       'reason': reason,
+      'notes': notes,
       'active': active,
       'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
       'evidenceUrls': evidenceUrls,
@@ -162,6 +167,7 @@ class DNRModel {
     String? phone,
     String? phoneDigits,
     String? reason,
+    String? notes,
     bool? active,
     DateTime? expiresAt,
     List<String>? evidenceUrls,
@@ -187,6 +193,7 @@ class DNRModel {
       phone: phone ?? this.phone,
       phoneDigits: phoneDigits ?? this.phoneDigits,
       reason: reason ?? this.reason,
+      notes: notes ?? this.notes,
       active: active ?? this.active,
       expiresAt: expiresAt ?? this.expiresAt,
       evidenceUrls: evidenceUrls ?? this.evidenceUrls,

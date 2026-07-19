@@ -4,6 +4,7 @@ import '../models/global_dnr_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../models/facility_model.dart';
+import '../services/dnr_terms_service.dart';
 import '../services/global_dnr_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
@@ -28,6 +29,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
 
   GlobalDnrSeverity _severity = GlobalDnrSeverity.medium;
   String? _selectedFacilityId;
+  bool _accuracyAttested = false;
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -61,6 +63,19 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
       setState(() => _errorMessage = 'Please select a facility.');
       return;
     }
+    if (!_accuracyAttested) {
+      setState(() => _errorMessage =
+          'Please confirm the accuracy attestation before adding this entry.');
+      return;
+    }
+
+    // Creating shared entries requires recorded DNR terms acceptance (rules-enforced).
+    final termsOk = await DnrTermsService.ensureAccepted(context);
+    if (!termsOk) {
+      setState(() =>
+          _errorMessage = 'DNR terms must be accepted before creating entries.');
+      return;
+    }
 
     setState(() {
       _isLoading = true;
@@ -87,6 +102,7 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
         createdByFacilityId: facilityId,
         createdByFacilityName: facility.name,
         createdByState: null,
+        accuracyAttested: _accuracyAttested,
       );
 
       if (mounted) {
@@ -134,6 +150,24 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                   const Text(
                     'This entry is visible to every Storage Facility Creator subscriber, not only your sites. Only add individuals who should not be rented to anywhere on the platform.',
                     style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.warning.withOpacity(0.08),
+                      border: Border.all(color: AppTheme.warning),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'Entries must be factual, based on your facility\'s direct business experience, and supported by '
+                      'your internal records. Entries must not be based on race, color, religion, national origin, sex, '
+                      'familial status, disability, age, or any other protected characteristic, and must comply with '
+                      'applicable privacy, housing, consumer reporting, and defamation laws. This list is not a consumer '
+                      'report and may not be used as one. Attach supporting evidence after saving. See the Do Not Rent '
+                      'Data Policy for the dispute and correction process.',
+                      style: TextStyle(fontSize: 12),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   if (_errorMessage != null) ...[
@@ -233,6 +267,18 @@ class _GlobalDNREntryScreenState extends ConsumerState<GlobalDNREntryScreen> {
                         .map((s) => DropdownMenuItem(value: s, child: Text(s.value)))
                         .toList(),
                     onChanged: (v) => setState(() => _severity = v ?? GlobalDnrSeverity.medium),
+                  ),
+                  const SizedBox(height: 12),
+                  CheckboxListTile(
+                    value: _accuracyAttested,
+                    onChanged: (v) => setState(() => _accuracyAttested = v ?? false),
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: const Text(
+                      'I attest that this entry is factual, based on this facility\'s direct business experience, '
+                      'supported by our internal records, and not based on any protected characteristic.',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    contentPadding: EdgeInsets.zero,
                   ),
                   const SizedBox(height: 24),
                   ElevatedButton(

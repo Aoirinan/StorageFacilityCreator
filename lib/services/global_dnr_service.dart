@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import '../models/global_dnr_model.dart';
+import 'audit_service.dart';
 import 'facility_service.dart';
 
 /// Service for the global DNR collection (global_dnr_entries).
@@ -103,11 +104,18 @@ class GlobalDNRService {
     required String createdByFacilityId,
     String? createdByFacilityName,
     String? createdByState,
+    bool accuracyAttested = false,
   }) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('Not signed in');
 
     if (reason.trim().isEmpty) throw Exception('Reason is required');
+
+    if (!accuracyAttested) {
+      throw Exception(
+        'You must attest that this entry is factual, supported by your records, and not based on any protected characteristic.',
+      );
+    }
 
     final now = DateTime.now();
     final searchTokens = _buildSearchTokens(
@@ -129,6 +137,10 @@ class GlobalDNRService {
       if (notes != null && notes.isNotEmpty) 'notes': notes.trim(),
       'severity': severity.value,
       'status': GlobalDnrStatus.active.value,
+      // Submitter attestation: factual, supported by records, not based on a protected characteristic.
+      'accuracyAttestation': true,
+      'attestedAt': Timestamp.fromDate(now),
+      'attestedByUid': user.uid,
       'createdAt': Timestamp.fromDate(now),
       'createdByUserId': user.uid,
       'createdByFacilityId': createdByFacilityId,
@@ -142,6 +154,18 @@ class GlobalDNRService {
     if (kDebugMode) {
       print('✅ [GlobalDNR] Created entry ${docRef.id}');
     }
+
+    await AuditService.logDNRAction(
+      facilityId: createdByFacilityId,
+      action: 'dnr.global.create',
+      targetId: docRef.id,
+      details: {
+        'fullName': fullName.trim(),
+        'reason': reason.trim(),
+        'severity': severity.value,
+      },
+    );
+
     return docRef.id;
   }
 
@@ -221,6 +245,8 @@ class GlobalDNRService {
     if (user == null) throw Exception('Not signed in');
 
     final ref = _firestore.collection(_collection).doc(entryId);
+    final current = await ref.get();
+    final currentData = current.data() ?? {};
     final updates = <String, dynamic>{
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -237,20 +263,84 @@ class GlobalDNRService {
     if (status != null) updates['status'] = status.value;
 
     if (fullName != null || email != null || phone != null || dob != null || driversLicenseLast4 != null || idLast4 != null) {
-      final current = await ref.get();
-      final data = current.data() ?? {};
       updates['searchTokens'] = _buildSearchTokens(
-        fullName: fullName ?? (data['fullName'] as String? ?? ''),
-        email: email ?? (data['email'] as String? ?? ''),
-        phone: phone ?? (data['phone'] as String? ?? ''),
-        dob: dob ?? data['dob'] as String?,
-        last4: driversLicenseLast4 ?? idLast4 ?? data['driversLicenseLast4'] as String? ?? data['idLast4'] as String?,
+        fullName: fullName ?? (currentData['fullName'] as String? ?? ''),
+        email: email ?? (currentData['email'] as String? ?? ''),
+        phone: phone ?? (currentData['phone'] as String? ?? ''),
+        dob: dob ?? currentData['dob'] as String?,
+        last4: driversLicenseLast4 ?? idLast4 ?? currentData['driversLicenseLast4'] as String? ?? currentData['idLast4'] as String?,
       );
     }
 
     await ref.update(updates);
     if (kDebugMode) {
       print('✅ [GlobalDNR] Updated entry $entryId');
+    }
+
+    final auditFacilityId = currentData['createdByFacilityId'] as String?;
+    if (auditFacilityId != null && auditFacilityId.isNotEmpty) {
+      await AuditService.logDNRAction(
+        facilityId: auditFacilityId,
+        action: 'dnr.global.update',
+        targetId: entryId,
+        details: {
+          'updatedFields': updates.keys
+              .where((k) => k != 'updatedAt' && k != 'searchTokens')
+              .toList(),
+          if (status != null) 'status': status.value,
+        },
+      );
+    }
+  }
+
+  /// Delete a global DNR entry (entry doc + evidence docs + evidence files).
+  /// Allowed for superadmin or creator-facility staff (enforced by rules).
+  static Future<void> deleteGlobalDNREntry(String entryId) async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('Not signed in');
+
+    final entryRef = _firestore.collection(_collection).doc(entryId);
+    final entryDoc = await entryRef.get();
+    final entryData = entryDoc.data() ?? {};
+
+    // Best-effort evidence cleanup (files + metadata docs) before entry delete.
+    try {
+      final evidenceSnapshot = await entryRef.collection('evidence').get();
+      for (final doc in evidenceSnapshot.docs) {
+        final storagePath = doc.data()['storagePath'] as String?;
+        if (storagePath != null && storagePath.isNotEmpty) {
+          try {
+            await _storage.ref().child(storagePath).delete();
+          } catch (e) {
+            if (kDebugMode) {
+              print('⚠️ [GlobalDNR] Could not delete evidence file $storagePath: $e');
+            }
+          }
+        }
+        await doc.reference.delete();
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [GlobalDNR] Evidence cleanup error for $entryId: $e');
+      }
+    }
+
+    await entryRef.delete();
+    if (kDebugMode) {
+      print('✅ [GlobalDNR] Deleted entry $entryId');
+    }
+
+    final auditFacilityId = entryData['createdByFacilityId'] as String?;
+    if (auditFacilityId != null && auditFacilityId.isNotEmpty) {
+      await AuditService.logDNRAction(
+        facilityId: auditFacilityId,
+        action: 'dnr.global.delete',
+        targetId: entryId,
+        details: {
+          if (entryData['fullName'] != null) 'fullName': entryData['fullName'],
+          if (entryData['reason'] != null) 'reason': entryData['reason'],
+        },
+      );
     }
   }
 

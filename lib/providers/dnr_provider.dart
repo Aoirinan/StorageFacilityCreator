@@ -120,6 +120,7 @@ class DNROperationsNotifier extends StateNotifier<AsyncValue<void>> {
     required String email,
     required String phone,
     required String reason,
+    String? notes,
     bool active = true,
     DateTime? expiresAt,
     List<String>? evidenceUrls,
@@ -130,6 +131,7 @@ class DNROperationsNotifier extends StateNotifier<AsyncValue<void>> {
         required String addedByName,
     String? linkedTenantId,
     String? linkedTenantName,
+    bool accuracyAttested = false,
   }) async {
     state = const AsyncValue.loading();
     try {
@@ -139,9 +141,11 @@ class DNROperationsNotifier extends StateNotifier<AsyncValue<void>> {
         email: email,
         phone: phone,
         reason: reason,
+        notes: notes,
         active: active,
         expiresAt: expiresAt,
         evidenceUrls: evidenceUrls,
+        accuracyAttested: accuracyAttested,
         facilityName: facilityName,
         ownerEmail: ownerEmail,
         facilityPhone: facilityPhone,
@@ -163,6 +167,7 @@ class DNROperationsNotifier extends StateNotifier<AsyncValue<void>> {
     String? email,
     String? phone,
     String? reason,
+    String? notes,
     bool? active,
     DateTime? expiresAt,
     List<String>? evidenceUrls,
@@ -179,6 +184,7 @@ class DNROperationsNotifier extends StateNotifier<AsyncValue<void>> {
         email: email,
         phone: phone,
         reason: reason,
+        notes: notes,
         active: active,
         expiresAt: expiresAt,
         evidenceUrls: evidenceUrls,

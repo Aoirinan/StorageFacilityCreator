@@ -17,6 +17,7 @@ import 'package:sfcapp/screens/super_admin/tabs/commission_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/messaging_guard_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/referrals_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/custom_domain_guide_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/dnr_moderation_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/ai_logs_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/platform_reset_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/message_logs_tab.dart';
@@ -38,6 +39,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.credit_card, label: 'Accounts'),
     _TabDef(icon: Icons.people, label: 'Users'),
     _TabDef(icon: Icons.toggle_on, label: 'Feature Flags'),
+    _TabDef(icon: Icons.person_off, label: 'DNR'),
     _TabDef(icon: Icons.psychology_outlined, label: 'AI logs'),
     _TabDef(icon: Icons.outgoing_mail, label: 'Message logs'),
     _TabDef(icon: Icons.support_agent, label: 'Leads'),
@@ -54,7 +56,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 14, vsync: this);
+    _tabController = TabController(length: 15, vsync: this);
     // Seed feature flags on first load (no-op if already seeded)
     FeatureFlagService.seedDefaults();
   }
@@ -240,6 +242,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           AccountsTab(),
           UsersTab(),
           FeatureFlagsTab(),
+          DnrModerationTab(),
           AiLogsTab(),
           MessageLogsTab(),
           LeadsTab(),

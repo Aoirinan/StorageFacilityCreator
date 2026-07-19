@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: `Privacy policy for ${SITE_NAME}: data we collect, how we use it, sharing, retention, and your rights.`,
 };
 
-const LAST_UPDATED = 'June 23, 2026';
+const LAST_UPDATED = 'July 18, 2026';
 
 export default function PrivacyPage() {
   return (
@@ -88,7 +88,7 @@ export default function PrivacyPage() {
             We share data with third-party vendors and processors that help us operate the Service. We require them to protect your data and use it only for the purposes we specify. We do not sell your personal information or Customer Data to third parties.
           </p>
           <p className="text-slate-600 mt-2">
-            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), and Twilio/SendGrid (messaging). See our full <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
+            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), Twilio/SendGrid (messaging), OpenAI (optional in-app AI assistant), and Intuit/QuickBooks (optional accounting sync). See our full <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
           </p>
           <p className="text-slate-600 mt-2">
             We may also disclose information if required by law, court order, or to protect the rights, property, or safety of {SITE_NAME}, our Customers, or others.
@@ -125,12 +125,20 @@ export default function PrivacyPage() {
             We use reasonable technical and organizational measures to protect your data, including encryption in transit and access controls. See our <Link href="/security" className="text-primary hover:underline">Security Overview</Link> for more detail.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">10. Changes to This Policy</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">10. Security Incident Notification</h2>
+          <p className="text-slate-600 mt-2">
+            If we confirm a breach of security leading to the accidental or unlawful destruction, loss, alteration, or unauthorized disclosure of or access to personal data we process on a Customer's behalf, we will notify affected Customers without undue delay and in any event within seven (7) days of confirming the breach. Our notice will describe the nature of the incident, the categories of data involved, the steps we have taken or plan to take, and a contact point for further information, so Customers can meet their own notification obligations to Tenants and regulators.
+          </p>
+          <p className="text-slate-600 mt-2">
+            Each of our subprocessors is bound by a data processing agreement that requires them to notify us of security breaches affecting their platforms; we pass those notifications through to affected Customers on the same timeline.
+          </p>
+
+          <h2 className="text-xl font-bold text-slate-900 mt-8">11. Changes to This Policy</h2>
           <p className="text-slate-600 mt-2">
             We may update this policy from time to time. When we do, we will update the "Last updated" date at the top and, for material changes, notify you by email or in-app notice. Continued use of the Service after changes constitutes acceptance of the updated policy.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">11. Contact</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">12. Contact</h2>
           <p className="text-slate-600 mt-2">
             For privacy questions or requests:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.

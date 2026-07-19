@@ -20,6 +20,7 @@ const routes = [
   '/billing',
   '/sms-terms',
   '/esign-disclosure',
+  '/dnr-policy',
   '/subprocessors',
   '/dpa',
 ];

@@ -604,15 +604,19 @@ export default function HomePage() {
             </p>
             <p className="mt-3 text-sm text-slate-700 leading-relaxed">
               Use only information you are authorized to share, and do not submit protected-class or discriminatory
-              content. Review{' '}
+              content. Review the{' '}
+              <Link href="/dnr-policy" className="text-primary hover:underline">
+                Do Not Rent Data Policy
+              </Link>
+              ,{' '}
               <Link href="/acceptable-use" className="text-primary hover:underline">
                 Acceptable Use
-              </Link>{' '}
-              and{' '}
+              </Link>
+              , and{' '}
               <Link href="/terms" className="text-primary hover:underline">
                 Terms
               </Link>{' '}
-              for baseline requirements.
+              for baseline requirements, including the dispute and correction process.
             </p>
           </article>
         </div>

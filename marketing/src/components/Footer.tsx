@@ -32,6 +32,7 @@ const LEGAL_LINKS = [
   { href: '/billing', label: 'Billing & Refunds' },
   { href: '/sms-terms', label: 'SMS Terms' },
   { href: '/esign-disclosure', label: 'E-Sign Disclosure' },
+  { href: '/dnr-policy', label: 'Do Not Rent Data Policy' },
 ];
 
 const TRUST_LINKS = [

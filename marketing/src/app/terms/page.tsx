@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: `Terms of service for ${SITE_NAME}: subscription, acceptable use, messaging terms, and customer responsibilities.`,
 };
 
-const LAST_UPDATED = 'February 26, 2026';
+const LAST_UPDATED = 'July 13, 2026';
 
 export default function TermsPage() {
   return (
@@ -95,6 +95,8 @@ export default function TermsPage() {
             <li><strong>Stripe</strong> — payment processing and billing.</li>
             <li><strong>Twilio</strong> — SMS messaging delivery.</li>
             <li><strong>SendGrid (Twilio)</strong> — email delivery (where used).</li>
+            <li><strong>OpenAI</strong> — optional in-app AI assistant (where used).</li>
+            <li><strong>Intuit (QuickBooks Online)</strong> — optional accounting sync (where connected by you).</li>
           </ul>
           <p className="text-slate-600 mt-2">
             Your use of the Service is subject to these providers' terms and policies. See our <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for more detail.
@@ -118,42 +120,56 @@ export default function TermsPage() {
             See our <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link> for the full SMS consent and opt-out policy.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">9. Availability and Maintenance</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">9. Do Not Rent Entries</h2>
+          <p className="text-slate-600 mt-2">
+            The Service includes optional "Do Not Rent" (DNR) features that let Customers document individuals with whom they have had a direct, adverse business experience, and share those entries with other participating facilities on the platform. If you use these features, you agree that:
+          </p>
+          <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
+            <li><strong>You are solely responsible for your entries.</strong> Every DNR entry you or your staff submit is Customer Data. You warrant that each entry is factual, based on your facility's direct business experience, supported by your internal records, and lawful to share.</li>
+            <li><strong>No discriminatory entries.</strong> You must not create entries based on race, color, religion, national origin, sex, familial status, disability, age, or any other characteristic protected by applicable law, and you must not use DNR entries for harassment or retaliation.</li>
+            <li><strong>Attestation.</strong> The Service requires an accuracy attestation before an entry is published, and records the identity of the submitting user and facility with every entry.</li>
+            <li><strong>Corrections and removal.</strong> You must promptly correct or deactivate entries you learn are inaccurate or unsupported. We may deactivate or remove any entry at our discretion, including entries that are disputed and not substantiated by the submitting facility. See our <Link href="/dnr-policy" className="text-primary hover:underline">Do Not Rent Data Policy</Link> for the dispute and correction process.</li>
+            <li><strong>Entries from other facilities are not verified by us.</strong> DNR entries created by other Customers are provided "as is." {SITE_NAME} does not verify, endorse, or adopt them, and you may not treat them as a consumer report or as the sole basis for a rental decision where applicable law requires more.</li>
+            <li><strong>Not a consumer reporting agency.</strong> {SITE_NAME} is not a consumer reporting agency and the DNR features are not a consumer report under the Fair Credit Reporting Act. If you obtain or use consumer reports in your rental decisions, compliance with the FCRA and analogous state laws is solely your responsibility.</li>
+            <li><strong>Indemnification.</strong> Without limiting Section 13, you agree to indemnify and hold harmless {SITE_NAME} from any claims arising out of DNR entries you or your staff submit, including claims of defamation, discrimination, or violation of privacy, housing, or consumer reporting laws.</li>
+          </ul>
+
+          <h2 className="text-xl font-bold text-slate-900 mt-8">10. Availability and Maintenance</h2>
           <p className="text-slate-600 mt-2">
             We strive to maintain high availability but do not guarantee uninterrupted or error-free operation. We may perform scheduled or emergency maintenance that temporarily affects availability. We will make reasonable efforts to notify Customers of planned downtime.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">10. Disclaimers</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">11. Disclaimers</h2>
           <p className="text-slate-600 mt-2">
             The Service is provided "as is" and "as available." We disclaim all warranties, express or implied, including warranties of merchantability, fitness for a particular purpose, and non-infringement, to the maximum extent permitted by applicable law.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">11. Limitation of Liability</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">12. Limitation of Liability</h2>
           <p className="text-slate-600 mt-2">
             To the maximum extent permitted by applicable law, {SITE_NAME} is not liable for any indirect, incidental, special, consequential, or punitive damages, including loss of profits, data, or business opportunities, arising from or related to your use of the Service. Our total aggregate liability for any claim arising from the Service is limited to the amount you paid us in the twelve (12) months preceding the claim. Some jurisdictions do not allow these limitations; in such cases, our liability is limited to the maximum extent permitted.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">12. Indemnification</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">13. Indemnification</h2>
           <p className="text-slate-600 mt-2">
-            You agree to indemnify and hold harmless {SITE_NAME} and its officers, employees, and agents from any claims, damages, losses, or expenses (including reasonable attorneys' fees) arising from: (a) your use of the Service in violation of these Terms; (b) your violation of applicable law; (c) your Customer Data; or (d) your messaging activities, including any failure to obtain required consents.
+            You agree to indemnify and hold harmless {SITE_NAME} and its officers, employees, and agents from any claims, damages, losses, or expenses (including reasonable attorneys' fees) arising from: (a) your use of the Service in violation of these Terms; (b) your violation of applicable law; (c) your Customer Data, including Do Not Rent entries submitted by you or your staff; or (d) your messaging activities, including any failure to obtain required consents.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">13. Termination and Suspension</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">14. Termination and Suspension</h2>
           <p className="text-slate-600 mt-2">
             We may suspend or terminate your access to the Service if you materially breach these Terms, fail to pay fees, or engage in activity that poses a risk to the Service or other users. You may terminate your subscription at any time by cancelling through your account. Upon termination, your access to the Service will end at the close of the current billing period, and we will handle your Customer Data as described in our Privacy Policy.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">14. Changes to Terms</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">15. Changes to Terms</h2>
           <p className="text-slate-600 mt-2">
             We may update these Terms from time to time. We will notify you of material changes by email or in-app notice at least 14 days before the changes take effect. Continued use of the Service after the effective date constitutes acceptance of the updated Terms. If you do not agree to the changes, you must stop using the Service and may cancel your subscription.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">15. Governing Law</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">16. Governing Law</h2>
           <p className="text-slate-600 mt-2">
             These Terms are governed by the laws of the State of Texas, without regard to conflict-of-law principles. Any disputes shall be resolved in the courts of Texas, and you consent to personal jurisdiction in that venue.
           </p>
 
-          <h2 className="text-xl font-bold text-slate-900 mt-8">16. Contact</h2>
+          <h2 className="text-xl font-bold text-slate-900 mt-8">17. Contact</h2>
           <p className="text-slate-600 mt-2">
             Questions about these Terms:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.

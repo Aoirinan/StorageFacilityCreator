@@ -10,6 +10,7 @@ import '../providers/facility_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../services/facility_service.dart';
 import '../services/dnr_service.dart';
+import '../services/dnr_terms_service.dart';
 import '../services/tenant_service.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/superadmin_service.dart';
@@ -119,8 +120,76 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
           return _buildUpgradePrompt(context);
         }
 
-        return _buildBody(userId);
+        // Premium OK — also require one-time DNR terms acceptance (participation),
+        // which Firestore rules enforce for all shared DNR reads.
+        return FutureBuilder(
+          future: DnrTermsService.hasAccepted(),
+          builder: (context, termsSnapshot) {
+            if (termsSnapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            final termsAccepted = termsSnapshot.data ?? false;
+            if (!termsAccepted) {
+              return _buildTermsAcceptancePrompt(context);
+            }
+
+            return _buildBody(userId);
+          },
+        );
       },
+    );
+  }
+
+  Widget _buildTermsAcceptancePrompt(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.policy_outlined,
+              size: 64,
+              color: AppTheme.textTertiary,
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Do Not Rent Terms',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'The DNR list is shared between participating facilities. Before accessing it, '
+              'review and accept the Do Not Rent terms below.',
+              style: TextStyle(fontSize: 16, color: AppTheme.textTertiary),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () async {
+                final accepted = await DnrTermsService.ensureAccepted(context);
+                if (accepted && mounted) {
+                  setState(() {});
+                }
+              },
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('Review & Accept Terms'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.error,
+                foregroundColor: AppTheme.textOnDark,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                textStyle: const TextStyle(fontSize: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -938,7 +1007,8 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Archive DNR Entry'),
-        content: Text('Are you sure you want to archive "${entry.name}"?'),
+        content: Text(
+            'Are you sure you want to archive "${entry.name}"? The entry will be deactivated and can be restored later.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -948,9 +1018,11 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
             onPressed: () async {
               Navigator.of(context).pop();
               try {
-                await DNRService.deleteDNREntry(
+                // Archive = deactivate (recoverable); permanent removal is the separate Delete action.
+                await DNRService.toggleDNRActive(
                   facilityId: entry.facilityId!,
                   dnrId: entry.id,
+                  active: false,
                 );
                 // Refresh providers after archiving
                 ref.invalidate(dnrEntriesForFacilityProvider(entry.facilityId!));

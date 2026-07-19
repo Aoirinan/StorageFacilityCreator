@@ -5,6 +5,7 @@ import '../models/dnr_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/dnr_provider.dart';
 import '../services/dnr_service.dart';
+import '../services/dnr_terms_service.dart';
 import '../services/facility_service.dart';
 import '../providers/facility_provider.dart';
 import '../providers/tenant_provider.dart';
@@ -36,6 +37,7 @@ class _DNREntryScreenState extends ConsumerState<DNREntryScreen> {
 
   // Removed DNRSeverity and DNRScope - using simple boolean for active status
   bool _isActive = true;
+  bool _accuracyAttested = false;
   bool _isLoading = false;
   String? _errorMessage;
   String? _selectedFacilityId;
@@ -352,7 +354,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
     _emailController.text = entry.email;
     _phoneController.text = entry.phone;
     _reasonController.text = entry.reason;
-    _notesController.text = '';
+    _notesController.text = entry.notes ?? '';
     _isActive = entry.active;
     _expiresAt = entry.expiresAt;
     _selectedFacilityId = entry.facilityId;
@@ -375,6 +377,25 @@ Enter this code in the SFC App to complete the DNR entry creation.
 
   Future<void> _saveDNR() async {
     if (!_formKey.currentState!.validate()) return;
+
+    if (!_accuracyAttested) {
+      setState(() {
+        _errorMessage =
+            'Please confirm the accuracy attestation before saving this DNR entry.';
+      });
+      return;
+    }
+
+    // Creating shared entries requires recorded DNR terms acceptance (rules-enforced).
+    if (widget.dnrEntry == null) {
+      final termsOk = await DnrTermsService.ensureAccepted(context);
+      if (!termsOk) {
+        setState(() {
+          _errorMessage = 'DNR terms must be accepted before creating entries.';
+        });
+        return;
+      }
+    }
 
     setState(() {
       _isLoading = true;
@@ -439,6 +460,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
           email: _emailController.text.trim(),
           phone: _phoneController.text.trim(),
           reason: _reasonController.text.trim(),
+          notes: _notesController.text.trim(),
           active: _isActive,
           expiresAt: _expiresAt,
           updatedAt: DateTime.now(),
@@ -456,6 +478,7 @@ Enter this code in the SFC App to complete the DNR entry creation.
           email: updatedEntry.email,
           phone: updatedEntry.phone,
           reason: updatedEntry.reason,
+          notes: _notesController.text.trim(),
           active: updatedEntry.active,
           expiresAt: updatedEntry.expiresAt,
           evidenceUrls: updatedEntry.evidenceUrls,
@@ -485,8 +508,10 @@ Enter this code in the SFC App to complete the DNR entry creation.
           email: _emailController.text.trim(),
           phone: _phoneController.text.trim(),
           reason: _reasonController.text.trim(),
+          notes: _notesController.text.trim(),
           active: _isActive,
           expiresAt: _expiresAt,
+          accuracyAttested: _accuracyAttested,
           facilityName: _facilityName ?? facilityName,
           ownerEmail: _ownerEmail ?? user.email ?? '',
           facilityPhone: _facilityPhone ?? facilityPhone,
@@ -948,6 +973,36 @@ Enter this code in the SFC App to complete the DNR entry creation.
                   ),
                 ),
 
+              // Responsible-use notice (compliance requirement)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: AppTheme.warning.withOpacity(0.08),
+                  border: Border.all(color: AppTheme.warning),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Responsible use',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      'DNR entries are shared with other participating facilities. Entries must be factual, based on '
+                      'your facility\'s direct business experience, and supported by your internal records. Entries must '
+                      'not be based on race, color, religion, national origin, sex, familial status, disability, age, or '
+                      'any other protected characteristic, and must comply with applicable privacy, housing, consumer '
+                      'reporting, and defamation laws. This list is not a consumer report and may not be used as one. '
+                      'See the Do Not Rent Data Policy for the dispute and correction process.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+
               // Facility Information (Read-only)
               _buildFacilitySelectorField(),
               const SizedBox(height: 16),
@@ -1095,6 +1150,24 @@ Enter this code in the SFC App to complete the DNR entry creation.
                   prefixIcon: Icon(Icons.note),
                 ),
                 maxLines: 3,
+              ),
+              const SizedBox(height: 16),
+
+              // Required accuracy attestation (recorded with the entry)
+              CheckboxListTile(
+                value: _accuracyAttested,
+                onChanged: (value) {
+                  setState(() {
+                    _accuracyAttested = value ?? false;
+                  });
+                },
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text(
+                  'I attest that this entry is factual, based on this facility\'s direct business experience, '
+                  'supported by our internal records, and not based on any protected characteristic.',
+                  style: TextStyle(fontSize: 13),
+                ),
+                contentPadding: EdgeInsets.zero,
               ),
               const SizedBox(height: 24),
 

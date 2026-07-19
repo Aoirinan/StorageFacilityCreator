@@ -39,6 +39,7 @@ class DNRService {
     required String email,
     required String phone,
     required String reason,
+    String? notes,
     bool active = true,
     DateTime? expiresAt,
     List<String>? evidenceUrls,
@@ -49,11 +50,18 @@ class DNRService {
     required String addedByName,
     String? linkedTenantId,
     String? linkedTenantName,
+    bool accuracyAttested = false,
   }) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
         throw Exception('Not signed in');
+      }
+
+      if (!accuracyAttested) {
+        throw Exception(
+          'You must attest that this entry is factual, supported by your records, and not based on any protected characteristic.',
+        );
       }
 
       if (kDebugMode) {
@@ -82,9 +90,14 @@ class DNRService {
         'phone': phone,
         'phoneDigits': phoneDigits,
         'reason': reason,
+        'notes': (notes != null && notes.trim().isNotEmpty) ? notes.trim() : null,
         'active': active,
         'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt) : null,
         'evidenceUrls': evidenceUrls ?? [],
+        // Submitter attestation: factual, supported by records, not based on a protected characteristic.
+        'accuracyAttestation': true,
+        'attestedAt': FieldValue.serverTimestamp(),
+        'attestedByUid': user.uid,
         'addedAt': FieldValue.serverTimestamp(),
         'addedByUid': user.uid,
         'addedByEmail': addedByEmail,
@@ -382,6 +395,7 @@ class DNRService {
     String? email,
     String? phone,
     String? reason,
+    String? notes,
     bool? active,
     DateTime? expiresAt,
     List<String>? evidenceUrls,
@@ -420,6 +434,10 @@ class DNRService {
 
       if (reason != null) {
         updateData['reason'] = reason;
+      }
+
+      if (notes != null) {
+        updateData['notes'] = notes.trim().isEmpty ? null : notes.trim();
       }
 
       if (active != null) {
@@ -469,6 +487,21 @@ class DNRService {
         print('✅ DNR entry updated: $dnrId');
       }
 
+      // Log audit entry with the fields that changed (values captured in updateData)
+      await AuditService.logDNRAction(
+        facilityId: facilityId,
+        action: 'dnr.update',
+        targetId: dnrId,
+        details: {
+          'updatedFields': updateData.keys
+              .where((k) => k != 'updatedAt' && k != 'updatedByUid')
+              .toList(),
+          if (name != null) 'name': name,
+          if (reason != null) 'reason': reason,
+          if (active != null) 'active': active,
+        },
+      );
+
       if (linkedTenantId != null && linkedTenantId.isNotEmpty) {
         await _refreshTenantDnrStatus(
           facilityId: facilityId,
@@ -499,6 +532,8 @@ class DNRService {
   }) async {
     try {
       String? linkedTenantId;
+      String? deletedName;
+      String? deletedReason;
       final docRef = _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -509,6 +544,8 @@ class DNRService {
       if (existingDoc.exists) {
         final data = existingDoc.data() as Map<String, dynamic>?;
         linkedTenantId = data?['linkedTenantId'] as String?;
+        deletedName = data?['name'] as String?;
+        deletedReason = data?['reason'] as String?;
       }
 
       await _firestore
@@ -521,6 +558,17 @@ class DNRService {
       if (kDebugMode) {
         print('✅ DNR entry deleted: $dnrId');
       }
+
+      // Log audit entry preserving what was deleted
+      await AuditService.logDNRAction(
+        facilityId: facilityId,
+        action: 'dnr.delete',
+        targetId: dnrId,
+        details: {
+          if (deletedName != null) 'name': deletedName,
+          if (deletedReason != null) 'reason': deletedReason,
+        },
+      );
 
       if (linkedTenantId != null && linkedTenantId.isNotEmpty) {
         await _refreshTenantDnrStatus(
