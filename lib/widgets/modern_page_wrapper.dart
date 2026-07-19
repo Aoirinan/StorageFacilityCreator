@@ -60,20 +60,30 @@ class ModernPageWrapper extends StatelessWidget {
     return Scaffold(
       body: Row(
         children: [
-          // Sidebar
+          // Sidebar — must get explicit width/height like AppShell does:
+          // an unconstrained sidebar in a Row makes its ListView request
+          // infinite width, which throws and white-screens in release mode.
           if (!isMobile && showSidebar)
-            Consumer(
-              builder: (context, ref, _) {
-                final unread = ref.watch(activeFacilityEmployeeChatUnreadCountProvider);
-                return ModernSidebar(
-                  currentRoute: activeRoute,
-                  isCollapsed: false,
-                  onNavigate: onNavigate ??
-                      (route) => ModernNavigationService.navigateToRoute(
-                            context,
-                            route,
-                          ),
-                  employeeChatUnreadCount: unread,
+            LayoutBuilder(
+              builder: (context, constraints) {
+                return SizedBox(
+                  height: constraints.maxHeight,
+                  width: 240,
+                  child: Consumer(
+                    builder: (context, ref, _) {
+                      final unread = ref.watch(activeFacilityEmployeeChatUnreadCountProvider);
+                      return ModernSidebar(
+                        currentRoute: activeRoute,
+                        isCollapsed: false,
+                        onNavigate: onNavigate ??
+                            (route) => ModernNavigationService.navigateToRoute(
+                                  context,
+                                  route,
+                                ),
+                        employeeChatUnreadCount: unread,
+                      );
+                    },
+                  ),
                 );
               },
             ),
