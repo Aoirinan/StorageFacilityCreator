@@ -2,6 +2,42 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { enforceAppCheckOrThrow } from './guardrails';
 
+const EXPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const SIGNED_URL_LIFETIME_MS = 60 * 60 * 1000;
+
+async function assertOwnerOrManager(facilityId: string, uid: string): Promise<void> {
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+
+  if (!facilityDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Facility not found');
+  }
+
+  const facilityData = facilityDoc.data();
+  const role = facilityData?.roles?.[uid];
+  const managerEntry = facilityData?.managers?.[uid];
+  const managerFromMap =
+    managerEntry === true ||
+    (
+      typeof managerEntry === 'object' &&
+      managerEntry !== null &&
+      (
+        managerEntry.active === true ||
+        managerEntry.isActive === true ||
+        managerEntry.role === 'manager' ||
+        managerEntry.roleType === 'manager'
+      )
+    );
+  if (
+    facilityData?.ownerUid !== uid &&
+    !managerFromMap &&
+    role !== 'manager' &&
+    role !== 'owner' &&
+    role !== 'admin'
+  ) {
+    throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
+  }
+}
+
 /**
  * Process export job (for large datasets)
  * Generates CSV and stores in Firebase Storage
@@ -12,29 +48,19 @@ export const processExportJob = functions.https.onCall(async (data: any, context
   }
   enforceAppCheckOrThrow(context);
 
-  const { facilityId, jobId, type, filters } = data;
+  const facilityId = String(data?.facilityId || '').trim();
+  const jobId = String(data?.jobId || '').trim();
+  const type = String(data?.type || '').trim();
+  const filters = data?.filters;
 
-  if (!facilityId || !jobId || !type) {
+  if (!/^[^/]{1,128}$/.test(facilityId) || !/^[^/]{1,128}$/.test(jobId) || !type) {
     throw new functions.https.HttpsError('invalid-argument', 'facilityId, jobId, and type are required');
   }
 
+  await assertOwnerOrManager(facilityId, context.auth.uid);
+  const jobRef = admin.firestore().collection('facilities').doc(facilityId).collection('exportJobs').doc(jobId);
+
   try {
-    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-
-    if (!facilityDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Facility not found');
-    }
-
-    const facilityData = facilityDoc.data();
-    const ownerUid = facilityData?.ownerUid;
-    const roles = facilityData?.roles || {};
-
-    if (ownerUid !== context.auth.uid && roles[context.auth.uid] !== 'manager' && roles[context.auth.uid] !== 'owner') {
-      throw new functions.https.HttpsError('permission-denied', 'User does not have permission');
-    }
-
-    const jobRef = admin.firestore().collection('facilities').doc(facilityId).collection('exportJobs').doc(jobId);
-
     await jobRef.update({
       status: 'processing',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -75,13 +101,13 @@ export const processExportJob = functions.https.onCall(async (data: any, context
       },
     });
 
-    await file.makePublic();
-
-    const downloadUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + EXPORT_RETENTION_MS);
 
     await jobRef.update({
       status: 'completed',
-      downloadUrl,
+      storagePath: fileName,
+      expiresAt,
+      downloadUrl: admin.firestore.FieldValue.delete(),
       recordCount,
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -90,13 +116,11 @@ export const processExportJob = functions.https.onCall(async (data: any, context
     return {
       success: true,
       jobId,
-      downloadUrl,
       recordCount,
+      expiresAt: expiresAt.toDate().toISOString(),
     };
   } catch (error: any) {
     try {
-      const jobRef = admin.firestore().collection('facilities').doc(facilityId).collection('exportJobs').doc(jobId);
-
       await jobRef.update({
         status: 'failed',
         errorMessage: error.message,
@@ -107,9 +131,137 @@ export const processExportJob = functions.https.onCall(async (data: any, context
     }
 
     functions.logger.error('Error processing export job:', error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
     throw new functions.https.HttpsError('internal', `Failed to process export: ${error.message}`);
   }
 });
+
+/**
+ * Return a short-lived download URL for an authorized export.
+ */
+export const getExportDownloadUrl = functions.https.onCall(async (data: any, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  enforceAppCheckOrThrow(context);
+
+  const { facilityId, jobId } = data;
+  if (!facilityId || !jobId) {
+    throw new functions.https.HttpsError('invalid-argument', 'facilityId and jobId are required');
+  }
+
+  await assertOwnerOrManager(facilityId, context.auth.uid);
+
+  const jobDoc = await admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('exportJobs')
+    .doc(jobId)
+    .get();
+
+  if (!jobDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Export job not found');
+  }
+
+  const job = jobDoc.data();
+  const storagePath = job?.storagePath;
+  const expiresAt = job?.expiresAt;
+
+  if (job?.status !== 'completed' || typeof storagePath !== 'string' || !(expiresAt instanceof admin.firestore.Timestamp)) {
+    throw new functions.https.HttpsError('failed-precondition', 'Export is not available for download');
+  }
+  if (!storagePath.startsWith(`exports/${facilityId}/`)) {
+    throw new functions.https.HttpsError('failed-precondition', 'Export storage path is invalid');
+  }
+  if (expiresAt.toMillis() <= Date.now()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Export has expired');
+  }
+
+  const signedUrlExpiresAt = new Date(
+    Math.min(Date.now() + SIGNED_URL_LIFETIME_MS, expiresAt.toMillis()),
+  );
+  const [downloadUrl] = await admin.storage().bucket().file(storagePath).getSignedUrl({
+    action: 'read',
+    expires: signedUrlExpiresAt,
+    version: 'v4',
+  });
+
+  return {
+    downloadUrl,
+    expiresAt: signedUrlExpiresAt.toISOString(),
+  };
+});
+
+/**
+ * Delete expired export files and their job documents every day.
+ */
+export const cleanupExpiredExports = functions.pubsub
+  .schedule('0 3 * * *')
+  .timeZone('UTC')
+  .onRun(async () => {
+    const now = admin.firestore.Timestamp.now();
+    const bucket = admin.storage().bucket();
+
+    let matchedCount = 0;
+    let deletedCount = 0;
+    let cursor: admin.firestore.QueryDocumentSnapshot | undefined;
+
+    while (true) {
+      let query = admin
+        .firestore()
+        .collectionGroup('exportJobs')
+        .where('expiresAt', '<=', now)
+        .orderBy('expiresAt')
+        .limit(100);
+      if (cursor) {
+        query = query.startAfter(cursor);
+      }
+
+      const expiredJobs = await query.get();
+      if (expiredJobs.empty) {
+        break;
+      }
+      matchedCount += expiredJobs.size;
+
+      await Promise.all(
+        expiredJobs.docs.map(async (jobDoc) => {
+          const storagePath = jobDoc.get('storagePath');
+          const facilityId = jobDoc.ref.parent.parent?.id;
+          try {
+            if (
+              typeof storagePath === 'string' &&
+              facilityId &&
+              storagePath.startsWith(`exports/${facilityId}/`)
+            ) {
+              await bucket.file(storagePath).delete({ ignoreNotFound: true });
+            }
+            await jobDoc.ref.delete();
+            deletedCount += 1;
+          } catch (error) {
+            functions.logger.error('Failed to clean up expired export', {
+              jobPath: jobDoc.ref.path,
+              storagePath,
+              error,
+            });
+          }
+        }),
+      );
+
+      cursor = expiredJobs.docs[expiredJobs.docs.length - 1];
+      if (expiredJobs.size < 100) {
+        break;
+      }
+    }
+
+    functions.logger.info('Expired export cleanup completed', {
+      matchedCount,
+      deletedCount,
+    });
+    return null;
+  });
 
 async function exportTenantsToCSV(
   facilityId: string,

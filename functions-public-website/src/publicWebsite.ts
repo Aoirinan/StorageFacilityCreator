@@ -1264,6 +1264,20 @@ function toHtml(payload: {
 </html>`;
 }
 
+export function hasActiveWebsiteSubscription(data: Record<string, unknown>): boolean {
+  const status = String(data.websiteSubscriptionStatus || '').toLowerCase();
+  const subscriptionId = String(data.stripeWebsiteSubscriptionId || '').trim();
+  return subscriptionId.startsWith('sub_') &&
+    (status === 'active' || status === 'trialing');
+}
+
+async function facilityWebsiteIsEntitled(facilityId: string): Promise<boolean> {
+  if (!facilityId) return false;
+  const facilitySnap = await admin.firestore().collection('facilities').doc(facilityId).get();
+  return facilitySnap.exists &&
+    hasActiveWebsiteSubscription((facilitySnap.data() || {}) as Record<string, unknown>);
+}
+
 export async function resolveSlug(slug?: string, domain?: string, hostHeader?: string): Promise<string | null> {
   const directSlug = (slug || '').trim().toLowerCase();
   if (directSlug) return directSlug;
@@ -1279,11 +1293,11 @@ export async function resolveSlug(slug?: string, domain?: string, hostHeader?: s
   if (settings.empty) return null;
   const matching = settings.docs.find((doc) => {
     const data = doc.data() as Record<string, unknown>;
-    return data.enabled !== false;
+    return data.enabled === true;
   });
   if (!matching) return null;
   const facilityId = matching.ref.parent.parent?.id;
-  if (!facilityId) return null;
+  if (!facilityId || !(await facilityWebsiteIsEntitled(facilityId))) return null;
 
   const meta = await db.doc(`facilities/${facilityId}/mapEngine/meta`).get();
   const mapSlug = String(meta.data()?.publicSlug || '').trim().toLowerCase();
@@ -1333,6 +1347,11 @@ export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res)
   const data = snap.data() || {};
   const facilityName = String(data.facilityName || 'Storage Facility');
   const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
+  const facilityId = String(data.facilityId || '');
+  if (publicSettings.enabled !== true || !(await facilityWebsiteIsEntitled(facilityId))) {
+    res.status(404).json({ error: 'Website not found.' });
+    return;
+  }
   const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
   const available = units.filter((u) => String(u.status || '').toLowerCase() === 'available');
   const startingAt = available.reduce<number | null>((acc, u) => {
@@ -1356,7 +1375,7 @@ export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res)
   }
 
   res.json({
-    facilityId: String(data.facilityId || ''),
+    facilityId,
     facilitySlug: slug,
     facilityName,
     pageTitle: String(publicSettings.pageTitle || `${facilityName} | Storage`),
@@ -1476,6 +1495,11 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
   }
   const data = snap.data() || {};
   const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
+  const facilityId = String(data.facilityId || '');
+  if (publicSettings.enabled !== true || !(await facilityWebsiteIsEntitled(facilityId))) {
+    res.status(404).type('text/plain').send('Website not found.');
+    return;
+  }
   const widgetsBlock = (publicSettings.widgets || {}) as Record<string, unknown>;
   const websiteConfig = (
     (publicSettings.websiteConfig || widgetsBlock.websiteConfig || {}) as Record<string, unknown>

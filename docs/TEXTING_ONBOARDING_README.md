@@ -1,6 +1,15 @@
 # Texting Onboarding V1 (Twilio A2P 10DLC)
 
-This feature adds a self-serve `Enable Texting` wizard for per-facility Twilio number provisioning and A2P registration.
+This feature adds a guided, resumable Texting setup for per-facility Twilio
+number provisioning and A2P registration. The app has three setup stages:
+Business details, Messaging plan, and Review & submit. Submitted facilities
+open directly to a separate approval-status dashboard.
+
+Carrier campaign review typically takes 10–15 business days. Texting remains
+disabled until both the carrier and an SFC superadmin approve the facility.
+Automated registration supports LLCs, corporations, and nonprofits. Sole
+proprietors must use the manual support path because Twilio does not support
+self-service Sole Proprietor A2P registration through this API flow.
 
 ## Campaign rejection (30909) — resubmission checklist
 
@@ -37,7 +46,14 @@ Consent-text sources that must stay in sync:
 
 ## Facility phone numbers and A2P compliance (timing)
 
-**When the facility gets a number (Twilio purchase + Firestore):** During the wizard, **before** Twilio/carrier campaign approval finishes. Step 3 calls `provisionPhoneNumber`, which buys a US local SMS-capable number (optional area code), stores `twilioPhoneNumberSid` and `twilioPhoneNumberE164` on `facilities/{facilityId}`, ensures a per-facility Messaging Service, and attaches that number to the service. `submitTextingOnboarding` calls the same provisioning helper again; if a number already exists, it is reused.
+**When the facility gets a number (Twilio purchase + Firestore):** The final
+**Reserve number & submit** action first calls `provisionPhoneNumber`, which
+buys a US local SMS-capable number (optional area code), stores
+`twilioPhoneNumberSid` and `twilioPhoneNumberE164` on
+`facilities/{facilityId}`, ensures a per-facility Messaging Service, and
+attaches that number to the service. `submitTextingOnboarding` calls the same
+provisioning helper again; if a number already exists, it is reused. If
+campaign submission fails after purchase, retrying reuses the reserved number.
 
 **When outbound SMS uses that number as `From`:** Only when **all** of the following hold: the global feature flag is on, the facility has `textingOnboardingEnabled === true`, `a2pStatus` is `approved`, `textingPlatformApproved` is `true` (superadmin), and `twilioPhoneNumberE164` is set. Otherwise `sendSMS` either blocks or uses the legacy global `TWILIO_PHONE_NUMBER` when the per-facility onboarding path is not active for that facility.
 
@@ -101,6 +117,13 @@ Stored in `facilities/{facilityId}`:
 - `twilioBrandSid`, `twilioCampaignSid`
 - `twilioPhoneNumberSid`, `twilioPhoneNumberE164`
 - `textingPlatformApproved` (bool), `textingPlatformApprovedAt`, `textingPlatformApprovedBy` (superadmin gate for sending when onboarding is enabled)
+- `textingBusinessData` (safe resumable profile; only `einLast4`, never a full EIN)
+- `textingUseCases`, `textingSampleMessages`, `textingConsentConfirmedAt`
+
+`getTextingOnboardingStatus` returns these safe saved values plus completion
+signals so the Flutter flow can resume at the first incomplete stage. Pending,
+approved, rejected, and live registrations go directly to the status
+dashboard. The app polls only while status is `submitted` or `pending`.
 
 ## Data Fields (Tenant Consent)
 
@@ -123,16 +146,22 @@ Inbound STOP/START updates these fields automatically.
 
 1. Enable feature flag for test project.
 2. Open Settings -> Facility -> Texting.
-3. Complete wizard with test facility.
+3. Complete the three guided setup stages with a test facility.
 4. Verify status progression:
    - `draft` -> `submitted` -> `pending` -> `approved` (or `rejected`)
-5. Verify outbound SMS is blocked for that facility unless `a2pStatus=approved` **and** `textingPlatformApproved=true` (when `textingOnboardingEnabled` is on). Before carrier approval, confirm the dedicated number appears on the facility after Step 3 but messages still do not send from it until approvals complete.
-6. After carrier approval, use a superadmin account to call `setTextingPlatformApproval` (or the in-app controls on the status card) so sending is allowed.
-7. With per-facility onboarding active, confirm outbound send succeeds only when the target tenant has `smsConsentStatus=opted_in` (unless using a forced/test path).
-8. Send inbound STOP and confirm tenant:
+5. Reload the route and confirm draft setup resumes at the first incomplete
+   stage, while submitted/pending registrations open the status dashboard.
+6. Verify outbound SMS is blocked for that facility unless
+   `a2pStatus=approved` **and** `textingPlatformApproved=true` (when
+   `textingOnboardingEnabled` is on). Before carrier approval, confirm the
+   dedicated number appears after submission but messages still do not send
+   from it until approvals complete.
+7. After carrier approval, use a superadmin account to call `setTextingPlatformApproval` (or the in-app controls on the status dashboard) so sending is allowed.
+8. With per-facility onboarding active, confirm outbound send succeeds only when the target tenant has `smsConsentStatus=opted_in` (unless using a forced/test path).
+9. Send inbound STOP and confirm tenant:
    - `smsOptOut=true`
    - `smsConsentStatus=opted_out`
-9. Send inbound START and confirm tenant:
+10. Send inbound START and confirm tenant:
    - `smsOptOut=false`
    - `smsConsentStatus=opted_in`
 

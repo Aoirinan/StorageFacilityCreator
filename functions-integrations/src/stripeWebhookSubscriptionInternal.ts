@@ -23,7 +23,7 @@ function mapSubscriptionStatus(status: Stripe.Subscription.Status): string {
     case 'unpaid':
       return 'unpaid';
     default:
-      return 'active';
+      return status;
   }
 }
 
@@ -38,6 +38,51 @@ function subPeriodStart(sub: Stripe.Subscription): number | undefined {
 export function invoiceSubscriptionId(inv: Stripe.Invoice): string | null {
   const sub = (inv as Stripe.Invoice & { subscription?: string | Stripe.Subscription | null }).subscription;
   return typeof sub === 'string' ? sub : (sub as Stripe.Subscription)?.id ?? null;
+}
+
+export function isWebsiteAddonSubscription(subscription: Stripe.Subscription): boolean {
+  return subscription.metadata?.subscriptionType === 'website_addon';
+}
+
+export async function updateFacilityFromWebsiteSubscription(
+  facilityId: string,
+  subscription: Stripe.Subscription,
+): Promise<void> {
+  const status = mapSubscriptionStatus(subscription.status);
+  const isEntitled = status === 'active' || status === 'trialing';
+  const db = admin.firestore();
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  const settingsRef = facilityRef.collection('settings').doc('public');
+  const batch = db.batch();
+
+  batch.update(facilityRef, {
+    stripeWebsiteSubscriptionId: subscription.id,
+    websiteSubscriptionStatus: status,
+    websiteSubscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
+      ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
+      : null,
+    websiteSubscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
+    websiteCheckoutSessionId: admin.firestore.FieldValue.delete(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  if (!isEntitled) {
+    batch.set(
+      settingsRef,
+      {
+        enabled: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: 'stripeWebhook',
+      },
+      { merge: true },
+    );
+  }
+  await batch.commit();
+  functions.logger.info('Facility website subscription updated', {
+    facilityId,
+    subscriptionId: subscription.id,
+    status,
+    isEntitled,
+  });
 }
 
 export async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {

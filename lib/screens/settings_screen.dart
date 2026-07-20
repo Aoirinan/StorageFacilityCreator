@@ -12,6 +12,8 @@ import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/providers/dashboard_provider.dart';
 import 'package:sfcapp/services/two_factor_service.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
@@ -139,6 +141,93 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
         );
       }
+    }
+  }
+
+  Future<void> _openWebsiteSetup(FacilityModel facility) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (facility.hasActiveWebsiteSubscription) {
+      await context.push('${AppRoute.websiteSetup}?facilityId=${facility.id}');
+      return;
+    }
+
+    final isOwner =
+        facility.currentUserOwnsFacility ?? facility.ownerUid == user?.uid;
+    if (!isOwner) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'The facility owner must activate the \$25/month website add-on.'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+    final accountId = facility.facilityCreatorAccountId;
+    final email = user?.email;
+    if (accountId == null || accountId.isEmpty || email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Billing account information is incomplete.'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+      return;
+    }
+
+    final subscribe = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Activate Website Setup'),
+        content: const Text(
+          'Website Setup is an optional \$25/month subscription for this '
+          'facility. It becomes available after Stripe confirms payment.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue to payment'),
+          ),
+        ],
+      ),
+    );
+    if (subscribe != true || !mounted) return;
+
+    try {
+      final result = await StripeService.createWebsiteSubscriptionCheckout(
+        accountId: accountId,
+        facilityId: facility.id,
+        customerEmail: email,
+      );
+      if (result.subscriptionUpdated) {
+        ref.invalidate(userFacilitiesProvider(user!.uid));
+        if (mounted) {
+          await context
+              .push('${AppRoute.websiteSetup}?facilityId=${facility.id}');
+        }
+        return;
+      }
+      final checkoutUrl = result.checkoutUrl;
+      if (checkoutUrl == null || checkoutUrl.isEmpty) {
+        throw Exception('Stripe did not return a checkout link.');
+      }
+      final opened = await launchUrl(
+        Uri.parse(checkoutUrl),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) throw Exception('Could not open Stripe Checkout.');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not activate Website Setup: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
     }
   }
 
@@ -351,7 +440,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                             icon: Icons.web_outlined,
                             title: 'Website Setup',
                             subtitle:
-                                'Configure one public marketing website per facility',
+                                'Optional public website — \$25/month per facility',
                             onTap: () {
                               facilitiesAsync?.when(
                                 data: (facilities) {
@@ -364,8 +453,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                       ),
                                     );
                                   } else if (facilities.length == 1) {
-                                    context.push(
-                                        '${AppRoute.websiteSetup}?facilityId=${facilities.first.id}');
+                                    _openWebsiteSetup(facilities.first);
                                   } else {
                                     showDialog(
                                       context: context,
@@ -381,10 +469,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                                   facilities[index];
                                               return ListTile(
                                                 title: Text(facility.name),
+                                                subtitle: Text(
+                                                  facility.hasActiveWebsiteSubscription
+                                                      ? 'Active'
+                                                      : '\$25/month — payment required',
+                                                ),
+                                                trailing: Icon(
+                                                  facility.hasActiveWebsiteSubscription
+                                                      ? Icons.chevron_right
+                                                      : Icons.lock_outline,
+                                                ),
                                                 onTap: () {
                                                   Navigator.of(ctx).pop();
-                                                  context.push(
-                                                      '${AppRoute.websiteSetup}?facilityId=${facility.id}');
+                                                  _openWebsiteSetup(facility);
                                                 },
                                               );
                                             },
@@ -527,8 +624,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                           if (textingOnboardingEnabled)
                             _SettingsTile(
                               icon: Icons.sms_outlined,
-                              title: 'Texting',
-                              subtitle: 'Enable dedicated number + A2P setup',
+                              title: 'Facility texting',
+                              subtitle:
+                                  'Set up a dedicated number and manage approval',
                               onTap: () {
                                 facilitiesAsync?.when(
                                   data: (facilities) {
@@ -579,8 +677,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                       );
                                     }
                                   },
-                                  loading: () {},
-                                  error: (_, __) {},
+                                  loading: () {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content:
+                                            Text('Loading your facilities…'),
+                                      ),
+                                    );
+                                  },
+                                  error: (_, __) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Could not load facilities. Please try again.',
+                                        ),
+                                        backgroundColor: AppTheme.error,
+                                      ),
+                                    );
+                                  },
                                 );
                               },
                             ),
@@ -730,7 +844,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
     return facilitiesAsync.when(
       data: (facilities) {
         final hasFacility = facilities.isNotEmpty;
-        final facilitySubscribed = facilities.any((f) => f.hasActivePlatformSubscription);
+        final facilitySubscribed =
+            facilities.any((f) => f.hasActivePlatformSubscription);
         final stripeComplete = facilities.any((f) => f.canAcceptTenantPayments);
 
         final firstFacilityId =
@@ -835,7 +950,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
         _OnboardingStep(
           number: 4,
           title: 'Subscribe your facility (\$75/mo)',
-          subtitle: 'Unlock the app for each facility with its own card (30-day trial).',
+          subtitle:
+              'Unlock the app for each facility with its own card (30-day trial).',
           done: facilitySubscribed,
           onTap: () => context.go('${AppRoute.subscription}?tab=0'),
         ),
@@ -843,7 +959,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
         _OnboardingStep(
           number: 5,
           title: 'Connect Stripe for tenant payments',
-          subtitle: 'Receive rent and autopay on your connected account (0% platform fee).',
+          subtitle:
+              'Receive rent and autopay on your connected account (0% platform fee).',
           done: stripeComplete,
           onTap: () => context.go('${AppRoute.subscription}?tab=processing'),
         ),

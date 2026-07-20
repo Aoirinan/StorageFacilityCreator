@@ -40,12 +40,41 @@ service firebase.storage {
       );
     }
 
+    function creatorAccountActive(accountId) {
+      return accountId is string &&
+        firestore.exists(/databases/(default)/documents/facilityCreatorAccounts/$(accountId)) &&
+        firestore.get(/databases/(default)/documents/facilityCreatorAccounts/$(accountId)).data.subscriptionStatus == 'active';
+    }
+
+    function dnrFacilityHasPremium(facilityId) {
+      return facilityId is string &&
+        facilityExists(facilityId) &&
+        (
+          (
+            facilityDoc(facilityId).platformSubscriptionStatus is string &&
+            facilityDoc(facilityId).platformSubscriptionStatus == 'active'
+          ) ||
+          (
+            facilityDoc(facilityId).facilityCreatorAccountId is string &&
+            creatorAccountActive(facilityDoc(facilityId).facilityCreatorAccountId)
+          )
+        );
+    }
+
     // Shared DNR evidence readable only by participating operators (recorded DNR
     // terms acceptance + active paid subscription), mirroring firestore.rules.
     function isDnrParticipant() {
       return signedIn() &&
         firestore.exists(/databases/(default)/documents/dnr_participants/$(request.auth.uid)) &&
-        firestore.get(/databases/(default)/documents/dnr_participants/$(request.auth.uid)).data.accepted == true;
+        firestore.get(/databases/(default)/documents/dnr_participants/$(request.auth.uid)).data.accepted == true &&
+        (
+          creatorAccountActive(
+            firestore.get(/databases/(default)/documents/dnr_participants/$(request.auth.uid)).data.accountId
+          ) ||
+          dnrFacilityHasPremium(
+            firestore.get(/databases/(default)/documents/dnr_participants/$(request.auth.uid)).data.facilityId
+          )
+        );
     }
 
     function globalDnrEntryAllowsEvidenceWrite(entryId) {
@@ -71,6 +100,11 @@ service firebase.storage {
     match /dnrEvidence/{entryId}/{allPaths=**} {
       allow read: if isSuperAdmin() || isDnrParticipant();
       allow write: if signedIn() && (isSuperAdmin() || globalDnrEntryAllowsEvidenceWrite(entryId));
+    }
+
+    // Export files are server-owned and downloaded through short-lived signed URLs.
+    match /exports/{facilityId}/{allPaths=**} {
+      allow read, write: if false;
     }
 
     // Public branding assets (online rentals logos, etc.).

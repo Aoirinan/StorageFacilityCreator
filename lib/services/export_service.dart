@@ -3,11 +3,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import '../models/export_job_model.dart';
-import '../models/permission_model.dart';
-import '../models/tenant_model.dart';
-import '../models/payment_model.dart';
-import 'permission_service.dart';
+import 'package:sfcapp/models/export_job_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/services/permission_service.dart';
 
 /// Service for exporting data to CSV
 class ExportService {
@@ -30,9 +29,10 @@ class ExportService {
         facilityId: facilityId,
         permission: PermissionType.exportData,
       );
-      
+
       if (!permissionCheck.hasPermission) {
-        throw Exception(permissionCheck.reason ?? 'You do not have permission to export data');
+        throw Exception(permissionCheck.reason ??
+            'You do not have permission to export data');
       }
 
       // Create export job document
@@ -84,9 +84,10 @@ class ExportService {
         facilityId: facilityId,
         permission: PermissionType.exportData,
       );
-      
+
       if (!permissionCheck.hasPermission) {
-        throw Exception(permissionCheck.reason ?? 'You do not have permission to export data');
+        throw Exception(permissionCheck.reason ??
+            'You do not have permission to export data');
       }
       Query<Map<String, dynamic>> query = _firestore
           .collection('facilities')
@@ -98,20 +99,23 @@ class ExportService {
       }
 
       if (startDate != null) {
-        query = query.where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
+        query = query.where('createdAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
       }
 
       if (endDate != null) {
-        query = query.where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(endDate));
+        query = query.where('createdAt',
+            isLessThanOrEqualTo: Timestamp.fromDate(endDate));
       }
 
       final snapshot = await query.get();
 
       // Build CSV
       final csvRows = <String>[];
-      
+
       // Header
-      csvRows.add('ID,Name,Email,Phone,Unit Number,Monthly Rate,Status,Created At,Notes');
+      csvRows.add(
+          'ID,Name,Email,Phone,Unit Number,Monthly Rate,Status,Created At,Notes');
 
       // Data rows
       for (final doc in snapshot.docs) {
@@ -153,9 +157,10 @@ class ExportService {
         facilityId: facilityId,
         permission: PermissionType.exportData,
       );
-      
+
       if (!permissionCheck.hasPermission) {
-        throw Exception(permissionCheck.reason ?? 'You do not have permission to export data');
+        throw Exception(permissionCheck.reason ??
+            'You do not have permission to export data');
       }
       Query<Map<String, dynamic>> query = _firestore
           .collection('facilities')
@@ -168,20 +173,23 @@ class ExportService {
       }
 
       if (startDate != null) {
-        query = query.where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
+        query = query.where('createdAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
       }
 
       if (endDate != null) {
-        query = query.where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(endDate));
+        query = query.where('createdAt',
+            isLessThanOrEqualTo: Timestamp.fromDate(endDate));
       }
 
       final snapshot = await query.get();
 
       // Build CSV
       final csvRows = <String>[];
-      
+
       // Header
-      csvRows.add('ID,Tenant ID,Amount,Status,Method,Due Date,Paid Date,Transaction ID,Created At');
+      csvRows.add(
+          'ID,Tenant ID,Amount,Status,Method,Due Date,Paid Date,Transaction ID,Created At');
 
       // Data rows
       for (final doc in snapshot.docs) {
@@ -196,9 +204,13 @@ class ExportService {
               ? (data['dueDate'] as Timestamp).toDate().toIso8601String()
               : '',
           data['paidDate'] != null || data['paidAt'] != null
-              ? ((data['paidDate'] ?? data['paidAt']) as Timestamp).toDate().toIso8601String()
+              ? ((data['paidDate'] ?? data['paidAt']) as Timestamp)
+                  .toDate()
+                  .toIso8601String()
               : '',
-          _escapeCsvField(data['transactionId'] as String? ?? data['externalPaymentId'] as String? ?? ''),
+          _escapeCsvField(data['transactionId'] as String? ??
+              data['externalPaymentId'] as String? ??
+              ''),
           data['createdAt'] != null
               ? (data['createdAt'] as Timestamp).toDate().toIso8601String()
               : '',
@@ -227,9 +239,10 @@ class ExportService {
         facilityId: facilityId,
         permission: PermissionType.exportData,
       );
-      
+
       if (!permissionCheck.hasPermission) {
-        throw Exception(permissionCheck.reason ?? 'You do not have permission to export data');
+        throw Exception(permissionCheck.reason ??
+            'You do not have permission to export data');
       }
       Query<Map<String, dynamic>> query = _firestore
           .collection('facilities')
@@ -242,20 +255,24 @@ class ExportService {
       }
 
       if (startDate != null) {
-        query = query.where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
+        query = query.where('timestamp',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
       }
 
       if (endDate != null) {
-        query = query.where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(endDate));
+        query = query.where('timestamp',
+            isLessThanOrEqualTo: Timestamp.fromDate(endDate));
       }
 
-      final snapshot = await query.limit(10000).get(); // Limit to 10k for client-side
+      final snapshot =
+          await query.limit(10000).get(); // Limit to 10k for client-side
 
       // Build CSV
       final csvRows = <String>[];
-      
+
       // Header
-      csvRows.add('ID,Event Type,Actor Email,Actor Role,Target Type,Target ID,Tenant ID,Timestamp,Metadata');
+      csvRows.add(
+          'ID,Event Type,Actor Email,Actor Role,Target Type,Target ID,Tenant ID,Timestamp,Metadata');
 
       // Data rows
       for (final doc in snapshot.docs) {
@@ -321,6 +338,33 @@ class ExportService {
         .map((snapshot) => snapshot.docs
             .map((doc) => ExportJobModel.fromFirestore(doc))
             .toList());
+  }
+
+  /// Request a short-lived signed URL for a completed export.
+  static Future<Uri> getExportDownloadUrl({
+    required String facilityId,
+    required String jobId,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('User not authenticated');
+
+    final callable = _functions.httpsCallable('getExportDownloadUrl');
+    final result = await callable.call({
+      'facilityId': facilityId,
+      'jobId': jobId,
+    });
+    final data = result.data as Map<Object?, Object?>;
+    final downloadUrl = data['downloadUrl'];
+
+    if (downloadUrl is! String) {
+      throw Exception('Export download URL was not returned');
+    }
+
+    final uri = Uri.tryParse(downloadUrl);
+    if (uri == null || !uri.hasScheme) {
+      throw Exception('Export download URL is invalid');
+    }
+    return uri;
   }
 
   /// Escape CSV field (handles commas, quotes, newlines)

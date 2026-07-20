@@ -155,8 +155,15 @@ class GlobalDNREntryModel {
 
   factory GlobalDNREntryModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
+    return GlobalDNREntryModel.fromMap(id: doc.id, data: data);
+  }
+
+  factory GlobalDNREntryModel.fromMap({
+    required String id,
+    required Map<String, dynamic> data,
+  }) {
     return GlobalDNREntryModel(
-      id: doc.id,
+      id: id,
       fullName: data['fullName'] as String? ?? '',
       dob: data['dob'] as String?,
       phone: data['phone'] as String? ?? '',
@@ -193,7 +200,8 @@ class GlobalDNREntryModel {
       if (dob != null) 'dob': dob,
       'phone': phone,
       'email': email,
-      if (driversLicenseLast4 != null) 'driversLicenseLast4': driversLicenseLast4,
+      if (driversLicenseLast4 != null)
+        'driversLicenseLast4': driversLicenseLast4,
       if (idLast4 != null) 'idLast4': idLast4,
       'reason': reason,
       if (notes != null) 'notes': notes,
@@ -203,7 +211,8 @@ class GlobalDNREntryModel {
       if (updatedAt != null) 'updatedAt': Timestamp.fromDate(updatedAt!),
       'createdByUserId': createdByUserId,
       'createdByFacilityId': createdByFacilityId,
-      if (createdByFacilityName != null) 'createdByFacilityName': createdByFacilityName,
+      if (createdByFacilityName != null)
+        'createdByFacilityName': createdByFacilityName,
       if (createdByState != null) 'createdByState': createdByState,
       if (reportedByName != null) 'reportedByName': reportedByName,
       if (reportedByEmail != null) 'reportedByEmail': reportedByEmail,
@@ -253,7 +262,8 @@ class GlobalDNREntryModel {
       updatedAt: updatedAt ?? this.updatedAt,
       createdByUserId: createdByUserId ?? this.createdByUserId,
       createdByFacilityId: createdByFacilityId ?? this.createdByFacilityId,
-      createdByFacilityName: createdByFacilityName ?? this.createdByFacilityName,
+      createdByFacilityName:
+          createdByFacilityName ?? this.createdByFacilityName,
       createdByState: createdByState ?? this.createdByState,
       reportedByName: reportedByName ?? this.reportedByName,
       reportedByEmail: reportedByEmail ?? this.reportedByEmail,

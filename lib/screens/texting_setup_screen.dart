@@ -3,8 +3,11 @@ import 'dart:math' show min;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 
+import 'package:sfcapp/controllers/texting_onboarding_controller.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/texting_onboarding_model.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
@@ -14,31 +17,36 @@ import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
 class TextingSetupScreen extends ConsumerStatefulWidget {
   final String? facilityId;
+  final TextingOnboardingRepository? repository;
+  final bool? isSuperAdminOverride;
+  final List<FacilityModel>? facilitiesOverride;
 
-  const TextingSetupScreen({super.key, this.facilityId});
+  const TextingSetupScreen({
+    super.key,
+    this.facilityId,
+    this.repository,
+    this.isSuperAdminOverride,
+    this.facilitiesOverride,
+  });
 
   @override
   ConsumerState<TextingSetupScreen> createState() => _TextingSetupScreenState();
 }
 
 class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
-  static const Duration _statusPollInterval = Duration(seconds: 30);
-
-  static const List<String> _stepTitles = [
-    'Welcome',
-    'Business information',
-    'Messaging use cases',
-    'Dedicated phone number',
-    'Review and submit',
+  static const _pollInterval = Duration(seconds: 30);
+  static const _stepTitles = [
+    'Business details',
+    'Messaging plan',
+    'Review & submit',
   ];
 
-  int _step = 0;
-  bool _busy = false;
-  String? _error;
-  Map<String, dynamic>? _status;
-  String? _resolvedFacilityId;
-  Timer? _statusTimer;
+  late final TextingOnboardingController _controller;
+  Timer? _pollTimer;
+  String? _hydratedFacilityId;
 
+  final _businessFormKey = GlobalKey<FormState>();
+  final _reviewFormKey = GlobalKey<FormState>();
   final _legalName = TextEditingController();
   final _dba = TextEditingController();
   final _ein = TextEditingController();
@@ -54,1105 +62,1663 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   bool _consent = false;
 
   final Map<String, bool> _useCases = {
-    'Late notices': true,
     'Payment reminders': true,
-    'Gate code reminders': false,
+    'Past-due notices': true,
+    'Gate and access updates': false,
     'Operational notices': false,
   };
 
   @override
-  void dispose() {
-    _statusTimer?.cancel();
-    _legalName.dispose();
-    _dba.dispose();
-    _ein.dispose();
-    _address1.dispose();
-    _city.dispose();
-    _state.dispose();
-    _postal.dispose();
-    _website.dispose();
-    _supportEmail.dispose();
-    _supportPhone.dispose();
-    _areaCode.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _controller = TextingOnboardingController(
+      repository: widget.repository ?? FirebaseTextingOnboardingRepository(),
+    )..addListener(_onControllerChanged);
   }
 
   @override
-  void initState() {
-    super.initState();
-    _statusTimer = Timer.periodic(_statusPollInterval, (_) {
-      if (mounted && !_busy && _resolvedFacilityId != null) {
-        _refreshStatus();
-      }
-    });
+  void dispose() {
+    _pollTimer?.cancel();
+    _controller
+      ..removeListener(_onControllerChanged)
+      ..dispose();
+    for (final textController in [
+      _legalName,
+      _dba,
+      _ein,
+      _address1,
+      _city,
+      _state,
+      _postal,
+      _website,
+      _supportEmail,
+      _supportPhone,
+      _areaCode,
+    ]) {
+      textController.dispose();
+    }
+    super.dispose();
   }
 
-  Future<void> _loadStatus() async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final status =
-          await TextingOnboardingService.getStatus(_resolvedFacilityId!);
-      if (mounted) {
-        setState(() {
-          _status = status;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.toString();
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _busy = false;
-        });
-      }
+  void _onControllerChanged() {
+    if (!mounted) return;
+    final snapshot = _controller.snapshot;
+    final facilityId = _controller.facilityId;
+    if (snapshot != null &&
+        facilityId != null &&
+        _hydratedFacilityId != facilityId) {
+      _hydrate(snapshot);
+      _hydratedFacilityId = facilityId;
     }
+    _syncPolling();
+    setState(() {});
   }
 
-  List<String> _selectedUseCases() {
-    return _useCases.entries.where((e) => e.value).map((e) => e.key).toList();
-  }
-
-  /// Brand name carriers see in sample messages. A2P reviewers reject samples
-  /// that do not identify the sender, so prefix each sample with the facility
-  /// DBA (or legal name) entered in the business info step.
-  String _sampleBrandName() {
-    final dba = _dba.text.trim();
-    if (dba.isNotEmpty) return dba;
-    final legal = _legalName.text.trim();
-    if (legal.isNotEmpty) return legal;
-    return 'Your storage facility';
-  }
-
-  List<String> _sampleMessages() {
-    final brand = _sampleBrandName();
-    final samples = <String>[];
-    if (_useCases['Late notices'] == true) {
-      samples.add(
-          '$brand: Your account is now past due. Please make payment to avoid late fees. Reply STOP to opt out, HELP for help.');
-    }
-    if (_useCases['Payment reminders'] == true) {
-      samples.add(
-          '$brand: Friendly reminder — your rent payment is due soon. Reply STOP to opt out, HELP for help.');
-    }
-    if (_useCases['Gate code reminders'] == true) {
-      samples.add(
-          '$brand: Your access code has been updated. Contact the office for help. Reply STOP to opt out, HELP for help.');
-    }
-    if (_useCases['Operational notices'] == true) {
-      samples.add(
-          '$brand: Important facility notice — office hours update this week. Reply STOP to opt out, HELP for help.');
-    }
-    return samples;
-  }
-
-  Future<void> _saveBusinessInfo() async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.saveBusinessInfo(
-        facilityId: _resolvedFacilityId!,
-        businessData: {
-          'legalBusinessName': _legalName.text.trim(),
-          'dba': _dba.text.trim().isEmpty ? null : _dba.text.trim(),
-          'businessType': _businessType,
-          'ein': _ein.text.trim().isEmpty ? null : _ein.text.trim(),
-          'addressLine1': _address1.text.trim(),
-          'city': _city.text.trim(),
-          'state': _state.text.trim(),
-          'postalCode': _postal.text.trim(),
-          'country': 'US',
-          'website': _website.text.trim(),
-          'supportEmail': _supportEmail.text.trim(),
-          'supportPhone': _supportPhone.text.trim(),
-        },
+  void _syncPolling() {
+    if (_controller.shouldPoll) {
+      _pollTimer ??= Timer.periodic(
+        _pollInterval,
+        (_) => _controller.refresh(poll: true),
       );
-      await _loadStatus();
-      if (mounted) {
-        setState(() => _step = 2);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
+    } else {
+      _pollTimer?.cancel();
+      _pollTimer = null;
     }
   }
 
-  Future<void> _provisionNumber() async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.provisionPhoneNumber(
-        facilityId: _resolvedFacilityId!,
-        areaCode: _areaCode.text.trim().isEmpty ? null : _areaCode.text.trim(),
-      );
-      await _loadStatus();
-      if (mounted) {
-        setState(() => _step = 4);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
+  void _hydrate(TextingOnboardingSnapshot snapshot) {
+    final details = snapshot.businessDetails;
+    if (details != null) {
+      _legalName.text = details.legalBusinessName;
+      _dba.text = details.dba ?? '';
+      _businessType =
+          const {'LLC', 'Corp', 'Nonprofit'}.contains(details.businessType)
+              ? details.businessType
+              : 'LLC';
+      _address1.text = details.addressLine1;
+      _city.text = details.city;
+      _state.text = details.state;
+      _postal.text = details.postalCode;
+      _website.text = details.website;
+      _supportEmail.text = details.supportEmail;
+      _supportPhone.text = details.supportPhone;
     }
-  }
-
-  Future<void> _submit() async {
-    if (_resolvedFacilityId == null) return;
-    if (!_consent) {
-      setState(
-          () => _error = 'Consent confirmation is required before submitting.');
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.submitOnboarding(
-        facilityId: _resolvedFacilityId!,
-        useCases: _selectedUseCases(),
-        sampleMessages: _sampleMessages(),
-      );
-      await _loadStatus();
-      if (mounted) setState(() => _step = 5);
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _refreshStatus() async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.refreshStatus(_resolvedFacilityId!);
-      await _loadStatus();
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _resubmit() async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.resubmit(_resolvedFacilityId!);
-      await _loadStatus();
-      if (mounted) setState(() => _step = 4);
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _setPlatformApproval(bool approved) async {
-    if (_resolvedFacilityId == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await TextingOnboardingService.setPlatformApproval(
-        facilityId: _resolvedFacilityId!,
-        approved: approved,
-      );
-      await _loadStatus();
-    } catch (e) {
-      if (mounted) {
-        setState(() => _error = e.toString());
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _busy = false);
+    if (snapshot.useCases.isNotEmpty) {
+      final savedUseCases = snapshot.useCases.map((useCase) {
+        return switch (useCase) {
+          'Late notices' => 'Past-due notices',
+          'Gate code reminders' => 'Gate and access updates',
+          _ => useCase,
+        };
+      }).toSet();
+      for (final key in _useCases.keys) {
+        _useCases[key] = savedUseCases.contains(key);
       }
     }
+  }
+
+  void _ensureInitialFacility(List<FacilityModel> facilities) {
+    if (facilities.isEmpty || _controller.facilityId != null) return;
+    final requested = widget.facilityId;
+    final selected = facilities.firstWhere(
+      (facility) => facility.id == requested,
+      orElse: () => facilities.first,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _controller.facilityId == null) {
+        _controller.load(selected.id);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final userFacilities = ref.watch(
-      userFacilitiesProvider(
-        ref.watch(authStateProvider).whenOrNull(data: (u) => u?.uid) ?? '',
-      ),
-    );
+    final facilitiesOverride = widget.facilitiesOverride;
+    final uid = facilitiesOverride == null
+        ? ref.watch(authStateProvider).whenOrNull(data: (user) => user?.uid) ??
+            ''
+        : '';
+    final AsyncValue<List<FacilityModel>> facilitiesAsync =
+        facilitiesOverride != null
+            ? AsyncValue.data(facilitiesOverride)
+            : ref.watch(userFacilitiesProvider(uid));
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Enable Texting'),
+        title: const Text('Texting'),
         actions: [
           IconButton(
-            onPressed: _busy ? null : _refreshStatus,
+            tooltip: 'Refresh texting status',
+            onPressed: _controller.isWorking || _controller.facilityId == null
+                ? null
+                : _controller.refresh,
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh status',
           ),
         ],
       ),
-      body: userFacilities.when(
+      body: facilitiesAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (_, __) => _LoadFailure(
+            onRetry: () => ref.invalidate(
+                  userFacilitiesProvider(uid),
+                )),
         data: (facilities) {
-          if (facilities.isEmpty) {
-            return _buildEmptyState(context);
-          }
-
-          _resolvedFacilityId ??= widget.facilityId ?? facilities.first.id;
-          final selectedFacility = facilities.firstWhere(
-            (f) => f.id == _resolvedFacilityId,
-            orElse: () => facilities.first,
-          );
-          _resolvedFacilityId = selectedFacility.id;
-          _status ??= {
-            'a2pStatus': selectedFacility.a2pStatus ?? 'draft',
-            'twilioPhoneNumberE164': selectedFacility.twilioPhoneNumberE164,
-            'a2pLastError': selectedFacility.a2pLastError,
-          };
-
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final maxW = min(constraints.maxWidth, 720.0);
-              return Align(
-                alignment: Alignment.topCenter,
-                child: SizedBox(
-                  width: maxW,
-                  child: KeyboardScrollable(
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-                      children: [
-                        if (_error != null) ...[
-                          _buildErrorBanner(context),
-                          const SizedBox(height: 16),
-                        ],
-                        _buildFacilitySelector(context, facilities),
-                        const SizedBox(height: 20),
-                        if (_step < 5) _buildWizardCard(context),
-                        if (_step >= 5) ...[
-                          _buildSubmittedHeader(context),
-                          const SizedBox(height: 16),
-                          _buildStatusCard(context),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          );
+          if (facilities.isEmpty) return const _NoFacilities();
+          _ensureInitialFacility(facilities);
+          return _buildBody(facilities);
         },
-        loading: () => Center(
-          child: CircularProgressIndicator(
-            color: Theme.of(context).colorScheme.primary,
-          ),
-        ),
-        error: (e, _) => _buildLoadError(context, e),
       ),
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 400),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.business_outlined, size: 48, color: cs.primary),
-                const SizedBox(height: 16),
-                Text(
-                  'Create a facility first',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'SMS setup is per facility. Add a facility, then return here to enable texting.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: cs.onSurfaceVariant,
-                    height: 1.45,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget _buildBody(List<FacilityModel> facilities) {
+    if (_controller.isLoading || _controller.facilityId == null) {
+      return const _SetupSkeleton();
+    }
 
-  Widget _buildLoadError(BuildContext context, Object e) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.cloud_off_outlined, size: 40, color: cs.error),
-                const SizedBox(height: 12),
-                Text(
-                  'Could not load facilities',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+    return KeyboardScrollable(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 48),
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1080),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _PageHeader(
+                    facilities: facilities,
+                    selectedFacilityId: _controller.facilityId!,
+                    enabled: !_controller.isWorking,
+                    onSelected: (facilityId) {
+                      if (facilityId == null ||
+                          facilityId == _controller.facilityId) {
+                        return;
+                      }
+                      _hydratedFacilityId = null;
+                      _consent = false;
+                      _controller.load(facilityId);
+                    },
                   ),
-                ),
-                const SizedBox(height: 8),
-                SelectableText(
-                  '$e',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildErrorBanner(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Material(
-      color: cs.error.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.error_outline_rounded, color: cs.error, size: 24),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                _error!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: cs.error,
-                      height: 1.35,
+                  if (_controller.errorMessage != null) ...[
+                    const SizedBox(height: 16),
+                    _ErrorBanner(
+                      message: _controller.errorMessage!,
+                      onDismiss: _controller.clearError,
                     ),
+                  ],
+                  const SizedBox(height: 20),
+                  if (_controller.showDashboard)
+                    _buildStatusDashboard()
+                  else
+                    _buildGuidedSetup(),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildFacilitySelector(
-      BuildContext context, List<FacilityModel> facilities) {
-    final id = _resolvedFacilityId;
-    if (id == null) return const SizedBox.shrink();
+  Widget _buildGuidedSetup() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 840;
+        final rail = _StepRail(
+          currentStep: _controller.step,
+          onStepSelected: _controller.isWorking
+              ? null
+              : (step) {
+                  if (step <= _controller.step) _controller.goToStep(step);
+                },
+          horizontal: !wide,
+        );
+        final card = Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: EdgeInsets.all(wide ? 28 : 20),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: KeyedSubtree(
+                key: ValueKey(_controller.step),
+                child: switch (_controller.step) {
+                  0 => _buildBusinessStage(),
+                  1 => _buildMessagingStage(),
+                  _ => _buildReviewStage(),
+                },
+              ),
+            ),
+          ),
+        );
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-        child: DropdownMenuFormField<String>(
-          key: ValueKey<String>(id),
-          initialSelection: id,
-          enabled: !_busy,
-          width: double.infinity,
-          enableSearch: facilities.length > 6,
-          menuHeight: min(320, MediaQuery.sizeOf(context).height * 0.4),
-          label: const Text('Facility'),
-          leadingIcon: const Icon(Icons.business_outlined),
-          onSelected: (value) {
-            if (value == null) return;
-            setState(() {
-              _resolvedFacilityId = value;
-              _status = null;
-            });
-            _loadStatus();
+        if (!wide) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              rail,
+              const SizedBox(height: 16),
+              card,
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: 250, child: rail),
+            const SizedBox(width: 20),
+            Expanded(child: card),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildBusinessStage() {
+    final locked = _controller.snapshot?.hasTrustProfile == true;
+    return Form(
+      key: _businessFormKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _StageHeading(
+            eyebrow: 'STEP 1 OF 3',
+            title: 'Tell us about your business',
+            description:
+                'Carriers verify these details against public and tax records. Enter the legal information exactly as registered.',
+          ),
+          if (locked) ...[
+            const SizedBox(height: 20),
+            const _InfoCallout(
+              icon: Icons.lock_outline_rounded,
+              title: 'Business profile saved',
+              message:
+                  'These details are locked after the carrier profile is created. Contact SFC support if something needs to change.',
+            ),
+          ],
+          const SizedBox(height: 24),
+          _SectionLabel('Business identity'),
+          const SizedBox(height: 12),
+          _field(
+            key: const Key('legal-business-name'),
+            controller: _legalName,
+            label: 'Legal business name',
+            enabled: !locked,
+            validator: _required('Enter the legal business name.'),
+            autofillHints: const [AutofillHints.organizationName],
+          ),
+          const SizedBox(height: 12),
+          _field(
+            controller: _dba,
+            label: 'Doing business as (optional)',
+            enabled: !locked,
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _businessType,
+            decoration: const InputDecoration(labelText: 'Business type'),
+            items: const [
+              DropdownMenuItem(value: 'LLC', child: Text('LLC')),
+              DropdownMenuItem(value: 'Corp', child: Text('Corporation')),
+              DropdownMenuItem(
+                value: 'Nonprofit',
+                child: Text('Nonprofit'),
+              ),
+            ],
+            onChanged: locked
+                ? null
+                : (value) => setState(() => _businessType = value ?? 'LLC'),
+          ),
+          const SizedBox(height: 12),
+          _field(
+            key: const Key('ein'),
+            controller: _ein,
+            label: locked
+                ? 'EIN ending in ${_controller.snapshot?.businessDetails?.einLast4 ?? '••••'}'
+                : 'Federal EIN',
+            hint: locked ? null : '12-3456789',
+            enabled: !locked,
+            keyboardType: TextInputType.number,
+            validator: locked
+                ? null
+                : (value) {
+                    final digits = _digits(value);
+                    return digits.length == 9
+                        ? null
+                        : 'Enter a valid 9-digit EIN.';
+                  },
+          ),
+          const SizedBox(height: 12),
+          const _InfoCallout(
+            icon: Icons.info_outline_rounded,
+            title: 'Sole proprietor?',
+            message:
+                'Sole proprietor registrations require manual carrier setup. Contact SFC support instead of continuing here.',
+          ),
+          const SizedBox(height: 24),
+          _SectionLabel('Registered address'),
+          const SizedBox(height: 12),
+          _field(
+            controller: _address1,
+            label: 'Street address',
+            enabled: !locked,
+            validator: _required('Enter the registered street address.'),
+            autofillHints: const [AutofillHints.streetAddressLine1],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 2,
+                child: _field(
+                  controller: _city,
+                  label: 'City',
+                  enabled: !locked,
+                  validator: _required('Enter a city.'),
+                  autofillHints: const [AutofillHints.addressCity],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _field(
+                  controller: _state,
+                  label: 'State',
+                  hint: 'TX',
+                  enabled: !locked,
+                  textCapitalization: TextCapitalization.characters,
+                  validator: (value) =>
+                      RegExp(r'^[A-Za-z]{2}$').hasMatch(value?.trim() ?? '')
+                          ? null
+                          : 'Use 2 letters.',
+                  autofillHints: const [AutofillHints.addressState],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _field(
+                  controller: _postal,
+                  label: 'ZIP',
+                  enabled: !locked,
+                  keyboardType: TextInputType.number,
+                  validator: (value) =>
+                      RegExp(r'^\d{5}(-\d{4})?$').hasMatch(value?.trim() ?? '')
+                          ? null
+                          : 'Enter a valid ZIP.',
+                  autofillHints: const [AutofillHints.postalCode],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          _SectionLabel('Public contact details'),
+          const SizedBox(height: 12),
+          _field(
+            controller: _website,
+            label: 'Website',
+            hint: 'https://example.com',
+            enabled: !locked,
+            keyboardType: TextInputType.url,
+            validator: _validateWebsite,
+            autofillHints: const [AutofillHints.url],
+          ),
+          const SizedBox(height: 12),
+          _field(
+            controller: _supportEmail,
+            label: 'Support email',
+            enabled: !locked,
+            keyboardType: TextInputType.emailAddress,
+            validator: _validateEmail,
+            autofillHints: const [AutofillHints.email],
+          ),
+          const SizedBox(height: 12),
+          _field(
+            controller: _supportPhone,
+            label: 'Support phone',
+            enabled: !locked,
+            keyboardType: TextInputType.phone,
+            validator: (value) => _digits(value).length >= 10
+                ? null
+                : 'Enter a valid support phone number.',
+            autofillHints: const [AutofillHints.telephoneNumber],
+          ),
+          const SizedBox(height: 28),
+          _StageActions(
+            busy: _controller.isWorking,
+            primaryLabel: locked ? 'Continue' : 'Save and continue',
+            onPrimary: locked ? () => _controller.goToStep(1) : _saveBusiness,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessagingStage() {
+    final samples = _sampleMessages();
+    return Column(
+      key: const Key('messaging-plan-stage'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _StageHeading(
+          eyebrow: 'STEP 2 OF 3',
+          title: 'Choose what you will send',
+          description:
+              'Select every account-notification category you expect to use. We create compliant examples for the carrier review.',
+        ),
+        const SizedBox(height: 24),
+        ..._useCases.entries.map(
+          (entry) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _UseCaseTile(
+              title: entry.key,
+              selected: entry.value,
+              onChanged: _controller.isWorking
+                  ? null
+                  : (value) => setState(() => _useCases[entry.key] = value),
+            ),
+          ),
+        ),
+        if (!_useCases.containsValue(true)) ...[
+          const SizedBox(height: 2),
+          Text(
+            'Select at least one message type.',
+            key: const Key('use-case-error'),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+              fontSize: 12,
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
+        _SectionLabel('Carrier message previews'),
+        const SizedBox(height: 10),
+        ...samples.map(
+          (sample) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _MessagePreview(message: sample),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const _InfoCallout(
+          icon: Icons.verified_user_outlined,
+          title: 'Consent remains required',
+          message:
+              'Only text tenants who voluntarily opted in. Every message identifies your facility and includes STOP and HELP instructions.',
+        ),
+        const SizedBox(height: 28),
+        _StageActions(
+          busy: _controller.isWorking,
+          primaryLabel: 'Continue to review',
+          onBack: () => _controller.goToStep(0),
+          onPrimary: () {
+            if (!_useCases.containsValue(true)) {
+              setState(() {});
+              return;
+            }
+            _controller.saveMessagingPlanLocally();
           },
-          dropdownMenuEntries: [
-            for (final f in facilities)
-              DropdownMenuEntry<String>(value: f.id, label: f.name),
-          ],
         ),
+      ],
+    );
+  }
+
+  Widget _buildReviewStage() {
+    return Form(
+      key: _reviewFormKey,
+      child: Column(
+        key: const Key('review-stage'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _StageHeading(
+            eyebrow: 'STEP 3 OF 3',
+            title: 'Review and submit',
+            description:
+                'We will reserve a dedicated local number and send your registration to the carriers.',
+          ),
+          const SizedBox(height: 24),
+          _ReviewSection(
+            title: 'Business',
+            rows: {
+              'Legal name': _legalName.text.trim(),
+              'Type': _businessType,
+              'Address':
+                  '${_address1.text.trim()}, ${_city.text.trim()}, ${_state.text.trim()} ${_postal.text.trim()}',
+            },
+            onEdit: () => _controller.goToStep(0),
+          ),
+          const SizedBox(height: 14),
+          _ReviewSection(
+            title: 'Messaging plan',
+            rows: {
+              'Use cases': _selectedUseCases().join(', '),
+              'Review time': 'Typically 10–15 business days',
+            },
+            onEdit: () => _controller.goToStep(1),
+          ),
+          const SizedBox(height: 20),
+          _field(
+            key: const Key('area-code'),
+            controller: _areaCode,
+            label: 'Preferred area code (optional)',
+            hint: '512',
+            keyboardType: TextInputType.number,
+            validator: (value) {
+              final digits = _digits(value);
+              return digits.isEmpty || digits.length == 3
+                  ? null
+                  : 'Enter a 3-digit area code.';
+            },
+          ),
+          const SizedBox(height: 16),
+          CheckboxListTile(
+            key: const Key('consent-confirmation'),
+            value: _consent,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            onChanged: _controller.isWorking
+                ? null
+                : (value) => setState(() => _consent = value ?? false),
+            title: const Text(
+              'I confirm tenants voluntarily opt in before receiving account notifications, and consent is not required to rent.',
+            ),
+            subtitle: !_consent
+                ? const Text('Required before registration can be submitted.')
+                : null,
+          ),
+          const SizedBox(height: 10),
+          const _InfoCallout(
+            icon: Icons.schedule_outlined,
+            title: 'What happens next',
+            message:
+                'Your number is reserved immediately. Texting stays disabled until carrier approval and a final SFC platform review are both complete.',
+          ),
+          const SizedBox(height: 28),
+          _StageActions(
+            busy: _controller.isWorking,
+            primaryLabel: 'Reserve number & submit',
+            onBack: () => _controller.goToStep(1),
+            onPrimary: _submit,
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildWizardCard(BuildContext context) {
+  Widget _buildStatusDashboard() {
+    final snapshot = _controller.snapshot!;
+    final status = snapshot.status;
+    final rejected = status == TextingRegistrationStatus.rejected;
+    final carrierApproved = status == TextingRegistrationStatus.approved;
+    final superAdmin =
+        widget.isSuperAdminOverride ?? SuperAdminService.isSuperAdmin();
+
+    final title = snapshot.isLive
+        ? 'Texting is live'
+        : rejected
+            ? 'Registration needs attention'
+            : carrierApproved
+                ? 'Carrier approved'
+                : 'Registration under review';
+    final description = snapshot.isLive
+        ? 'This facility can now send compliant account notifications from its dedicated number.'
+        : rejected
+            ? 'The carrier could not approve the registration as submitted.'
+            : carrierApproved
+                ? 'Carrier registration is complete. SFC platform approval is the final step.'
+                : 'No action is needed right now. Carrier review typically takes 10–15 business days.';
+
+    return Column(
+      key: Key('status-${status.name}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _StatusIcon(
+                  rejected: rejected,
+                  live: snapshot.isLive,
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        description,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                              height: 1.45,
+                            ),
+                      ),
+                      if (snapshot.phoneNumber?.isNotEmpty == true) ...[
+                        const SizedBox(height: 14),
+                        SelectableText(
+                          snapshot.phoneNumber!,
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          'Dedicated facility number',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final progress = _ApprovalProgress(snapshot: snapshot);
+            final details = _RegistrationDetails(snapshot: snapshot);
+            if (constraints.maxWidth < 760) {
+              return Column(
+                children: [
+                  progress,
+                  const SizedBox(height: 18),
+                  details,
+                ],
+              );
+            }
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 3, child: progress),
+                const SizedBox(width: 18),
+                Expanded(flex: 2, child: details),
+              ],
+            );
+          },
+        ),
+        if (rejected) ...[
+          const SizedBox(height: 18),
+          _RejectionCard(
+            reason: snapshot.rejectionReason ??
+                snapshot.lastError ??
+                'The carrier did not provide a detailed reason.',
+            busy: _controller.isWorking,
+            onReview: _confirmResetAfterRejection,
+          ),
+        ],
+        if (superAdmin && carrierApproved) ...[
+          const SizedBox(height: 18),
+          _AdminApprovalCard(
+            approved: snapshot.platformApproved,
+            busy: _controller.isWorking,
+            onChanged: _controller.setPlatformApproval,
+          ),
+        ],
+        const SizedBox(height: 14),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed:
+                _controller.isWorking ? null : () => _controller.refresh(),
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: Text(
+              snapshot.isUnderReview
+                  ? 'Refresh status · checks automatically'
+                  : 'Refresh status',
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _saveBusiness() async {
+    if (_businessFormKey.currentState?.validate() != true) return;
+    await _controller.saveBusinessInfo({
+      'legalBusinessName': _legalName.text.trim(),
+      'dba': _emptyToNull(_dba.text),
+      'businessType': _businessType,
+      'ein': _digits(_ein.text),
+      'addressLine1': _address1.text.trim(),
+      'city': _city.text.trim(),
+      'state': _state.text.trim().toUpperCase(),
+      'postalCode': _postal.text.trim(),
+      'country': 'US',
+      'website': _website.text.trim(),
+      'supportEmail': _supportEmail.text.trim(),
+      'supportPhone': _supportPhone.text.trim(),
+    });
+  }
+
+  Future<void> _submit() async {
+    if (_reviewFormKey.currentState?.validate() != true) return;
+    if (!_consent) {
+      setState(() {});
+      return;
+    }
+    await _controller.provisionAndSubmit(
+      areaCode: _emptyToNull(_digits(_areaCode.text)),
+      useCases: _selectedUseCases(),
+      sampleMessages: _sampleMessages(),
+    );
+  }
+
+  Future<void> _confirmResetAfterRejection() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Review registration details?'),
+        content: const Text(
+          'This resets the carrier brand and campaign submission so you can review the messaging plan before submitting again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Reset and review'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      final success = await _controller.resetAfterRejection();
+      if (success) {
+        _hydratedFacilityId = null;
+        final snapshot = _controller.snapshot;
+        if (snapshot != null) _hydrate(snapshot);
+      }
+    }
+  }
+
+  TextFormField _field({
+    Key? key,
+    required TextEditingController controller,
+    required String label,
+    String? hint,
+    bool enabled = true,
+    TextInputType? keyboardType,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+    String? Function(String?)? validator,
+    List<String>? autofillHints,
+  }) {
+    return TextFormField(
+      key: key,
+      controller: controller,
+      enabled: enabled && !_controller.isWorking,
+      keyboardType: keyboardType,
+      textCapitalization: textCapitalization,
+      validator: validator,
+      autofillHints: autofillHints,
+      decoration: InputDecoration(labelText: label, hintText: hint),
+    );
+  }
+
+  List<String> _selectedUseCases() {
+    return _useCases.entries
+        .where((entry) => entry.value)
+        .map((entry) => entry.key)
+        .toList(growable: false);
+  }
+
+  String _brandName() {
+    if (_dba.text.trim().isNotEmpty) return _dba.text.trim();
+    if (_legalName.text.trim().isNotEmpty) return _legalName.text.trim();
+    return 'Your storage facility';
+  }
+
+  List<String> _sampleMessages() {
+    final brand = _brandName();
+    final templates = <String, String>{
+      'Payment reminders':
+          '$brand: Friendly reminder — your rent payment is due soon. Reply STOP to opt out, HELP for help.',
+      'Past-due notices':
+          '$brand: Your account is past due. Please make a payment to avoid late fees. Reply STOP to opt out, HELP for help.',
+      'Gate and access updates':
+          '$brand: Your access information has been updated. Contact the office for help. Reply STOP to opt out, HELP for help.',
+      'Operational notices':
+          '$brand: Important facility notice — office hours have changed this week. Reply STOP to opt out, HELP for help.',
+    };
+    return _selectedUseCases()
+        .map((useCase) => templates[useCase]!)
+        .toList(growable: false);
+  }
+
+  static String? Function(String?) _required(String message) {
+    return (value) => value?.trim().isNotEmpty == true ? null : message;
+  }
+
+  static String? _validateEmail(String? value) {
+    return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value?.trim() ?? '')
+        ? null
+        : 'Enter a valid email address.';
+  }
+
+  static String? _validateWebsite(String? value) {
+    final raw = value?.trim() ?? '';
+    final uri = Uri.tryParse(raw);
+    return uri != null &&
+            (uri.scheme == 'https' || uri.scheme == 'http') &&
+            uri.host.contains('.')
+        ? null
+        : 'Enter a full website URL, including https://.';
+  }
+
+  static String _digits(String? value) =>
+      (value ?? '').replaceAll(RegExp(r'\D'), '');
+
+  static String? _emptyToNull(String? value) {
+    final trimmed = value?.trim() ?? '';
+    return trimmed.isEmpty ? null : trimmed;
+  }
+}
+
+class _PageHeader extends StatelessWidget {
+  final List<FacilityModel> facilities;
+  final String selectedFacilityId;
+  final bool enabled;
+  final ValueChanged<String?> onSelected;
+
+  const _PageHeader({
+    required this.facilities,
+    required this.selectedFacilityId,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final title = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Facility texting',
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Set up and manage compliant SMS notifications.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        );
+        final selector = SizedBox(
+          width: min(340, constraints.maxWidth),
+          child: DropdownButtonFormField<String>(
+            key: ValueKey(selectedFacilityId),
+            initialValue: selectedFacilityId,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Facility',
+              prefixIcon: Icon(Icons.business_outlined),
+            ),
+            items: [
+              for (final facility in facilities)
+                DropdownMenuItem(
+                  value: facility.id,
+                  child: Text(
+                    facility.name,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: enabled ? onSelected : null,
+          ),
+        );
+        if (constraints.maxWidth < 650) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [title, const SizedBox(height: 16), selector],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: title),
+            const SizedBox(width: 24),
+            selector,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _StepRail extends StatelessWidget {
+  final int currentStep;
+  final ValueChanged<int>? onStepSelected;
+  final bool horizontal;
+
+  const _StepRail({
+    required this.currentStep,
+    required this.onStepSelected,
+    required this.horizontal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final children = List.generate(3, (index) {
+      final active = index == currentStep;
+      final complete = index < currentStep;
+      return InkWell(
+        onTap: onStepSelected == null ? null : () => onStepSelected!(index),
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 15,
+                backgroundColor: active || complete
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+                foregroundColor: active || complete
+                    ? Theme.of(context).colorScheme.onPrimary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
+                child: complete
+                    ? const Icon(Icons.check_rounded, size: 17)
+                    : Text('${index + 1}'),
+              ),
+              const SizedBox(width: 9),
+              if (!horizontal || MediaQuery.sizeOf(context).width > 520)
+                Expanded(
+                  child: Text(
+                    _TextingSetupScreenState._stepTitles[index],
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight:
+                              active ? FontWeight.w700 : FontWeight.w500,
+                          color: active
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    });
+    if (horizontal) {
+      return Card(
+        margin: EdgeInsets.zero,
+        child: Row(
+          children: children
+              .map((child) => Expanded(child: child))
+              .toList(growable: false),
+        ),
+      );
+    }
     return Card(
+      margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children
+              .map((child) => SizedBox(height: 52, child: child))
+              .toList(),
+        ),
+      ),
+    );
+  }
+}
+
+class _StageHeading extends StatelessWidget {
+  final String eyebrow;
+  final String title;
+  final String description;
+
+  const _StageHeading({
+    required this.eyebrow,
+    required this.title,
+    required this.description,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          eyebrow,
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.8,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          title,
+          style: Theme.of(context)
+              .textTheme
+              .headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          description,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StageActions extends StatelessWidget {
+  final bool busy;
+  final String primaryLabel;
+  final VoidCallback onPrimary;
+  final VoidCallback? onBack;
+
+  const _StageActions({
+    required this.busy,
+    required this.primaryLabel,
+    required this.onPrimary,
+    this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (onBack != null)
+          TextButton.icon(
+            onPressed: busy ? null : onBack,
+            icon: const Icon(Icons.arrow_back_rounded, size: 18),
+            label: const Text('Back'),
+          ),
+        const Spacer(),
+        FilledButton.icon(
+          key: const Key('primary-stage-action'),
+          onPressed: busy ? null : onPrimary,
+          icon: busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.arrow_forward_rounded, size: 18),
+          label: Text(busy ? 'Working…' : primaryLabel),
+        ),
+      ],
+    );
+  }
+}
+
+class _InfoCallout extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String message;
+
+  const _InfoCallout({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: cs.primary.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: cs.primary, size: 21),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  message,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        height: 1.45,
+                        color: cs.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UseCaseTile extends StatelessWidget {
+  final String title;
+  final bool selected;
+  final ValueChanged<bool>? onChanged;
+
+  const _UseCaseTile({
+    required this.title,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? cs.primary.withValues(alpha: 0.06) : cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(
+          color:
+              selected ? cs.primary.withValues(alpha: 0.4) : cs.outlineVariant,
+        ),
+      ),
+      child: CheckboxListTile(
+        value: selected,
+        onChanged:
+            onChanged == null ? null : (value) => onChanged!(value ?? false),
+        title: Text(title),
+        subtitle: Text(_useCaseDescription(title)),
+        controlAffinity: ListTileControlAffinity.leading,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+      ),
+    );
+  }
+
+  static String _useCaseDescription(String title) {
+    return switch (title) {
+      'Payment reminders' => 'Upcoming rent and payment due reminders',
+      'Past-due notices' => 'Delinquency and late-fee account notices',
+      'Gate and access updates' => 'Access-code and gate availability updates',
+      _ => 'Office hours, closures, and facility operations',
+    };
+  }
+}
+
+class _MessagePreview extends StatelessWidget {
+  final String message;
+
+  const _MessagePreview({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.chat_bubble_outline_rounded,
+            size: 19,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    height: 1.5,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReviewSection extends StatelessWidget {
+  final String title;
+  final Map<String, String> rows;
+  final VoidCallback onEdit;
+
+  const _ReviewSection({
+    required this.title,
+    required this.rows,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              TextButton(onPressed: onEdit, child: const Text('Edit')),
+            ],
+          ),
+          ...rows.entries.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(top: 9),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 95,
+                    child: Text(
+                      entry.key,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                  Expanded(child: Text(entry.value)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ApprovalProgress extends StatelessWidget {
+  final TextingOnboardingSnapshot snapshot;
+
+  const _ApprovalProgress({required this.snapshot});
+
+  @override
+  Widget build(BuildContext context) {
+    final carrierDone = snapshot.status == TextingRegistrationStatus.approved;
+    final rejected = snapshot.status == TextingRegistrationStatus.rejected;
+    final steps = [
+      (
+        'Registration submitted',
+        true,
+        _formatDate(snapshot.submittedAt) ?? 'Complete',
+      ),
+      (
+        'Carrier review',
+        carrierDone,
+        rejected
+            ? 'Needs attention'
+            : carrierDone
+                ? 'Approved'
+                : 'In progress',
+      ),
+      (
+        'SFC platform approval',
+        snapshot.platformApproved,
+        snapshot.platformApproved
+            ? 'Approved'
+            : carrierDone
+                ? 'Pending'
+                : 'Waiting for carrier',
+      ),
+      (
+        'Texting live',
+        snapshot.isLive,
+        snapshot.isLive ? 'Ready to send' : 'Not active yet',
+      ),
+    ];
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(22),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildStepProgress(context),
-            const SizedBox(height: 24),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              switchInCurve: Curves.easeOut,
-              switchOutCurve: Curves.easeIn,
-              child: KeyedSubtree(
-                key: ValueKey<int>(_step),
-                child: _buildStepBody(context),
-              ),
+            Text(
+              'Approval progress',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
-            if (_busy) ...[
-              const SizedBox(height: 20),
-              const Center(child: LinearProgressIndicator(minHeight: 3)),
-            ],
-            if (_step > 0 && _step < 5) ...[
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () => setState(() => _step = _step - 1),
-                  icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                  label: const Text('Back'),
-                ),
-              ),
-            ],
+            const SizedBox(height: 18),
+            ...steps.asMap().entries.map((entry) {
+              final index = entry.key;
+              final step = entry.value;
+              return _ProgressRow(
+                title: step.$1,
+                complete: step.$2,
+                detail: step.$3,
+                rejected: rejected && index == 1,
+                showLine: index < steps.length - 1,
+              );
+            }),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildSubmittedHeader(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
+  static String? _formatDate(DateTime? date) {
+    if (date == null) return null;
+    return DateFormat.yMMMd().format(date.toLocal());
+  }
+}
+
+class _ProgressRow extends StatelessWidget {
+  final String title;
+  final bool complete;
+  final String detail;
+  final bool rejected;
+  final bool showLine;
+
+  const _ProgressRow({
+    required this.title,
+    required this.complete,
+    required this.detail,
+    required this.rejected,
+    required this.showLine,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final color = rejected
+        ? cs.error
+        : complete
+            ? AppTheme.success
+            : cs.onSurfaceVariant;
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 28,
+            child: Column(
+              children: [
+                Icon(
+                  rejected
+                      ? Icons.error_rounded
+                      : complete
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                  color: color,
+                  size: 20,
+                ),
+                if (showLine)
+                  Expanded(
+                    child: Container(
+                      width: 2,
+                      margin: const EdgeInsets.symmetric(vertical: 3),
+                      color: cs.outlineVariant,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: showLine ? 20 : 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    detail,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: color,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RegistrationDetails extends StatelessWidget {
+  final TextingOnboardingSnapshot snapshot;
+
+  const _RegistrationDetails({required this.snapshot});
+
+  @override
+  Widget build(BuildContext context) {
+    final business = snapshot.businessDetails;
     return Card(
+      margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Registration details',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 16),
+            _DetailRow(
+              label: 'Business',
+              value: business?.legalBusinessName ?? 'Saved carrier profile',
+            ),
+            _DetailRow(
+              label: 'Use cases',
+              value: snapshot.useCases.isEmpty
+                  ? 'Account notifications'
+                  : snapshot.useCases.join(', '),
+            ),
+            _DetailRow(
+              label: 'Carrier status',
+              value: snapshot.status.name.toUpperCase(),
+            ),
+            if (snapshot.approvedAt != null)
+              _DetailRow(
+                label: 'Approved',
+                value:
+                    DateFormat.yMMMd().format(snapshot.approvedAt!.toLocal()),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DetailRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+          const SizedBox(height: 3),
+          Text(value, style: Theme.of(context).textTheme.bodyMedium),
+        ],
+      ),
+    );
+  }
+}
+
+class _RejectionCard extends StatelessWidget {
+  final String reason;
+  final bool busy;
+  final VoidCallback onReview;
+
+  const _RejectionCard({
+    required this.reason,
+    required this.busy,
+    required this.onReview,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: cs.errorContainer.withValues(alpha: 0.35),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Carrier feedback',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            SelectableText(reason),
+            const SizedBox(height: 8),
+            Text(
+              'Review the details before resetting. Resetting removes the current brand and campaign submission.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: busy ? null : onReview,
+              icon: const Icon(Icons.edit_note_rounded),
+              label: const Text('Review and resubmit'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminApprovalCard extends StatelessWidget {
+  final bool approved;
+  final bool busy;
+  final ValueChanged<bool> onChanged;
+
+  const _AdminApprovalCard({
+    required this.approved,
+    required this.busy,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(22),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: cs.primary.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.mark_email_read_outlined, color: cs.primary),
+            Icon(
+              Icons.admin_panel_settings_outlined,
+              color: Theme.of(context).colorScheme.primary,
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Registration submitted',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    'SFC platform review',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 5),
                   Text(
-                    'Carrier review can take some time. We will keep status updated below.',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: cs.onSurfaceVariant,
-                      height: 1.4,
-                    ),
+                    approved
+                        ? 'This facility is approved to send SMS.'
+                        : 'Carrier approval is complete. Verify the facility before enabling SMS.',
                   ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStepSegments(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final idx = _step.clamp(0, 4);
-    return Semantics(
-      label: 'Setup progress, step ${idx + 1} of 5',
-      child: Row(
-        children: List.generate(5, (i) {
-          final done = i < idx;
-          final active = i == idx;
-          final Color segColor;
-          if (done) {
-            segColor = cs.primary;
-          } else if (active) {
-            segColor = cs.primary.withValues(alpha: 0.55);
-          } else {
-            segColor = cs.outlineVariant.withValues(alpha: 0.45);
-          }
-          return Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(right: i < 4 ? 5 : 0),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: segColor,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-            ),
-          );
-        }),
-      ),
-    );
-  }
-
-  Widget _buildStepProgress(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final idx = _step.clamp(0, 4);
-    const total = 5;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Step ${idx + 1} of $total',
-          style: theme.textTheme.labelLarge?.copyWith(
-            color: cs.primary,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-          ),
-        ),
-        const SizedBox(height: 10),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: LinearProgressIndicator(
-            value: (idx + 1) / total,
-            minHeight: 8,
-            backgroundColor:
-                cs.surfaceContainerHighest.withValues(alpha: 0.85),
-            color: cs.primary,
-          ),
-        ),
-        const SizedBox(height: 12),
-        _buildStepSegments(context),
-        const SizedBox(height: 16),
-        Text(
-          _stepTitles[idx],
-          style: theme.textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.4,
-            color: cs.onSurface,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStepBody(BuildContext context) {
-    switch (_step) {
-      case 0:
-        return _buildIntroStep(context);
-      case 1:
-        return _buildBusinessStep(context);
-      case 2:
-        return _buildUseCaseStep(context);
-      case 3:
-        return _buildPhoneStep(context);
-      case 4:
-        return _buildReviewStep(context);
-      default:
-        return const SizedBox.shrink();
-    }
-  }
-
-  Widget _buildIntroStep(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final bullets = [
-      'A2P 10DLC registration is required; approval timing depends on carriers.',
-      'We provision a dedicated SMS number for this facility—no porting required.',
-      'Outbound texting stays compliant with the use cases you select in the next steps.',
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: cs.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(Icons.sms_outlined, color: cs.primary, size: 26),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                'Turn on SMS for payment reminders, delinquency notices, and operational updates tenants expect.',
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  height: 1.45,
-                  color: cs.onSurfaceVariant,
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 20),
-        ...bullets.map(
-          (line) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  Icons.check_circle_outline_rounded,
-                  size: 22,
-                  color: cs.primary.withValues(alpha: 0.85),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    line,
-                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: _busy ? null : () => setState(() => _step = 1),
-          child: const Text('Start setup'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBusinessStep(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'This should match your legal business profile for carrier registration.',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                height: 1.4,
-              ),
-        ),
-        const SizedBox(height: 16),
-        AutofillGroup(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _textField(
-                _legalName,
-                'Legal business name *',
-                autofillHints: const [AutofillHints.organizationName],
-              ),
-              _textField(
-                _dba,
-                'DBA (optional)',
-                autofillHints: const [AutofillHints.name],
-              ),
-              DropdownMenuFormField<String>(
-                key: ValueKey<String>(_businessType),
-                initialSelection: _businessType,
-                enabled: !_busy,
-                width: double.infinity,
-                enableSearch: false,
-                label: const Text('Business type *'),
-                onSelected: (v) =>
-                    setState(() => _businessType = v ?? 'LLC'),
-                dropdownMenuEntries: const [
-                  DropdownMenuEntry(value: 'LLC', label: 'LLC'),
-                  DropdownMenuEntry(value: 'Corp', label: 'Corp'),
-                  DropdownMenuEntry(value: 'Nonprofit', label: 'Nonprofit'),
-                  DropdownMenuEntry(value: 'Sole Prop', label: 'Sole Prop'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _textField(
-                _ein,
-                _businessType == 'Sole Prop'
-                    ? 'Tax ID last 4 (minimum)'
-                    : 'EIN',
-              ),
-              _textField(
-                _address1,
-                'Business address *',
-                autofillHints: const [AutofillHints.streetAddressLine1],
-              ),
-              _textField(
-                _city,
-                'City *',
-                autofillHints: const [AutofillHints.addressCity],
-              ),
-              _textField(
-                _state,
-                'State *',
-                autofillHints: const [AutofillHints.addressState],
-              ),
-              _textField(
-                _postal,
-                'ZIP *',
-                autofillHints: const [AutofillHints.postalCode],
-              ),
-              _textField(
-                _website,
-                'Website or app domain *',
-                autofillHints: const [AutofillHints.url],
-                keyboardType: TextInputType.url,
-              ),
-              _textField(
-                _supportEmail,
-                'Support email *',
-                autofillHints: const [AutofillHints.email],
-                keyboardType: TextInputType.emailAddress,
-              ),
-              _textField(
-                _supportPhone,
-                'Support phone *',
-                autofillHints: const [AutofillHints.telephoneNumber],
-                keyboardType: TextInputType.phone,
-                textInputAction: TextInputAction.done,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: _busy ? null : _saveBusinessInfo,
-          child: const Text('Save and continue'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildUseCaseStep(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final samples = _sampleMessages();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Choose the types of messages you will send. Sample previews help carriers understand your program.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: cs.onSurfaceVariant,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 8),
-        ..._useCases.keys.map(
-          (key) => CheckboxListTile(
-            value: _useCases[key] ?? false,
-            title: Text(key, style: theme.textTheme.titleSmall),
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            onChanged: _busy
-                ? null
-                : (v) => setState(() => _useCases[key] = v ?? false),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'Sample message previews',
-          style: theme.textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 8),
-        ...samples.map(
-          (m) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Material(
-              color: cs.surfaceContainerHighest.withValues(alpha: 0.45),
-              borderRadius: BorderRadius.circular(10),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                child: Text(
-                  m,
-                  style: theme.textTheme.bodySmall?.copyWith(height: 1.45),
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: _busy ? null : () => setState(() => _step = 3),
-          child: const Text('Continue'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPhoneStep(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final e164 = _status?['twilioPhoneNumberE164'] as String?;
-    final hasNumber = e164 != null && e164.isNotEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'We will purchase a US local SMS-capable number and attach it to your facility.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: cs.onSurfaceVariant,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 16),
-        _textField(_areaCode, 'Preferred area code (optional)'),
-        const SizedBox(height: 4),
-        FilledButton(
-          onPressed: _busy ? null : _provisionNumber,
-          child: const Text('Provision number'),
-        ),
-        if (hasNumber) ...[
-          const SizedBox(height: 16),
-          Material(
-            color: cs.primary.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                children: [
-                  Icon(Icons.phone_android_rounded, color: cs.primary),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Selected number',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        SelectableText(
-                          e164,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildReviewStep(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final phoneLine =
-        (_status?['twilioPhoneNumberE164'] as String?)?.trim().isNotEmpty == true
-            ? (_status!['twilioPhoneNumberE164'] as String)
-            : 'Not provisioned';
-    Widget row(String label, String value) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: cs.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 4),
-            SelectableText(
-              value,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w500,
-                height: 1.35,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Confirm details before we submit your A2P registration.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: cs.onSurfaceVariant,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 16),
-        row('Business', _legalName.text.trim()),
-        row('Use cases', _selectedUseCases().join(', ')),
-        row('Phone', phoneLine),
-        CheckboxListTile(
-          value: _consent,
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          onChanged:
-              _busy ? null : (v) => setState(() => _consent = v ?? false),
-          title: Text(
-            'I confirm I have consent to text tenants for these account notifications.',
-            style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
-          ),
-        ),
-        const SizedBox(height: 4),
-        FilledButton(
-          onPressed: _busy ? null : _submit,
-          child: const Text('Submit A2P registration'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatusCard(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final status = (_status?['a2pStatus'] as String?) ?? 'draft';
-    final error = _status?['a2pLastError'] as String?;
-    final rejectionReason = _status?['rejectionReason'] as String?;
-    final isRejected = status.toLowerCase() == 'rejected';
-    final isApprovedByCarrier = status.toLowerCase() == 'approved';
-    final platformApproved = _status?['textingPlatformApproved'] == true;
-    final isSuperAdmin = SuperAdminService.isSuperAdmin();
-    final timeline = const ['draft', 'submitted', 'pending', 'approved'];
-    final currentIndex = timeline.indexOf(status.toLowerCase());
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.sms_outlined, color: cs.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Texting status · ${status.toUpperCase()}',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            ...timeline.asMap().entries.map((entry) {
-              final i = entry.key;
-              final label = entry.value;
-              final done = i <= currentIndex;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      done
-                          ? Icons.check_circle_rounded
-                          : Icons.radio_button_unchecked,
-                      size: 18,
-                      color: done ? AppTheme.success : cs.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      label[0].toUpperCase() + label.substring(1),
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight:
-                            done ? FontWeight.w600 : FontWeight.w400,
-                        color: done ? cs.onSurface : cs.onSurfaceVariant,
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 10,
+                    children: [
+                      FilledButton(
+                        onPressed:
+                            busy || approved ? null : () => onChanged(true),
+                        child: const Text('Approve texting'),
                       ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-            if (isRejected || error != null || rejectionReason != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Latest issue: ${rejectionReason ?? error ?? 'Unknown'}',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: cs.error,
-                  height: 1.35,
-                ),
-              ),
-            ],
-            if (isRejected) ...[
-              const SizedBox(height: 12),
-              OutlinedButton(
-                onPressed: _busy ? null : _resubmit,
-                child: const Text('Resubmit'),
-              ),
-            ],
-            if (isApprovedByCarrier) ...[
-              const SizedBox(height: 12),
-              Text(
-                platformApproved
-                    ? 'Platform approval: Approved'
-                    : 'Platform approval: Pending superadmin acceptance',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: platformApproved ? AppTheme.success : AppTheme.warning,
-                  fontWeight: FontWeight.w600,
-                  height: 1.35,
-                ),
-              ),
-            ],
-            if (isSuperAdmin && isApprovedByCarrier) ...[
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton(
-                    onPressed: _busy ? null : () => _setPlatformApproval(true),
-                    child: const Text('Accept for SMS sending'),
-                  ),
-                  OutlinedButton(
-                    onPressed: _busy ? null : () => _setPlatformApproval(false),
-                    child: const Text('Revoke approval'),
+                      if (approved)
+                        OutlinedButton(
+                          onPressed: busy ? null : () => onChanged(false),
+                          child: const Text('Revoke approval'),
+                        ),
+                    ],
                   ),
                 ],
-              ),
-            ],
-            const SizedBox(height: 12),
-            Text(
-              'Status auto-refreshes every 30 seconds.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: cs.onSurfaceVariant,
               ),
             ),
           ],
@@ -1160,25 +1726,142 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       ),
     );
   }
+}
 
-  Widget _textField(
-    TextEditingController controller,
-    String label, {
-    List<String>? autofillHints,
-    TextInputType? keyboardType,
-    TextInputAction textInputAction = TextInputAction.next,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: TextField(
-        controller: controller,
-        autofillHints: autofillHints,
-        keyboardType: keyboardType,
-        textInputAction: textInputAction,
-        onSubmitted: textInputAction == TextInputAction.next
-            ? (_) => FocusScope.of(context).nextFocus()
-            : (_) => FocusScope.of(context).unfocus(),
-        decoration: InputDecoration(labelText: label),
+class _StatusIcon extends StatelessWidget {
+  final bool rejected;
+  final bool live;
+
+  const _StatusIcon({required this.rejected, required this.live});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = rejected
+        ? Theme.of(context).colorScheme.error
+        : live
+            ? AppTheme.success
+            : Theme.of(context).colorScheme.primary;
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Icon(
+        rejected
+            ? Icons.error_outline_rounded
+            : live
+                ? Icons.check_circle_outline_rounded
+                : Icons.schedule_send_outlined,
+        color: color,
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+
+  const _ErrorBanner({required this.message, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.errorContainer.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline_rounded, color: cs.error),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+            IconButton(
+              tooltip: 'Dismiss',
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  final String text;
+
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: Theme.of(context)
+          .textTheme
+          .titleMedium
+          ?.copyWith(fontWeight: FontWeight.w700),
+    );
+  }
+}
+
+class _SetupSkeleton extends StatelessWidget {
+  const _SetupSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 14),
+          Text('Loading texting setup…'),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoFacilities extends StatelessWidget {
+  const _NoFacilities();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: _InfoCallout(
+          icon: Icons.business_outlined,
+          title: 'Create a facility first',
+          message:
+              'Texting is configured per facility. Create a facility, then return here to continue.',
+        ),
+      ),
+    );
+  }
+}
+
+class _LoadFailure extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _LoadFailure({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.cloud_off_outlined, size: 42),
+          const SizedBox(height: 12),
+          const Text('Could not load your facilities.'),
+          const SizedBox(height: 12),
+          OutlinedButton(onPressed: onRetry, child: const Text('Try again')),
+        ],
       ),
     );
   }

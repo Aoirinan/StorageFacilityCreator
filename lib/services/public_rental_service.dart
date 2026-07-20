@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
@@ -62,60 +61,36 @@ class PublicRentalService {
         const Duration(hours: 24), // Default 24 hour hold
   }) async {
     try {
-      if (unitId != null) {
-        try {
-          final callable = FirebaseFunctions.instance
-              .httpsCallable('createPublicReservationHold');
-          final holdMinutes = expirationDuration.inMinutes <= 0
-              ? 10
-              : expirationDuration.inMinutes;
-          final response = await callable.call(<String, dynamic>{
-            'facilityId': facilityId,
-            'unitId': unitId,
-            'unitNumber': unitNumber,
-            'email': email,
-            'phone': phone,
-            'name': name,
-            'moveInDate': moveInDate?.toIso8601String(),
-            'metadata': metadata,
-            'holdMinutes': holdMinutes,
-          });
-          final payload = Map<String, dynamic>.from(response.data as Map);
-          if (payload['success'] == true) {
-            final holdToken =
-                payload['moveInToken']?.toString() ?? _generateSecureToken();
-            final expiresIso = payload['expiresAt']?.toString();
-            return Reservation(
-              id: payload['reservationId']?.toString() ?? '',
-              facilityId: facilityId,
-              unitId: unitId,
-              unitNumber: unitNumber,
-              email: email.toLowerCase().trim(),
-              phone: phone?.trim(),
-              name: name?.trim(),
-              status: ReservationStatus.pending,
-              reservedAt: DateTime.now(),
-              expiresAt: expiresIso != null
-                  ? DateTime.tryParse(expiresIso)
-                  : DateTime.now().add(expirationDuration),
-              moveInDate: moveInDate,
-              moveInToken: holdToken,
-              metadata: metadata,
-            );
-          }
-        } catch (holdError) {
-          if (kDebugMode) {
-            print(
-                '⚠️ [PublicRental] Hold function unavailable, using legacy reservation path: $holdError');
-          }
-        }
+      if (unitId == null || unitId.trim().isEmpty) {
+        throw ArgumentError('unitId is required for a public reservation');
       }
 
-      final expiresAt = DateTime.now().add(expirationDuration);
-      final moveInToken = _generateSecureToken();
-
-      final reservation = Reservation(
-        id: '',
+      final callable = FirebaseFunctions.instance
+          .httpsCallable('createPublicReservationHold');
+      final holdMinutes =
+          expirationDuration.inMinutes <= 0 ? 10 : expirationDuration.inMinutes;
+      final response = await callable.call(<String, dynamic>{
+        'facilityId': facilityId,
+        'unitId': unitId,
+        'unitNumber': unitNumber,
+        'email': email,
+        'phone': phone,
+        'name': name,
+        'moveInDate': moveInDate?.toIso8601String(),
+        'metadata': metadata,
+        'holdMinutes': holdMinutes,
+      });
+      final payload = Map<String, dynamic>.from(response.data as Map);
+      if (payload['success'] != true) {
+        throw Exception('Reservation could not be created');
+      }
+      final moveInToken = payload['moveInToken']?.toString() ?? '';
+      if (moveInToken.isEmpty) {
+        throw Exception('Reservation creation returned no move-in token');
+      }
+      final expiresIso = payload['expiresAt']?.toString();
+      return Reservation(
+        id: payload['reservationId']?.toString() ?? '',
         facilityId: facilityId,
         unitId: unitId,
         unitNumber: unitNumber,
@@ -124,27 +99,13 @@ class PublicRentalService {
         name: name?.trim(),
         status: ReservationStatus.pending,
         reservedAt: DateTime.now(),
-        expiresAt: expiresAt,
+        expiresAt: expiresIso != null
+            ? DateTime.tryParse(expiresIso)
+            : DateTime.now().add(expirationDuration),
         moveInDate: moveInDate,
         moveInToken: moveInToken,
         metadata: metadata,
       );
-
-      final docRef = await _firestore
-          .collection('publicReservations')
-          .add(reservation.toMap());
-
-      // Optionally mark unit as reserved (if facility allows this)
-      if (unitId != null) {
-        // Note: You might want to add a "reserved" status to units
-        // For now, we'll just store the reservation
-      }
-
-      if (kDebugMode) {
-        print('✅ [PublicRental] Created reservation: ${docRef.id}');
-      }
-
-      return reservation.copyWith(id: docRef.id);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRental] Error creating reservation: $e');
@@ -156,90 +117,58 @@ class PublicRentalService {
   /// Get reservation by token
   static Future<Reservation?> getReservationByToken(String token) async {
     try {
-      // Preferred path: token-gated Cloud Function lookup.
-      // Firestore rules intentionally block anonymous collection queries.
-      try {
-        final callable =
-            FirebaseFunctions.instance.httpsCallable('getPublicReservationByToken');
-        final response =
-            await callable.call(<String, dynamic>{'token': token.trim()});
-        final payload = Map<String, dynamic>.from(response.data as Map);
-        if (payload['found'] == true && payload['reservation'] is Map) {
-          final reservationMap =
-              Map<String, dynamic>.from(payload['reservation'] as Map);
-          final statusRaw = reservationMap['status']?.toString() ?? 'pending';
-          final status = ReservationStatus.values.firstWhere(
-            (s) => s.name == statusRaw,
-            orElse: () => ReservationStatus.pending,
-          );
-          String? leaseTitle;
-          String? leaseUrl;
-          final lease = payload['onlineMoveInLease'];
-          if (lease is Map) {
-            leaseTitle = lease['title']?.toString();
-            leaseUrl = lease['url']?.toString();
-          }
-          return Reservation(
-            id: reservationMap['id']?.toString() ?? '',
-            facilityId: reservationMap['facilityId']?.toString() ?? '',
-            unitId: reservationMap['unitId']?.toString(),
-            unitNumber: reservationMap['unitNumber']?.toString(),
-            email: reservationMap['email']?.toString() ?? '',
-            phone: reservationMap['phone']?.toString(),
-            name: reservationMap['name']?.toString(),
-            status: status,
-            reservedAt: DateTime.tryParse(
-                    reservationMap['reservedAt']?.toString() ?? '') ??
-                DateTime.now(),
-            expiresAt: DateTime.tryParse(
-                reservationMap['expiresAt']?.toString() ?? ''),
-            moveInDate: DateTime.tryParse(
-                reservationMap['moveInDate']?.toString() ?? ''),
-            completedAt: DateTime.tryParse(
-                reservationMap['completedAt']?.toString() ?? ''),
-            moveInToken: reservationMap['moveInToken']?.toString(),
-            metadata: reservationMap['metadata'] is Map
-                ? Map<String, dynamic>.from(reservationMap['metadata'] as Map)
-                : null,
-            onlineMoveInLeaseTitle:
-                (leaseTitle != null && leaseTitle.trim().isNotEmpty)
-                    ? leaseTitle.trim()
-                    : null,
-            onlineMoveInLeaseUrl:
-                (leaseUrl != null && leaseUrl.trim().isNotEmpty)
-                    ? leaseUrl.trim()
-                    : null,
-          );
-        }
-        if (payload['found'] == false) return null;
-      } catch (_) {
-        // Fallback to legacy direct query path for older deployments.
-      }
-
-      final snapshot = await _firestore
-          .collection('publicReservations')
-          .where('moveInToken', isEqualTo: token)
-          .where('status', whereIn: [
-            ReservationStatus.pending.name,
-            ReservationStatus.confirmed.name
-          ])
-          .limit(1)
-          .get();
-
-      if (snapshot.docs.isEmpty) return null;
-
-      final doc = snapshot.docs.first;
-      final reservation = Reservation.fromMap(doc.id, doc.data());
-
-      // Check if expired
-      if (reservation.expiresAt != null &&
-          DateTime.now().isAfter(reservation.expiresAt!)) {
-        // Mark as expired
-        await doc.reference.update({'status': ReservationStatus.expired.name});
+      final callable = FirebaseFunctions.instance
+          .httpsCallable('getPublicReservationByToken');
+      final response =
+          await callable.call(<String, dynamic>{'token': token.trim()});
+      final payload = Map<String, dynamic>.from(response.data as Map);
+      if (payload['found'] != true || payload['reservation'] is! Map) {
         return null;
       }
-
-      return reservation;
+      final reservationMap =
+          Map<String, dynamic>.from(payload['reservation'] as Map);
+      final statusRaw = reservationMap['status']?.toString() ?? 'pending';
+      final status = ReservationStatus.values.firstWhere(
+        (s) => s.name == statusRaw,
+        orElse: () => ReservationStatus.pending,
+      );
+      String? leaseTitle;
+      String? leaseUrl;
+      final lease = payload['onlineMoveInLease'];
+      if (lease is Map) {
+        leaseTitle = lease['title']?.toString();
+        leaseUrl = lease['url']?.toString();
+      }
+      return Reservation(
+        id: reservationMap['id']?.toString() ?? '',
+        facilityId: reservationMap['facilityId']?.toString() ?? '',
+        unitId: reservationMap['unitId']?.toString(),
+        unitNumber: reservationMap['unitNumber']?.toString(),
+        email: reservationMap['email']?.toString() ?? '',
+        phone: reservationMap['phone']?.toString(),
+        name: reservationMap['name']?.toString(),
+        status: status,
+        reservedAt:
+            DateTime.tryParse(reservationMap['reservedAt']?.toString() ?? '') ??
+                DateTime.now(),
+        expiresAt:
+            DateTime.tryParse(reservationMap['expiresAt']?.toString() ?? ''),
+        moveInDate:
+            DateTime.tryParse(reservationMap['moveInDate']?.toString() ?? ''),
+        completedAt:
+            DateTime.tryParse(reservationMap['completedAt']?.toString() ?? ''),
+        moveInToken: reservationMap['moveInToken']?.toString(),
+        metadata: reservationMap['metadata'] is Map
+            ? Map<String, dynamic>.from(reservationMap['metadata'] as Map)
+            : null,
+        onlineMoveInLeaseTitle:
+            (leaseTitle != null && leaseTitle.trim().isNotEmpty)
+                ? leaseTitle.trim()
+                : null,
+        onlineMoveInLeaseUrl: (leaseUrl != null && leaseUrl.trim().isNotEmpty)
+            ? leaseUrl.trim()
+            : null,
+      );
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PublicRental] Error getting reservation: $e');
@@ -251,26 +180,21 @@ class PublicRentalService {
   /// Update reservation status
   static Future<void> updateReservationStatus({
     required String reservationId,
+    required String moveInToken,
     required ReservationStatus status,
-    Map<String, dynamic>? additionalData,
   }) async {
     try {
-      final updates = <String, dynamic>{
+      if (status != ReservationStatus.cancelled) {
+        throw ArgumentError(
+            'Public reservations may only transition to cancelled');
+      }
+      final callable = FirebaseFunctions.instance
+          .httpsCallable('transitionPublicReservationStatus');
+      await callable.call(<String, dynamic>{
+        'reservationId': reservationId,
+        'moveInToken': moveInToken,
         'status': status.name,
-      };
-
-      if (status == ReservationStatus.completed) {
-        updates['completedAt'] = FieldValue.serverTimestamp();
-      }
-
-      if (additionalData != null) {
-        updates.addAll(additionalData);
-      }
-
-      await _firestore
-          .collection('publicReservations')
-          .doc(reservationId)
-          .update(updates);
+      });
 
       if (kDebugMode) {
         print(
@@ -284,35 +208,14 @@ class PublicRentalService {
     }
   }
 
-  /// Generate secure token for move-in link
-  static String _generateSecureToken() {
-    final random = Random.secure();
-    final chars =
-        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    final tokenParts = List.generate(2, (_) {
-      return List.generate(32, (_) => chars[random.nextInt(chars.length)])
-          .join();
-    });
-    return tokenParts.join();
-  }
-
   /// Cancel a reservation
-  static Future<void> cancelReservation(String reservationId) async {
-    try {
-      await _firestore
-          .collection('publicReservations')
-          .doc(reservationId)
-          .update({'status': ReservationStatus.cancelled.name});
-
-      if (kDebugMode) {
-        print('✅ [PublicRental] Cancelled reservation: $reservationId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [PublicRental] Error cancelling reservation: $e');
-      }
-      rethrow;
-    }
+  static Future<void> cancelReservation(
+      String reservationId, String moveInToken) {
+    return updateReservationStatus(
+      reservationId: reservationId,
+      moveInToken: moveInToken,
+      status: ReservationStatus.cancelled,
+    );
   }
 
   /// Build public reservation URL

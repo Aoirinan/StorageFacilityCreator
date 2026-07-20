@@ -33,4 +33,4 @@ export { resetMonthlySMSUsage } from './smsUsageReset';
 export { autoProtectMoveIn, autoProtectAudit, checkInsuranceCompliance } from './insuranceAutomation';
 export { processPaymentReminders } from './paymentRemindersScheduled';
 
-export { processExportJob } from './processExportJob';
+export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';

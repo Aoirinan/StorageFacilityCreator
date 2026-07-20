@@ -14,6 +14,7 @@ enum ExportStatus {
   processing,
   completed,
   failed,
+  expired,
 }
 
 class ExportJobModel {
@@ -23,7 +24,8 @@ class ExportJobModel {
   final ExportStatus status;
   final DateTime createdAt;
   final DateTime? completedAt;
-  final String? downloadUrl;
+  final String? storagePath;
+  final DateTime? expiresAt;
   final String? errorMessage;
   final Map<String, dynamic>? filters; // Date range, status filters, etc.
   final int? recordCount;
@@ -36,7 +38,8 @@ class ExportJobModel {
     required this.status,
     required this.createdAt,
     this.completedAt,
-    this.downloadUrl,
+    this.storagePath,
+    this.expiresAt,
     this.errorMessage,
     this.filters,
     this.recordCount,
@@ -60,7 +63,10 @@ class ExportJobModel {
       completedAt: data['completedAt'] != null
           ? (data['completedAt'] as Timestamp).toDate()
           : null,
-      downloadUrl: data['downloadUrl'] as String?,
+      storagePath: data['storagePath'] as String?,
+      expiresAt: data['expiresAt'] != null
+          ? (data['expiresAt'] as Timestamp).toDate()
+          : null,
       errorMessage: data['errorMessage'] as String?,
       filters: data['filters'] as Map<String, dynamic>?,
       recordCount: data['recordCount'] as int?,
@@ -75,7 +81,8 @@ class ExportJobModel {
       'status': status.name,
       'createdAt': Timestamp.fromDate(createdAt),
       if (completedAt != null) 'completedAt': Timestamp.fromDate(completedAt!),
-      if (downloadUrl != null) 'downloadUrl': downloadUrl,
+      if (storagePath != null) 'storagePath': storagePath,
+      if (expiresAt != null) 'expiresAt': Timestamp.fromDate(expiresAt!),
       if (errorMessage != null) 'errorMessage': errorMessage,
       if (filters != null) 'filters': filters,
       if (recordCount != null) 'recordCount': recordCount,
@@ -90,7 +97,8 @@ class ExportJobModel {
     ExportStatus? status,
     DateTime? createdAt,
     DateTime? completedAt,
-    String? downloadUrl,
+    String? storagePath,
+    DateTime? expiresAt,
     String? errorMessage,
     Map<String, dynamic>? filters,
     int? recordCount,
@@ -103,11 +111,15 @@ class ExportJobModel {
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       completedAt: completedAt ?? this.completedAt,
-      downloadUrl: downloadUrl ?? this.downloadUrl,
+      storagePath: storagePath ?? this.storagePath,
+      expiresAt: expiresAt ?? this.expiresAt,
       errorMessage: errorMessage ?? this.errorMessage,
       filters: filters ?? this.filters,
       recordCount: recordCount ?? this.recordCount,
       createdBy: createdBy ?? this.createdBy,
     );
   }
+
+  bool get isExpired =>
+      expiresAt != null && !expiresAt!.isAfter(DateTime.now());
 }

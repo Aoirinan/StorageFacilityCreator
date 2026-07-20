@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { getDownloadURL } from 'firebase-admin/storage';
 import {
   enforceAppCheckOrThrow,
+  enforceRateLimit,
   escapeHtml,
   getStripeClient,
   sendFacilityEmailWithCompliance,
@@ -153,9 +154,10 @@ async function downloadTemplatePdfToBuffer(
  * Public token lookup for reservation flow.
  * This keeps unauthenticated move-in working while Firestore blocks anonymous list queries.
  */
-export const getPublicReservationByToken = functions.https.onCall(async (data: any, _context) => {
+export const getPublicReservationByToken = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
   const token = String(data?.token || '').trim();
-  if (!token || token.length < 16) {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) {
     throw new functions.https.HttpsError('invalid-argument', 'Valid token is required');
   }
 
@@ -172,6 +174,16 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
 
   const doc = snapshot.docs[0];
   const reservation = doc.data() as Record<string, any>;
+  const facilityIdForRateLimit = String(reservation.facilityId || '').trim();
+  if (facilityIdForRateLimit) {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+    await enforceRateLimit({
+      facilityId: facilityIdForRateLimit,
+      key: `getPublicReservation_${tokenHash}`,
+      limit: 60,
+      windowSeconds: 60,
+    });
+  }
   const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
   if (expiresAt && expiresAt.toDate() < new Date()) {
     await doc.ref.set(
@@ -216,6 +228,7 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
  * This reduces obvious double-booking races before move-in completion.
  */
 export const createPublicReservationHold = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
   const {
     facilityId,
     unitId,
@@ -231,6 +244,14 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
   if (!facilityId || !unitId || !email) {
     throw new functions.https.HttpsError('invalid-argument', 'facilityId, unitId, and email are required');
   }
+
+  await enforceRateLimit({
+    facilityId: String(facilityId),
+    key: 'createPublicReservationHold',
+    limit: 30,
+    windowSeconds: 60,
+    userId: context.auth?.uid || null,
+  });
 
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name ? String(name).trim() : '',
@@ -318,6 +339,104 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     moveInToken,
     expiresAt: expiresAt.toISOString(),
   };
+});
+
+/**
+ * Token-gated public status transition. Public clients may only cancel an
+ * active reservation; confirmation and completion remain server-controlled.
+ */
+export const transitionPublicReservationStatus = functions.https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+
+  const reservationId = String(data?.reservationId || '').trim();
+  const moveInToken = String(data?.moveInToken || data?.token || '').trim();
+  const targetStatus = String(data?.status || '').trim().toLowerCase();
+  if (!/^[^/]{1,128}$/.test(reservationId) || !/^[A-Za-z0-9_-]{16,128}$/.test(moveInToken)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Valid reservationId and moveInToken are required',
+    );
+  }
+  if (targetStatus !== 'cancelled') {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Public reservations may only transition to cancelled',
+    );
+  }
+
+  const reservationRef = admin.firestore().collection('publicReservations').doc(reservationId);
+  const initialSnapshot = await reservationRef.get();
+  if (!initialSnapshot.exists) {
+    throw new functions.https.HttpsError('not-found', 'Reservation not found');
+  }
+  const initialReservation = initialSnapshot.data() as Record<string, any>;
+  if (initialReservation.moveInToken !== moveInToken) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+
+  const facilityId = String(initialReservation.facilityId || '').trim();
+  if (!facilityId) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Reservation is missing facilityId',
+    );
+  }
+  const tokenHash = crypto.createHash('sha256').update(moveInToken).digest('hex').slice(0, 16);
+  await enforceRateLimit({
+    facilityId,
+    key: `transitionPublicReservation_${tokenHash}`,
+    limit: 10,
+    windowSeconds: 60,
+  });
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const reservationSnapshot = await tx.get(reservationRef);
+    if (!reservationSnapshot.exists) {
+      throw new functions.https.HttpsError('not-found', 'Reservation not found');
+    }
+    const reservation = reservationSnapshot.data() as Record<string, any>;
+    if (reservation.moveInToken !== moveInToken) {
+      throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+    }
+
+    const currentStatus = String(reservation.status || '');
+    if (currentStatus === 'cancelled') {
+      return;
+    }
+    if (currentStatus !== 'pending' && currentStatus !== 'confirmed') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Reservation can no longer be cancelled',
+      );
+    }
+
+    const unitId = String(reservation.unitId || '').trim();
+    let holdRef: admin.firestore.DocumentReference | null = null;
+    if (unitId) {
+      holdRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('mapEngine')
+        .doc('activeHolds')
+        .collection('items')
+        .doc(unitId);
+      const holdSnapshot = await tx.get(holdRef);
+      if (!holdSnapshot.exists || holdSnapshot.data()?.reservationId !== reservationId) {
+        holdRef = null;
+      }
+    }
+
+    tx.update(reservationRef, {
+      status: 'cancelled',
+      cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    if (holdRef) {
+      tx.delete(holdRef);
+    }
+  });
+
+  return { success: true, status: 'cancelled' };
 });
 
 export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {

@@ -4,9 +4,11 @@ import type Stripe from 'stripe';
 import { getStripeClient, processReferralOnPlatformInvoicePaid } from '@sfc/functions-shared';
 import {
   invoiceSubscriptionId,
+  isWebsiteAddonSubscription,
   subPeriodEnd,
   updateAccountFromSubscription,
   updateFacilityFromPlatformSubscription,
+  updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
 
 export async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
@@ -20,6 +22,12 @@ export async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
   const accountId = subscription.metadata?.accountId;
   const facilityId = subscription.metadata?.facilityId;
   const tenantId = subscription.metadata?.tenantId;
+
+  if (facilityId && isWebsiteAddonSubscription(subscription)) {
+    await updateFacilityFromWebsiteSubscription(facilityId, subscription);
+    functions.logger.info(`Facility ${facilityId} website add-on payment succeeded`);
+    return;
+  }
 
   if (facilityId && !tenantId) {
     await updateFacilityFromPlatformSubscription(facilityId, subscriptionId);

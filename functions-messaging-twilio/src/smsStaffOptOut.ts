@@ -41,7 +41,9 @@ function tenantSmsOptOutDisplayName(t: Record<string, unknown>): string {
 /**
  * Staff: list SMS block list + tenants marked opted out (STOP / consent).
  */
-export const listFacilitySmsOptOuts = functions.https.onCall(async (data: { facilityId?: string }, context) => {
+export const listFacilitySmsOptOuts = functions
+  .runWith({ invoker: 'public' })
+  .https.onCall(async (data: { facilityId?: string }, context) => {
   try {
     if (!context.auth) {
       throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
@@ -107,7 +109,7 @@ export const listFacilitySmsOptOuts = functions.https.onCall(async (data: { faci
   } catch (e: unknown) {
     rethrowStaffOptOutError('listFacilitySmsOptOuts', e);
   }
-});
+  });
 
 /** Scoped tenant lookup by normalized phone (facility-bound). */
 async function findTenantByPhoneNumber(
@@ -147,7 +149,9 @@ async function findTenantByPhoneNumber(
 /**
  * Staff: remove number from facility SMS block list and/or clear tenant SMS opt-out (re-allow SMS).
  */
-export const restoreFacilitySmsForPhone = functions.https.onCall(
+export const restoreFacilitySmsForPhone = functions
+  .runWith({ invoker: 'public' })
+  .https.onCall(
   async (data: { facilityId?: string; phone?: string; tenantId?: string | null }, context) => {
     try {
     if (!context.auth) {

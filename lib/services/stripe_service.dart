@@ -128,6 +128,34 @@ class StripeService {
     }
   }
 
+  /// Start the optional $25/month public website subscription for one facility.
+  static Future<SubscriptionCheckoutResult> createWebsiteSubscriptionCheckout({
+    required String accountId,
+    required String facilityId,
+    required String customerEmail,
+    String? successUrl,
+    String? cancelUrl,
+  }) async {
+    final callable =
+        _functions.httpsCallable('createWebsiteSubscriptionCheckout');
+    final result = await callable.call(<String, dynamic>{
+      'accountId': accountId,
+      'facilityId': facilityId,
+      'customerEmail': customerEmail,
+      if (successUrl != null) 'successUrl': successUrl,
+      if (cancelUrl != null) 'cancelUrl': cancelUrl,
+    }).timeout(
+      const Duration(seconds: 60),
+      onTimeout: () => throw Exception('Request timed out. Please try again.'),
+    );
+    final data = Map<String, dynamic>.from(result.data as Map);
+    return SubscriptionCheckoutResult(
+      checkoutUrl: data['checkoutUrl'] as String?,
+      subscriptionUpdated: data['subscriptionUpdated'] == true,
+      message: data['message'] as String?,
+    );
+  }
+
   /// Cancel one facility's platform subscription at period end.
   static Future<void> cancelFacilitySubscription(
       {required String facilityId}) async {

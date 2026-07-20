@@ -1,17 +1,56 @@
 import 'package:cloud_functions/cloud_functions.dart';
 
-class TextingOnboardingService {
-  static final FirebaseFunctions _functions = FirebaseFunctions.instance;
+import 'package:sfcapp/models/texting_onboarding_model.dart';
 
-  static Future<Map<String, dynamic>> getStatus(String facilityId) async {
+abstract class TextingOnboardingRepository {
+  Future<TextingOnboardingSnapshot> getStatus(String facilityId);
+
+  Future<void> saveBusinessInfo({
+    required String facilityId,
+    required Map<String, dynamic> businessData,
+  });
+
+  Future<TextingOnboardingSnapshot> provisionPhoneNumber({
+    required String facilityId,
+    String? areaCode,
+  });
+
+  Future<TextingOnboardingSnapshot> submitOnboarding({
+    required String facilityId,
+    required List<String> useCases,
+    required List<String> sampleMessages,
+  });
+
+  Future<TextingOnboardingSnapshot> refreshStatus(String facilityId);
+
+  Future<void> resubmit(String facilityId);
+
+  Future<void> setPlatformApproval({
+    required String facilityId,
+    required bool approved,
+  });
+}
+
+class FirebaseTextingOnboardingRepository
+    implements TextingOnboardingRepository {
+  final FirebaseFunctions _functions;
+
+  FirebaseTextingOnboardingRepository({FirebaseFunctions? functions})
+      : _functions = functions ?? FirebaseFunctions.instance;
+
+  @override
+  Future<TextingOnboardingSnapshot> getStatus(String facilityId) async {
     final result =
         await _functions.httpsCallable('getTextingOnboardingStatus').call({
       'facilityId': facilityId,
     });
-    return Map<String, dynamic>.from(result.data as Map);
+    return TextingOnboardingSnapshot.fromMap(
+      Map<String, dynamic>.from(result.data as Map),
+    );
   }
 
-  static Future<void> saveBusinessInfo({
+  @override
+  Future<void> saveBusinessInfo({
     required String facilityId,
     required Map<String, dynamic> businessData,
   }) async {
@@ -21,24 +60,25 @@ class TextingOnboardingService {
     });
   }
 
-  static Future<Map<String, dynamic>> provisionPhoneNumber({
+  @override
+  Future<TextingOnboardingSnapshot> provisionPhoneNumber({
     required String facilityId,
     String? areaCode,
   }) async {
-    final result = await _functions.httpsCallable('provisionPhoneNumber').call({
+    await _functions.httpsCallable('provisionPhoneNumber').call({
       'facilityId': facilityId,
       if (areaCode != null && areaCode.isNotEmpty) 'areaCode': areaCode,
     });
-    return Map<String, dynamic>.from(result.data as Map);
+    return getStatus(facilityId);
   }
 
-  static Future<Map<String, dynamic>> submitOnboarding({
+  @override
+  Future<TextingOnboardingSnapshot> submitOnboarding({
     required String facilityId,
     required List<String> useCases,
     required List<String> sampleMessages,
   }) async {
-    final result =
-        await _functions.httpsCallable('submitTextingOnboarding').call({
+    await _functions.httpsCallable('submitTextingOnboarding').call({
       'facilityId': facilityId,
       'campaignData': {
         'useCases': useCases,
@@ -46,24 +86,26 @@ class TextingOnboardingService {
         'consentConfirmed': true,
       },
     });
-    return Map<String, dynamic>.from(result.data as Map);
+    return getStatus(facilityId);
   }
 
-  static Future<Map<String, dynamic>> refreshStatus(String facilityId) async {
-    final result =
-        await _functions.httpsCallable('refreshTextingOnboardingStatus').call({
-      'facilityId': facilityId,
-    });
-    return Map<String, dynamic>.from(result.data as Map);
+  @override
+  Future<TextingOnboardingSnapshot> refreshStatus(String facilityId) async {
+    await _functions
+        .httpsCallable('refreshTextingOnboardingStatus')
+        .call({'facilityId': facilityId});
+    return getStatus(facilityId);
   }
 
-  static Future<void> resubmit(String facilityId) async {
+  @override
+  Future<void> resubmit(String facilityId) async {
     await _functions.httpsCallable('resubmitTextingOnboarding').call({
       'facilityId': facilityId,
     });
   }
 
-  static Future<void> setPlatformApproval({
+  @override
+  Future<void> setPlatformApproval({
     required String facilityId,
     required bool approved,
   }) async {
@@ -71,5 +113,61 @@ class TextingOnboardingService {
       'facilityId': facilityId,
       'approved': approved,
     });
+  }
+}
+
+/// Backward-compatible static facade for callers outside the setup screen.
+class TextingOnboardingService {
+  static final TextingOnboardingRepository _repository =
+      FirebaseTextingOnboardingRepository();
+
+  static Future<TextingOnboardingSnapshot> getStatus(String facilityId) =>
+      _repository.getStatus(facilityId);
+
+  static Future<void> saveBusinessInfo({
+    required String facilityId,
+    required Map<String, dynamic> businessData,
+  }) async {
+    return _repository.saveBusinessInfo(
+      facilityId: facilityId,
+      businessData: businessData,
+    );
+  }
+
+  static Future<TextingOnboardingSnapshot> provisionPhoneNumber({
+    required String facilityId,
+    String? areaCode,
+  }) =>
+      _repository.provisionPhoneNumber(
+        facilityId: facilityId,
+        areaCode: areaCode,
+      );
+
+  static Future<TextingOnboardingSnapshot> submitOnboarding({
+    required String facilityId,
+    required List<String> useCases,
+    required List<String> sampleMessages,
+  }) =>
+      _repository.submitOnboarding(
+        facilityId: facilityId,
+        useCases: useCases,
+        sampleMessages: sampleMessages,
+      );
+
+  static Future<TextingOnboardingSnapshot> refreshStatus(String facilityId) =>
+      _repository.refreshStatus(facilityId);
+
+  static Future<void> resubmit(String facilityId) async {
+    return _repository.resubmit(facilityId);
+  }
+
+  static Future<void> setPlatformApproval({
+    required String facilityId,
+    required bool approved,
+  }) async {
+    return _repository.setPlatformApproval(
+      facilityId: facilityId,
+      approved: approved,
+    );
   }
 }

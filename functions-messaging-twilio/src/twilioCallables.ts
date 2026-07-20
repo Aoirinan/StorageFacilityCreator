@@ -1480,6 +1480,11 @@ export const getTextingOnboardingStatus = functions.https.onCall(async (data: { 
   const { data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
   return {
     ...getTextingOnboardingState(facilityData),
+    businessData: facilityData.textingBusinessData || null,
+    useCases: Array.isArray(facilityData.textingUseCases) ? facilityData.textingUseCases : [],
+    sampleMessages: Array.isArray(facilityData.textingSampleMessages) ? facilityData.textingSampleMessages : [],
+    hasTrustProfile: Boolean(facilityData.twilioTrustProfileSid && facilityData.twilioTrustProductSid),
+    hasPhoneNumber: Boolean(facilityData.twilioPhoneNumberSid && facilityData.twilioPhoneNumberE164),
     submittedAt: facilityData.a2pSubmittedAt || null,
     approvedAt: facilityData.a2pApprovedAt || null,
     rejectedAt: facilityData.a2pRejectedAt || null,

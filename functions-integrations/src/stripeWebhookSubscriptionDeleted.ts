@@ -1,11 +1,37 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
+import { isWebsiteAddonSubscription } from './stripeWebhookSubscriptionInternal';
 
 export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
   const facilityId = subscription.metadata?.facilityId;
   const tenantId = subscription.metadata?.tenantId;
+
+  if (facilityId && isWebsiteAddonSubscription(subscription)) {
+    const db = admin.firestore();
+    const facilityRef = db.collection('facilities').doc(facilityId);
+    const batch = db.batch();
+    batch.update(facilityRef, {
+      websiteSubscriptionStatus: 'cancelled',
+      stripeWebsiteSubscriptionId: admin.firestore.FieldValue.delete(),
+      websiteSubscriptionCurrentPeriodEnd: admin.firestore.FieldValue.delete(),
+      websiteSubscriptionCancelAtPeriodEnd: false,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(
+      facilityRef.collection('settings').doc('public'),
+      {
+        enabled: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: 'stripeWebhook',
+      },
+      { merge: true },
+    );
+    await batch.commit();
+    functions.logger.info(`Facility ${facilityId} website subscription cancelled`);
+    return;
+  }
 
   if (facilityId && !tenantId) {
     await admin.firestore().collection('facilities').doc(facilityId).update({

@@ -1,15 +1,22 @@
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import {
+  isWebsiteAddonSubscription,
   subPeriodEnd,
   updateAccountFromSubscription,
   updateFacilityFromPlatformSubscription,
+  updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
 
 export async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
   const facilityId = subscription.metadata?.facilityId;
   const tenantId = subscription.metadata?.tenantId;
+
+  if (facilityId && isWebsiteAddonSubscription(subscription)) {
+    await updateFacilityFromWebsiteSubscription(facilityId, subscription);
+    return;
+  }
 
   if (facilityId && !tenantId) {
     await updateFacilityFromPlatformSubscription(facilityId, subscription.id);

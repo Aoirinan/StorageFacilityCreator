@@ -2,7 +2,11 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
-import { invoiceSubscriptionId } from './stripeWebhookSubscriptionInternal';
+import {
+  invoiceSubscriptionId,
+  isWebsiteAddonSubscription,
+  updateFacilityFromWebsiteSubscription,
+} from './stripeWebhookSubscriptionInternal';
 
 export async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
   const subscriptionId = invoiceSubscriptionId(invoice);
@@ -18,6 +22,12 @@ export async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
   const lastError = invoice.last_finalization_error;
   const failureCode = lastError?.code || null;
   const failureMessage = lastError?.message || null;
+
+  if (facilityId && isWebsiteAddonSubscription(subscription)) {
+    await updateFacilityFromWebsiteSubscription(facilityId, subscription);
+    functions.logger.info(`Facility ${facilityId} website add-on payment failed`);
+    return;
+  }
 
   if (facilityId && !tenantId) {
     await admin.firestore().collection('facilities').doc(facilityId).update({

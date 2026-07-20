@@ -33,10 +33,15 @@ export { getPublicWebsiteConfig, renderPublicWebsite, routeCustomDomainRoot } fr
 export {
   getPublicReservationByToken,
   createPublicReservationHold,
+  transitionPublicReservationStatus,
   createPublicMoveInCheckout,
   confirmPublicMoveInCheckout,
   completePublicMoveIn,
 } from './publicMoveIn';
-export { createPublicPaymentCheckout } from './publicPaymentCheckout';
+export {
+  createPublicPaymentLink,
+  getPublicPaymentLink,
+  createPublicPaymentCheckout,
+} from './publicPaymentCheckout';
 export { migratePublicWebsiteTemplateV4OptionalFields } from './migratePublicWebsiteTemplate';
 export { redirectToCustomDomain } from './redirectToCustomDomain';

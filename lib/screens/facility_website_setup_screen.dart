@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 
 import '../models/facility_model.dart';
+import '../router/app_route.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../services/facility_service.dart';
@@ -55,6 +56,7 @@ class _FacilityWebsiteSetupScreenState
 
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _subscriptionRequired = false;
   String? _error;
 
   FacilityModel? _facility;
@@ -83,11 +85,15 @@ class _FacilityWebsiteSetupScreenState
   final TextEditingController _mapEmbedUrlController = TextEditingController();
   final TextEditingController _promoTitleController = TextEditingController();
   final TextEditingController _promoBodyController = TextEditingController();
-  final TextEditingController _promoCtaLabelController = TextEditingController();
+  final TextEditingController _promoCtaLabelController =
+      TextEditingController();
   final TextEditingController _promoCtaUrlController = TextEditingController();
-  final TextEditingController _promiseSecurityController = TextEditingController();
-  final TextEditingController _promiseServiceController = TextEditingController();
-  final TextEditingController _promiseConvenienceController = TextEditingController();
+  final TextEditingController _promiseSecurityController =
+      TextEditingController();
+  final TextEditingController _promiseServiceController =
+      TextEditingController();
+  final TextEditingController _promiseConvenienceController =
+      TextEditingController();
   final TextEditingController _reviewUrlController = TextEditingController();
   final TextEditingController _stepChooseIconUrlController =
       TextEditingController();
@@ -105,8 +111,10 @@ class _FacilityWebsiteSetupScreenState
       TextEditingController();
   final TextEditingController _heroGradientEndController =
       TextEditingController();
-  final TextEditingController _heroTextColorController = TextEditingController();
-  final TextEditingController _ctaButtonColorController = TextEditingController();
+  final TextEditingController _heroTextColorController =
+      TextEditingController();
+  final TextEditingController _ctaButtonColorController =
+      TextEditingController();
   final TextEditingController _logoImageUrlController = TextEditingController();
   final TextEditingController _phoneNumberController = TextEditingController();
   final TextEditingController _aboutSectionTitleController =
@@ -117,14 +125,16 @@ class _FacilityWebsiteSetupScreenState
       TextEditingController();
   final TextEditingController _partnershipTitleController =
       TextEditingController();
-  final TextEditingController _partnershipBodyController = TextEditingController();
+  final TextEditingController _partnershipBodyController =
+      TextEditingController();
   final TextEditingController _partnershipImageUrlController =
       TextEditingController();
   final TextEditingController _partnershipCtaLabelController =
       TextEditingController();
   final TextEditingController _partnershipCtaUrlController =
       TextEditingController();
-  final TextEditingController _footerTaglineController = TextEditingController();
+  final TextEditingController _footerTaglineController =
+      TextEditingController();
   final TextEditingController _facebookUrlController = TextEditingController();
   final TextEditingController _instagramUrlController = TextEditingController();
   final TextEditingController _googleUrlController = TextEditingController();
@@ -134,7 +144,7 @@ class _FacilityWebsiteSetupScreenState
   final TextEditingController _ogImageUrlController = TextEditingController();
   final TextEditingController _canonicalUrlController = TextEditingController();
 
-  bool _websiteEnabled = true;
+  bool _websiteEnabled = false;
   bool _showPaymentLoginButtonInHeader = true;
   bool _useStructuredOfficeHours = false;
   String? _uploadingFieldKey;
@@ -221,11 +231,22 @@ class _FacilityWebsiteSetupScreenState
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
+      _subscriptionRequired = false;
       _error = null;
     });
     try {
       final facilities = await FacilityService.getUserFacilities();
       final facility = await FacilityService.getFacility(widget.facilityId);
+      if (facility == null || !facility.hasActiveWebsiteSubscription) {
+        if (!mounted) return;
+        setState(() {
+          _facility = facility;
+          _userFacilities = facilities;
+          _subscriptionRequired = true;
+          _isLoading = false;
+        });
+        return;
+      }
       final settings =
           await FacilityPublicService.getPublicSettings(widget.facilityId);
       final publicSlug = await FacilityMapV2Service.getPublicSlugForFacility(
@@ -242,22 +263,22 @@ class _FacilityWebsiteSetupScreenState
       setState(() {
         _facility = facility;
         _userFacilities = facilities;
-        _websiteEnabled = settings?.enabled ?? true;
+        _websiteEnabled = settings?.enabled ?? false;
         _slugController.text =
             (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
                 ? settings!.publicRentalSlug!
                 : (publicSlug ?? widget.facilityId.toLowerCase());
         _customDomainController.text = settings?.customDomain ?? '';
-        _pageTitleController.text = settings?.pageTitle ??
-            '${facility?.name ?? 'Storage Facility'} | Self Storage';
+        _pageTitleController.text =
+            settings?.pageTitle ?? '${facility.name} | Self Storage';
         _pageDescriptionController.text = settings?.pageDescription ??
-            (facility?.description ??
+            (facility.description ??
                 'Secure storage units with easy online rentals.');
         _heroHeadlineController.text =
             (websiteConfig['heroHeadline'] as String?)?.trim().isNotEmpty ==
                     true
                 ? websiteConfig['heroHeadline'] as String
-                : '${facility?.name ?? 'Storage Facility'}';
+                : facility.name;
         _heroSubheadlineController.text = (websiteConfig['heroSubheadline']
                         as String?)
                     ?.trim()
@@ -303,7 +324,8 @@ class _FacilityWebsiteSetupScreenState
             (websiteConfig['mapEmbedUrl'] as String?) ?? '';
         _promoTitleController.text =
             (websiteConfig['promoTitle'] as String?) ?? '';
-        _promoBodyController.text = (websiteConfig['promoBody'] as String?) ?? '';
+        _promoBodyController.text =
+            (websiteConfig['promoBody'] as String?) ?? '';
         _promoCtaLabelController.text =
             (websiteConfig['promoCtaLabel'] as String?) ?? '';
         _promoCtaUrlController.text =
@@ -314,7 +336,8 @@ class _FacilityWebsiteSetupScreenState
             (websiteConfig['promiseService'] as String?) ?? '';
         _promiseConvenienceController.text =
             (websiteConfig['promiseConvenience'] as String?) ?? '';
-        _reviewUrlController.text = (websiteConfig['reviewUrl'] as String?) ?? '';
+        _reviewUrlController.text =
+            (websiteConfig['reviewUrl'] as String?) ?? '';
         _stepChooseIconUrlController.text =
             (websiteConfig['stepChooseIconUrl'] as String?) ?? '';
         _stepDetailsIconUrlController.text =
@@ -337,7 +360,8 @@ class _FacilityWebsiteSetupScreenState
             (customStyles['ctaButtonColor'] as String?) ?? '#103A86';
         _logoImageUrlController.text =
             (websiteConfig['logoImageUrl'] as String?) ?? '';
-        _phoneNumberController.text = (websiteConfig['phoneNumber'] as String?) ?? '';
+        _phoneNumberController.text =
+            (websiteConfig['phoneNumber'] as String?) ?? '';
         _showPaymentLoginButtonInHeader =
             websiteConfig['showPaymentLoginButtonInHeader'] != false;
         _aboutSectionTitleController.text =
@@ -362,17 +386,15 @@ class _FacilityWebsiteSetupScreenState
         _partnershipBodyController.text =
             ((websiteConfig['partnershipBand'] as Map?)?['body'] as String?) ??
                 '';
-        _partnershipImageUrlController.text =
-            ((websiteConfig['partnershipBand'] as Map?)?['imageUrl']
-                    as String?) ??
-                '';
-        _partnershipCtaLabelController.text =
-            ((websiteConfig['partnershipBand'] as Map?)?['ctaLabel']
-                    as String?) ??
-                '';
-        _partnershipCtaUrlController.text =
-            ((websiteConfig['partnershipBand'] as Map?)?['ctaUrl'] as String?) ??
-                '';
+        _partnershipImageUrlController.text = ((websiteConfig['partnershipBand']
+                as Map?)?['imageUrl'] as String?) ??
+            '';
+        _partnershipCtaLabelController.text = ((websiteConfig['partnershipBand']
+                as Map?)?['ctaLabel'] as String?) ??
+            '';
+        _partnershipCtaUrlController.text = ((websiteConfig['partnershipBand']
+                as Map?)?['ctaUrl'] as String?) ??
+            '';
         _footerTaglineController.text =
             (websiteConfig['footerTagline'] as String?) ?? '';
         _facebookUrlController.text =
@@ -382,12 +404,14 @@ class _FacilityWebsiteSetupScreenState
             ((websiteConfig['socialLinks'] as Map?)?['instagram'] as String?) ??
                 '';
         _googleUrlController.text =
-            ((websiteConfig['socialLinks'] as Map?)?['google'] as String?) ?? '';
+            ((websiteConfig['socialLinks'] as Map?)?['google'] as String?) ??
+                '';
         _footerLegalTextController.text =
             (websiteConfig['footerLegalText'] as String?) ?? '';
         _metaKeywordsController.text =
             (websiteConfig['metaKeywords'] as String?) ?? '';
-        _ogImageUrlController.text = (websiteConfig['ogImageUrl'] as String?) ?? '';
+        _ogImageUrlController.text =
+            (websiteConfig['ogImageUrl'] as String?) ?? '';
         _canonicalUrlController.text =
             (websiteConfig['canonicalUrl'] as String?) ?? '';
         _isLoading = false;
@@ -410,7 +434,8 @@ class _FacilityWebsiteSetupScreenState
   String _normalizeHexColor(String raw, {String fallback = '#103A86'}) {
     var value = raw.trim().replaceAll('#', '').toUpperCase();
     if (value.length == 3 && RegExp(r'^[0-9A-F]{3}$').hasMatch(value)) {
-      value = '${value[0]}${value[0]}${value[1]}${value[1]}${value[2]}${value[2]}';
+      value =
+          '${value[0]}${value[0]}${value[1]}${value[1]}${value[2]}${value[2]}';
     }
     if (value.length == 6 && RegExp(r'^[0-9A-F]{6}$').hasMatch(value)) {
       return '#$value';
@@ -596,12 +621,12 @@ class _FacilityWebsiteSetupScreenState
     required String day,
     required bool isOpen,
   }) async {
-    final current = _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
+    final current =
+        _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
     final source = isOpen ? current.open : current.close;
     final parts = source.split(':');
     final initialHour = int.tryParse(parts.first) ?? 8;
-    final initialMinute =
-        parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+    final initialMinute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
     final picked = await showTimePicker(
       context: context,
       initialTime: TimeOfDay(hour: initialHour, minute: initialMinute),
@@ -614,7 +639,8 @@ class _FacilityWebsiteSetupScreenState
     );
     if (picked == null) return;
     setState(() {
-      final next = _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
+      final next =
+          _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
       final formatted =
           '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
       _officeHoursStructured[day] = isOpen
@@ -625,8 +651,10 @@ class _FacilityWebsiteSetupScreenState
 
   Map<String, dynamic>? _buildOfficeHoursStructuredPayload() {
     if (!_useStructuredOfficeHours) return null;
-    return _dayOrder.fold<Map<String, dynamic>>(<String, dynamic>{}, (acc, day) {
-      final value = _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
+    return _dayOrder.fold<Map<String, dynamic>>(<String, dynamic>{},
+        (acc, day) {
+      final value =
+          _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
       acc[day] = value.toMap();
       return acc;
     });
@@ -659,7 +687,8 @@ class _FacilityWebsiteSetupScreenState
           'About section image', _aboutSectionImageUrlController.text.trim());
       validateHttps(
           'Partnership image', _partnershipImageUrlController.text.trim());
-      validateHttps('Partnership CTA URL', _partnershipCtaUrlController.text.trim());
+      validateHttps(
+          'Partnership CTA URL', _partnershipCtaUrlController.text.trim());
       validateHttps('Facebook URL', _facebookUrlController.text.trim());
       validateHttps('Instagram URL', _instagramUrlController.text.trim());
       validateHttps('Google URL', _googleUrlController.text.trim());
@@ -761,7 +790,8 @@ class _FacilityWebsiteSetupScreenState
           'stepChooseIconUrl': _stepChooseIconUrlController.text.trim(),
           'stepDetailsIconUrl': _stepDetailsIconUrlController.text.trim(),
           'stepReserveIconUrl': _stepReserveIconUrlController.text.trim(),
-          'promiseSecurityIconUrl': _promiseSecurityIconUrlController.text.trim(),
+          'promiseSecurityIconUrl':
+              _promiseSecurityIconUrlController.text.trim(),
           'promiseServiceIconUrl': _promiseServiceIconUrlController.text.trim(),
           'promiseConvenienceIconUrl':
               _promiseConvenienceIconUrlController.text.trim(),
@@ -778,14 +808,15 @@ class _FacilityWebsiteSetupScreenState
           'testimonialsStructured': sanitizedTestimonialsStructured.isEmpty
               ? null
               : sanitizedTestimonialsStructured,
-          'partnershipBand': partnershipBand.values
-                  .every((v) => v.toString().trim().isEmpty)
-              ? null
-              : partnershipBand,
+          'partnershipBand':
+              partnershipBand.values.every((v) => v.toString().trim().isEmpty)
+                  ? null
+                  : partnershipBand,
           'footerTagline': _footerTaglineController.text.trim(),
-          'socialLinks': socialLinks.values.every((v) => v.toString().trim().isEmpty)
-              ? null
-              : socialLinks,
+          'socialLinks':
+              socialLinks.values.every((v) => v.toString().trim().isEmpty)
+                  ? null
+                  : socialLinks,
           'footerLegalText': _footerLegalTextController.text.trim(),
           'metaKeywords': _metaKeywordsController.text.trim(),
           'ogImageUrl': _ogImageUrlController.text.trim(),
@@ -816,14 +847,15 @@ class _FacilityWebsiteSetupScreenState
             ? null
             : <String>[_heroImageUrlController.text.trim()],
         customStyles: <String, dynamic>{
-          'heroGradientStart':
-              _normalizeHexColor(_heroGradientStartController.text, fallback: '#0C1E4D'),
-          'heroGradientEnd':
-              _normalizeHexColor(_heroGradientEndController.text, fallback: '#1E5BD4'),
-          'heroTextColor':
-              _normalizeHexColor(_heroTextColorController.text, fallback: '#FFFFFF'),
-          'ctaButtonColor':
-              _normalizeHexColor(_ctaButtonColorController.text, fallback: '#103A86'),
+          'heroGradientStart': _normalizeHexColor(
+              _heroGradientStartController.text,
+              fallback: '#0C1E4D'),
+          'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text,
+              fallback: '#1E5BD4'),
+          'heroTextColor': _normalizeHexColor(_heroTextColorController.text,
+              fallback: '#FFFFFF'),
+          'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text,
+              fallback: '#103A86'),
         },
         widgets: mergedWidgets,
       );
@@ -872,7 +904,8 @@ class _FacilityWebsiteSetupScreenState
 
   List<Widget> _buildOfficeHoursRows() {
     return _dayOrder.map((day) {
-      final hours = _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
+      final hours =
+          _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
       return Padding(
         padding: const EdgeInsets.only(bottom: 10),
         child: Row(
@@ -906,8 +939,8 @@ class _FacilityWebsiteSetupScreenState
               value: hours.closed,
               onChanged: (value) {
                 setState(() {
-                  final current =
-                      _officeHoursStructured[day] ?? _defaultOfficeHoursForDay(day);
+                  final current = _officeHoursStructured[day] ??
+                      _defaultOfficeHoursForDay(day);
                   _officeHoursStructured[day] =
                       current.copyWith(closed: value ?? false);
                 });
@@ -924,6 +957,39 @@ class _FacilityWebsiteSetupScreenState
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
+    }
+    if (_subscriptionRequired) {
+      return Center(
+        child: Card(
+          margin: const EdgeInsets.all(24),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline,
+                    size: 48, color: AppTheme.textSecondary),
+                const SizedBox(height: 12),
+                const Text(
+                  'Website subscription required',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Activate the \$25/month website add-on from Settings before '
+                  'configuring or publishing this facility website.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => context.go(AppRoute.settings),
+                  child: const Text('Back to Settings'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
 
     return ListView(
@@ -984,7 +1050,8 @@ class _FacilityWebsiteSetupScreenState
                 const Text('Template',
                     style: TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
-                const Text('Public website v2 — hero, map, promise, promo band'),
+                const Text(
+                    'Public website v2 — hero, map, promise, promo band'),
                 const SizedBox(height: 10),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -1047,8 +1114,9 @@ class _FacilityWebsiteSetupScreenState
                     title: 'Hero gradient start',
                     fallback: const Color(0xFF0C1E4D),
                   ),
-                  previewColor:
-                      _parseHexColor(_heroGradientStartController.text, fallback: const Color(0xFF0C1E4D)),
+                  previewColor: _parseHexColor(
+                      _heroGradientStartController.text,
+                      fallback: const Color(0xFF0C1E4D)),
                 ),
                 const SizedBox(height: 10),
                 _ColorPickerField(
@@ -1061,8 +1129,8 @@ class _FacilityWebsiteSetupScreenState
                     title: 'Hero gradient end',
                     fallback: const Color(0xFF1E5BD4),
                   ),
-                  previewColor:
-                      _parseHexColor(_heroGradientEndController.text, fallback: const Color(0xFF1E5BD4)),
+                  previewColor: _parseHexColor(_heroGradientEndController.text,
+                      fallback: const Color(0xFF1E5BD4)),
                 ),
                 const SizedBox(height: 10),
                 _ColorPickerField(
@@ -1075,8 +1143,8 @@ class _FacilityWebsiteSetupScreenState
                     title: 'Hero text color',
                     fallback: Colors.white,
                   ),
-                  previewColor:
-                      _parseHexColor(_heroTextColorController.text, fallback: Colors.white),
+                  previewColor: _parseHexColor(_heroTextColorController.text,
+                      fallback: Colors.white),
                 ),
                 const SizedBox(height: 10),
                 _ColorPickerField(
@@ -1089,8 +1157,8 @@ class _FacilityWebsiteSetupScreenState
                     title: 'CTA button color',
                     fallback: const Color(0xFF103A86),
                   ),
-                  previewColor:
-                      _parseHexColor(_ctaButtonColorController.text, fallback: const Color(0xFF103A86)),
+                  previewColor: _parseHexColor(_ctaButtonColorController.text,
+                      fallback: const Color(0xFF103A86)),
                 ),
               ],
             ),
@@ -1585,7 +1653,8 @@ class _FacilityWebsiteSetupScreenState
                       ),
                       const SizedBox(height: 8),
                       TextFormField(
-                        initialValue: (item['longDescription'] ?? '').toString(),
+                        initialValue:
+                            (item['longDescription'] ?? '').toString(),
                         maxLines: 4,
                         decoration: const InputDecoration(
                           labelText: 'Long description (markdown allowed)',
@@ -1625,8 +1694,8 @@ class _FacilityWebsiteSetupScreenState
                           const SizedBox(width: 8),
                           Expanded(
                             child: TextFormField(
-                              initialValue: (item['displayOrder'] ?? '')
-                                  .toString(),
+                              initialValue:
+                                  (item['displayOrder'] ?? '').toString(),
                               decoration: const InputDecoration(
                                 labelText: 'Display order',
                                 border: OutlineInputBorder(),
@@ -1693,8 +1762,8 @@ class _FacilityWebsiteSetupScreenState
                     const SizedBox(width: 8),
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        initialValue: _amenityIconOptions.contains(
-                                (item['icon'] ?? '').toString())
+                        initialValue: _amenityIconOptions
+                                .contains((item['icon'] ?? '').toString())
                             ? (item['icon'] ?? '').toString()
                             : _amenityIconOptions.first,
                         decoration: const InputDecoration(
@@ -1836,7 +1905,8 @@ class _FacilityWebsiteSetupScreenState
               subtitle: const Text(
                   'When enabled, this replaces the legacy freeform office hours on public pages.'),
               value: _useStructuredOfficeHours,
-              onChanged: (value) => setState(() => _useStructuredOfficeHours = value),
+              onChanged: (value) =>
+                  setState(() => _useStructuredOfficeHours = value),
             ),
             if (_useStructuredOfficeHours) ..._buildOfficeHoursRows(),
           ],
@@ -1927,7 +1997,8 @@ class _FacilityWebsiteSetupScreenState
                                   const TextStyle(fontWeight: FontWeight.w700)),
                           const Spacer(),
                           IconButton(
-                            onPressed: () => setState(() => _faqs.removeAt(index)),
+                            onPressed: () =>
+                                setState(() => _faqs.removeAt(index)),
                             icon: const Icon(Icons.delete_outline),
                           ),
                         ],

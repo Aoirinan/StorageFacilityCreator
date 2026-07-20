@@ -1,7 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { updateAccountFromSubscription, updateFacilityFromPlatformSubscription } from './stripeWebhookSubscriptionInternal';
+import { getStripeClient } from '@sfc/functions-shared';
+import {
+  updateAccountFromSubscription,
+  updateFacilityFromPlatformSubscription,
+  updateFacilityFromWebsiteSubscription,
+} from './stripeWebhookSubscriptionInternal';
 
 export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const accountId = session.metadata?.accountId;
@@ -14,6 +19,12 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) 
   const subscriptionId = session.subscription as string;
   if (!subscriptionId) {
     functions.logger.error('No subscription ID in checkout session');
+    return;
+  }
+
+  if (facilityId && session.metadata?.subscriptionType === 'website_addon') {
+    const subscription = await getStripeClient().subscriptions.retrieve(subscriptionId);
+    await updateFacilityFromWebsiteSubscription(facilityId, subscription);
     return;
   }
 

@@ -37,10 +37,21 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   }
 
   void _handleResetPassword() async {
-    if (_formKey.currentState!.validate()) {
+    final valid = _formKey.currentState!.validate();
+    if (valid) {
       await ref.read(forgotPasswordStateProvider.notifier).resetPassword(
             email: _emailController.text.trim(),
           );
+      if (!mounted) return;
+      final result = ref.read(forgotPasswordStateProvider);
+      if (result.hasError) {
+        _showErrorSnackBar(_getErrorMessage(result.error));
+      } else {
+        setState(() {
+          _isEmailSent = true;
+        });
+        _showSuccessSnackBar('Password reset email sent! Check your inbox.');
+      }
     }
   }
 
@@ -85,23 +96,10 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   Widget build(BuildContext context) {
     final forgotPasswordState = ref.watch(forgotPasswordStateProvider);
 
-    forgotPasswordState.whenOrNull(
-      data: (data) {
-        if (!_isEmailSent) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            setState(() {
-              _isEmailSent = true;
-            });
-            _showSuccessSnackBar('Password reset email sent! Check your inbox.');
-          });
-        }
-      },
-      error: (error, stackTrace) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _showErrorSnackBar(_getErrorMessage(error));
-        });
-      },
-    );
+    // Success/error handling happens in _handleResetPassword after the call
+    // completes. Do not react to the provider state during build: the shared
+    // notifier's initial/stale state is AsyncData(null), which previously made
+    // the screen show "email sent" before the user submitted anything.
 
     return AuthShell(
       backButton: AuthShellBackButton(

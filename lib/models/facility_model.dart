@@ -20,6 +20,7 @@ class FacilityModel {
   final String? phone;
   final String? email;
   final String? description;
+
   /// User-set facility capacity (max units the site can hold). Edited from the
   /// wizard / facility edit screen. NOT the same as how many unit documents
   /// actually exist — see [unitDocCount].
@@ -56,6 +57,12 @@ class FacilityModel {
       platformSubscriptionStatus; // active | trialing | past_due | cancelled | unpaid
   final DateTime? platformSubscriptionCurrentPeriodEnd;
   final bool platformSubscriptionCancelAtPeriodEnd;
+
+  // Optional public website add-on ($25/mo), controlled by Stripe webhooks.
+  final String? stripeWebsiteSubscriptionId;
+  final String? websiteSubscriptionStatus;
+  final DateTime? websiteSubscriptionCurrentPeriodEnd;
+  final bool websiteSubscriptionCancelAtPeriodEnd;
 
   // Localization
   final String?
@@ -108,6 +115,10 @@ class FacilityModel {
     this.platformSubscriptionStatus,
     this.platformSubscriptionCurrentPeriodEnd,
     this.platformSubscriptionCancelAtPeriodEnd = false,
+    this.stripeWebsiteSubscriptionId,
+    this.websiteSubscriptionStatus,
+    this.websiteSubscriptionCurrentPeriodEnd,
+    this.websiteSubscriptionCancelAtPeriodEnd = false,
     this.defaultLocale,
     this.smsSettings,
     this.textingOnboardingEnabled = false,
@@ -177,6 +188,14 @@ class FacilityModel {
               ?.toDate(),
       platformSubscriptionCancelAtPeriodEnd:
           data?['platformSubscriptionCancelAtPeriodEnd'] ?? false,
+      stripeWebsiteSubscriptionId:
+          data?['stripeWebsiteSubscriptionId'] as String?,
+      websiteSubscriptionStatus: data?['websiteSubscriptionStatus'] as String?,
+      websiteSubscriptionCurrentPeriodEnd:
+          (data?['websiteSubscriptionCurrentPeriodEnd'] as Timestamp?)
+              ?.toDate(),
+      websiteSubscriptionCancelAtPeriodEnd:
+          data?['websiteSubscriptionCancelAtPeriodEnd'] == true,
       defaultLocale: data?['defaultLocale'] as String?,
       smsSettings: data?['smsSettings'] != null
           ? Map<String, dynamic>.from(data!['smsSettings'])
@@ -196,6 +215,12 @@ class FacilityModel {
       twilioPhoneNumberSid: data?['twilioPhoneNumberSid'] as String?,
       twilioPhoneNumberE164: data?['twilioPhoneNumberE164'] as String?,
     );
+  }
+
+  bool get hasActiveWebsiteSubscription {
+    final status = websiteSubscriptionStatus?.toLowerCase();
+    return stripeWebsiteSubscriptionId != null &&
+        (status == 'active' || status == 'trialing');
   }
 
   // Convert FacilityModel to Map for Firestore

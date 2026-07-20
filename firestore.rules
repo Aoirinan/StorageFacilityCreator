@@ -114,6 +114,45 @@ service cloud.firestore {
     ];
   }
 
+  function accountEntitlementWriteForbiddenKeys() {
+    return [
+      'subscriptionStatus',
+      'stripeSubscriptionId',
+      'stripeCustomerId',
+      'subscriptionCurrentPeriodStart',
+      'subscriptionCurrentPeriodEnd',
+      'subscriptionCancelAtPeriodEnd',
+      'subscriptionCanceledAt',
+      'subscriptionTrialEnd',
+      'suspended',
+      'suspensionReason',
+      'suspendedAt',
+      'suspendedByUid',
+      'suspendedByEmail',
+      'referralCode',
+      'referredByAccountId',
+      'referralRewardPreferredFacilityId',
+      'approvedAt',
+      'rejectedAt'
+    ];
+  }
+
+  function facilityEntitlementWriteForbiddenKeys() {
+    return [
+      'stripePlatformSubscriptionId',
+      'platformSubscriptionStatus',
+      'platformSubscriptionCurrentPeriodStart',
+      'platformSubscriptionCurrentPeriodEnd',
+      'platformSubscriptionCancelAtPeriodEnd',
+      'platformSubscriptionTrialEnd',
+      'stripeWebsiteSubscriptionId',
+      'websiteSubscriptionStatus',
+      'websiteSubscriptionCurrentPeriodEnd',
+      'websiteSubscriptionCancelAtPeriodEnd',
+      'websiteCheckoutSessionId'
+    ];
+  }
+
   function isManualCompletedFacilityPaymentCreate(facilityId) {
     return request.resource.data.keys().hasAll([
         'tenantId',
@@ -378,11 +417,36 @@ service cloud.firestore {
       // Allow create if ownerUid matches current user
       allow create: if request.auth != null && 
         request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.keys().hasAll(['ownerUid', 'ownerEmail', 'ownerName', 'subscriptionStatus', 'createdAt', 'updatedAt']);
+        request.resource.data.keys().hasAll(['ownerUid', 'ownerEmail', 'ownerName', 'subscriptionStatus', 'createdAt', 'updatedAt']) &&
+        request.resource.data.subscriptionStatus == 'pendingApproval' &&
+        (!('stripeSubscriptionId' in request.resource.data) || request.resource.data.stripeSubscriptionId == null) &&
+        (!('stripeCustomerId' in request.resource.data) || request.resource.data.stripeCustomerId == null) &&
+        (!('subscriptionCurrentPeriodStart' in request.resource.data) || request.resource.data.subscriptionCurrentPeriodStart == null) &&
+        (!('subscriptionCurrentPeriodEnd' in request.resource.data) || request.resource.data.subscriptionCurrentPeriodEnd == null) &&
+        (!('subscriptionCancelAtPeriodEnd' in request.resource.data) || request.resource.data.subscriptionCancelAtPeriodEnd == false) &&
+        (!('subscriptionCanceledAt' in request.resource.data) || request.resource.data.subscriptionCanceledAt == null) &&
+        (!('subscriptionTrialEnd' in request.resource.data) || request.resource.data.subscriptionTrialEnd == null) &&
+        (!('suspended' in request.resource.data) || request.resource.data.suspended == false) &&
+        (!('suspensionReason' in request.resource.data) || request.resource.data.suspensionReason == null) &&
+        (!('suspendedAt' in request.resource.data) || request.resource.data.suspendedAt == null) &&
+        (!('suspendedByUid' in request.resource.data) || request.resource.data.suspendedByUid == null) &&
+        (!('suspendedByEmail' in request.resource.data) || request.resource.data.suspendedByEmail == null) &&
+        (!('referralCode' in request.resource.data) || request.resource.data.referralCode == null) &&
+        (!('referredByAccountId' in request.resource.data) || request.resource.data.referredByAccountId == null) &&
+        (!('referralRewardPreferredFacilityId' in request.resource.data) || request.resource.data.referralRewardPreferredFacilityId == null) &&
+        (!('approvedAt' in request.resource.data) || request.resource.data.approvedAt == null) &&
+        (!('rejectedAt' in request.resource.data) || request.resource.data.rejectedAt == null);
       
       // Allow update by owner or superadmin (for account interventions/suspension).
       allow update: if request.auth != null &&
-        (isSuperAdmin() || resource.data.ownerUid == request.auth.uid);
+        (
+          isSuperAdmin() ||
+          (
+            resource.data.ownerUid == request.auth.uid &&
+            !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(accountEntitlementWriteForbiddenKeys())
+          )
+        );
       
       // Allow delete only by owner
       allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
@@ -422,12 +486,17 @@ service cloud.firestore {
       allow create: if request.auth != null && 
         request.resource.data.ownerUid == request.auth.uid &&
         request.resource.data.keys().hasAll(['name', 'ownerUid', 'createdAt', 'active']) &&
-        request.resource.data.active == true;
+        request.resource.data.active == true &&
+        !request.resource.data.keys().hasAny(facilityEntitlementWriteForbiddenKeys());
       
       // Allow update by owner or super admin, or invitee merging their own role + trace field (assignRole)
       allow update: if request.auth != null && (
         isSuperAdmin() ||
-        resource.data.ownerUid == request.auth.uid ||
+        (
+          resource.data.ownerUid == request.auth.uid &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(facilityEntitlementWriteForbiddenKeys())
+        ) ||
         facilityInviteRoleMergeAllowed(facilityId)
       );
       
@@ -833,6 +902,16 @@ service cloud.firestore {
         allow read: if isFacilityStaff(facilityId);
         allow create, update: if isFacilityStaff(facilityId);
         allow delete: if isFacilityStaff(facilityId);
+      }
+
+      match /exportJobs/{jobId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.status == 'pending';
+        // Status, storage path, expiry, and download metadata are server-owned.
+        allow update, delete: if false;
       }
 
       match /invites/{inviteId} {
@@ -1456,24 +1535,20 @@ service cloud.firestore {
 
     // Public payment links (/pay?token=...). Doc ID equals data.token (unguessable).
     match /publicPaymentLinks/{linkId} {
-      // Holder of the token may read that document (checkout page; no sign-in).
-      allow get: if resource != null;
+      // Public reads are served by token-validating callables that return a
+      // minimal response. Staff may still manage links for their own facility.
+      allow get: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
 
       // Staff management UI: queries must only return docs the user may read (per-doc check).
       allow list: if request.auth != null &&
         resource.data.facilityId is string &&
         isFacilityStaff(resource.data.facilityId);
 
-      allow create: if request.auth != null &&
-        request.resource.data.facilityId is string &&
-        facilityExists(request.resource.data.facilityId) &&
-        isFacilityStaff(request.resource.data.facilityId) &&
-        linkId == request.resource.data.token &&
-        request.resource.data.tenantId is string &&
-        request.resource.data.amount is number &&
-        request.resource.data.amount > 0 &&
-        request.resource.data.status == 'pending' &&
-        request.resource.data.createdBy == request.auth.uid;
+      // Link creation is server-only so token generation and tenant binding
+      // cannot be bypassed by older or modified clients.
+      allow create: if false;
 
       // Revoke pending links only. Marking paid should be done with Admin SDK (e.g. webhook).
       allow update: if request.auth != null &&
@@ -1493,41 +1568,12 @@ service cloud.firestore {
     // Public reservations used by unauthenticated online rental flow.
     // NOTE: This collection is intentionally separate from facility private data.
     match /publicReservations/{reservationId} {
-      // Keep direct single-doc lookups available for public fallback paths.
-      // Block anonymous collection listing/querying to reduce data exposure.
-      allow get: if true;
-      allow list: if request.auth != null;
-
-      // Allow creating reservation holds from public rental page.
-      allow create: if request.resource.data.keys().hasAll([
-        'facilityId',
-        'email',
-        'status',
-        'reservedAt',
-        'moveInToken'
-      ]) &&
-      request.resource.data.facilityId is string &&
-      request.resource.data.facilityId.size() > 0 &&
-      request.resource.data.email is string &&
-      request.resource.data.email.size() > 3 &&
-      request.resource.data.status in ['pending', 'confirmed', 'expired', 'completed', 'cancelled'] &&
-      request.resource.data.moveInToken is string &&
-      request.resource.data.moveInToken.size() >= 16;
-
-      // Allow status transitions during public move-in fallback paths.
-      allow update: if request.resource.data.keys().hasAll([
-        'facilityId',
-        'email',
-        'status',
-        'reservedAt',
-        'moveInToken'
-      ]) &&
-      request.resource.data.facilityId == resource.data.facilityId &&
-      request.resource.data.email == resource.data.email &&
-      request.resource.data.moveInToken == resource.data.moveInToken &&
-      request.resource.data.status in ['pending', 'confirmed', 'expired', 'completed', 'cancelled'];
-
-      allow delete: if false;
+      // Public access and state changes are handled by token-validating
+      // callables using the Admin SDK.
+      allow get, create, update, delete: if false;
+      allow list: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
     }
     
     // Super admin internal notes - only superadmin can read/write
@@ -1615,6 +1661,8 @@ service cloud.firestore {
       allow update: if request.auth != null && (
         isSuperAdmin() ||
         (
+          request.resource.data.userId == resource.data.userId &&
+          request.resource.data.facilityId == resource.data.facilityId &&
           exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
           (
             get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
@@ -1627,6 +1675,7 @@ service cloud.firestore {
           resource.data.userId == request.auth.uid &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.facilityId == resource.data.facilityId &&
+          request.resource.data.assignedBy == resource.data.assignedBy &&
           request.resource.data.roleType is string &&
           request.resource.data.assignedBy is string &&
           pendingInviteMatchesUserRoleWrite(

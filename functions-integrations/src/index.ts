@@ -44,6 +44,7 @@ export {
   updateSubscriptionQuantity,
   getSubscriptionStatus,
 } from './stripePlatformSubscriptions';
+export { createWebsiteSubscriptionCheckout } from './stripePlatformWebsiteSubscription';
 
 export * from './stripeFacilityCallables';
 

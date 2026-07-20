@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:go_router/go_router.dart';
-import '../models/export_job_model.dart';
-import '../models/permission_model.dart';
-import '../services/export_service.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../widgets/permission_gate.dart';
-import '../services/modern_navigation_service.dart';
-import '../providers/active_facility_provider.dart';
+import 'package:sfcapp/models/export_job_model.dart';
+import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/services/export_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/permission_gate.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Provider for export jobs stream
-final exportJobsProvider = StreamProvider.family<List<ExportJobModel>, String>((ref, facilityId) {
+final exportJobsProvider =
+    StreamProvider.family<List<ExportJobModel>, String>((ref, facilityId) {
   return ExportService.getExportJobsStream(facilityId);
 });
 
@@ -28,6 +28,7 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
   DateTime? _startDate;
   DateTime? _endDate;
   bool _isCreating = false;
+  final Set<String> _downloadingJobIds = {};
 
   @override
   Widget build(BuildContext context) {
@@ -50,7 +51,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
         PermissionGate(
           permission: PermissionType.exportData,
           child: ElevatedButton.icon(
-            onPressed: _isCreating ? null : () => _showCreateExportDialog(facilityId),
+            onPressed:
+                _isCreating ? null : () => _showCreateExportDialog(facilityId),
             icon: const Icon(Icons.file_download),
             label: const Text('New Export'),
           ),
@@ -80,26 +82,30 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
           Text(
             'Quick Export (Small Datasets)',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
+                  fontWeight: FontWeight.bold,
+                ),
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: DropdownButtonFormField<ExportType?>(
-                  value: _selectedType,
+                  initialValue: _selectedType,
                   decoration: InputDecoration(
                     labelText: 'Export Type',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
                   items: [
-                    const DropdownMenuItem(value: null, child: Text('Select type')),
+                    const DropdownMenuItem(
+                        value: null, child: Text('Select type')),
                     ...ExportType.values.map((type) {
                       return DropdownMenuItem(
                         value: type,
-                        child: Text(type.name.replaceAll(RegExp(r'(?<=[a-z])(?=[A-Z])'), ' ')),
+                        child: Text(type.name
+                            .replaceAll(RegExp(r'(?<=[a-z])(?=[A-Z])'), ' ')),
                       );
                     }),
                   ],
@@ -116,7 +122,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                   onTap: () async {
                     final date = await showDatePicker(
                       context: context,
-                      initialDate: _startDate ?? DateTime.now().subtract(const Duration(days: 30)),
+                      initialDate: _startDate ??
+                          DateTime.now().subtract(const Duration(days: 30)),
                       firstDate: DateTime(2020),
                       lastDate: DateTime.now(),
                     );
@@ -129,8 +136,10 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                   child: InputDecorator(
                     decoration: InputDecoration(
                       labelText: 'Start Date',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
                       suffixIcon: const Icon(Icons.calendar_today),
                     ),
                     child: Text(
@@ -138,7 +147,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                           ? DateFormat('MM/dd/yyyy').format(_startDate!)
                           : 'Select start date',
                       style: TextStyle(
-                        color: _startDate != null ? null : AppTheme.textTertiary,
+                        color:
+                            _startDate != null ? null : AppTheme.textTertiary,
                       ),
                     ),
                   ),
@@ -163,8 +173,10 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                   child: InputDecorator(
                     decoration: InputDecoration(
                       labelText: 'End Date',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
                       suffixIcon: const Icon(Icons.calendar_today),
                     ),
                     child: Text(
@@ -197,69 +209,74 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
     return Consumer(
       builder: (context, ref, child) {
         return ref.watch(exportJobsProvider(facilityId)).when(
-          data: (jobs) {
-            if (jobs.isEmpty) {
-              return Center(
+              data: (jobs) {
+                if (jobs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.file_download,
+                            size: 64, color: AppTheme.textTertiary),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No export jobs yet',
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Create a new export to get started',
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppTheme.textTertiary,
+                                  ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(16.0),
+                  itemCount: jobs.length,
+                  itemBuilder: (context, index) {
+                    final job = jobs[index];
+                    return _buildExportJobCard(job);
+                  },
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stack) => Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.file_download, size: 64, color: AppTheme.textTertiary),
+                    Icon(Icons.error_outline, size: 64, color: AppTheme.error),
                     const SizedBox(height: 16),
                     Text(
-                      'No export jobs yet',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Create a new export to get started',
+                      'Error loading export jobs: $error',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppTheme.textTertiary,
-                      ),
+                            color: AppTheme.error,
+                          ),
                     ),
                   ],
                 ),
-              );
-            }
-
-            return ListView.builder(
-              padding: const EdgeInsets.all(16.0),
-              itemCount: jobs.length,
-              itemBuilder: (context, index) {
-                final job = jobs[index];
-                return _buildExportJobCard(job);
-              },
+              ),
             );
-          },
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, stack) => Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.error_outline, size: 64, color: AppTheme.error),
-                const SizedBox(height: 16),
-                Text(
-                  'Error loading export jobs: $error',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: AppTheme.error,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
       },
     );
   }
 
   Widget _buildExportJobCard(ExportJobModel job) {
     final statusColor = {
-      ExportStatus.pending: AppTheme.warning,
-      ExportStatus.processing: AppTheme.info,
-      ExportStatus.completed: AppTheme.success,
-      ExportStatus.failed: AppTheme.error,
-    }[job.status] ?? AppTheme.textTertiary;
+          ExportStatus.pending: AppTheme.warning,
+          ExportStatus.processing: AppTheme.info,
+          ExportStatus.completed: AppTheme.success,
+          ExportStatus.failed: AppTheme.error,
+          ExportStatus.expired: AppTheme.textTertiary,
+        }[job.status] ??
+        AppTheme.textTertiary;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -271,17 +288,26 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
         title: Text(
           job.type.name.replaceAll(RegExp(r'(?<=[a-z])(?=[A-Z])'), ' '),
           style: Theme.of(context).textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
+                fontWeight: FontWeight.bold,
+              ),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Status: ${job.status.name}'),
             if (job.recordCount != null) Text('Records: ${job.recordCount}'),
-            Text('Created: ${DateFormat('MM/dd/yyyy HH:mm').format(job.createdAt)}'),
+            Text(
+                'Created: ${DateFormat('MM/dd/yyyy HH:mm').format(job.createdAt)}'),
             if (job.completedAt != null)
-              Text('Completed: ${DateFormat('MM/dd/yyyy HH:mm').format(job.completedAt!)}'),
+              Text(
+                  'Completed: ${DateFormat('MM/dd/yyyy HH:mm').format(job.completedAt!)}'),
+            if (job.expiresAt != null)
+              Text(
+                job.isExpired
+                    ? 'Expired: ${DateFormat('MM/dd/yyyy HH:mm').format(job.expiresAt!)}'
+                    : 'Expires: ${DateFormat('MM/dd/yyyy HH:mm').format(job.expiresAt!)}',
+                style: job.isExpired ? TextStyle(color: AppTheme.error) : null,
+              ),
             if (job.errorMessage != null)
               Text(
                 'Error: ${job.errorMessage}',
@@ -289,32 +315,60 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
               ),
           ],
         ),
-        trailing: job.status == ExportStatus.completed && job.downloadUrl != null
+        trailing: job.status == ExportStatus.completed &&
+                job.storagePath != null &&
+                !job.isExpired
             ? IconButton(
-                icon: const Icon(Icons.download),
-                onPressed: () {
-                  // Open download URL
-                  // In web, this will trigger download
-                  if (job.downloadUrl != null) {
-                    // Use url_launcher or similar
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Download URL: ${job.downloadUrl}'),
-                        action: SnackBarAction(
-                          label: 'Copy',
-                          onPressed: () {
-                            // Copy to clipboard
-                          },
-                        ),
-                      ),
-                    );
-                  }
-                },
+                icon: _downloadingJobIds.contains(job.id)
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download),
+                onPressed: _downloadingJobIds.contains(job.id)
+                    ? null
+                    : () => _downloadCompletedExport(job),
                 tooltip: 'Download',
               )
             : null,
       ),
     );
+  }
+
+  Future<void> _downloadCompletedExport(ExportJobModel job) async {
+    setState(() {
+      _downloadingJobIds.add(job.id);
+    });
+
+    try {
+      final uri = await ExportService.getExportDownloadUrl(
+        facilityId: job.facilityId,
+        jobId: job.id,
+      );
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) {
+        throw Exception('Could not open the export download');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error downloading export: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _downloadingJobIds.remove(job.id);
+        });
+      }
+    }
   }
 
   IconData _getStatusIcon(ExportStatus status) {
@@ -327,6 +381,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
         return Icons.check_circle;
       case ExportStatus.failed:
         return Icons.error;
+      case ExportStatus.expired:
+        return Icons.event_busy;
     }
   }
 
@@ -345,7 +401,7 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               DropdownButtonFormField<ExportType>(
-                value: selectedType,
+                initialValue: selectedType,
                 decoration: const InputDecoration(
                   labelText: 'Export Type',
                   border: OutlineInputBorder(),
@@ -353,7 +409,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                 items: ExportType.values.map((type) {
                   return DropdownMenuItem(
                     value: type,
-                    child: Text(type.name.replaceAll(RegExp(r'(?<=[a-z])(?=[A-Z])'), ' ')),
+                    child: Text(type.name
+                        .replaceAll(RegExp(r'(?<=[a-z])(?=[A-Z])'), ' ')),
                   );
                 }).toList(),
                 onChanged: (value) {
@@ -367,7 +424,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
                 onTap: () async {
                   final date = await showDatePicker(
                     context: context,
-                    initialDate: startDate ?? DateTime.now().subtract(const Duration(days: 30)),
+                    initialDate: startDate ??
+                        DateTime.now().subtract(const Duration(days: 30)),
                     firstDate: DateTime(2020),
                     lastDate: DateTime.now(),
                   );
@@ -422,7 +480,7 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppTheme.info.withOpacity(0.1),
+                  color: AppTheme.info.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -493,7 +551,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Export job created. It will be processed in the background.'),
+            content: Text(
+                'Export job created. It will be processed in the background.'),
             backgroundColor: AppTheme.success,
           ),
         );
@@ -549,11 +608,13 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
           );
           break;
         default:
-          throw Exception('Quick export not supported for ${_selectedType!.name}');
+          throw Exception(
+              'Quick export not supported for ${_selectedType!.name}');
       }
 
       // Download CSV
-      _downloadCSV(csvContent, '${_selectedType!.name}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv');
+      _downloadCSV(csvContent,
+          '${_selectedType!.name}_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -610,7 +671,8 @@ class _ExportsScreenState extends ConsumerState<ExportsScreen> {
               Navigator.pop(context);
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('CSV content copied to clipboard (use proper download in production)'),
+                  content: Text(
+                      'CSV content copied to clipboard (use proper download in production)'),
                   backgroundColor: AppTheme.info,
                 ),
               );
