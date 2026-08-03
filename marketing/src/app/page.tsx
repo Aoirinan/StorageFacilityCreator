@@ -159,22 +159,30 @@ const TOUR_CARDS: TourCard[] = [
   },
   {
     title: 'Facility map and units',
-    description: 'Manage visual unit layout and status by location.',
+    description: 'Track unit status, tenants, and rates across your facility.',
     featureKey: 'map',
     image: {
-      src: '/how-it-works-facility-setup.png',
-      alt: 'Storage Facility Creator facility setup screen',
+      src: '/tour-unit-list.png',
+      alt: 'Storage Facility Creator unit list screen',
     },
   },
   {
     title: 'Contracts and e-sign',
     description: 'Support digital document workflows and disclosures.',
     featureKey: 'contracts',
+    image: {
+      src: '/tour-contracts-esign.png',
+      alt: 'Storage Facility Creator contract creation screen',
+    },
   },
   {
     title: 'Integrations',
     description: 'Use practical integrations like Stripe, Twilio, SendGrid, and QuickBooks.',
     featureKey: 'integrations',
+    image: {
+      src: '/tour-integrations.png',
+      alt: 'Storage Facility Creator Stripe payment integration screen',
+    },
   },
 ];
 
@@ -565,6 +573,29 @@ export default function HomePage() {
             </li>
           ))}
         </ul>
+      </Section>
+
+      {/* Trust / early access */}
+      <Section className="bg-gradient-to-b from-sky-50/70 to-white">
+        <Reveal>
+          <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xs text-center">
+            <span className="eyebrow">Why a newer platform</span>
+            <h2 className="font-display mt-3 text-2xl sm:text-3xl font-extrabold text-slate-900">
+              Built by someone who has run this problem, not a committee.
+            </h2>
+            <p className="mt-4 text-slate-600 leading-relaxed">
+              SFC is early-stage and taking on new operators directly — which means responsive support and a
+              product that changes when you tell us what is missing, instead of waiting on a roadmap. You are not
+              locked in while you find out if it fits: a 30-day trial plus your first month free, no onboarding
+              fee, and no long-term contract.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs font-semibold">
+              <span className="rounded-full border border-blue-200 bg-blue-50/90 px-3 py-1 text-blue-900">30-day trial + first month free</span>
+              <span className="rounded-full border border-indigo-200 bg-indigo-50/90 px-3 py-1 text-indigo-900">Cancel anytime</span>
+              <span className="rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-emerald-900">No onboarding fee</span>
+            </div>
+          </div>
+        </Reveal>
       </Section>
 
       {/* Global DNR */}
