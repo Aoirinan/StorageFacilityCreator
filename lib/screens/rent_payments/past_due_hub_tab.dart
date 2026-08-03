@@ -13,8 +13,6 @@ import '../../services/late_logic_service.dart';
 import '../../services/tenant_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/badge_widget.dart';
-import '../facility_edit_screen.dart';
-
 /// Past due hub tab: late stats + overdue payments/tenants (Delinquency Overview + Past Due merged).
 class PastDueHubTab extends ConsumerStatefulWidget {
   const PastDueHubTab({super.key});
@@ -184,8 +182,8 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
             TextButton.icon(
               onPressed: () {
                 context.push(
-                  AppRoute.legacyScreen,
-                  extra: FacilityEditScreen(facility: facility),
+                  '${AppRoute.facilityEdit}?facilityId=${facility.id}',
+                  extra: facility,
                 );
               },
               icon: const Icon(Icons.settings, size: 18),

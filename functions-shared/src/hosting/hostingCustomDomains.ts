@@ -21,6 +21,34 @@ function isValidHostname(value: string): boolean {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(value);
 }
 
+function wrapFirestoreQueryError(error: unknown, fallbackMessage: string): never {
+  const msg = String((error as { message?: string })?.message || error || '');
+  if (msg.includes('FAILED_PRECONDITION') && msg.includes('index')) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Firestore is still building the custom-domain lookup index. Wait a few minutes and try again.',
+    );
+  }
+  if (error instanceof functions.https.HttpsError) throw error;
+  throw new functions.https.HttpsError('internal', fallbackMessage);
+}
+
+/** Keep Website Setup `customDomain` in sync with the hostname we just connected in Hosting. */
+async function syncFacilityCustomDomain(facilityId: string, hostname: string): Promise<void> {
+  const db = admin.firestore();
+  const ref = db.doc(`facilities/${facilityId}/settings/public`);
+  const snap = await ref.get();
+  const current = normalizeHostname(String(snap.get('customDomain') || ''));
+  if (current === hostname) return;
+  await ref.set(
+    {
+      customDomain: hostname,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
 async function resolveFacilitySlugFromInput(input: {
   facilityId?: string;
   slug?: string;
@@ -37,7 +65,7 @@ async function resolveFacilitySlugFromInput(input: {
     if (!slug) {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'facilityId is valid but no published public slug was found.',
+        'This facility has no published Website URL name yet. Open Website Setup, set Website URL name, publish/save, then try again.',
       );
     }
     return { facilityId: directFacilityId, slug };
@@ -46,7 +74,10 @@ async function resolveFacilitySlugFromInput(input: {
   if (directSlug) {
     const mapSnap = await db.collection('publicFacilityMaps').doc(directSlug).get();
     if (!mapSnap.exists) {
-      throw new functions.https.HttpsError('not-found', 'No public facility map found for slug.');
+      throw new functions.https.HttpsError(
+        'not-found',
+        'No published website found for that Website URL name. Confirm it in Website Setup, then try again.',
+      );
     }
     const facilityId = String(mapSnap.get('facilityId') || '').trim();
     if (!facilityId) {
@@ -56,23 +87,39 @@ async function resolveFacilitySlugFromInput(input: {
   }
 
   if (normalizedHost) {
-    const settings = await db
-      .collectionGroup('settings')
-      .where('customDomain', '==', normalizedHost)
-      .limit(10)
-      .get();
+    let settings;
+    try {
+      settings = await db
+        .collectionGroup('settings')
+        .where('customDomain', '==', normalizedHost)
+        .limit(10)
+        .get();
+    } catch (error) {
+      wrapFirestoreQueryError(
+        error,
+        'Could not look up this website address. Enter Facility ID or Website URL name, or try again shortly.',
+      );
+    }
     const enabled = settings.docs.find((doc) => {
       const data = doc.data() as Record<string, unknown>;
       return data.enabled !== false;
     });
     const facilityId = enabled?.ref.parent.parent?.id;
     if (!facilityId) {
-      throw new functions.https.HttpsError('not-found', 'No enabled facility settings found for hostname.');
+      throw new functions.https.HttpsError(
+        'not-found',
+        `No facility has Custom domain set to "${normalizedHost}" yet. ` +
+          'In Website Setup, set Custom domain to this exact address and save, ' +
+          'or enter Facility ID / Website URL name here (we will sync Custom domain automatically).',
+      );
     }
     const meta = await db.doc(`facilities/${facilityId}/mapEngine/meta`).get();
     const slug = String(meta.get('publicSlug') || '').trim().toLowerCase();
     if (!slug) {
-      throw new functions.https.HttpsError('failed-precondition', 'Facility is missing published public slug.');
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Facility is missing a published Website URL name. Finish Website Setup publish/save first.',
+      );
     }
     return { facilityId, slug };
   }
@@ -115,39 +162,117 @@ async function hostingApiRequest(path: string, init: RequestInit): Promise<any> 
   return json;
 }
 
-type DomainRecord = { type: string; name: string; value: string };
+type DomainRecord = {
+  type: string;
+  name: string;
+  value: string;
+  /** Firebase Hosting requiredAction, e.g. ADD / REMOVE / NONE */
+  requiredAction?: string;
+};
 
+/**
+ * Firebase Hosting v1beta1 shape:
+ * requiredDnsUpdates.desired[] / .discovered[] → DnsRecordSet { domainName, records[] }
+ * DnsRecord → { type, domainName, rdata, requiredAction }
+ */
 function flattenDnsRecords(customDomain: any): DomainRecord[] {
   const records: DomainRecord[] = [];
-  const blocks = [
-    customDomain?.requiredDnsUpdates,
-    customDomain?.requiredDnsUpdates?.desired,
-    customDomain?.requiredDnsUpdates?.discovered,
-  ];
-  for (const block of blocks) {
-    const additions = Array.isArray(block?.records) ? block.records : [];
-    for (const item of additions) {
-      const values = Array.isArray(item?.rrdata) ? item.rrdata : [];
+  const updates = customDomain?.requiredDnsUpdates;
+  const sets: any[] = [];
+  if (Array.isArray(updates?.desired)) sets.push(...updates.desired);
+  if (Array.isArray(updates?.discovered)) sets.push(...updates.discovered);
+  // Legacy / alternate shapes
+  if (Array.isArray(updates?.records)) sets.push(updates);
+  if (Array.isArray(customDomain?.dnsRecords)) sets.push({ records: customDomain.dnsRecords });
+
+  for (const set of sets) {
+    const setDomain = String(set?.domainName || '').trim();
+    const items = Array.isArray(set?.records) ? set.records : [];
+    for (const item of items) {
+      const type = String(item?.type || '').toUpperCase();
+      const name = String(item?.domainName || setDomain || '').trim();
+      const action = String(item?.requiredAction || '').toUpperCase();
+      const values: string[] = [];
+      if (typeof item?.rdata === 'string' && item.rdata.trim()) values.push(item.rdata.trim());
+      if (Array.isArray(item?.rrdata)) {
+        for (const v of item.rrdata) {
+          if (typeof v === 'string' && v.trim()) values.push(v.trim());
+        }
+      }
       for (const value of values) {
-        records.push({
-          type: String(item?.type || '').toUpperCase(),
-          name: String(item?.domainName || '').trim(),
-          value: String(value || '').trim(),
-        });
+        records.push({ type, name, value, requiredAction: action || undefined });
       }
     }
   }
-  return records.filter((r) => r.type && r.name && r.value);
+
+  // Prefer records the customer still needs to ADD; fall back to full list.
+  const toAdd = records.filter((r) => !r.requiredAction || r.requiredAction === 'ADD');
+  const preferred = toAdd.length > 0 ? toAdd : records;
+
+  const seen = new Set<string>();
+  return preferred.filter((r) => {
+    if (!r.type || !r.name || !r.value) return false;
+    const key = `${r.type}|${r.name}|${r.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function summarizeStatus(customDomain: any): string {
-  const cert = String(customDomain?.cert?.state || '').toLowerCase();
+  const cert = String(customDomain?.cert?.state || '').toUpperCase();
+  const host = String(customDomain?.hostState || '').toUpperCase();
+  const ownership = String(customDomain?.ownershipState || '').toUpperCase();
   const setup = String(customDomain?.status || '').toLowerCase();
-  if (cert === 'active') return 'connected';
-  if (cert === 'provisioning') return 'provisioning_ssl';
+
+  if (cert === 'CERT_ACTIVE' && (host === 'HOST_ACTIVE' || host === '')) return 'connected';
+  if (cert === 'CERT_ACTIVE') return 'connected';
+  if (cert === 'CERT_PROPAGATING' || cert === 'CERT_PENDING') return 'provisioning_ssl';
+  if (cert === 'CERT_VALIDATING' || cert === 'CERT_PREPARING') return 'pending_dns';
+  if (ownership === 'OWNERSHIP_MISSING' || ownership === 'OWNERSHIP_PENDING') return 'pending_dns';
+  if (host === 'HOST_UNHOSTED' || host === 'HOST_UNREACHABLE') return 'pending_dns';
+  if (cert === 'CERT_EXPIRED' || cert === 'CERT_EXPIRING_SOON') return 'certificate_issue';
   if (setup === 'pending' || setup === 'pending_setup') return 'pending_dns';
   if (setup) return setup;
+  if (cert) return cert.toLowerCase();
   return 'unknown';
+}
+
+function explainStatus(customDomain: any, records: DomainRecord[]): string {
+  const cert = String(customDomain?.cert?.state || 'unknown');
+  const host = String(customDomain?.hostState || 'unknown');
+  const ownership = String(customDomain?.ownershipState || 'unknown');
+  const issues = Array.isArray(customDomain?.issues)
+    ? customDomain.issues
+        .map((i: any) => String(i?.message || i?.details || '').trim())
+        .filter(Boolean)
+    : [];
+
+  const lines: string[] = [];
+  if (records.length > 0) {
+    lines.push(
+      `Firebase needs ${records.length} DNS change(s) at GoDaddy before the site can go live. ` +
+        'Add every row below exactly (Type / Name / Value), wait a few minutes, then tap Check progress.',
+    );
+  } else if (String(customDomain?.cert?.state || '').toUpperCase() === 'CERT_VALIDATING') {
+    lines.push(
+      'Firebase is validating DNS for the SSL certificate (CERT_VALIDATING). ' +
+        'If GoDaddy still has old A/CNAME/forwarding records for this domain, remove or replace them with the records Firebase shows. ' +
+        'Tap Check progress again in 1–2 minutes — records often appear after the next DNS check.',
+    );
+  } else {
+    lines.push(
+      'No DNS rows were returned on this check. Tap Check progress again shortly. ' +
+        'You can also open Firebase Console → Hosting → Custom domains for the live record list.',
+    );
+  }
+  lines.push(`Certificate: ${cert}`);
+  lines.push(`Hosting state: ${host}`);
+  lines.push(`Ownership: ${ownership}`);
+  if (issues.length > 0) {
+    lines.push(`Issues: ${issues.join(' | ')}`);
+  }
+  return lines.join('\n');
 }
 
 async function getCustomDomain(hostname: string): Promise<any> {
@@ -259,6 +384,9 @@ export const superAdminProvisionHostingCustomDomain = functions.https.onCall(
       hostname,
     });
 
+    // Permanent sync: Website Setup Custom domain must match Hosting hostname for lookup + root redirect.
+    await syncFacilityCustomDomain(resolved.facilityId, hostname);
+
     const { getProjectId, getSiteId } = requireHostingConfig();
     const projectId = getProjectId().trim();
     const siteId = getSiteId().trim();
@@ -280,13 +408,17 @@ export const superAdminProvisionHostingCustomDomain = functions.https.onCall(
       customDomain = await getCustomDomain(hostname);
     }
 
+    const records = flattenDnsRecords(customDomain);
     return {
       hostname,
       facilityId: resolved.facilityId,
       slug: resolved.slug,
       status: summarizeStatus(customDomain),
-      records: flattenDnsRecords(customDomain),
+      detail: explainStatus(customDomain, records),
+      records,
       certState: customDomain?.cert?.state || null,
+      hostState: customDomain?.hostState || null,
+      ownershipState: customDomain?.ownershipState || null,
       customDomainName: customDomain?.name || null,
       retrievedAt: new Date().toISOString(),
     };
@@ -309,13 +441,17 @@ export const superAdminGetHostingCustomDomainStatus = functions.https.onCall(
 
     const customDomain = await getCustomDomain(hostname);
     const resolved = await resolveFacilitySlugFromInput({ hostname });
+    const records = flattenDnsRecords(customDomain);
     return {
       hostname,
       facilityId: resolved.facilityId,
       slug: resolved.slug,
       status: summarizeStatus(customDomain),
-      records: flattenDnsRecords(customDomain),
+      detail: explainStatus(customDomain, records),
+      records,
       certState: customDomain?.cert?.state || null,
+      hostState: customDomain?.hostState || null,
+      ownershipState: customDomain?.ownershipState || null,
       customDomainName: customDomain?.name || null,
       retrievedAt: new Date().toISOString(),
     };

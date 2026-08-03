@@ -2,11 +2,6 @@
       allow read: if isSuperAdmin();
     }
 
-    // Collection group query for DNR entries across all facilities
-    // Business requirement: participating facilities see DNR entries from other facilities.
-    // Cross-facility visibility is limited to DNR participants (active paid subscription
-    // + recorded DNR terms acceptance) and super admins; a facility can always read its
-    // OWN entries via the facility-scoped rule above regardless of participation.
-    // NOTE: no conditions on `path` here — collectionGroup() queries cannot evaluate
-    // path-based conditions and fail closed with permission-denied. 'dnr' subcollections
-    // only exist under facilities/{facilityId}, so the auth gate alone is sufficient.
+    // Super-admin Websites tab reads facilities/{id}/settings/public across all
+    // facilities via collectionGroup('settings'); the nested settings rule does
+    // not authorize collection group list queries, so grant superadmin read here.

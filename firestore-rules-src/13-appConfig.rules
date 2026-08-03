@@ -3,4 +3,4 @@
       allow write: if request.auth != null && isSuperAdmin();
     }
 
-    // Public map snapshots are read-only and intentionally safe for anonymous access.
+    // Cancellation retention analytics — Admin SDK / callables only

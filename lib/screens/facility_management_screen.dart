@@ -16,7 +16,6 @@ import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
 import 'facility_creation_wizard.dart';
-import 'facility_edit_screen.dart';
 import 'subscription_test_screen.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
@@ -998,7 +997,10 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
   }
 
   void _showEditFacilityDialog(BuildContext context, FacilityModel facility) {
-    context.push(AppRoute.legacyScreen, extra: FacilityEditScreen(facility: facility));
+    context.push(
+      '${AppRoute.facilityEdit}?facilityId=${facility.id}',
+      extra: facility,
+    );
   }
 }
 

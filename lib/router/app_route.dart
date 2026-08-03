@@ -25,6 +25,7 @@ class AppRoute {
   static const facilities = '/facilities';
   static const facilityNew = '/facilities/new';
   static const facilityCreate = '/facilities/create';
+  static const facilityEdit = '/facilities/edit';
   static const tenants = '/tenants';
   static const tenantDetail = '/tenants/detail';
   static const tenantCsvImport = '/tenants/import-csv';

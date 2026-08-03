@@ -127,7 +127,8 @@ Storage Facility Creator support''';
                   const SizedBox(height: 8),
                   Text(
                     'Help a facility share their marketing website. They can use our standard link right away, '
-                    'or use their own address (like rent.theirstorage.com) after a short DNS setup.',
+                    'or their own domain after DNS setup — apex (keepsakeselfstorage.com), www, or a subdomain '
+                    '(rent.…). A subdomain is optional, not required.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                       height: 1.4,
@@ -185,26 +186,28 @@ Storage Facility Creator support''';
                         const SizedBox(height: 16),
                         _NumberStep(
                           n: 1,
-                          title: 'Facility sets up Website Setup',
+                          title: 'Facility publishes Website Setup',
                           body:
-                              'In their account: **Settings → Website Setup**. Set **Website URL name** (the `/w/…` part). '
-                              'Enter the **exact** address they want (e.g. `rent.theirstorage.com`) in **Custom domain**, then save.',
+                              'In their account: **Settings → Website Setup**. Set **Website URL name** (the `/w/…` part) '
+                              'and confirm `app.storagefacilitycreator.com/w/…` works. Optionally set **Custom domain** '
+                              'to the exact address they want (apex like `theirstorage.com` is fine).',
                         ),
                         const SizedBox(height: 14),
                         _NumberStep(
                           n: 2,
                           title: 'You connect the domain here',
                           body:
-                              'Use **Connect a custom domain** below with the same website address. '
-                              'You will get DNS records to send to the customer.',
+                              'Enter that website address below and click **Connect domain**. '
+                              'Firebase Hosting returns the **exact DNS records** (usually TXT + A for apex, or TXT + CNAME for a subdomain). '
+                              'We also sync Website Setup **Custom domain** to match.',
                         ),
                         const SizedBox(height: 14),
                         _NumberStep(
                           n: 3,
-                          title: 'Customer adds DNS records',
+                          title: 'Customer adds DNS at their registrar (e.g. GoDaddy)',
                           body:
-                              'They (or their IT person) add those records at their domain provider. '
-                              'After DNS updates, the site usually goes live within a few minutes to a few hours.',
+                              'They add each record from Step 2 (Type / Name / Value). For an apex domain, GoDaddy **Name** is often `@`. '
+                              'After DNS updates, tap **Check progress** until status is live.',
                         ),
                       ],
                     ),
@@ -225,9 +228,9 @@ Storage Facility Creator support''';
                           controller: _hostnameCtrl,
                           decoration: const InputDecoration(
                             labelText: 'Website address',
-                            hintText: 'rent.theirstorage.com',
+                            hintText: 'keepsakeselfstorage.com',
                             helperText:
-                                'The domain only — no https:// or paths',
+                                'Apex, www, or subdomain — no https:// or paths',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -235,10 +238,10 @@ Storage Facility Creator support''';
                         TextField(
                           controller: _facilityIdCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Facility ID (optional)',
+                            labelText: 'Facility ID (recommended first time)',
                             hintText: 'abc123FacilityId',
                             helperText:
-                                'Only if needed — find it on the Facilities tab',
+                                'From the Facilities tab — we sync Custom domain automatically',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -249,7 +252,7 @@ Storage Facility Creator support''';
                             labelText: 'Website URL name (optional)',
                             hintText: 'my-storage',
                             helperText:
-                                'The /w/... name from Website Setup — can be used instead of Facility ID',
+                                'The /w/... name — alternative to Facility ID',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -530,19 +533,30 @@ class _ProvisionResultCard extends StatelessWidget {
       case 'provisioning_ssl':
         return 'Almost ready — finishing the security certificate';
       case 'pending_dns':
-        return 'Waiting — customer still needs to add DNS records';
+        return 'Waiting on DNS — add the records below at GoDaddy';
+      case 'certificate_issue':
+        return 'Certificate problem — check DNS and Firebase Hosting';
       default:
         return status.replaceAll('_', ' ');
     }
   }
 
-  static String? _friendlyCertHint(String? certState) {
-    if (certState == null || certState.isEmpty) return null;
-    switch (certState.toLowerCase()) {
-      case 'active':
-        return 'Security certificate is active';
-      case 'provisioning':
-        return 'Security certificate is being issued — can take up to a few hours';
+  static String _friendlyCertHint(String? certState) {
+    if (certState == null || certState.isEmpty) {
+      return 'Certificate: not reported yet';
+    }
+    switch (certState.toUpperCase()) {
+      case 'CERT_ACTIVE':
+      case 'ACTIVE':
+        return 'Security certificate is active (HTTPS ready)';
+      case 'CERT_VALIDATING':
+        return 'CERT_VALIDATING — Firebase is checking DNS before it can finish the SSL certificate. '
+            'This usually means DNS is missing, incomplete, or still propagating.';
+      case 'CERT_PREPARING':
+        return 'CERT_PREPARING — Firebase is preparing to request the SSL certificate.';
+      case 'CERT_PROPAGATING':
+      case 'PROVISIONING':
+        return 'Certificate is being issued/propagated — can take up to a few hours after DNS is correct.';
       default:
         return 'Certificate: ${certState.replaceAll('_', ' ')}';
     }
@@ -552,6 +566,7 @@ class _ProvisionResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final certHint = _friendlyCertHint(result.certState);
+    final detail = result.detail?.trim();
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFFF8FAFC),
@@ -568,10 +583,28 @@ class _ProvisionResultCard extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
-          if (certHint != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            certHint,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppTheme.textSecondary,
+              height: 1.4,
+            ),
+          ),
+          if (result.hostState != null && result.hostState!.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              certHint,
+              'Hosting state: ${result.hostState}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ],
+          if (result.ownershipState != null &&
+              result.ownershipState!.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Ownership: ${result.ownershipState}',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: AppTheme.textSecondary,
               ),
@@ -580,20 +613,41 @@ class _ProvisionResultCard extends StatelessWidget {
           const SizedBox(height: 8),
           SelectableText(
             'Website address: ${result.hostname}\n'
-            'Facility: ${result.facilityId.isEmpty ? '—' : result.facilityId}    '
-            'URL name: ${result.slug.isEmpty ? '—' : result.slug}',
-            style: theme.textTheme.bodySmall,
+            'Facility: ${result.facilityId.isEmpty ? '—' : result.facilityId}\n'
+            'URL name: ${result.slug.isEmpty ? '—' : result.slug}\n'
+            'Public site (works now): https://app.storagefacilitycreator.com/w/${result.slug.isEmpty ? '…' : result.slug}',
+            style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
           ),
+          if (detail != null && detail.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              'What this means',
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              detail,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppTheme.textPrimary,
+                height: 1.45,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Text(
-            'DNS records for the customer\'s domain provider',
+            'DNS records (from Firebase Hosting — add these at GoDaddy)',
             style: theme.textTheme.labelLarge?.copyWith(
               fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            'Copy each row and add it in GoDaddy, Cloudflare, Namecheap, or wherever they manage their domain.',
+            'These are the exact records Firebase returned for this connect. '
+            'In GoDaddy: DNS → Add record. Use Type, Name (Host), and Value (Points to / Data). '
+            'For the bare domain, Name is usually @. Remove conflicting old A/CNAME/forwarding for this host. '
+            'Do not invent records — only use this list.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: AppTheme.textSecondary,
               height: 1.4,
@@ -601,35 +655,73 @@ class _ProvisionResultCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (result.records.isEmpty)
-            const Text(
-              'No DNS records yet. Tap Check progress in a minute or two.',
+            Text(
+              'No DNS rows on this check yet.\n'
+              '1) Tap Check progress again in 1–2 minutes.\n'
+              '2) If still empty, open Firebase Console → Hosting → Custom domains → ${result.hostname} '
+              'and copy the records shown there into GoDaddy.\n'
+              '3) CERT_VALIDATING means Firebase is waiting to see correct DNS before SSL can finish.',
+              style: theme.textTheme.bodySmall?.copyWith(height: 1.45),
             )
           else
             ...result.records.map(
-              (record) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: SelectableText(
-                        '${record.type}    ${record.name}    ${record.value}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontFamily: 'monospace',
+              (record) {
+                final goDaddyName =
+                    _goDaddyHostHint(record.name, result.hostname);
+                final action = record.requiredAction;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderLight),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: SelectableText(
+                            '${action != null && action.isNotEmpty ? 'Action: $action\n' : ''}'
+                            'Type: ${record.type}\n'
+                            'Name / Host: ${record.name}'
+                            '${goDaddyName != null ? '  (GoDaddy often uses: $goDaddyName)' : ''}\n'
+                            'Value / Points to: ${record.value}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontFamily: 'monospace',
+                              height: 1.45,
+                            ),
+                          ),
                         ),
-                      ),
+                        IconButton(
+                          tooltip: 'Copy record',
+                          icon: const Icon(Icons.copy, size: 18),
+                          onPressed: () => onCopyRecord(record),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      tooltip: 'Copy record',
-                      icon: const Icon(Icons.copy, size: 18),
-                      onPressed: () => onCopyRecord(record),
-                    ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             ),
         ],
       ),
     );
+  }
+
+  /// Apex → `@`; subdomain host label (e.g. rent.example.com → rent).
+  static String? _goDaddyHostHint(String recordName, String hostname) {
+    final name = recordName.trim().toLowerCase().replaceAll(RegExp(r'\.$'), '');
+    final host = hostname.trim().toLowerCase();
+    if (name.isEmpty) return null;
+    if (name == '@' || name == host) return '@';
+    if (name.endsWith('.$host')) {
+      final label = name.substring(0, name.length - host.length - 1);
+      if (label.isNotEmpty && !label.contains('.')) return label;
+    }
+    if (!name.contains('.')) return name;
+    return null;
   }
 }

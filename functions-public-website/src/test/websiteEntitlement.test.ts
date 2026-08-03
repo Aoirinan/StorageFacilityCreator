@@ -29,3 +29,25 @@ test('website entitlement requires an active Stripe subscription id', () => {
     false,
   );
 });
+
+test('website entitlement accepts only an unexpired superadmin trial', () => {
+  const nowMs = 1_000_000;
+  assert.equal(
+    hasActiveWebsiteSubscription({
+      websiteAdminTrialEndsAt: { toMillis: () => nowMs + 60_000 },
+    }, nowMs),
+    true,
+  );
+  assert.equal(
+    hasActiveWebsiteSubscription({
+      websiteAdminTrialEndsAt: { toMillis: () => nowMs },
+    }, nowMs),
+    false,
+  );
+  assert.equal(
+    hasActiveWebsiteSubscription({
+      websiteAdminTrialEndsAt: { toMillis: () => nowMs - 1 },
+    }, nowMs),
+    false,
+  );
+});

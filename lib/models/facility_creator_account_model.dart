@@ -9,6 +9,7 @@ enum SubscriptionStatus {
   incomplete,
   incompleteExpired,
   unpaid,
+
   /// Account created but not yet approved by admin. Trial clock has not started.
   pendingApproval,
 }
@@ -20,7 +21,7 @@ class FacilityCreatorAccountModel {
   final String ownerUid; // Firebase Auth UID of the account owner
   final String ownerEmail;
   final String ownerName;
-  
+
   // Subscription fields
   final SubscriptionStatus subscriptionStatus;
   final String? stripeSubscriptionId; // Stripe subscription ID (sub_...)
@@ -34,7 +35,7 @@ class FacilityCreatorAccountModel {
   final String? suspensionReason;
   final DateTime? suspendedAt;
   final String? suspendedByEmail;
-  
+
   // Account metadata
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -43,8 +44,10 @@ class FacilityCreatorAccountModel {
 
   /// Shareable code for the referral program (set by Cloud Function).
   final String? referralCode;
+
   /// Facility creator account id of the referrer, if this account joined via referral.
   final String? referredByAccountId;
+
   /// Facility id whose platform subscription receives referral rewards first (optional).
   final String? referralRewardPreferredFacilityId;
 
@@ -77,14 +80,14 @@ class FacilityCreatorAccountModel {
   /// Create from Firestore document
   factory FacilityCreatorAccountModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>?;
-    
+
     // Parse subscription status
-    SubscriptionStatus status = SubscriptionStatus.active;
+    SubscriptionStatus status = SubscriptionStatus.pendingApproval;
     final statusStr = data?['subscriptionStatus'] as String?;
     if (statusStr != null) {
       status = SubscriptionStatus.values.firstWhere(
         (e) => e.name == statusStr,
-        orElse: () => SubscriptionStatus.active,
+        orElse: () => SubscriptionStatus.pendingApproval,
       );
     }
 
@@ -96,22 +99,33 @@ class FacilityCreatorAccountModel {
       subscriptionStatus: status,
       stripeSubscriptionId: data?['stripeSubscriptionId'],
       stripeCustomerId: data?['stripeCustomerId'],
-      subscriptionCurrentPeriodStart: (data?['subscriptionCurrentPeriodStart'] as Timestamp?)?.toDate(),
-      subscriptionCurrentPeriodEnd: (data?['subscriptionCurrentPeriodEnd'] as Timestamp?)?.toDate(),
-      subscriptionCancelAtPeriodEnd: data?['subscriptionCancelAtPeriodEnd'] ?? false,
-      subscriptionCanceledAt: (data?['subscriptionCanceledAt'] as Timestamp?)?.toDate(),
-      subscriptionTrialEnd: (data?['subscriptionTrialEnd'] as Timestamp?)?.toDate(),
+      subscriptionCurrentPeriodStart:
+          (data?['subscriptionCurrentPeriodStart'] as Timestamp?)?.toDate(),
+      subscriptionCurrentPeriodEnd:
+          (data?['subscriptionCurrentPeriodEnd'] as Timestamp?)?.toDate(),
+      subscriptionCancelAtPeriodEnd:
+          data?['subscriptionCancelAtPeriodEnd'] ?? false,
+      subscriptionCanceledAt:
+          (data?['subscriptionCanceledAt'] as Timestamp?)?.toDate(),
+      subscriptionTrialEnd:
+          (data?['subscriptionTrialEnd'] as Timestamp?)?.toDate(),
       suspended: data?['suspended'] == true,
       suspensionReason: data?['suspensionReason'] as String?,
       suspendedAt: (data?['suspendedAt'] as Timestamp?)?.toDate(),
       suspendedByEmail: data?['suspendedByEmail'] as String?,
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-      facilityIds: (data?['facilityIds'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
-      metadata: data?['metadata'] != null ? Map<String, dynamic>.from(data!['metadata']) : null,
+      facilityIds: (data?['facilityIds'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          [],
+      metadata: data?['metadata'] != null
+          ? Map<String, dynamic>.from(data!['metadata'])
+          : null,
       referralCode: data?['referralCode'] as String?,
       referredByAccountId: data?['referredByAccountId'] as String?,
-      referralRewardPreferredFacilityId: data?['referralRewardPreferredFacilityId'] as String?,
+      referralRewardPreferredFacilityId:
+          data?['referralRewardPreferredFacilityId'] as String?,
     );
   }
 
@@ -139,14 +153,16 @@ class FacilityCreatorAccountModel {
           : null,
       'suspended': suspended,
       'suspensionReason': suspensionReason,
-      'suspendedAt': suspendedAt != null ? Timestamp.fromDate(suspendedAt!) : null,
+      'suspendedAt':
+          suspendedAt != null ? Timestamp.fromDate(suspendedAt!) : null,
       'suspendedByEmail': suspendedByEmail,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
       'facilityIds': facilityIds,
       'metadata': metadata,
       if (referralCode != null) 'referralCode': referralCode,
-      if (referredByAccountId != null) 'referredByAccountId': referredByAccountId,
+      if (referredByAccountId != null)
+        'referredByAccountId': referredByAccountId,
       if (referralRewardPreferredFacilityId != null)
         'referralRewardPreferredFacilityId': referralRewardPreferredFacilityId,
     };
@@ -186,10 +202,14 @@ class FacilityCreatorAccountModel {
       subscriptionStatus: subscriptionStatus ?? this.subscriptionStatus,
       stripeSubscriptionId: stripeSubscriptionId ?? this.stripeSubscriptionId,
       stripeCustomerId: stripeCustomerId ?? this.stripeCustomerId,
-      subscriptionCurrentPeriodStart: subscriptionCurrentPeriodStart ?? this.subscriptionCurrentPeriodStart,
-      subscriptionCurrentPeriodEnd: subscriptionCurrentPeriodEnd ?? this.subscriptionCurrentPeriodEnd,
-      subscriptionCancelAtPeriodEnd: subscriptionCancelAtPeriodEnd ?? this.subscriptionCancelAtPeriodEnd,
-      subscriptionCanceledAt: subscriptionCanceledAt ?? this.subscriptionCanceledAt,
+      subscriptionCurrentPeriodStart:
+          subscriptionCurrentPeriodStart ?? this.subscriptionCurrentPeriodStart,
+      subscriptionCurrentPeriodEnd:
+          subscriptionCurrentPeriodEnd ?? this.subscriptionCurrentPeriodEnd,
+      subscriptionCancelAtPeriodEnd:
+          subscriptionCancelAtPeriodEnd ?? this.subscriptionCancelAtPeriodEnd,
+      subscriptionCanceledAt:
+          subscriptionCanceledAt ?? this.subscriptionCanceledAt,
       subscriptionTrialEnd: subscriptionTrialEnd ?? this.subscriptionTrialEnd,
       suspended: suspended ?? this.suspended,
       suspensionReason: suspensionReason ?? this.suspensionReason,
@@ -201,21 +221,25 @@ class FacilityCreatorAccountModel {
       metadata: metadata ?? this.metadata,
       referralCode: referralCode ?? this.referralCode,
       referredByAccountId: referredByAccountId ?? this.referredByAccountId,
-      referralRewardPreferredFacilityId:
-          referralRewardPreferredFacilityId ?? this.referralRewardPreferredFacilityId,
+      referralRewardPreferredFacilityId: referralRewardPreferredFacilityId ??
+          this.referralRewardPreferredFacilityId,
     );
   }
 
   // Helper getters
-  bool get hasActiveSubscription => subscriptionStatus == SubscriptionStatus.active;
+  bool get hasActiveSubscription =>
+      subscriptionStatus == SubscriptionStatus.active;
   bool get hasTrial => subscriptionStatus == SubscriptionStatus.trialing;
-  bool get isSubscriptionActive => 
-      subscriptionStatus == SubscriptionStatus.active || 
+  bool get isSubscriptionActive =>
+      subscriptionStatus == SubscriptionStatus.active ||
       subscriptionStatus == SubscriptionStatus.trialing;
-  bool get isSubscriptionPastDue => subscriptionStatus == SubscriptionStatus.pastDue;
-  bool get isSubscriptionCancelled => subscriptionStatus == SubscriptionStatus.cancelled;
-  bool get isPendingApproval => subscriptionStatus == SubscriptionStatus.pendingApproval;
-  
+  bool get isSubscriptionPastDue =>
+      subscriptionStatus == SubscriptionStatus.pastDue;
+  bool get isSubscriptionCancelled =>
+      subscriptionStatus == SubscriptionStatus.cancelled;
+  bool get isPendingApproval =>
+      subscriptionStatus == SubscriptionStatus.pendingApproval;
+
   /// Check if subscription is valid for accessing the platform
   /// Note: Superadmins bypass this check (handled in UI layer)
   bool get canAccessPlatform {
@@ -227,12 +251,13 @@ class FacilityCreatorAccountModel {
     if (hasTrial && isTrialExpired) {
       return false;
     }
-    
+
     if (isSubscriptionActive) return true;
     if (isSubscriptionPastDue) {
       // Allow access for 7 days after past due (grace period)
       if (subscriptionCurrentPeriodEnd != null) {
-        final daysPastDue = DateTime.now().difference(subscriptionCurrentPeriodEnd!).inDays;
+        final daysPastDue =
+            DateTime.now().difference(subscriptionCurrentPeriodEnd!).inDays;
         return daysPastDue <= 7;
       }
     }
@@ -259,7 +284,8 @@ class FacilityCreatorAccountModel {
   /// Get days until subscription expires
   int? get daysUntilExpiration {
     if (subscriptionCurrentPeriodEnd == null) return null;
-    final days = subscriptionCurrentPeriodEnd!.difference(DateTime.now()).inDays;
+    final days =
+        subscriptionCurrentPeriodEnd!.difference(DateTime.now()).inDays;
     return days > 0 ? days : 0;
   }
 
@@ -292,8 +318,11 @@ class FacilityCreatorAccountModel {
 
   /// Get days remaining in grace period (for past_due subscriptions)
   int? get daysRemainingInGracePeriod {
-    if (!isSubscriptionPastDue || subscriptionCurrentPeriodEnd == null) return null;
-    final daysPastDue = DateTime.now().difference(subscriptionCurrentPeriodEnd!).inDays;
+    if (!isSubscriptionPastDue || subscriptionCurrentPeriodEnd == null) {
+      return null;
+    }
+    final daysPastDue =
+        DateTime.now().difference(subscriptionCurrentPeriodEnd!).inDays;
     final daysRemaining = 7 - daysPastDue;
     return daysRemaining > 0 ? daysRemaining : 0;
   }
@@ -322,4 +351,3 @@ extension SubscriptionStatusExtension on SubscriptionStatus {
     }
   }
 }
-

@@ -2,19 +2,11 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function signedIn() { return request.auth != null; }
-    function authEmail() {
-      return request.auth != null && request.auth.token.email != null
-        ? request.auth.token.email
-        : null;
-    }
     function isSuperAdmin() {
-      let email = authEmail();
-      return email != null && (
-        email == 'russell_forsyth_1992@outlook.com' ||
-        email == 'russell_Forsyth_1992@outlook.com' ||
-        email == 'russellforsyth09091992@gmail.com' ||
-        email == 'kennethgriggs03@gmail.com'
-      );
+      // Superadmin access is granted via a server-set custom claim only, so an
+      // unverified password account matching an allowlisted email cannot
+      // impersonate an admin. Set with the `superadmin` custom claim.
+      return request.auth != null && request.auth.token.superadmin == true;
     }
     function facilityDoc(facilityId) {
       return firestore.get(/databases/(default)/documents/facilities/$(facilityId)).data;

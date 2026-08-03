@@ -1,5 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'stripe_connect_status_model.dart';
+import 'package:sfcapp/models/stripe_connect_status_model.dart';
 
 class FacilityModel {
   final String id;
@@ -56,6 +56,7 @@ class FacilityModel {
   final String?
       platformSubscriptionStatus; // active | trialing | past_due | cancelled | unpaid
   final DateTime? platformSubscriptionCurrentPeriodEnd;
+  final DateTime? platformSubscriptionTrialEnd;
   final bool platformSubscriptionCancelAtPeriodEnd;
 
   // Optional public website add-on ($25/mo), controlled by Stripe webhooks.
@@ -63,6 +64,14 @@ class FacilityModel {
   final String? websiteSubscriptionStatus;
   final DateTime? websiteSubscriptionCurrentPeriodEnd;
   final bool websiteSubscriptionCancelAtPeriodEnd;
+  final DateTime? websiteAdminTrialEndsAt;
+  final DateTime? websiteAdminTrialGrantedAt;
+  final String? websiteAdminTrialGrantedByUid;
+  final String? websiteAdminTrialGrantedByEmail;
+  final String? websiteAdminTrialReason;
+  final DateTime? websiteAdminTrialRevokedAt;
+  final String? websiteAdminTrialRevokedByUid;
+  final String? websiteAdminTrialRevokedByEmail;
 
   // Localization
   final String?
@@ -114,11 +123,20 @@ class FacilityModel {
     this.stripePlatformSubscriptionId,
     this.platformSubscriptionStatus,
     this.platformSubscriptionCurrentPeriodEnd,
+    this.platformSubscriptionTrialEnd,
     this.platformSubscriptionCancelAtPeriodEnd = false,
     this.stripeWebsiteSubscriptionId,
     this.websiteSubscriptionStatus,
     this.websiteSubscriptionCurrentPeriodEnd,
     this.websiteSubscriptionCancelAtPeriodEnd = false,
+    this.websiteAdminTrialEndsAt,
+    this.websiteAdminTrialGrantedAt,
+    this.websiteAdminTrialGrantedByUid,
+    this.websiteAdminTrialGrantedByEmail,
+    this.websiteAdminTrialReason,
+    this.websiteAdminTrialRevokedAt,
+    this.websiteAdminTrialRevokedByUid,
+    this.websiteAdminTrialRevokedByEmail,
     this.defaultLocale,
     this.smsSettings,
     this.textingOnboardingEnabled = false,
@@ -186,6 +204,8 @@ class FacilityModel {
       platformSubscriptionCurrentPeriodEnd:
           (data?['platformSubscriptionCurrentPeriodEnd'] as Timestamp?)
               ?.toDate(),
+      platformSubscriptionTrialEnd:
+          (data?['platformSubscriptionTrialEnd'] as Timestamp?)?.toDate(),
       platformSubscriptionCancelAtPeriodEnd:
           data?['platformSubscriptionCancelAtPeriodEnd'] ?? false,
       stripeWebsiteSubscriptionId:
@@ -196,6 +216,21 @@ class FacilityModel {
               ?.toDate(),
       websiteSubscriptionCancelAtPeriodEnd:
           data?['websiteSubscriptionCancelAtPeriodEnd'] == true,
+      websiteAdminTrialEndsAt:
+          (data?['websiteAdminTrialEndsAt'] as Timestamp?)?.toDate(),
+      websiteAdminTrialGrantedAt:
+          (data?['websiteAdminTrialGrantedAt'] as Timestamp?)?.toDate(),
+      websiteAdminTrialGrantedByUid:
+          data?['websiteAdminTrialGrantedByUid'] as String?,
+      websiteAdminTrialGrantedByEmail:
+          data?['websiteAdminTrialGrantedByEmail'] as String?,
+      websiteAdminTrialReason: data?['websiteAdminTrialReason'] as String?,
+      websiteAdminTrialRevokedAt:
+          (data?['websiteAdminTrialRevokedAt'] as Timestamp?)?.toDate(),
+      websiteAdminTrialRevokedByUid:
+          data?['websiteAdminTrialRevokedByUid'] as String?,
+      websiteAdminTrialRevokedByEmail:
+          data?['websiteAdminTrialRevokedByEmail'] as String?,
       defaultLocale: data?['defaultLocale'] as String?,
       smsSettings: data?['smsSettings'] != null
           ? Map<String, dynamic>.from(data!['smsSettings'])
@@ -217,11 +252,17 @@ class FacilityModel {
     );
   }
 
-  bool get hasActiveWebsiteSubscription {
+  bool get hasActiveStripeWebsiteSubscription {
     final status = websiteSubscriptionStatus?.toLowerCase();
     return stripeWebsiteSubscriptionId != null &&
         (status == 'active' || status == 'trialing');
   }
+
+  bool get hasActiveWebsiteAdminTrial =>
+      websiteAdminTrialEndsAt?.isAfter(DateTime.now()) == true;
+
+  bool get hasActiveWebsiteSubscription =>
+      hasActiveStripeWebsiteSubscription || hasActiveWebsiteAdminTrial;
 
   // Convert FacilityModel to Map for Firestore
   Map<String, dynamic> toFirestore() {
@@ -318,7 +359,20 @@ class FacilityModel {
     String? stripePlatformSubscriptionId,
     String? platformSubscriptionStatus,
     DateTime? platformSubscriptionCurrentPeriodEnd,
+    DateTime? platformSubscriptionTrialEnd,
     bool? platformSubscriptionCancelAtPeriodEnd,
+    String? stripeWebsiteSubscriptionId,
+    String? websiteSubscriptionStatus,
+    DateTime? websiteSubscriptionCurrentPeriodEnd,
+    bool? websiteSubscriptionCancelAtPeriodEnd,
+    DateTime? websiteAdminTrialEndsAt,
+    DateTime? websiteAdminTrialGrantedAt,
+    String? websiteAdminTrialGrantedByUid,
+    String? websiteAdminTrialGrantedByEmail,
+    String? websiteAdminTrialReason,
+    DateTime? websiteAdminTrialRevokedAt,
+    String? websiteAdminTrialRevokedByUid,
+    String? websiteAdminTrialRevokedByEmail,
     String? defaultLocale,
     Map<String, dynamic>? smsSettings,
     bool? textingOnboardingEnabled,
@@ -373,9 +427,37 @@ class FacilityModel {
       platformSubscriptionCurrentPeriodEnd:
           platformSubscriptionCurrentPeriodEnd ??
               this.platformSubscriptionCurrentPeriodEnd,
+      platformSubscriptionTrialEnd:
+          platformSubscriptionTrialEnd ?? this.platformSubscriptionTrialEnd,
       platformSubscriptionCancelAtPeriodEnd:
           platformSubscriptionCancelAtPeriodEnd ??
               this.platformSubscriptionCancelAtPeriodEnd,
+      stripeWebsiteSubscriptionId:
+          stripeWebsiteSubscriptionId ?? this.stripeWebsiteSubscriptionId,
+      websiteSubscriptionStatus:
+          websiteSubscriptionStatus ?? this.websiteSubscriptionStatus,
+      websiteSubscriptionCurrentPeriodEnd:
+          websiteSubscriptionCurrentPeriodEnd ??
+              this.websiteSubscriptionCurrentPeriodEnd,
+      websiteSubscriptionCancelAtPeriodEnd:
+          websiteSubscriptionCancelAtPeriodEnd ??
+              this.websiteSubscriptionCancelAtPeriodEnd,
+      websiteAdminTrialEndsAt:
+          websiteAdminTrialEndsAt ?? this.websiteAdminTrialEndsAt,
+      websiteAdminTrialGrantedAt:
+          websiteAdminTrialGrantedAt ?? this.websiteAdminTrialGrantedAt,
+      websiteAdminTrialGrantedByUid:
+          websiteAdminTrialGrantedByUid ?? this.websiteAdminTrialGrantedByUid,
+      websiteAdminTrialGrantedByEmail: websiteAdminTrialGrantedByEmail ??
+          this.websiteAdminTrialGrantedByEmail,
+      websiteAdminTrialReason:
+          websiteAdminTrialReason ?? this.websiteAdminTrialReason,
+      websiteAdminTrialRevokedAt:
+          websiteAdminTrialRevokedAt ?? this.websiteAdminTrialRevokedAt,
+      websiteAdminTrialRevokedByUid:
+          websiteAdminTrialRevokedByUid ?? this.websiteAdminTrialRevokedByUid,
+      websiteAdminTrialRevokedByEmail: websiteAdminTrialRevokedByEmail ??
+          this.websiteAdminTrialRevokedByEmail,
       defaultLocale: defaultLocale ?? this.defaultLocale,
       smsSettings: smsSettings ?? this.smsSettings,
       textingOnboardingEnabled:
@@ -405,7 +487,8 @@ class FacilityModel {
   /// True if this facility has an active platform subscription (per-facility model)
   bool get hasActivePlatformSubscription =>
       platformSubscriptionStatus == 'active' ||
-      platformSubscriptionStatus == 'trialing';
+      (platformSubscriptionStatus == 'trialing' &&
+          platformSubscriptionTrialEnd?.isAfter(DateTime.now()) == true);
 
   /// True when Stripe Connect is ready to accept tenant card payments.
   bool get canAcceptTenantPayments =>

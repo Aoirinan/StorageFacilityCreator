@@ -83,6 +83,13 @@ test('rateLimits collection denies all client access', async () => {
   );
 });
 
+test('cancellationEvents denies client write and non-superadmin read', async () => {
+  const authed = testEnv.authenticatedContext(OWNER_UID);
+  const ref = authed.firestore().collection('cancellationEvents').doc('evt1');
+  await assertFails(ref.get());
+  await assertFails(ref.set({ outcome: 'cancelled' }));
+});
+
 test('user-scoped rateLimits denies client read and write', async () => {
   const authed = testEnv.authenticatedContext(OWNER_UID);
   const ref = authed.firestore().collection('users').doc(OWNER_UID).collection('rateLimits').doc('otp');
@@ -242,7 +249,59 @@ test('facility owners cannot write platform or website subscription entitlements
   await assertFails(facilityRef.update({ websiteSubscriptionStatus: 'active' }));
   await assertFails(facilityRef.update({ stripeWebsiteSubscriptionId: 'sub_forged' }));
   await assertFails(facilityRef.update({ websiteCheckoutSessionId: 'cs_forged' }));
+  await assertFails(
+    facilityRef.update({ websiteAdminTrialEndsAt: serverTimestamp() }),
+  );
+  await assertFails(
+    facilityRef.update({ websiteAdminTrialGrantedByEmail: 'owner@example.com' }),
+  );
   await assertSucceeds(facilityRef.update({ facilityCreatorAccountId: 'account-1' }));
+});
+
+test('superadmin custom claim can write website entitlements; others cannot', async () => {
+  await seedFacility();
+  // Superadmin access is granted by a server-set custom claim, not by email, so
+  // an unverified account matching an allowlisted email cannot impersonate.
+  const admin = testEnv.authenticatedContext('admin-user', {
+    superadmin: true,
+  });
+  const nonAdmin = testEnv.authenticatedContext('non-admin', {
+    email: 'russell_forsyth_1992@outlook.com',
+    email_verified: false,
+  });
+
+  await assertSucceeds(
+    admin
+        .firestore()
+        .collection('facilities')
+        .doc(FACILITY_ID)
+        .update({ websiteAdminTrialReason: 'admin grant' }),
+  );
+  await assertFails(
+    nonAdmin
+        .firestore()
+        .collection('facilities')
+        .doc(FACILITY_ID)
+        .update({ websiteAdminTrialReason: 'forged' }),
+  );
+});
+
+test('superadmin can run the website settings collection group query', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db
+        .collection('facilities')
+        .doc(FACILITY_ID)
+        .collection('settings')
+        .doc('public')
+        .set({ enabled: true, customDomain: 'example.com' });
+  });
+
+  const admin = testEnv.authenticatedContext('admin-user', { superadmin: true });
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+
+  await assertSucceeds(admin.firestore().collectionGroup('settings').get());
+  await assertFails(owner.firestore().collectionGroup('settings').get());
 });
 
 test('role assigners cannot retarget an existing role to another facility or user', async () => {

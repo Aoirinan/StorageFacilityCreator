@@ -10,6 +10,31 @@ import { STRIPE_SECRETS } from './secrets';
 const WEBSITE_SUBSCRIPTION_TYPE = 'website_addon';
 const WEBSITE_PRICE_LOOKUP_KEY = 'sfc_website_monthly_25';
 
+function timestampMillis(value: unknown): number | null {
+  if (value instanceof admin.firestore.Timestamp) return value.toMillis();
+  return null;
+}
+
+export function hasActiveBasePlatformSubscription(
+  account: Record<string, unknown>,
+  facility: Record<string, unknown>,
+  nowMs = Date.now(),
+): boolean {
+  if (account.suspended === true) return false;
+  const accountStatus = String(account.subscriptionStatus || '').toLowerCase();
+  const facilityStatus = String(facility.platformSubscriptionStatus || '').toLowerCase();
+  const accountTrialEndMs = timestampMillis(account.subscriptionTrialEnd);
+  const facilityTrialEndMs = timestampMillis(facility.platformSubscriptionTrialEnd);
+  return accountStatus === 'active' ||
+    (accountStatus === 'trialing' &&
+      accountTrialEndMs !== null &&
+      accountTrialEndMs > nowMs) ||
+    facilityStatus === 'active' ||
+    (facilityStatus === 'trialing' &&
+      facilityTrialEndMs !== null &&
+      facilityTrialEndMs > nowMs);
+}
+
 async function getOrCreateWebsitePriceId(stripe: Stripe): Promise<string> {
   const configuredPriceId = (process.env.STRIPE_WEBSITE_PRICE_ID || '').trim();
   if (configuredPriceId) return configuredPriceId;
@@ -92,11 +117,10 @@ export const createWebsiteSubscriptionCheckout = functions
       );
     }
 
-    const platformStatus = String(facility.platformSubscriptionStatus || '');
-    if (platformStatus !== 'active' && platformStatus !== 'trialing') {
+    if (!hasActiveBasePlatformSubscription(account, facility)) {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'An active facility subscription is required before adding a website',
+        'An active $75 platform subscription is required before adding a website',
       );
     }
 
@@ -140,7 +164,8 @@ export const createWebsiteSubscriptionCheckout = functions
         mode: 'subscription',
         line_items: [{ price: priceId, quantity: 1 }],
         success_url:
-          data.successUrl || 'https://app.storagefacilitycreator.com/#/settings',
+          data.successUrl ||
+          `https://app.storagefacilitycreator.com/#/website-setup?facilityId=${encodeURIComponent(facilityId)}`,
         cancel_url:
           data.cancelUrl || 'https://app.storagefacilitycreator.com/#/settings',
         metadata,

@@ -202,6 +202,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         accountId: accountId,
         facilityId: facility.id,
         customerEmail: email,
+        successUrl:
+            'https://app.storagefacilitycreator.com/#/website-setup?facilityId=${facility.id}',
+        cancelUrl: 'https://app.storagefacilitycreator.com/#/settings',
       );
       if (result.subscriptionUpdated) {
         ref.invalidate(userFacilitiesProvider(user!.uid));

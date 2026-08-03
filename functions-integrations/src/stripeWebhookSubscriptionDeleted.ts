@@ -1,7 +1,10 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { isWebsiteAddonSubscription } from './stripeWebhookSubscriptionInternal';
+import {
+  hasActiveWebsiteAdminTrial,
+  isWebsiteAddonSubscription,
+} from './stripeWebhookSubscriptionInternal';
 
 export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
@@ -11,24 +14,33 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
   if (facilityId && isWebsiteAddonSubscription(subscription)) {
     const db = admin.firestore();
     const facilityRef = db.collection('facilities').doc(facilityId);
-    const batch = db.batch();
-    batch.update(facilityRef, {
-      websiteSubscriptionStatus: 'cancelled',
-      stripeWebsiteSubscriptionId: admin.firestore.FieldValue.delete(),
-      websiteSubscriptionCurrentPeriodEnd: admin.firestore.FieldValue.delete(),
-      websiteSubscriptionCancelAtPeriodEnd: false,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    batch.set(
-      facilityRef.collection('settings').doc('public'),
-      {
-        enabled: false,
+    await db.runTransaction(async (transaction) => {
+      const facilitySnap = await transaction.get(facilityRef);
+      if (!facilitySnap.exists) {
+        throw new Error(`Facility ${facilityId} not found`);
+      }
+      const adminTrialActive = hasActiveWebsiteAdminTrial(
+        (facilitySnap.data() || {}) as Record<string, unknown>,
+      );
+      transaction.update(facilityRef, {
+        websiteSubscriptionStatus: 'cancelled',
+        stripeWebsiteSubscriptionId: admin.firestore.FieldValue.delete(),
+        websiteSubscriptionCurrentPeriodEnd: admin.firestore.FieldValue.delete(),
+        websiteSubscriptionCancelAtPeriodEnd: false,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedBy: 'stripeWebhook',
-      },
-      { merge: true },
-    );
-    await batch.commit();
+      });
+      if (!adminTrialActive) {
+        transaction.set(
+          facilityRef.collection('settings').doc('public'),
+          {
+            enabled: false,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedBy: 'stripeWebhook',
+          },
+          { merge: true },
+        );
+      }
+    });
     functions.logger.info(`Facility ${facilityId} website subscription cancelled`);
     return;
   }

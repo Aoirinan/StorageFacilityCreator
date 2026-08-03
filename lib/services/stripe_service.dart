@@ -156,6 +156,23 @@ class StripeService {
     );
   }
 
+  /// Cancel the $25 website add-on at period end.
+  static Future<void> cancelWebsiteSubscription({
+    required String facilityId,
+  }) async {
+    try {
+      final callable = _functions.httpsCallable('cancelWebsiteSubscription');
+      await callable.call(<String, dynamic>{'facilityId': facilityId}).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () =>
+            throw Exception('Request timed out. Please try again.'),
+      );
+    } catch (e) {
+      if (kDebugMode) print('❌ Website cancel error: $e');
+      rethrow;
+    }
+  }
+
   /// Cancel one facility's platform subscription at period end.
   static Future<void> cancelFacilitySubscription(
       {required String facilityId}) async {

@@ -27,6 +27,48 @@ class SuperAdminFacilityRow {
   });
 }
 
+class WebsiteAdminRow {
+  final FacilityModel facility;
+  final String ownerEmail;
+  final FacilityCreatorAccountModel? account;
+  final bool publicWebsiteConfigured;
+  final bool publicWebsiteEnabled;
+  final String? customDomain;
+
+  const WebsiteAdminRow({
+    required this.facility,
+    required this.ownerEmail,
+    this.account,
+    required this.publicWebsiteConfigured,
+    required this.publicWebsiteEnabled,
+    this.customDomain,
+  });
+
+  String? get accountSubscriptionStatus => account?.subscriptionStatus.name;
+
+  bool get hasActiveBaseSubscription {
+    if (account?.suspended == true) return false;
+    final accountActive =
+        account?.subscriptionStatus == SubscriptionStatus.active;
+    final accountTrialing =
+        account?.subscriptionStatus == SubscriptionStatus.trialing &&
+            account?.subscriptionTrialEnd?.isAfter(DateTime.now()) == true;
+    return facility.hasActivePlatformSubscription ||
+        accountActive ||
+        accountTrialing;
+  }
+}
+
+class PublicWebsiteAdminSettings {
+  final bool enabled;
+  final String? customDomain;
+
+  const PublicWebsiteAdminSettings({
+    required this.enabled,
+    this.customDomain,
+  });
+}
+
 class PlatformMetrics {
   final int totalFacilities;
   final int activeFacilities;
@@ -76,11 +118,14 @@ class PlatformSaasRevenueSnapshot {
   final double estimatedMonthlyRevenue;
   final double legacyAccountMrr;
   final double perFacilityMrr;
+
   /// Facilities with `platformSubscriptionStatus == active`.
   final int perFacilityPayingCount;
+
   /// Facilities billed through an active account-level Stripe subscription
   /// (excluding those that also have an active per-facility sub).
   final int legacyCoveredFacilityCount;
+
   /// Accounts contributing [legacyAccountMrr] (active + `stripeSubscriptionId`).
   final int legacyPayingAccountCount;
 
@@ -188,8 +233,7 @@ final platformTenantRevenueAggregateProvider =
     if (stats != null) {
       scheduled +=
           (stats['scheduledMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
-      autopay +=
-          (stats['autopayMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
+      autopay += (stats['autopayMonthlyRevenue'] as num?)?.toDouble() ?? 0.0;
     }
   }
   return PlatformTenantRevenueSnapshot(
@@ -562,11 +606,13 @@ class HostingDnsRecord {
   final String type;
   final String name;
   final String value;
+  final String? requiredAction;
 
   const HostingDnsRecord({
     required this.type,
     required this.name,
     required this.value,
+    this.requiredAction,
   });
 
   factory HostingDnsRecord.fromMap(Map<String, dynamic> map) {
@@ -574,6 +620,7 @@ class HostingDnsRecord {
       type: (map['type'] ?? '').toString(),
       name: (map['name'] ?? '').toString(),
       value: (map['value'] ?? '').toString(),
+      requiredAction: (map['requiredAction'] as String?)?.trim(),
     );
   }
 }
@@ -583,7 +630,10 @@ class HostingCustomDomainProvisionResult {
   final String facilityId;
   final String slug;
   final String status;
+  final String? detail;
   final String? certState;
+  final String? hostState;
+  final String? ownershipState;
   final DateTime? retrievedAt;
   final List<HostingDnsRecord> records;
 
@@ -592,7 +642,10 @@ class HostingCustomDomainProvisionResult {
     required this.facilityId,
     required this.slug,
     required this.status,
+    this.detail,
     this.certState,
+    this.hostState,
+    this.ownershipState,
     this.retrievedAt,
     required this.records,
   });
@@ -604,7 +657,10 @@ class HostingCustomDomainProvisionResult {
       facilityId: (map['facilityId'] ?? '').toString(),
       slug: (map['slug'] ?? '').toString(),
       status: (map['status'] ?? 'unknown').toString(),
+      detail: (map['detail'] as String?)?.trim(),
       certState: (map['certState'] as String?)?.trim(),
+      hostState: (map['hostState'] as String?)?.trim(),
+      ownershipState: (map['ownershipState'] as String?)?.trim(),
       retrievedAt: DateTime.tryParse((map['retrievedAt'] ?? '').toString()),
       records: rawRecords
           .whereType<Map>()
@@ -753,6 +809,75 @@ final superAdminFacilityRowsProvider =
         },
       );
     },
+  );
+});
+
+final publicWebsiteAdminSettingsProvider =
+    StreamProvider<Map<String, PublicWebsiteAdminSettings>>((ref) {
+  return FirebaseFirestore.instance.collectionGroup('settings').snapshots().map(
+    (snapshot) {
+      final byFacilityId = <String, PublicWebsiteAdminSettings>{};
+      for (final doc in snapshot.docs) {
+        if (doc.id != 'public') continue;
+        final facilityId = doc.reference.parent.parent?.id;
+        if (facilityId == null) continue;
+        final data = doc.data();
+        byFacilityId[facilityId] = PublicWebsiteAdminSettings(
+          enabled: data['enabled'] == true,
+          customDomain: (data['customDomain'] as String?)?.trim(),
+        );
+      }
+      return byFacilityId;
+    },
+  );
+});
+
+final websiteAdminRowsProvider =
+    Provider<AsyncValue<List<WebsiteAdminRow>>>((ref) {
+  final facilitiesAsync = ref.watch(allFacilitiesProvider);
+  final accountsAsync = ref.watch(allAccountsProvider);
+  final usersAsync = ref.watch(allUsersProvider);
+  final settingsAsync = ref.watch(publicWebsiteAdminSettingsProvider);
+
+  return facilitiesAsync.when(
+    loading: () => const AsyncValue.loading(),
+    error: (error, stack) => AsyncValue.error(error, stack),
+    data: (facilities) => accountsAsync.when(
+      loading: () => const AsyncValue.loading(),
+      error: (error, stack) => AsyncValue.error(error, stack),
+      data: (accounts) => usersAsync.when(
+        loading: () => const AsyncValue.loading(),
+        error: (error, stack) => AsyncValue.error(error, stack),
+        data: (users) => settingsAsync.when(
+          loading: () => const AsyncValue.loading(),
+          error: (error, stack) => AsyncValue.error(error, stack),
+          data: (settingsByFacilityId) {
+            final userByUid = {for (final user in users) user.uid: user};
+            final accountById = {
+              for (final account in accounts) account.accountId: account
+            };
+            final accountByOwner = {
+              for (final account in accounts) account.ownerUid: account
+            };
+            return AsyncValue.data(facilities.map((facility) {
+              final account = accountById[facility.facilityCreatorAccountId] ??
+                  accountByOwner[facility.ownerUid];
+              final settings = settingsByFacilityId[facility.id];
+              return WebsiteAdminRow(
+                facility: facility,
+                ownerEmail: userByUid[facility.ownerUid]?.email ??
+                    facility.email ??
+                    'Unknown',
+                account: account,
+                publicWebsiteConfigured: settings != null,
+                publicWebsiteEnabled: settings?.enabled == true,
+                customDomain: settings?.customDomain,
+              );
+            }).toList());
+          },
+        ),
+      ),
+    ),
   );
 });
 
@@ -907,10 +1032,28 @@ class SuperAdminDataService {
     );
   }
 
+  static Future<Map<String, dynamic>> manageWebsiteSubscription({
+    required String facilityId,
+    required String action,
+    int? days,
+    String? reason,
+  }) async {
+    final callable =
+        _functions.httpsCallable('superAdminManageWebsiteSubscription');
+    final result = await callable.call<Map<String, dynamic>>({
+      'facilityId': facilityId.trim(),
+      'action': action,
+      if (days != null) 'days': days,
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
+    return Map<String, dynamic>.from(result.data);
+  }
+
   /// How many facility documents and unique owner emails a broadcast would hit.
   static Future<SuperAdminFacilityOwnerBroadcastPreview>
       previewFacilityOwnerBroadcast({
     bool includeInactiveFacilities = false,
+
     /// `allOwners` = any owner of an (active) facility; `activePayingSubscribers` = Stripe active only ($75/mo).
     String recipientScope = 'activePayingSubscribers',
   }) async {
@@ -931,7 +1074,8 @@ class SuperAdminDataService {
   }
 
   /// Send one platform email per unique facility owner inbox. Requires [acknowledgment] `BROADCAST`.
-  static Future<SuperAdminFacilityOwnerBroadcastResult> sendFacilityOwnerBroadcast({
+  static Future<SuperAdminFacilityOwnerBroadcastResult>
+      sendFacilityOwnerBroadcast({
     required String subject,
     String? html,
     String? text,
@@ -1313,8 +1457,7 @@ class SuperAdminDataService {
   static Future<void> deleteMarketingLead(String leadId) async {
     final leadRef = _db.collection('marketing_leads').doc(leadId);
     while (true) {
-      final snapshot =
-          await leadRef.collection('activities').limit(200).get();
+      final snapshot = await leadRef.collection('activities').limit(200).get();
       if (snapshot.docs.isEmpty) break;
       final batch = _db.batch();
       for (final doc in snapshot.docs) {

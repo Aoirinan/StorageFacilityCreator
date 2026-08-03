@@ -1264,11 +1264,29 @@ function toHtml(payload: {
 </html>`;
 }
 
-export function hasActiveWebsiteSubscription(data: Record<string, unknown>): boolean {
+function timestampMillis(value: unknown): number | null {
+  if (!value || typeof value !== 'object') return null;
+  const timestamp = value as {
+    toMillis?: () => number;
+    seconds?: number;
+    _seconds?: number;
+  };
+  if (typeof timestamp.toMillis === 'function') return timestamp.toMillis();
+  const seconds = timestamp.seconds ?? timestamp._seconds;
+  return typeof seconds === 'number' ? seconds * 1000 : null;
+}
+
+export function hasActiveWebsiteSubscription(
+  data: Record<string, unknown>,
+  nowMs = Date.now(),
+): boolean {
   const status = String(data.websiteSubscriptionStatus || '').toLowerCase();
   const subscriptionId = String(data.stripeWebsiteSubscriptionId || '').trim();
-  return subscriptionId.startsWith('sub_') &&
+  const stripeEntitled = subscriptionId.startsWith('sub_') &&
     (status === 'active' || status === 'trialing');
+  const adminTrialEndsAtMs = timestampMillis(data.websiteAdminTrialEndsAt);
+  return stripeEntitled ||
+    (adminTrialEndsAtMs !== null && adminTrialEndsAtMs > nowMs);
 }
 
 async function facilityWebsiteIsEntitled(facilityId: string): Promise<boolean> {

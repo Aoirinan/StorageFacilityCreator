@@ -44,39 +44,55 @@ export function isWebsiteAddonSubscription(subscription: Stripe.Subscription): b
   return subscription.metadata?.subscriptionType === 'website_addon';
 }
 
+export function hasActiveWebsiteAdminTrial(
+  data: Record<string, unknown>,
+  nowMs = Date.now(),
+): boolean {
+  const value = data.websiteAdminTrialEndsAt;
+  return value instanceof admin.firestore.Timestamp && value.toMillis() > nowMs;
+}
+
 export async function updateFacilityFromWebsiteSubscription(
   facilityId: string,
   subscription: Stripe.Subscription,
 ): Promise<void> {
   const status = mapSubscriptionStatus(subscription.status);
-  const isEntitled = status === 'active' || status === 'trialing';
   const db = admin.firestore();
   const facilityRef = db.collection('facilities').doc(facilityId);
+  const stripeEntitled = status === 'active' || status === 'trialing';
   const settingsRef = facilityRef.collection('settings').doc('public');
-  const batch = db.batch();
-
-  batch.update(facilityRef, {
-    stripeWebsiteSubscriptionId: subscription.id,
-    websiteSubscriptionStatus: status,
-    websiteSubscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
-      ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
-      : null,
-    websiteSubscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
-    websiteCheckoutSessionId: admin.firestore.FieldValue.delete(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  let isEntitled = stripeEntitled;
+  await db.runTransaction(async (transaction) => {
+    const facilitySnap = await transaction.get(facilityRef);
+    if (!facilitySnap.exists) {
+      throw new Error(`Facility ${facilityId} not found`);
+    }
+    isEntitled = stripeEntitled ||
+      hasActiveWebsiteAdminTrial(
+        (facilitySnap.data() || {}) as Record<string, unknown>,
+      );
+    transaction.update(facilityRef, {
+      stripeWebsiteSubscriptionId: subscription.id,
+      websiteSubscriptionStatus: status,
+      websiteSubscriptionCurrentPeriodEnd: subPeriodEnd(subscription)
+        ? admin.firestore.Timestamp.fromMillis(subPeriodEnd(subscription)! * 1000)
+        : null,
+      websiteSubscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end,
+      websiteCheckoutSessionId: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    if (!isEntitled) {
+      transaction.set(
+        settingsRef,
+        {
+          enabled: false,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedBy: 'stripeWebhook',
+        },
+        { merge: true },
+      );
+    }
   });
-  if (!isEntitled) {
-    batch.set(
-      settingsRef,
-      {
-        enabled: false,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedBy: 'stripeWebhook',
-      },
-      { merge: true },
-    );
-  }
-  await batch.commit();
   functions.logger.info('Facility website subscription updated', {
     facilityId,
     subscriptionId: subscription.id,

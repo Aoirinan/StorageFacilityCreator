@@ -39,6 +39,8 @@ import '../screens/financial_reports_screen.dart';
 import '../screens/yield_management_screen.dart';
 import '../screens/dnr_list_screen.dart';
 import '../screens/facility_creation_wizard.dart';
+import '../screens/facility_edit_screen.dart';
+import '../services/facility_service.dart';
 import '../widgets/global_home_overlay.dart';
 import '../screens/subscription_test_screen.dart';
 import '../screens/billing_and_payments_screen.dart';
@@ -245,6 +247,34 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             path: AppRoute.facilityNew,
             name: 'facility-new',
             builder: (context, state) => const FacilityCreationWizard(),
+          ),
+          GoRoute(
+            path: AppRoute.facilityEdit,
+            name: 'facility-edit',
+            builder: (context, state) {
+              final extra = state.extra;
+              if (extra is FacilityModel) {
+                return FacilityEditScreen(facility: extra);
+              }
+              final facilityId = state.uri.queryParameters['facilityId'];
+              if (facilityId == null || facilityId.isEmpty) {
+                return NotFoundPage(state: state);
+              }
+              return FutureBuilder<FacilityModel?>(
+                future: FacilityService.getFacility(facilityId),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError ||
+                      !snapshot.hasData ||
+                      snapshot.data == null) {
+                    return NotFoundPage(state: state);
+                  }
+                  return FacilityEditScreen(facility: snapshot.data!);
+                },
+              );
+            },
           ),
           GoRoute(
             path: AppRoute.tenants,

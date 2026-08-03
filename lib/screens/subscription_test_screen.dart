@@ -18,6 +18,7 @@ import 'package:sfcapp/services/referral_program_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/screens/cancellation/cancellation_retention_wizard.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 
@@ -601,57 +602,39 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     }
   }
 
+  Future<void> _openCancellationWizard(
+    FacilityModel facility, {
+    String? initialPlanType,
+    bool allowPlanPicker = false,
+  }) async {
+    if (_isCancelling || _isRemovingFacility) return;
+    final completed = await CancellationRetentionWizard.show(
+      context,
+      facility: facility,
+      initialPlanType: initialPlanType,
+      allowPlanPicker: allowPlanPicker,
+    );
+    if (completed == true && mounted) {
+      _loadAccount();
+    }
+  }
+
   /// Cancel subscription for one facility only.
-  /// Per-facility model: calls cancelFacilitySubscription.
-  /// Legacy: removes from account or cancels account sub.
+  /// Opens retention wizard; Stripe cancel happens after survey.
+  /// Legacy multi-facility remove path is unchanged below.
   Future<void> _cancelSubscriptionForFacility(FacilityModel facility) async {
     if (_account == null || _isCancelling || _isRemovingFacility) return;
 
     // Per-facility: facility has its own subscription
     if (facility.stripePlatformSubscriptionId != null) {
       if (facility.platformSubscriptionCancelAtPeriodEnd) return;
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.cancel_outlined, color: AppTheme.error),
-              SizedBox(width: 8),
-              Text('Cancel Subscription'),
-            ],
-          ),
-          content: Text(
-            'Cancel the subscription for "${facility.name}"? You will keep access until the end of the billing period, then this facility will be locked.',
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Keep')),
-            ElevatedButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
-              child: const Text('Yes, Cancel'),
-            ),
-          ],
-        ),
+      final hasWebsite = facility.hasActiveStripeWebsiteSubscription &&
+          !facility.websiteSubscriptionCancelAtPeriodEnd;
+      await _openCancellationWizard(
+        facility,
+        initialPlanType: 'platform',
+        allowPlanPicker: hasWebsite,
       );
-      if (confirmed != true || !mounted) return;
-      setState(() => _isCancelling = true);
-      try {
-        await StripeService.cancelFacilitySubscription(facilityId: facility.id);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Subscription will cancel at period end.'), backgroundColor: AppTheme.success),
-          );
-          _loadAccount();
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _isCancelling = false);
-      }
       return;
     }
 
@@ -660,20 +643,29 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     final count = _account!.facilityIds.length;
     final isOnlyFacility = count <= 1;
 
+    if (isOnlyFacility) {
+      final hasWebsite = facility.hasActiveStripeWebsiteSubscription &&
+          !facility.websiteSubscriptionCancelAtPeriodEnd;
+      await _openCancellationWizard(
+        facility,
+        initialPlanType: 'platform',
+        allowPlanPicker: hasWebsite,
+      );
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Row(
+        title: const Row(
           children: [
             Icon(Icons.cancel_outlined, color: AppTheme.error),
-            const SizedBox(width: 8),
-            Text(isOnlyFacility ? 'Cancel Subscription' : 'Cancel Subscription for Facility'),
+            SizedBox(width: 8),
+            Text('Cancel Subscription for Facility'),
           ],
         ),
         content: Text(
-          isOnlyFacility
-              ? 'Cancel the subscription for "${facility.name}"? You will keep access until the end of your current billing period, then the facility will be locked. You can reactivate anytime from Manage Subscription.'
-              : 'Cancel the subscription for "${facility.name}"? You will stop paying for this facility. It will be removed from your subscription and you will need to resubscribe to use it again.',
+          'Cancel the subscription for "${facility.name}"? You will stop paying for this facility. It will be removed from your subscription and you will need to resubscribe to use it again.',
         ),
         actions: [
           TextButton(
@@ -683,36 +675,14 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
-            child: Text(isOnlyFacility ? 'Yes, Cancel Subscription' : 'Yes, Cancel for This Facility'),
+            child: const Text('Yes, Cancel for This Facility'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
 
-    if (isOnlyFacility) {
-      setState(() => _isCancelling = true);
-      try {
-        await StripeService.cancelSubscription(accountId: _account!.accountId);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Subscription will cancel at end of billing period.'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
-          _loadAccount();
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _isCancelling = false);
-      }
-    } else {
+    {
       setState(() => _isRemovingFacility = true);
       try {
         await FacilityCreatorAccountService.removeFacilityFromAccount(
@@ -888,6 +858,11 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
     if (link == null || link.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final prefValue = _coerceReferralRewardDropdownValue(_account?.referralRewardPreferredFacilityId);
+    final code = (_account?.referralCode?.trim().toUpperCase().isNotEmpty == true)
+        ? _account!.referralCode!.trim().toUpperCase()
+        : Uri.tryParse(link)?.queryParameters[ReferralProgramService.referralSignupQueryParam]
+            ?.trim()
+            .toUpperCase();
     return Card(
       elevation: 2,
       color: AppTheme.surface,
@@ -917,8 +892,58 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
               'on one of your own facility subscriptions. Up to 10 rewards per calendar year.',
               style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
             ),
+            if (code != null && code.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Your referral code',
+                style: theme.textTheme.labelLarge?.copyWith(color: AppTheme.textPrimary),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppTheme.backgroundSecondary,
+                  border: Border.all(color: AppTheme.borderLight),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: SelectableText(
+                  code,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.5,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Friends can type this code on the signup form, or open your link below.',
+                style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: code));
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Referral code copied')),
+                  );
+                },
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('Copy code'),
+              ),
+            ],
             const SizedBox(height: 12),
-            SelectableText(link, style: theme.textTheme.bodyLarge),
+            Text(
+              'Share link',
+              style: theme.textTheme.labelLarge?.copyWith(color: AppTheme.textPrimary),
+            ),
+            const SizedBox(height: 6),
+            SelectableText(
+              link,
+              style: theme.textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
+            ),
             const SizedBox(height: 8),
             TextButton.icon(
               onPressed: () async {
@@ -928,7 +953,7 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                   const SnackBar(content: Text('Referral link copied')),
                 );
               },
-              icon: const Icon(Icons.copy, size: 18),
+              icon: const Icon(Icons.link, size: 18),
               label: const Text('Copy link'),
             ),
             if (_subscribedFacilities.isNotEmpty) ...[
@@ -1417,6 +1442,93 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                                     ),
                                   ),
                                 )),
+                              ],
+
+                              if (_subscribedFacilities.any((f) =>
+                                  f.hasActiveStripeWebsiteSubscription ||
+                                  f.websiteSubscriptionCancelAtPeriodEnd)) ...[
+                                const SizedBox(height: 16),
+                                const Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Website add-on (\$25/mo)',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                ..._subscribedFacilities
+                                    .where((f) =>
+                                        f.hasActiveStripeWebsiteSubscription ||
+                                        f.websiteSubscriptionCancelAtPeriodEnd)
+                                    .map(
+                                      (f) => Card(
+                                        margin:
+                                            const EdgeInsets.only(bottom: 8),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      f.name,
+                                                      style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 4),
+                                                    Text(
+                                                      f.websiteSubscriptionCancelAtPeriodEnd
+                                                          ? 'Cancelling at period end'
+                                                          : '${f.websiteSubscriptionStatus ?? "Active"} • \$25/mo',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: f.websiteSubscriptionCancelAtPeriodEnd
+                                                            ? AppTheme.warning
+                                                            : AppTheme.success,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              if (f.hasActiveStripeWebsiteSubscription &&
+                                                  !f.websiteSubscriptionCancelAtPeriodEnd)
+                                                OutlinedButton.icon(
+                                                  onPressed: (_isCancelling ||
+                                                          _isRemovingFacility)
+                                                      ? null
+                                                      : () =>
+                                                          _openCancellationWizard(
+                                                            f,
+                                                            initialPlanType:
+                                                                'website',
+                                                          ),
+                                                  icon: const Icon(
+                                                    Icons.cancel_outlined,
+                                                    size: 16,
+                                                  ),
+                                                  label: const Text('Cancel'),
+                                                  style:
+                                                      OutlinedButton.styleFrom(
+                                                    foregroundColor:
+                                                        AppTheme.error,
+                                                    side: const BorderSide(
+                                                      color: AppTheme.error,
+                                                    ),
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                               ],
                               
                               const SizedBox(height: 12),

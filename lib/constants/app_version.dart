@@ -1,18 +1,18 @@
 /// Fallback app version when [PackageInfo] is unavailable (tests, early frame).
 /// **Keep in sync with `pubspec.yaml`** `version:` line (`major.minor.patch+build`).
 class AppVersion {
-  static const String version = '2.11.7';
+  static const String version = '2.13.0';
 
-  static const String buildNumber = '20260725';
+  static const String buildNumber = '20260803';
 
   static const String fullVersion = '$version+$buildNumber';
 
-  static const String deploymentDate = '2026-07-18';
+  static const String deploymentDate = '2026-08-03';
   static const String deploymentTime =
-      'DNR compliance release: accuracy attestation, participation terms gating, superadmin DNR moderation tab, modernized DNR screens, and audit-logged DNR changes.';
+      'Cancellation retention flow, superadmin website-subscription admin tools, and custom domain hosting fixes.';
 
   static const String featureTag =
-      'DNR attestation + participation gate; DNR moderation tab; staff person picker; modern DNR entry/detail UI; single facility selector.';
+      'Subscription cancellation with retention offers; superadmin retention/websites tabs; custom domain DNS/status fixes.';
 
   static String get displayVersion => 'v$version (Build $buildNumber)';
 

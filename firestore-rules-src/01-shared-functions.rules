@@ -40,13 +40,10 @@
     }
 
     function isSuperAdmin() {
-      let email = authEmailLower();
-      // Keep in sync with lib/services/superadmin_service.dart, storage.rules, and functions/src/index.ts
-      return email != null && (
-        email == 'russell_forsyth_1992@outlook.com' ||
-        email == 'russellforsyth09091992@gmail.com' ||
-        email == 'kennethgriggs03@gmail.com'
-      );
+      // Superadmin access is granted via a server-set custom claim only, so an
+      // unverified password account matching an allowlisted email cannot
+      // impersonate an admin. Set with the `superadmin` custom claim.
+      return request.auth != null && request.auth.token.superadmin == true;
     }
 
     // Viewer role + staff/owner: read calendar and shared lists (writes stay stricter per collection).
@@ -146,7 +143,15 @@
       'websiteSubscriptionStatus',
       'websiteSubscriptionCurrentPeriodEnd',
       'websiteSubscriptionCancelAtPeriodEnd',
-      'websiteCheckoutSessionId'
+      'websiteCheckoutSessionId',
+      'websiteAdminTrialEndsAt',
+      'websiteAdminTrialGrantedAt',
+      'websiteAdminTrialGrantedByUid',
+      'websiteAdminTrialGrantedByEmail',
+      'websiteAdminTrialReason',
+      'websiteAdminTrialRevokedAt',
+      'websiteAdminTrialRevokedByUid',
+      'websiteAdminTrialRevokedByEmail'
     ];
   }
 

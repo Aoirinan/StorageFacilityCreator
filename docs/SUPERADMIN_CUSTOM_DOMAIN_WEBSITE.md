@@ -3,7 +3,7 @@
 > **Day-to-day:** In the app, use **Super Admin → Custom domain** for the short checklist, copy buttons, and email draft. This file is the long-form reference.
 
 **Audience:** Storage Facility Creator (SFC) super admins and internal support.  
-**Goal:** A facility keeps the **same SFC-hosted public website** we host, but visitors use **their** domain (e.g. `https://rent.theirstorage.com/...`).
+**Goal:** A facility keeps the **same SFC-hosted public website** we host, but visitors use **their** domain — apex (`https://theirstorage.com`), `www`, or an optional subdomain (`https://rent.theirstorage.com`). A `rent.` subdomain is **not required**.
 
 **Important:** Their domain’s **DNS** must be updated at whoever **owns/registers** that domain (the customer or their IT). SFC cannot push DNS changes to GoDaddy, Namecheap, etc. without their registrar credentials. This guide covers **what you do in Firebase/SFC** and **what you ask the customer to do in DNS**.
 

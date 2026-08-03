@@ -21,6 +21,8 @@ import 'package:sfcapp/screens/super_admin/tabs/dnr_moderation_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/ai_logs_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/platform_reset_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/message_logs_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/websites_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/retention_tab.dart';
 
 class SuperAdminScreen extends ConsumerStatefulWidget {
   const SuperAdminScreen({super.key});
@@ -49,14 +51,18 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.chat_bubble, label: 'Messaging'),
     _TabDef(icon: Icons.group_add, label: 'Referrals'),
     _TabDef(icon: Icons.bug_report, label: 'Bug Reports'),
+    _TabDef(icon: Icons.language, label: 'Websites'),
     _TabDef(icon: Icons.link, label: 'Website address'),
+    // Prefer older filled Material icons on web — Icons.loyalty is absent from
+    // the bundled font and renders as a blank tab icon.
+    _TabDef(icon: Icons.favorite, label: 'Retention'),
     _TabDef(icon: Icons.delete_forever, label: 'Reset'),
   ];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 15, vsync: this);
+    _tabController = TabController(length: 17, vsync: this);
     // Seed feature flags on first load (no-op if already seeded)
     FeatureFlagService.seedDefaults();
   }
@@ -250,7 +256,9 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
           MessagingGuardTab(),
           ReferralsTab(),
           BugReportsTab(),
+          WebsitesTab(),
           CustomDomainGuideTab(),
+          RetentionTab(),
           PlatformResetTab(),
         ],
       ),

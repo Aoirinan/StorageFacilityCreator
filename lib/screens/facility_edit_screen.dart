@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
+import '../router/app_route.dart';
 import '../services/facility_service.dart';
 import '../services/facility_stats_service.dart';
 import '../models/facility_model.dart';
@@ -317,7 +318,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         );
 
         // Navigate back
-        Navigator.of(context).pop();
+        if (context.canPop()) {
+          context.pop();
+        } else {
+          context.go(AppRoute.facilities);
+        }
       }
     } catch (e) {
       if (kDebugMode) {
@@ -333,6 +338,16 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     }
   }
 
+  Widget _sectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
@@ -340,38 +355,34 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     return authState.when(
       data: (user) {
         if (user == null) {
-          return const Scaffold(
-            body: Center(child: Text('Please sign in to edit facilities')),
-          );
+          return const Center(child: Text('Please sign in to edit facilities'));
         }
 
-        return Scaffold(
-          backgroundColor: Theme.of(context).colorScheme.surface,
-          appBar: AppBar(
-            title: const Text('Edit Facility'),
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back),
-              tooltip: 'Back',
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-          ),
-          body: Form(
-            key: _formKey,
-            child: ListView(
-              padding: const EdgeInsets.all(16.0),
-              // Clamping avoids extra scroll extent on web when content is shorter than the viewport
-              // (AlwaysScrollableScrollPhysics from app builder was exposing a gray gap while scrolling).
-              physics: const ClampingScrollPhysics(),
-              children: [
-                  const Text(
-                    'Facility Information',
-                    style: TextStyle(
-                      fontSize: 24,
+        return Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(16.0),
+            // Clamping avoids extra scroll extent on web when content is shorter than the viewport
+            // (AlwaysScrollableScrollPhysics from app builder was exposing a gray gap while scrolling).
+            physics: const ClampingScrollPhysics(),
+            children: [
+              Text(
+                'Edit Facility',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
                     ),
-                  ),
-                  const SizedBox(height: 24),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                widget.facility.name,
+                style: const TextStyle(
+                  fontSize: 16,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 20),
+              _sectionTitle('Facility Information'),
+              const SizedBox(height: 16),
 
                   // Facility Name
                   TextFormField(
@@ -430,18 +441,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Divider for settings section
-                  const Divider(),
-                  const SizedBox(height: 16),
-
-                  const Text(
-                    'Settings',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
+                  const SizedBox(height: 8),
+                  _sectionTitle('Settings'),
                   const SizedBox(height: 16),
 
                   // Site-wide capacity (max units); unit rows are added in the unit list, not auto-created here.
@@ -494,15 +495,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Billing Settings Section
-                  const Text(
-                    'Billing Settings',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
+                  _sectionTitle('Billing Settings'),
                   const SizedBox(height: 16),
 
                   // Grace Period
@@ -578,16 +571,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  const Divider(),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Public Rental Links',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
+                  const SizedBox(height: 8),
+                  _sectionTitle('Public Rental Links'),
                   const SizedBox(height: 8),
                   const Text(
                     'Generate hosted online rental links your team can paste on your website, email, SMS, and social pages.',
@@ -852,26 +837,21 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
 
                   const SizedBox(height: 16),
-              ],
-            ),
+            ],
           ),
         );
       },
-      loading: () => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, stackTrace) => Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error, size: 64, color: AppTheme.error),
-              const SizedBox(height: 16),
-              const Text('Error loading user data'),
-              const SizedBox(height: 8),
-              Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
-            ],
-          ),
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stackTrace) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error, size: 64, color: AppTheme.error),
+            const SizedBox(height: 16),
+            const Text('Error loading user data'),
+            const SizedBox(height: 8),
+            Text(ErrorMessageHelper.getUserFriendlyMessage(error)),
+          ],
         ),
       ),
     );

@@ -1,0 +1,6 @@
+    match /cancellationEvents/{eventId} {
+      allow read: if request.auth != null && isSuperAdmin();
+      allow write: if false;
+    }
+
+    // Public map snapshots are read-only and intentionally safe for anonymous access.

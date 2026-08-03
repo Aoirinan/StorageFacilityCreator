@@ -1,15 +1,19 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/facility_model.dart';
 import '../router/app_route.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../services/facility_service.dart';
+import '../screens/cancellation/cancellation_retention_wizard.dart';
+import '../services/stripe_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
 
@@ -57,6 +61,7 @@ class _FacilityWebsiteSetupScreenState
   bool _isLoading = true;
   bool _isSaving = false;
   bool _subscriptionRequired = false;
+  bool _isStartingCheckout = false;
   String? _error;
 
   FacilityModel? _facility;
@@ -226,6 +231,83 @@ class _FacilityWebsiteSetupScreenState
     _ogImageUrlController.dispose();
     _canonicalUrlController.dispose();
     super.dispose();
+  }
+
+  Future<void> _startWebsiteCheckout() async {
+    final facility = _facility;
+    final user = FirebaseAuth.instance.currentUser;
+    if (facility == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Facility not found. Refresh and try again.'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+      return;
+    }
+
+    final isOwner =
+        facility.currentUserOwnsFacility ?? facility.ownerUid == user?.uid;
+    if (!isOwner) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The facility owner must activate the \$25/month website add-on.',
+          ),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+
+    final accountId = facility.facilityCreatorAccountId;
+    final email = user?.email;
+    if (accountId == null || accountId.isEmpty || email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Billing account information is incomplete.'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isStartingCheckout = true);
+    try {
+      final result = await StripeService.createWebsiteSubscriptionCheckout(
+        accountId: accountId,
+        facilityId: facility.id,
+        customerEmail: email,
+        successUrl:
+            'https://app.storagefacilitycreator.com/#/website-setup?facilityId=${facility.id}',
+        cancelUrl:
+            'https://app.storagefacilitycreator.com/#/website-setup?facilityId=${facility.id}',
+      );
+      if (!mounted) return;
+      if (result.subscriptionUpdated) {
+        await _load();
+        return;
+      }
+      final checkoutUrl = result.checkoutUrl;
+      if (checkoutUrl == null || checkoutUrl.isEmpty) {
+        throw Exception('Stripe did not return a checkout link.');
+      }
+      final opened = await launchUrl(
+        Uri.parse(checkoutUrl),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) throw Exception('Could not open Stripe Checkout.');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not start website checkout: $e'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isStartingCheckout = false);
+    }
   }
 
   Future<void> _load() async {
@@ -887,14 +969,16 @@ class _FacilityWebsiteSetupScreenState
   Widget _buildOptionalSection({
     required String title,
     required List<Widget> children,
+    String? subtitle,
+    bool initiallyExpanded = false,
   }) {
     return Card(
       child: ExpansionTile(
-        initiallyExpanded: false,
+        initiallyExpanded: initiallyExpanded,
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle: const Text(
-          '(optional — leave blank to use defaults)',
-          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        subtitle: Text(
+          subtitle ?? '(optional — leave blank to use defaults)',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
         ),
         childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         children: children,
@@ -959,6 +1043,12 @@ class _FacilityWebsiteSetupScreenState
       return const Center(child: CircularProgressIndicator());
     }
     if (_subscriptionRequired) {
+      final user = FirebaseAuth.instance.currentUser;
+      final facility = _facility;
+      final isOwner = facility == null
+          ? false
+          : (facility.currentUserOwnsFacility ??
+              facility.ownerUid == user?.uid);
       return Center(
         child: Card(
           margin: const EdgeInsets.all(24),
@@ -975,16 +1065,45 @@ class _FacilityWebsiteSetupScreenState
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Activate the \$25/month website add-on from Settings before '
-                  'configuring or publishing this facility website.',
+                Text(
+                  isOwner
+                      ? 'Activate the optional \$25/month website add-on for this '
+                          'facility. You need an active \$75 platform subscription first. '
+                          'After Stripe confirms payment, Website Setup unlocks.'
+                      : 'The facility owner must activate the \$25/month website '
+                          'add-on before this page can be configured.',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: () => context.go(AppRoute.settings),
-                  child: const Text('Back to Settings'),
-                ),
+                if (isOwner)
+                  FilledButton.icon(
+                    onPressed:
+                        _isStartingCheckout ? null : _startWebsiteCheckout,
+                    icon: _isStartingCheckout
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.payment),
+                    label: Text(
+                      _isStartingCheckout
+                          ? 'Opening Stripe...'
+                          : 'Continue to payment',
+                    ),
+                  )
+                else
+                  FilledButton(
+                    onPressed: () => context.go(AppRoute.settings),
+                    child: const Text('Back to Settings'),
+                  ),
+                if (isOwner) ...[
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _isStartingCheckout ? null : _load,
+                    child: const Text('I already paid — refresh'),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1002,6 +1121,29 @@ class _FacilityWebsiteSetupScreenState
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
             const Spacer(),
+            if (_facility != null &&
+                _facility!.hasActiveStripeWebsiteSubscription &&
+                !_facility!.websiteSubscriptionCancelAtPeriodEnd)
+              TextButton.icon(
+                onPressed: () async {
+                  final done = await CancellationRetentionWizard.show(
+                    context,
+                    facility: _facility!,
+                    initialPlanType: 'website',
+                  );
+                  if (done == true && mounted) await _load();
+                },
+                icon: const Icon(Icons.cancel_outlined, size: 18),
+                label: const Text('Cancel website plan'),
+              )
+            else if (_facility?.websiteSubscriptionCancelAtPeriodEnd == true)
+              const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: Text(
+                  'Cancelling at period end',
+                  style: TextStyle(color: AppTheme.warning),
+                ),
+              ),
             IconButton(
               onPressed: _load,
               icon: const Icon(Icons.refresh),
@@ -1040,466 +1182,434 @@ class _FacilityWebsiteSetupScreenState
           _facility?.name ?? 'Facility',
           style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
         ),
-        const SizedBox(height: 10),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Template',
-                    style: TextStyle(fontWeight: FontWeight.w700)),
-                const SizedBox(height: 6),
-                const Text(
-                    'Public website v2 — hero, map, promise, promo band'),
-                const SizedBox(height: 10),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _websiteEnabled,
-                  onChanged: (v) => setState(() => _websiteEnabled = v),
-                  title: const Text('Website Enabled'),
-                ),
-              ],
-            ),
-          ),
-        ),
         const SizedBox(height: 12),
-        TextField(
-          controller: _slugController,
-          decoration: const InputDecoration(
-            labelText: 'Website URL Name',
-            hintText: 'your-facility',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.link),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _customDomainController,
-          onChanged: (_) => setState(() {}),
-          decoration: const InputDecoration(
-            labelText: 'Custom Domain (optional)',
-            hintText: 'rent.yourfacility.com',
-            helperText:
-                'Only works after you add this exact hostname in Firebase Hosting → Custom domains and create the DNS records your registrar shows (often a CNAME). Until then, use the public website link below — "site can\'t be reached" means DNS is not set up yet.',
-            helperMaxLines: 4,
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.language),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Branding Colors (Public Rentals)',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'These colors style the live rental site hero + CTA buttons.',
-                  style: TextStyle(color: AppTheme.textSecondary),
-                ),
-                const SizedBox(height: 12),
-                _ColorPickerField(
-                  controller: _heroGradientStartController,
-                  label: 'Hero gradient start color',
-                  hintText: '#0C1E4D',
-                  fallback: const Color(0xFF0C1E4D),
-                  onPick: () => _pickColor(
-                    controller: _heroGradientStartController,
-                    title: 'Hero gradient start',
-                    fallback: const Color(0xFF0C1E4D),
-                  ),
-                  previewColor: _parseHexColor(
-                      _heroGradientStartController.text,
-                      fallback: const Color(0xFF0C1E4D)),
-                ),
-                const SizedBox(height: 10),
-                _ColorPickerField(
-                  controller: _heroGradientEndController,
-                  label: 'Hero gradient end color',
-                  hintText: '#1E5BD4',
-                  fallback: const Color(0xFF1E5BD4),
-                  onPick: () => _pickColor(
-                    controller: _heroGradientEndController,
-                    title: 'Hero gradient end',
-                    fallback: const Color(0xFF1E5BD4),
-                  ),
-                  previewColor: _parseHexColor(_heroGradientEndController.text,
-                      fallback: const Color(0xFF1E5BD4)),
-                ),
-                const SizedBox(height: 10),
-                _ColorPickerField(
-                  controller: _heroTextColorController,
-                  label: 'Hero text color',
-                  hintText: '#FFFFFF',
-                  fallback: Colors.white,
-                  onPick: () => _pickColor(
-                    controller: _heroTextColorController,
-                    title: 'Hero text color',
-                    fallback: Colors.white,
-                  ),
-                  previewColor: _parseHexColor(_heroTextColorController.text,
-                      fallback: Colors.white),
-                ),
-                const SizedBox(height: 10),
-                _ColorPickerField(
-                  controller: _ctaButtonColorController,
-                  label: 'CTA button color',
-                  hintText: '#103A86',
-                  fallback: const Color(0xFF103A86),
-                  onPick: () => _pickColor(
-                    controller: _ctaButtonColorController,
-                    title: 'CTA button color',
-                    fallback: const Color(0xFF103A86),
-                  ),
-                  previewColor: _parseHexColor(_ctaButtonColorController.text,
-                      fallback: const Color(0xFF103A86)),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _pageTitleController,
-          decoration: const InputDecoration(
-            labelText: 'Page Title',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _pageDescriptionController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Page Description',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _heroHeadlineController,
-          decoration: const InputDecoration(
-            labelText: 'Hero Headline',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _heroSubheadlineController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Hero Subheadline',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _taglineController,
-          decoration: const InputDecoration(
-            labelText: 'Header Tagline (under facility name)',
-            hintText: 'Climate controlled & drive-up self storage',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _heroImageUrlController,
-          decoration: InputDecoration(
-            labelText: 'Hero Background Image URL (https only)',
-            hintText: 'https://.../photo.jpg',
-            border: const OutlineInputBorder(),
-            prefixIcon: const Icon(Icons.image_outlined),
-            suffixIcon: IconButton(
-              onPressed: _uploadingFieldKey == 'hero-image'
-                  ? null
-                  : () => _uploadImageToController(
-                        _heroImageUrlController,
-                        'hero-image',
-                      ),
-              icon: _uploadingFieldKey == 'hero-image'
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.upload_file),
-              tooltip: 'Upload image',
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Icons (Optional)',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Upload once and save. These icons appear on the public cookie-cutter page.',
-                  style: TextStyle(color: AppTheme.textSecondary),
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _stepChooseIconUrlController,
-                  label: 'Step 1 icon (Choose unit)',
-                  fieldKey: 'step-choose-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _stepDetailsIconUrlController,
-                  label: 'Step 2 icon (Enter details)',
-                  fieldKey: 'step-details-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _stepReserveIconUrlController,
-                  label: 'Step 3 icon (Reserve online)',
-                  fieldKey: 'step-reserve-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _promiseSecurityIconUrlController,
-                  label: 'Why Rent icon: Security',
-                  fieldKey: 'why-security-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _promiseServiceIconUrlController,
-                  label: 'Why Rent icon: Service',
-                  fieldKey: 'why-service-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-                const SizedBox(height: 10),
-                _UploadableUrlField(
-                  controller: _promiseConvenienceIconUrlController,
-                  label: 'Why Rent icon: Convenience',
-                  fieldKey: 'why-convenience-icon',
-                  uploadingFieldKey: _uploadingFieldKey,
-                  onUpload: _uploadImageToController,
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _marketingContentController,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Main Marketing Paragraph',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _addressController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Address',
-            hintText: '123 Main St, City, ST 12345',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _contactEmailController,
-          keyboardType: TextInputType.emailAddress,
-          decoration: const InputDecoration(
-            labelText: 'Contact Email (optional)',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.email_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _mapEmbedUrlController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Google Maps Embed URL (optional)',
-            helperText:
-                'From Google Maps: Share → Embed a map → copy the iframe src URL (https://www.google.com/maps/embed?...)',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-            prefixIcon: Icon(Icons.map_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _officeHoursController,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Office Hours',
-            hintText:
-                'Mon-Fri: 8:00 AM - 6:00 PM\nSat: 9:00 AM - 5:00 PM\nSun: Closed',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _amenitiesController,
-          maxLines: 3,
-          decoration: const InputDecoration(
-            labelText: 'Amenities (comma separated)',
-            hintText:
-                'Online Rentals, Online Bill Pay, Drive-up Access, Climate Control',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _testimonialsController,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Testimonials (one per line)',
-            hintText:
-                'Great facility... --- Jane D.\nUse --- before the reviewer name (optional).',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _paymentUrlController,
-          decoration: const InputDecoration(
-            labelText: 'Payment/Login URL (optional)',
-            hintText: 'https://...',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _promoTitleController,
-          decoration: const InputDecoration(
-            labelText: 'Promo band title (optional)',
-            hintText: 'Making your move easier',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _promoBodyController,
-          maxLines: 3,
-          decoration: const InputDecoration(
-            labelText: 'Promo band paragraph (optional)',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _promoCtaLabelController,
-                decoration: const InputDecoration(
-                  labelText: 'Promo CTA label',
-                  hintText: 'Learn more',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextField(
-                controller: _promoCtaUrlController,
-                decoration: const InputDecoration(
-                  labelText: 'Promo CTA URL',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _promiseSecurityController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Our promise — Security (optional override)',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _promiseServiceController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Our promise — Customer service (optional)',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _promiseConvenienceController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Our promise — Convenience (optional)',
-            border: OutlineInputBorder(),
-            alignLabelWithHint: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _reviewUrlController,
-          decoration: const InputDecoration(
-            labelText: 'Review link (optional, footer)',
-            hintText: 'Google Business review URL',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.reviews_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _primaryCtaController,
-                decoration: const InputDecoration(
-                  labelText: 'Primary CTA Label',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextField(
-                controller: _secondaryCtaController,
-                decoration: const InputDecoration(
-                  labelText: 'Secondary CTA Label',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
         _buildOptionalSection(
-          title: '1. Branding & Header',
+          title: '1. Website Basics',
+          subtitle: 'Enable the site and set your URL / custom domain',
+          initiallyExpanded: true,
+          children: [
+            const Text(
+              'Website layout',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Standard public website — homepage, units, map, and contact info',
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _websiteEnabled,
+              onChanged: (v) => setState(() => _websiteEnabled = v),
+              title: const Text('Website Enabled'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _slugController,
+              decoration: const InputDecoration(
+                labelText: 'Website URL Name',
+                hintText: 'your-facility',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.link),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _customDomainController,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'Custom Domain (optional)',
+                hintText: 'yourfacility.com',
+                helperText:
+                    'Your real domain — apex (yourfacility.com), www, or a subdomain. Must match what Super Admin connects in Hosting. '
+                    'After Connect, add the DNS records Firebase shows at GoDaddy (or your registrar). '
+                    'Until DNS is live, use the public /w/… link below.',
+                helperMaxLines: 4,
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.language),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '2. Branding Colors',
+          children: [
+            const Text(
+              'These colors style the live rental site hero + CTA buttons.',
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            _ColorPickerField(
+              controller: _heroGradientStartController,
+              label: 'Hero gradient start color',
+              hintText: '#0C1E4D',
+              fallback: const Color(0xFF0C1E4D),
+              onPick: () => _pickColor(
+                controller: _heroGradientStartController,
+                title: 'Hero gradient start',
+                fallback: const Color(0xFF0C1E4D),
+              ),
+              previewColor: _parseHexColor(
+                _heroGradientStartController.text,
+                fallback: const Color(0xFF0C1E4D),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _ColorPickerField(
+              controller: _heroGradientEndController,
+              label: 'Hero gradient end color',
+              hintText: '#1E5BD4',
+              fallback: const Color(0xFF1E5BD4),
+              onPick: () => _pickColor(
+                controller: _heroGradientEndController,
+                title: 'Hero gradient end',
+                fallback: const Color(0xFF1E5BD4),
+              ),
+              previewColor: _parseHexColor(
+                _heroGradientEndController.text,
+                fallback: const Color(0xFF1E5BD4),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _ColorPickerField(
+              controller: _heroTextColorController,
+              label: 'Hero text color',
+              hintText: '#FFFFFF',
+              fallback: Colors.white,
+              onPick: () => _pickColor(
+                controller: _heroTextColorController,
+                title: 'Hero text color',
+                fallback: Colors.white,
+              ),
+              previewColor: _parseHexColor(
+                _heroTextColorController.text,
+                fallback: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _ColorPickerField(
+              controller: _ctaButtonColorController,
+              label: 'CTA button color',
+              hintText: '#103A86',
+              fallback: const Color(0xFF103A86),
+              onPick: () => _pickColor(
+                controller: _ctaButtonColorController,
+                title: 'CTA button color',
+                fallback: const Color(0xFF103A86),
+              ),
+              previewColor: _parseHexColor(
+                _ctaButtonColorController.text,
+                fallback: const Color(0xFF103A86),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '3. Hero & Page Copy',
+          children: [
+            TextField(
+              controller: _pageTitleController,
+              decoration: const InputDecoration(
+                labelText: 'Page Title',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _pageDescriptionController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Page Description',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _heroHeadlineController,
+              decoration: const InputDecoration(
+                labelText: 'Hero Headline',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _heroSubheadlineController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Hero Subheadline',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _taglineController,
+              decoration: const InputDecoration(
+                labelText: 'Header Tagline (under facility name)',
+                hintText: 'Climate controlled & drive-up self storage',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _heroImageUrlController,
+              decoration: InputDecoration(
+                labelText: 'Hero Background Image URL (https only)',
+                hintText: 'https://.../photo.jpg',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.image_outlined),
+                suffixIcon: IconButton(
+                  onPressed: _uploadingFieldKey == 'hero-image'
+                      ? null
+                      : () => _uploadImageToController(
+                            _heroImageUrlController,
+                            'hero-image',
+                          ),
+                  icon: _uploadingFieldKey == 'hero-image'
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.upload_file),
+                  tooltip: 'Upload image',
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '4. Icons',
+          children: [
+            const Text(
+              'Upload once and save. These icons appear on the public cookie-cutter page.',
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _stepChooseIconUrlController,
+              label: 'Step 1 icon (Choose unit)',
+              fieldKey: 'step-choose-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _stepDetailsIconUrlController,
+              label: 'Step 2 icon (Enter details)',
+              fieldKey: 'step-details-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _stepReserveIconUrlController,
+              label: 'Step 3 icon (Reserve online)',
+              fieldKey: 'step-reserve-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _promiseSecurityIconUrlController,
+              label: 'Why Rent icon: Security',
+              fieldKey: 'why-security-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _promiseServiceIconUrlController,
+              label: 'Why Rent icon: Service',
+              fieldKey: 'why-service-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+            const SizedBox(height: 10),
+            _UploadableUrlField(
+              controller: _promiseConvenienceIconUrlController,
+              label: 'Why Rent icon: Convenience',
+              fieldKey: 'why-convenience-icon',
+              uploadingFieldKey: _uploadingFieldKey,
+              onUpload: _uploadImageToController,
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '5. Location & Contact',
+          children: [
+            TextField(
+              controller: _marketingContentController,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Main Marketing Paragraph',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _addressController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Address',
+                hintText: '123 Main St, City, ST 12345',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _contactEmailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'Contact Email (optional)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.email_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _mapEmbedUrlController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Google Maps Embed URL (optional)',
+                helperText:
+                    'From Google Maps: Share → Embed a map → copy the iframe src URL (https://www.google.com/maps/embed?...)',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+                prefixIcon: Icon(Icons.map_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _paymentUrlController,
+              decoration: const InputDecoration(
+                labelText: 'Payment/Login URL (optional)',
+                hintText: 'https://...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '6. Promo Band & CTAs',
+          children: [
+            TextField(
+              controller: _promoTitleController,
+              decoration: const InputDecoration(
+                labelText: 'Promo band title (optional)',
+                hintText: 'Making your move easier',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _promoBodyController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Promo band paragraph (optional)',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _promoCtaLabelController,
+                    decoration: const InputDecoration(
+                      labelText: 'Promo CTA label',
+                      hintText: 'Learn more',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _promoCtaUrlController,
+                    decoration: const InputDecoration(
+                      labelText: 'Promo CTA URL',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _promiseSecurityController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Our promise — Security (optional override)',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _promiseServiceController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Our promise — Customer service (optional)',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _promiseConvenienceController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Our promise — Convenience (optional)',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reviewUrlController,
+              decoration: const InputDecoration(
+                labelText: 'Review link (optional, footer)',
+                hintText: 'Google Business review URL',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.reviews_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _primaryCtaController,
+                    decoration: const InputDecoration(
+                      labelText: 'Primary CTA Label',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _secondaryCtaController,
+                    decoration: const InputDecoration(
+                      labelText: 'Secondary CTA Label',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '7. Branding & Header',
           children: [
             TextField(
               controller: _logoImageUrlController,
@@ -1548,7 +1658,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '2. About Section',
+          title: '8. About Section',
           children: [
             TextField(
               controller: _aboutSectionTitleController,
@@ -1580,7 +1690,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '3. Unit Categories',
+          title: '9. Unit Categories',
           children: [
             Align(
               alignment: Alignment.centerLeft,
@@ -1725,8 +1835,20 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '4. Amenities Grid',
+          title: '10. Amenities',
           children: [
+            TextField(
+              controller: _amenitiesController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Amenities (comma separated)',
+                hintText:
+                    'Online Rentals, Online Bill Pay, Drive-up Access, Climate Control',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
@@ -1795,8 +1917,20 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '5. Testimonials',
+          title: '11. Testimonials',
           children: [
+            TextField(
+              controller: _testimonialsController,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Testimonials (one per line)',
+                hintText:
+                    'Great facility... --- Jane D.\nUse --- before the reviewer name (optional).',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
@@ -1897,8 +2031,20 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '6. Office Hours (Structured)',
+          title: '12. Office Hours',
           children: [
+            TextField(
+              controller: _officeHoursController,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Office Hours (freeform)',
+                hintText:
+                    'Mon-Fri: 8:00 AM - 6:00 PM\nSat: 9:00 AM - 5:00 PM\nSun: Closed',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Use structured day-by-day office hours'),
@@ -1913,7 +2059,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '7. Partnership / Secondary Promo Band',
+          title: '13. Partnership / Secondary Promo Band',
           children: [
             TextField(
               controller: _partnershipTitleController,
@@ -1968,7 +2114,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '8. FAQ',
+          title: '14. FAQ',
           children: [
             Align(
               alignment: Alignment.centerLeft,
@@ -2031,7 +2177,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '9. Footer & Social',
+          title: '15. Footer & Social',
           children: [
             TextField(
               controller: _footerTaglineController,
@@ -2076,7 +2222,7 @@ class _FacilityWebsiteSetupScreenState
         ),
         const SizedBox(height: 12),
         _buildOptionalSection(
-          title: '10. SEO',
+          title: '16. SEO',
           children: [
             TextField(
               controller: _metaKeywordsController,
@@ -2103,42 +2249,38 @@ class _FacilityWebsiteSetupScreenState
             ),
           ],
         ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _WebsiteLinkRow(
-                  label: 'Public website link (works now)',
-                  value: _publicWebsiteUrl,
-                  onCopy: _copy,
-                ),
-                if (_customDomainWebsiteUrl != null) ...[
-                  const Divider(),
-                  _WebsiteLinkRow(
-                    label: 'Custom domain (needs DNS + Hosting)',
-                    value: _customDomainWebsiteUrl!,
-                    onCopy: _copy,
-                  ),
-                ],
-                const Divider(),
-                _WebsiteLinkRow(
-                  label: 'Website JSON',
-                  value: FacilityPublicService.getPublicWebsiteConfigUrl(
-                      _slugPreview),
-                  onCopy: _copy,
-                ),
-              ],
+        const SizedBox(height: 12),
+        _buildOptionalSection(
+          title: '17. Publish Links',
+          subtitle: 'Copy links after publishing',
+          children: [
+            _WebsiteLinkRow(
+              label: 'Public website link (works now)',
+              value: _publicWebsiteUrl,
+              onCopy: _copy,
             ),
-          ),
+            if (_customDomainWebsiteUrl != null) ...[
+              const Divider(),
+              _WebsiteLinkRow(
+                label: 'Custom domain (needs DNS + Hosting)',
+                value: _customDomainWebsiteUrl!,
+                onCopy: _copy,
+              ),
+            ],
+            const Divider(),
+            _WebsiteLinkRow(
+              label: 'Website JSON',
+              value: FacilityPublicService.getPublicWebsiteConfigUrl(
+                  _slugPreview),
+              onCopy: _copy,
+            ),
+          ],
         ),
         if (_error != null) ...[
           const SizedBox(height: 12),
           Text(_error!, style: const TextStyle(color: AppTheme.error)),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         Row(
           children: [
             Expanded(

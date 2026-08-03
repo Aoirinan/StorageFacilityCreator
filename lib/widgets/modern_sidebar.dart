@@ -189,15 +189,6 @@ class ModernSidebar extends StatelessWidget {
                   onTap: () => onNavigate('/calendar'),
                 ),
                 _SidebarItem(
-                  icon: Icons.lock_outlined,
-                  activeIcon: Icons.lock,
-                  label: 'Manager Overlock',
-                  route: '/manager-overlock',
-                  isActive: isActive('/manager-overlock'),
-                  isCollapsed: isCollapsed,
-                  onTap: () => onNavigate('/manager-overlock'),
-                ),
-                _SidebarItem(
                   icon: Icons.description_outlined,
                   activeIcon: Icons.description,
                   label: 'Contracts',
@@ -208,7 +199,9 @@ class ModernSidebar extends StatelessWidget {
                 ),
                 _UnitsSection(
                   isCollapsed: isCollapsed,
-                  isActive: isActive('/units') || isActive('/units/map'),
+                  isActive: isActive('/units') ||
+                      isActive('/units/map') ||
+                      isActive('/manager-overlock'),
                   currentRoute: currentRoute,
                   onNavigate: onNavigate,
                 ),
@@ -519,8 +512,10 @@ class _UnitsSection extends StatelessWidget {
       );
     }
 
-    final expanded = currentRoute.startsWith('/units');
     final unitsPath = currentRoute.split('?').first;
+    final overlockActive = unitsPath == AppRoute.managerOverlock ||
+        unitsPath.startsWith('${AppRoute.managerOverlock}/');
+    final expanded = currentRoute.startsWith('/units') || overlockActive;
     final unitListActive = unitsPath == '/units' ||
         unitsPath == AppRoute.unitCreate ||
         unitsPath == AppRoute.unitEdit ||
@@ -554,6 +549,15 @@ class _UnitsSection extends StatelessWidget {
           isActive: unitListActive,
           isCollapsed: false,
           onTap: () => onNavigate('/units'),
+        ),
+        _SidebarItem(
+          icon: Icons.lock_outlined,
+          activeIcon: Icons.lock,
+          label: 'Manager Overlock',
+          route: AppRoute.managerOverlock,
+          isActive: overlockActive,
+          isCollapsed: false,
+          onTap: () => onNavigate(AppRoute.managerOverlock),
         ),
         _SidebarItem(
           icon: Icons.map_outlined,
