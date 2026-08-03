@@ -1,0 +1,24 @@
+      match /leaseTemplates/{templateId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'facilityOwnerUid',
+            'name',
+            'provider',
+            'isActive',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.facilityOwnerUid == facilityDoc(facilityId).ownerUid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.provider is string &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // E-sign Envelopes

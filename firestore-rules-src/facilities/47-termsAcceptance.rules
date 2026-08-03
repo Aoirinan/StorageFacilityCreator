@@ -1,0 +1,16 @@
+      match /compliance/termsAcceptance {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.keys().hasAll([
+            'acceptedAt',
+            'acceptedByUserId',
+            'tosVersion',
+            'textHash'
+          ]) &&
+          request.resource.data.acceptedByUserId == request.auth.uid;
+        // No updates or deletes - terms acceptance is immutable (new version = new document)
+      }
+
+      // DNR Entries - facility-scoped (Phase 2)
+      // Super admins have full read/update/delete for platform moderation
+      // (Do Not Rent Data Policy: SFC may deactivate or remove any entry).

@@ -1,0 +1,31 @@
+    match /facilities/{facilityId} {
+      // Allow read if user owns the facility, is a manager, has a role, OR is superadmin
+      allow read: if request.auth != null && 
+        (isSuperAdmin() ||
+         resource.data.ownerUid == request.auth.uid || 
+         resource.data.managers[request.auth.uid] != null ||
+         resource.data.roles[request.auth.uid] != null);
+      
+      // Allow create only if ownerUid is set to current user and required fields present
+      allow create: if request.auth != null && 
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['name', 'ownerUid', 'createdAt', 'active']) &&
+        request.resource.data.active == true &&
+        !request.resource.data.keys().hasAny(facilityEntitlementWriteForbiddenKeys());
+      
+      // Allow update by owner or super admin, or invitee merging their own role + trace field (assignRole)
+      allow update: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          resource.data.ownerUid == request.auth.uid &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(facilityEntitlementWriteForbiddenKeys())
+        ) ||
+        facilityInviteRoleMergeAllowed(facilityId)
+      );
+      
+      // Allow delete only by owner
+      allow delete: if request.auth != null && 
+        resource.data.ownerUid == request.auth.uid;
+      
+      // Sub-collections under facilities

@@ -1,0 +1,56 @@
+    match /facilityCreatorAccounts/{accountId} {
+      // Allow read if user owns this account OR is superadmin (for platform-wide visibility)
+      allow read: if request.auth != null && (isSuperAdmin() || resource.data.ownerUid == request.auth.uid);
+      
+      // Allow create if ownerUid matches current user
+      allow create: if request.auth != null && 
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['ownerUid', 'ownerEmail', 'ownerName', 'subscriptionStatus', 'createdAt', 'updatedAt']) &&
+        request.resource.data.subscriptionStatus == 'pendingApproval' &&
+        (!('stripeSubscriptionId' in request.resource.data) || request.resource.data.stripeSubscriptionId == null) &&
+        (!('stripeCustomerId' in request.resource.data) || request.resource.data.stripeCustomerId == null) &&
+        (!('subscriptionCurrentPeriodStart' in request.resource.data) || request.resource.data.subscriptionCurrentPeriodStart == null) &&
+        (!('subscriptionCurrentPeriodEnd' in request.resource.data) || request.resource.data.subscriptionCurrentPeriodEnd == null) &&
+        (!('subscriptionCancelAtPeriodEnd' in request.resource.data) || request.resource.data.subscriptionCancelAtPeriodEnd == false) &&
+        (!('subscriptionCanceledAt' in request.resource.data) || request.resource.data.subscriptionCanceledAt == null) &&
+        (!('subscriptionTrialEnd' in request.resource.data) || request.resource.data.subscriptionTrialEnd == null) &&
+        (!('suspended' in request.resource.data) || request.resource.data.suspended == false) &&
+        (!('suspensionReason' in request.resource.data) || request.resource.data.suspensionReason == null) &&
+        (!('suspendedAt' in request.resource.data) || request.resource.data.suspendedAt == null) &&
+        (!('suspendedByUid' in request.resource.data) || request.resource.data.suspendedByUid == null) &&
+        (!('suspendedByEmail' in request.resource.data) || request.resource.data.suspendedByEmail == null) &&
+        (!('referralCode' in request.resource.data) || request.resource.data.referralCode == null) &&
+        (!('referredByAccountId' in request.resource.data) || request.resource.data.referredByAccountId == null) &&
+        (!('referralRewardPreferredFacilityId' in request.resource.data) || request.resource.data.referralRewardPreferredFacilityId == null) &&
+        (!('approvedAt' in request.resource.data) || request.resource.data.approvedAt == null) &&
+        (!('rejectedAt' in request.resource.data) || request.resource.data.rejectedAt == null);
+      
+      // Allow update by owner or superadmin (for account interventions/suspension).
+      allow update: if request.auth != null &&
+        (
+          isSuperAdmin() ||
+          (
+            resource.data.ownerUid == request.auth.uid &&
+            !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(accountEntitlementWriteForbiddenKeys())
+          )
+        );
+      
+      // Allow delete only by owner
+      allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+
+      // Security Collections - account-scoped (Phase 2)
+      match /security_events/{eventId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+
+      match /security_alerts/{alertId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+
+      match /security_settings/{settingId} {
+        allow read, write: if isAuthenticated() && isAccountOwner(accountId);
+      }
+    }
+
+    // Referral program indexes — written only by Cloud Functions (Admin SDK)

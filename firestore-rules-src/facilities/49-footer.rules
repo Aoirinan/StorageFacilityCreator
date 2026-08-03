@@ -1,0 +1,9 @@
+    }
+    
+    // DNR entries in facility subcollections - facility owner access
+    // REMOVED: Global dnr_entries collection (security issue - line 642-648)
+    // DNR entries are now facility-scoped: facilities/{facilityId}/dnr/{dnrId}
+    // See facility-scoped DNR rules below
+    
+    // Super-admin collection group queries (Platform Control → AI logs / Message logs tabs).
+    // Nested facility rules are not enough for collectionGroup() list queries; use path=**.

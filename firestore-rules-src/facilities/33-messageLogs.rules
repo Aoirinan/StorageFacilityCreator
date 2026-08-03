@@ -1,0 +1,8 @@
+      match /messageLogs/{messageLogId} {
+        // Read: Staff for this facility; super admins (collection-group review in app)
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        // Write: Only Cloud Functions can write message logs (client writes disallowed for security)
+        allow write: if false; // All writes must go through Cloud Functions
+      }
+
+      // AI assistant audit (one document per user turn). Written only by Cloud Functions (Admin SDK).

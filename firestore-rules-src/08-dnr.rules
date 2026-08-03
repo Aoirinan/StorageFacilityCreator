@@ -1,0 +1,28 @@
+    match /{path=**}/dnr/{dnrId} {
+      allow read: if isSuperAdmin() || isDnrParticipant();
+    }
+    
+    // REMOVED: Global contract_templates collection (security issue - line 655-658)
+    // Contract templates are now facility-scoped: facilities/{facilityId}/contractTemplates/{templateId}
+    // See facility-scoped contract template rules below
+    
+    // Legacy unit_maps collection - DEPRECATED, not used
+    // New model uses facilities/{facilityId}/mapShapes (already scoped)
+    // match /unit_maps/{mapId} {
+    //   allow read, write: if request.auth != null && 
+    //     (resource.data.ownerUid == request.auth.uid ||
+    //      request.resource.data.ownerUid == request.auth.uid);
+    // }
+    
+    // REMOVED: Global security_events, security_alerts, security_settings collections (security issue - lines 668-684)
+    // Security collections are now account-scoped: facilityCreatorAccounts/{accountId}/security_*/
+    // See account-scoped security rules below
+    
+    // -------------------------------------------------------------------------
+    // DNR participation (Do Not Rent terms acceptance + subscription gate)
+    // Shared DNR data (global_dnr_entries and cross-facility dnr collection-group
+    // reads) is limited to "participating" operators: users on an active paid
+    // subscription who have recorded a one-time acceptance of the DNR terms.
+    // The acceptance doc is validated against the subscription at create time and
+    // the subscription is re-checked on every read, so lapsed accounts lose access.
+    // -------------------------------------------------------------------------

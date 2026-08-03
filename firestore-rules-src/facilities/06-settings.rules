@@ -1,0 +1,5 @@
+      match /settings/{settingId} {
+        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+      
+      // Rate limit counters (per facility) - Cloud Functions only (Admin SDK bypasses rules)

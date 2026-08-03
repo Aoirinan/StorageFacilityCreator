@@ -1,0 +1,392 @@
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function facilityDoc(facilityId) {
+      let facility = get(/databases/$(database)/documents/facilities/$(facilityId));
+      return facility.data;
+    }
+
+    function facilityExists(facilityId) {
+      return exists(/databases/$(database)/documents/facilities/$(facilityId));
+    }
+
+    function facilityRole(facilityId) {
+      return facilityExists(facilityId) && facilityDoc(facilityId).roles != null && facilityDoc(facilityId).roles[request.auth.uid] != null
+        ? facilityDoc(facilityId).roles[request.auth.uid]
+        : null;
+    }
+
+    function isFacilityOwnerOrManager(facilityId) {
+      return isAuthenticated() && facilityExists(facilityId) && (
+        facilityDoc(facilityId).ownerUid == request.auth.uid ||
+        (facilityDoc(facilityId).managers != null && facilityDoc(facilityId).managers[request.auth.uid] == true) ||
+        facilityRole(facilityId) == 'owner' ||
+        facilityRole(facilityId) == 'manager' ||
+        facilityRole(facilityId) == 'admin'
+      );
+    }
+
+    function isFacilityStaff(facilityId) {
+      return isFacilityOwnerOrManager(facilityId) ||
+        facilityRole(facilityId) == 'manager' ||
+        facilityRole(facilityId) == 'employee';
+    }
+
+    function authEmailLower() {
+      return request.auth != null && request.auth.token.email != null
+        ? request.auth.token.email.lower()
+        : null;
+    }
+
+    function isSuperAdmin() {
+      let email = authEmailLower();
+      // Keep in sync with lib/services/superadmin_service.dart, storage.rules, and functions/src/index.ts
+      return email != null && (
+        email == 'russell_forsyth_1992@outlook.com' ||
+        email == 'russellforsyth09091992@gmail.com' ||
+        email == 'kennethgriggs03@gmail.com'
+      );
+    }
+
+    // Viewer role + staff/owner: read calendar and shared lists (writes stay stricter per collection).
+    function isFacilityViewer(facilityId) {
+      return facilityExists(facilityId) && facilityRole(facilityId) == 'viewer';
+    }
+
+    function canReadFacilityCalendarAndLists(facilityId) {
+      return isSuperAdmin() ||
+        isFacilityStaff(facilityId) ||
+        isFacilityViewer(facilityId);
+    }
+
+    // Client-written manual payment row in tenants/{id}/payments (see PaymentService.recordManualPayment).
+    // Stripe/webhook rows stay server-only (different type / shape).
+    function isManualTenantPaymentCreate(facilityId, tenantId) {
+      return request.resource.data.keys().hasOnly([
+          'facilityId',
+          'tenantId',
+          'type',
+          'amountCents',
+          'currency',
+          'chargeType',
+          'status',
+          'description',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'failureCode',
+          'failureMessage'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.tenantId == tenantId &&
+        request.resource.data.type == 'manual' &&
+        request.resource.data.amountCents is int &&
+        request.resource.data.amountCents >= 1 &&
+        request.resource.data.amountCents <= 1000000000 &&
+        request.resource.data.currency == 'usd' &&
+        request.resource.data.chargeType is string &&
+        request.resource.data.chargeType.matches('^manual_[a-zA-Z0-9_]+$') &&
+        request.resource.data.status == 'succeeded' &&
+        request.resource.data.description is string &&
+        request.resource.data.description.size() <= 4000 &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.updatedAt == request.time &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.failureCode == null &&
+        request.resource.data.failureMessage == null;
+    }
+
+    // Client-written facility payment row (see PaymentService.recordManualPayment / LateLogicService).
+  function facilityPaymentWriteForbiddenKeys() {
+    return [
+      'externalPaymentId',
+      'transactionId',
+      'quickbooksId',
+      'quickbooksSyncStatus',
+      'stripePaymentIntentId',
+      'stripeChargeId',
+      'type',
+      'amountCents',
+    ];
+  }
+
+  function accountEntitlementWriteForbiddenKeys() {
+    return [
+      'subscriptionStatus',
+      'stripeSubscriptionId',
+      'stripeCustomerId',
+      'subscriptionCurrentPeriodStart',
+      'subscriptionCurrentPeriodEnd',
+      'subscriptionCancelAtPeriodEnd',
+      'subscriptionCanceledAt',
+      'subscriptionTrialEnd',
+      'suspended',
+      'suspensionReason',
+      'suspendedAt',
+      'suspendedByUid',
+      'suspendedByEmail',
+      'referralCode',
+      'referredByAccountId',
+      'referralRewardPreferredFacilityId',
+      'approvedAt',
+      'rejectedAt'
+    ];
+  }
+
+  function facilityEntitlementWriteForbiddenKeys() {
+    return [
+      'stripePlatformSubscriptionId',
+      'platformSubscriptionStatus',
+      'platformSubscriptionCurrentPeriodStart',
+      'platformSubscriptionCurrentPeriodEnd',
+      'platformSubscriptionCancelAtPeriodEnd',
+      'platformSubscriptionTrialEnd',
+      'stripeWebsiteSubscriptionId',
+      'websiteSubscriptionStatus',
+      'websiteSubscriptionCurrentPeriodEnd',
+      'websiteSubscriptionCancelAtPeriodEnd',
+      'websiteCheckoutSessionId'
+    ];
+  }
+
+  function isManualCompletedFacilityPaymentCreate(facilityId) {
+    return request.resource.data.keys().hasAll([
+        'tenantId',
+        'facilityId',
+        'contractId',
+        'amount',
+        'status',
+        'method',
+        'paidAt',
+        'paidDate',
+        'dueDate',
+        'createdAt',
+        'updatedAt',
+        'createdBy',
+        'isActive',
+      ]) &&
+      !request.resource.data.keys().hasAny(facilityPaymentWriteForbiddenKeys()) &&
+      request.resource.data.keys().size() >= 13 &&
+      request.resource.data.keys().size() <= 16 &&
+      request.resource.data.facilityId == facilityId &&
+      request.resource.data.tenantId is string &&
+      request.resource.data.contractId is string &&
+      request.resource.data.amount is number &&
+      request.resource.data.amount >= 0.01 &&
+      request.resource.data.amount <= 10000000 &&
+      request.resource.data.status == 'completed' &&
+      request.resource.data.method is string &&
+      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe)$') &&
+      request.resource.data.paidAt == request.time &&
+      request.resource.data.paidDate == request.time &&
+      request.resource.data.dueDate == request.time &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      request.resource.data.createdBy == request.auth.uid &&
+      request.resource.data.isActive == true &&
+      (!('tenantName' in request.resource.data) || request.resource.data.tenantName is string) &&
+      (!('unitNumber' in request.resource.data) || request.resource.data.unitNumber is string) &&
+      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000));
+  }
+
+  function isLateFeeFacilityPaymentCreate(facilityId) {
+    return request.resource.data.keys().hasOnly([
+        'tenantId',
+        'facilityId',
+        'contractId',
+        'amount',
+        'status',
+        'method',
+        'dueDate',
+        'notes',
+        'createdAt',
+        'updatedAt',
+        'createdBy'
+      ]) &&
+      request.resource.data.facilityId == facilityId &&
+      request.resource.data.tenantId is string &&
+      request.resource.data.contractId is string &&
+      request.resource.data.amount is number &&
+      request.resource.data.amount >= 0.01 &&
+      request.resource.data.amount <= 10000000 &&
+      request.resource.data.status == 'pending' &&
+      request.resource.data.method == 'cash' &&
+      request.resource.data.dueDate == request.time &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      request.resource.data.createdBy == request.auth.uid &&
+      request.resource.data.notes is string &&
+      request.resource.data.notes.size() <= 4000;
+  }
+
+  function isClientFacilityPaymentCreate(facilityId) {
+    return isManualCompletedFacilityPaymentCreate(facilityId) ||
+      isLateFeeFacilityPaymentCreate(facilityId);
+  }
+
+    function inviteDocPath(facilityId, inviteId) {
+      return /databases/$(database)/documents/facilities/$(facilityId)/invites/$(inviteId);
+    }
+
+    // Invite acceptance: pending invite must match signed-in email and claimed role (see PermissionService.assignRole).
+    function pendingInviteMatchesUserRoleWrite(facilityId, inviteId, roleType, assignedBy) {
+      return inviteId is string &&
+        exists(inviteDocPath(facilityId, inviteId)) &&
+        get(inviteDocPath(facilityId, inviteId)).data.status == 'pending' &&
+        get(inviteDocPath(facilityId, inviteId)).data.facilityId == facilityId &&
+        authEmailLower() != null &&
+        get(inviteDocPath(facilityId, inviteId)).data.emailLower == authEmailLower() &&
+        get(inviteDocPath(facilityId, inviteId)).data.roleType == roleType &&
+        get(inviteDocPath(facilityId, inviteId)).data.invitedBy == assignedBy;
+    }
+
+    function facilityInviteRoleMergeAllowed(facilityId) {
+      return request.auth != null &&
+        request.resource.data.acceptingInviteId is string &&
+        request.resource.data.roles != null &&
+        request.resource.data.roles[request.auth.uid] is string &&
+        pendingInviteMatchesUserRoleWrite(
+          facilityId,
+          request.resource.data.acceptingInviteId,
+          request.resource.data.roles[request.auth.uid],
+          get(inviteDocPath(facilityId, request.resource.data.acceptingInviteId)).data.invitedBy
+        ) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['roles', 'acceptingInviteId']) &&
+        (
+          !('roles' in resource.data) ||
+          resource.data.roles == null ||
+          request.resource.data.roles.diff(resource.data.roles).changedKeys().hasOnly([request.auth.uid])
+        );
+    }
+
+    function stringMatchesTime(value) {
+      return value is string &&
+        value.size() == 5 &&
+        value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function isValidReminderChannels(channels) {
+      return channels is list &&
+        channels.size() > 0 &&
+        channels.hasOnly(['email', 'sms', 'push', 'inApp']);
+    }
+
+    function isValidConversationCreate(facilityId) {
+      // Private conversation validation (if isPrivate == true)
+      let isPrivateConv = request.resource.data.isPrivate == true;
+      let isGroupConv = !('isPrivate' in request.resource.data) || request.resource.data.isPrivate == false;
+      
+      // Validate private conversation requirements
+      let privateValid = isPrivateConv && 
+        request.resource.data.keys().hasAll([
+          'facilityId',
+          'title',
+          'createdAt',
+          'createdByUid',
+          'createdByEmail',
+          'createdByName',
+          'isActive',
+          'isPrivate',
+          'participantUids',
+          'participantNames'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.isPrivate == true &&
+        request.resource.data.participantUids is list &&
+        request.resource.data.participantUids.size() == 2 &&
+        request.resource.data.participantUids.hasAny([request.auth.uid]) &&
+        request.resource.data.participantNames is map &&
+        request.resource.data.participantNames.keys().hasAll(request.resource.data.participantUids);
+      
+      // Validate group conversation requirements (default)
+      let groupValid = isGroupConv &&
+        request.resource.data.keys().hasAll([
+          'facilityId',
+          'title',
+          'createdAt',
+          'createdByUid',
+          'createdByEmail',
+          'createdByName',
+          'isActive'
+        ]) &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        (!('isPrivate' in request.resource.data) || request.resource.data.isPrivate == false);
+      
+      return privateValid || groupValid;
+    }
+    
+    function isPrivateConversationParticipant(facilityId, conversationId) {
+      return exists(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)) &&
+             get(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)).data.isPrivate == true &&
+             get(/databases/$(database)/documents/facilities/$(facilityId)/conversations/$(conversationId)).data.participantUids.hasAny([request.auth.uid]);
+    }
+
+    function isValidMessageCreate(facilityId, conversationId) {
+      return request.resource.data.keys().hasAll([
+        'conversationId',
+        'facilityId',
+        'text',
+        'createdAt',
+        'senderUid',
+        'senderEmail',
+        'senderName',
+        'readBy',
+        'isActive'
+      ]) &&
+        request.resource.data.conversationId == conversationId &&
+        request.resource.data.facilityId == facilityId &&
+        request.resource.data.senderUid == request.auth.uid;
+    }
+
+    // Permanent tenant doc delete: require active paid or trialing (not expired), via per-facility platform sub or linked creator account.
+    // Stricter than general app access (no past_due grace / cancelled remainder).
+    function creatorAccountData(accountId) {
+      return get(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)).data;
+    }
+
+    function accountAllowsPermanentTenantDelete(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        (creatorAccountData(accountId).suspended == null || creatorAccountData(accountId).suspended == false) &&
+        creatorAccountData(accountId).subscriptionStatus != 'pendingApproval' &&
+        (
+          creatorAccountData(accountId).subscriptionStatus == 'active' ||
+          (
+            creatorAccountData(accountId).subscriptionStatus == 'trialing' &&
+            (
+              !('subscriptionTrialEnd' in creatorAccountData(accountId)) ||
+              creatorAccountData(accountId).subscriptionTrialEnd == null ||
+              request.time < creatorAccountData(accountId).subscriptionTrialEnd
+            )
+          )
+        );
+    }
+
+    function facilityHasActiveOrTrialingPlatformSub(facilityId) {
+      let d = facilityDoc(facilityId);
+      return 'platformSubscriptionStatus' in d &&
+        d.platformSubscriptionStatus is string &&
+        (d.platformSubscriptionStatus == 'active' || d.platformSubscriptionStatus == 'trialing');
+    }
+
+    function facilityAllowsPermanentTenantDelete(facilityId) {
+      return facilityExists(facilityId) && (
+        facilityHasActiveOrTrialingPlatformSub(facilityId) ||
+        (
+          'facilityCreatorAccountId' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).facilityCreatorAccountId is string &&
+          facilityDoc(facilityId).facilityCreatorAccountId.size() > 0 &&
+          accountAllowsPermanentTenantDelete(facilityDoc(facilityId).facilityCreatorAccountId)
+        )
+      );
+    }
+
+    function isAccountOwner(accountId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        get(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)).data.ownerUid == request.auth.uid;
+    }
+    
+    // Users can only access their own user document

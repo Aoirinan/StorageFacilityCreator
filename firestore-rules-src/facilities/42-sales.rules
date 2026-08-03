@@ -1,0 +1,4 @@
+      match /sales/{saleId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+

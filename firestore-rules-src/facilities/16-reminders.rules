@@ -1,0 +1,27 @@
+      match /reminders/{reminderId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'tenantId',
+            'facilityId',
+            'type',
+            'channels',
+            'title',
+            'message',
+            'scheduledFor',
+            'status',
+            'createdAt',
+            'updatedAt',
+            'createdBy',
+            'isActive'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          isValidReminderChannels(request.resource.data.channels);
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('channels' in request.resource.data) || isValidReminderChannels(request.resource.data.channels)) &&
+          (!('scheduledFor' in request.resource.data) || request.resource.data.scheduledFor is timestamp);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+

@@ -1,0 +1,4 @@
+      match /rateLimits/{windowId} {
+        allow read, write: if false;
+      }
+      

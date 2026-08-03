@@ -1,0 +1,5 @@
+      match /auditLogs/{logId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if isFacilityOwnerOrManager(facilityId);
+      }
+

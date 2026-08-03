@@ -1,0 +1,5 @@
+      match /billing/{billingId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Email opt-outs (List-Unsubscribe). Written by Cloud Functions only.

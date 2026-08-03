@@ -1,0 +1,6 @@
+      match /payments/{paymentId} {
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow create: if isSuperAdmin() || (isFacilityStaff(facilityId) && isClientFacilityPaymentCreate(facilityId));
+        allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+

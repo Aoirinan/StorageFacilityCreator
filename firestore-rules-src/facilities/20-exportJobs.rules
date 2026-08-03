@@ -1,0 +1,10 @@
+      match /exportJobs/{jobId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.status == 'pending';
+        // Status, storage path, expiry, and download metadata are server-owned.
+        allow update, delete: if false;
+      }
+

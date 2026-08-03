@@ -1,0 +1,11 @@
+      match /units/{unitId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        match /overlockEvents/{eventId} {
+          allow read: if canReadFacilityCalendarAndLists(facilityId);
+          allow create: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow update, delete: if false;
+        }
+      }
+
+      // Internal facility reservations (calendar). Public flow uses /publicReservations.

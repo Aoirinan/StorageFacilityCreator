@@ -1,0 +1,6 @@
+      match /AutopayEvents/{eventId} {
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow write: if false; // Cloud Functions only
+      }
+
+      // Facility notifications (autopay, system alerts). Written by Cloud Functions; staff can read. Redirect /notifications -> Settings.

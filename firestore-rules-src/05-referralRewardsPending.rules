@@ -1,0 +1,5 @@
+    match /referralRewardsPending/{id} {
+      allow read, write: if false;
+    }
+    
+    // Facilities - owner-based access with proper validation

@@ -1,0 +1,10 @@
+      match /insurancePlans/{planId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'monthlyPrice', 'coverageAmount', 'active', 'createdAt', 'updatedAt']);
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+

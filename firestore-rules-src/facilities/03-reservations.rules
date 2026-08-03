@@ -1,0 +1,6 @@
+      match /reservations/{reservationId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Optional facility-level tenant insurance index (calendar aggregation)

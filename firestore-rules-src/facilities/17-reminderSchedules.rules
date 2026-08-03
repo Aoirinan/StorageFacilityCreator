@@ -1,0 +1,34 @@
+      match /reminderSchedules/{scheduleId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'name',
+            'type',
+            'channels',
+            'sendMode',
+            'offsetDays',
+            'sendTime',
+            'autoSend',
+            'isActive',
+            'titleTemplate',
+            'messageTemplate',
+            'createdAt',
+            'updatedAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          isValidReminderChannels(request.resource.data.channels) &&
+          request.resource.data.offsetDays is int &&
+          stringMatchesTime(request.resource.data.sendTime);
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('channels' in request.resource.data) || isValidReminderChannels(request.resource.data.channels)) &&
+          (!('offsetDays' in request.resource.data) || request.resource.data.offsetDays is int) &&
+          (!('sendTime' in request.resource.data) ||
+            request.resource.data.sendTime == null ||
+            stringMatchesTime(request.resource.data.sendTime));
+        allow delete: if isFacilityStaff(facilityId);
+      }
+

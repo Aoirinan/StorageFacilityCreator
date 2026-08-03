@@ -1,0 +1,6 @@
+      match /tenant_insurance/{insuranceId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityStaff(facilityId);
+      }
+
+      // Facility-level overlock schedule (calendar); distinct from units/.../overlockEvents

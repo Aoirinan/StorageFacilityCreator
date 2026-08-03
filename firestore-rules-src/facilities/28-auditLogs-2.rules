@@ -1,0 +1,27 @@
+      match /auditLogs/{logId} {
+        // Read: Staff can read audit logs for their facility
+        allow read: if isFacilityStaff(facilityId);
+        // Write: Only system/authorized operations can create audit logs
+        // Audit logs should be immutable once created
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'action',
+            'entityType',
+            'entityId',
+            'userId',
+            'userEmail',
+            'timestamp',
+            'changes',
+            'metadata'
+          ]) &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.action is string &&
+          request.resource.data.entityType is string &&
+          request.resource.data.timestamp is timestamp;
+        // Audit logs should not be updated or deleted (immutable)
+        allow update: if false; // Audit logs are immutable
+        allow delete: if isSuperAdmin(); // Only super admins can delete audit logs (for compliance)
+      }
+

@@ -1,0 +1,6 @@
+    match /appConfig/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
+    // Public map snapshots are read-only and intentionally safe for anonymous access.

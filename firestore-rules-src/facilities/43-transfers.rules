@@ -1,0 +1,4 @@
+      match /transfers/{transferId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+

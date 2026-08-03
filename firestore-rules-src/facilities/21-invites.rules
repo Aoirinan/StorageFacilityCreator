@@ -1,0 +1,46 @@
+      match /invites/{inviteId} {
+        // get: invitee can open email link before sign-in (pending only); staff; or signed-in invitee
+        allow get: if resource != null &&
+          (
+            resource.data.status == 'pending' ||
+            isSuperAdmin() ||
+            isFacilityOwnerOrManager(facilityId) ||
+            (authEmailLower() != null &&
+              'emailLower' in resource.data &&
+              resource.data.emailLower == authEmailLower())
+          );
+        // list: management UI only (collection queries); not public listing
+        allow list: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create: if isSuperAdmin() ||
+          (isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'email',
+            'emailLower',
+            'roleType',
+            'status',
+            'invitedAt',
+            'invitedBy'
+          ]) &&
+          request.resource.data.roleType is string &&
+          request.resource.data.status == 'pending' &&
+          request.resource.data.invitedBy == request.auth.uid &&
+          request.resource.data.invitedAt is timestamp);
+        allow update: if isSuperAdmin() ||
+          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId)) ||
+          (
+            authEmailLower() != null &&
+            resource.data.emailLower == authEmailLower() &&
+            request.resource.data.emailLower == resource.data.emailLower &&
+            request.resource.data.roleType == resource.data.roleType &&
+            request.resource.data.invitedAt == resource.data.invitedAt &&
+            request.resource.data.invitedBy == resource.data.invitedBy &&
+            (!('invitedByEmail' in resource.data) || request.resource.data.invitedByEmail == resource.data.invitedByEmail) &&
+            request.resource.data.status == 'accepted' &&
+            request.resource.data.acceptedBy == request.auth.uid &&
+            request.resource.data.acceptedAt is timestamp
+          );
+        allow delete: if isSuperAdmin() || 
+          (resource.data.facilityId != null && isFacilityOwnerOrManager(resource.data.facilityId));
+      }
+

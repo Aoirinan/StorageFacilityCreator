@@ -1,0 +1,4 @@
+    match /{path=**}/messageLogs/{messageLogId} {
+      allow read: if isSuperAdmin();
+    }
+

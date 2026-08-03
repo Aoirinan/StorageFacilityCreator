@@ -1,0 +1,6 @@
+      match /Notifications/{notificationId} {
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow write: if false; // Cloud Functions only
+      }
+
+      // Message logs - unified logging for all outbound communications

@@ -1,0 +1,57 @@
+      match /contracts/{contractId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'facilityOwnerUid',
+            'tenantId',
+            'title',
+            'type',
+            'status',
+            'createdAt',
+            'createdBy',
+            'isActive'
+          ]) &&
+          request.resource.data.facilityOwnerUid == facilityDoc(facilityId).ownerUid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.type is string &&
+          request.resource.data.status is string &&
+          request.resource.data.isActive is bool &&
+          (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus == 'active');
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId);
+        // Move-out operations require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            // Allow move-out status updates
+            (!('moveOutStatus' in request.resource.data) || request.resource.data.moveOutStatus is string) &&
+            (!('moveOutDate' in request.resource.data) || request.resource.data.moveOutDate is timestamp) &&
+            (!('moveOutCharges' in request.resource.data) || request.resource.data.moveOutCharges is number) &&
+            (!('moveOutRefund' in request.resource.data) || request.resource.data.moveOutRefund is number)
+          );
+        // Compliance operations (disable/enable) require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus is string) &&
+            (!('disabledAt' in request.resource.data) || request.resource.data.disabledAt is timestamp) &&
+            (!('disabledBy' in request.resource.data) || request.resource.data.disabledBy is string) &&
+            (!('disabledReason' in request.resource.data) || request.resource.data.disabledReason is string)
+          );
+        // Super admin can disable any contract
+        allow update: if isSuperAdmin() &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus is string) &&
+            (!('disabledAt' in request.resource.data) || request.resource.data.disabledAt is timestamp) &&
+            (!('disabledBy' in request.resource.data) || request.resource.data.disabledBy is string) &&
+            (!('disabledReason' in request.resource.data) || request.resource.data.disabledReason is string)
+          );
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Lease Templates (for E-sign)

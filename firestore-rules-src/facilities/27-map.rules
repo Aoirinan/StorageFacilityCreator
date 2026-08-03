@@ -1,0 +1,4 @@
+      match /map/{mapId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+

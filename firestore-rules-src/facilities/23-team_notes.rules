@@ -1,0 +1,25 @@
+      match /team_notes/{noteId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.body is string &&
+          request.resource.data.body.size() > 0 &&
+          request.resource.data.body.size() <= 8000 &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          request.resource.data.updatedByUid == request.auth.uid &&
+          request.resource.data.createdAt is timestamp &&
+          request.resource.data.updatedAt is timestamp;
+        allow update: if isFacilityStaff(facilityId) &&
+          request.resource.data.body is string &&
+          request.resource.data.body.size() > 0 &&
+          request.resource.data.body.size() <= 8000 &&
+          request.resource.data.createdByUid == resource.data.createdByUid &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.updatedAt is timestamp &&
+          request.resource.data.updatedByUid == request.auth.uid;
+        allow delete: if isFacilityStaff(facilityId);
+      }
+
+      // Team messaging (conversations and messages) - facility staff can read/write
+      // Private conversations: only participants can access
+      // Group conversations: all facility staff can access
+      // SuperAdmin bypass: full access for admin account (e.g. after subscription payment)

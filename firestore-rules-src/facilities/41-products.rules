@@ -1,0 +1,8 @@
+      match /products/{productId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+        // Stock adjustment audit log (POS / inventory) — subcollection must be explicit
+        match /stockAdjustments/{adjustmentId} {
+          allow read, write: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+

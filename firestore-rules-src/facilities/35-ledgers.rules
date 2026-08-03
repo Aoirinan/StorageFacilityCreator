@@ -1,0 +1,34 @@
+      match /ledgers/{ledgerId} {
+        // Read: Staff can read ledger entries
+        allow read: if isFacilityStaff(facilityId);
+        // Create: Staff can create ledger entries, but refunds require owner/manager
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'tenantId',
+            'facilityId',
+            'type',
+            'amount',
+            'entryDate',
+            'status',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.amount is number &&
+          request.resource.data.type is string &&
+          request.resource.data.status is string &&
+          // Refunds require owner/manager permission
+          (request.resource.data.type != 'refund' || isFacilityOwnerOrManager(facilityId));
+        // Update: Only owner/manager can update ledger entries (for corrections)
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          // Voiding entries requires owner/manager
+          (!('status' in request.resource.data) || 
+            (request.resource.data.status == 'voided' && isFacilityOwnerOrManager(facilityId)) ||
+            request.resource.data.status == resource.data.status);
+        // Delete: Only owner/manager can delete (should be rare, prefer voiding)
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+

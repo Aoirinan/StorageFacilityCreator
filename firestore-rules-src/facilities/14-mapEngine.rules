@@ -1,0 +1,9 @@
+      match /mapEngine/{docId} {
+        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+
+        match /{subPath=**} {
+          allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      // Audit logs for sensitive actions

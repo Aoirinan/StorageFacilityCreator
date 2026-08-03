@@ -1,0 +1,17 @@
+      match /dnr/{dnrId} {
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'active', 'addedAt', 'addedByUid', 'facilityId']) &&
+          // Submitter must attest the entry is factual, supported by records,
+          // and not based on a protected characteristic (recorded with the entry).
+          request.resource.data.accuracyAttestation == true &&
+          // Entries are shared with other participating facilities, so the
+          // submitter must be a registered DNR participant (terms + paid sub).
+          (isSuperAdmin() || isDnrParticipant());
+        allow update: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId)
+        );
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }

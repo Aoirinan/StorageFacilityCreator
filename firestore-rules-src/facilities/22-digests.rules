@@ -1,0 +1,13 @@
+      match /digests/{digestId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+
+        match /items/{itemId} {
+          allow read, write: if isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      // DNR rules live in the granular "DNR Entries - facility-scoped (Phase 2)" block below.
+      // (A broad read/write rule here would OR with that block and bypass its create-time
+      // attestation requirement, so keep this spot rule-free.)
+
+      // Shared team notes — readable by everyone who can use facility lists; editable by staff

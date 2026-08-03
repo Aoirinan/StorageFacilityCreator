@@ -1,0 +1,32 @@
+      match /claims/{claimId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'tenantId',
+            'incidentDate',
+            'claimType',
+            'status',
+            'claimAmount',
+            'deductibleAmount',
+            'description',
+            'filedDate',
+            'createdBy',
+            'createdAt'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.claimType is string &&
+          request.resource.data.status is string &&
+          request.resource.data.claimAmount is number &&
+          request.resource.data.deductibleAmount is number &&
+          request.resource.data.incidentDate is timestamp &&
+          request.resource.data.filedDate is timestamp;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          // Only owner/manager can change status
+          (!('status' in request.resource.data) || isFacilityOwnerOrManager(facilityId));
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+

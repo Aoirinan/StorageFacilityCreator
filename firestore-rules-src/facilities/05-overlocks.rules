@@ -1,0 +1,6 @@
+      match /overlocks/{overlockId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Facility-level settings (including settings/public used by online rentals)

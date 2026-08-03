@@ -1,0 +1,6 @@
+    match /rateLimits/{docId} {
+      allow read, write: if false; // Cloud Functions use Admin SDK (bypasses rules)
+    }
+
+    // System configuration - super admin only
+    // Currently only used for system billing defaults (configs/system)

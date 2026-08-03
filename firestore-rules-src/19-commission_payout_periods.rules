@@ -1,0 +1,8 @@
+    match /commission_payout_periods/{periodId} {
+      allow read, write: if request.auth != null && isSuperAdmin();
+      match /reps/{repId} {
+        allow read, write: if request.auth != null && isSuperAdmin();
+      }
+    }
+
+    // User roles collection - for permission system

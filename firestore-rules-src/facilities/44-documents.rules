@@ -1,0 +1,31 @@
+      match /documents/{documentId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'fileName',
+            'fileUrl',
+            'fileSize',
+            'mimeType',
+            'documentType',
+            'category',
+            'uploadedAt',
+            'uploadedBy',
+            'isActive'
+          ]) &&
+          request.resource.data.uploadedBy == request.auth.uid &&
+          request.resource.data.fileName is string &&
+          request.resource.data.fileUrl is string &&
+          request.resource.data.fileSize is number &&
+          request.resource.data.mimeType is string &&
+          request.resource.data.documentType is string &&
+          request.resource.data.category is string &&
+          request.resource.data.uploadedAt is timestamp &&
+          request.resource.data.isActive is bool;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Contract Templates - facility-scoped (Phase 2)

@@ -1,0 +1,18 @@
+      match /rightsAttestations/{attestationId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'uploaderUserId',
+            'uploaderEmail',
+            'timestamp',
+            'tosVersion',
+            'attestationText',
+            'documentId'
+          ]) &&
+          request.resource.data.uploaderUserId == request.auth.uid;
+        // No updates or deletes allowed - attestations are immutable
+      }
+
+      // Terms Acceptance - facility-level compliance

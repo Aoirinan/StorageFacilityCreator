@@ -1,0 +1,32 @@
+      match /leases/{leaseId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'tenantId',
+            'unitId',
+            'moveInDate',
+            'rentAmount',
+            'status',
+            'createdAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.status is string &&
+          request.resource.data.moveInDate is timestamp &&
+          request.resource.data.rentAmount is number;
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('tenantId' in request.resource.data) || request.resource.data.tenantId == resource.data.tenantId) &&
+          (!('unitId' in request.resource.data) || request.resource.data.unitId == resource.data.unitId);
+        // Move-out operations require owner/manager permissions
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          (
+            (!('moveOutDate' in request.resource.data) || request.resource.data.moveOutDate is timestamp) &&
+            (!('status' in request.resource.data) || request.resource.data.status in ['active', 'terminated', 'expired'])
+          );
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+

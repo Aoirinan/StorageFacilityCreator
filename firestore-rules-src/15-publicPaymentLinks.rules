@@ -1,0 +1,33 @@
+    match /publicPaymentLinks/{linkId} {
+      // Public reads are served by token-validating callables that return a
+      // minimal response. Staff may still manage links for their own facility.
+      allow get: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
+
+      // Staff management UI: queries must only return docs the user may read (per-doc check).
+      allow list: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
+
+      // Link creation is server-only so token generation and tenant binding
+      // cannot be bypassed by older or modified clients.
+      allow create: if false;
+
+      // Revoke pending links only. Marking paid should be done with Admin SDK (e.g. webhook).
+      allow update: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId) &&
+        request.resource.data.facilityId == resource.data.facilityId &&
+        request.resource.data.tenantId == resource.data.tenantId &&
+        request.resource.data.token == resource.data.token &&
+        request.resource.data.amount == resource.data.amount &&
+        resource.data.status == 'pending' &&
+        request.resource.data.status == 'revoked' &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'revokedAt']);
+
+      allow delete: if false;
+    }
+
+    // Public reservations used by unauthenticated online rental flow.
+    // NOTE: This collection is intentionally separate from facility private data.

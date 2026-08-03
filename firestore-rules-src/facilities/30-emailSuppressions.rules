@@ -1,0 +1,5 @@
+      match /emailSuppressions/{suppressionId} {
+        allow read, write: if false;
+      }
+
+      // Autopay events (Payments > Autopay tab activity). Written by Cloud Functions only.

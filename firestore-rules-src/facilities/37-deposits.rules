@@ -1,0 +1,5 @@
+      match /deposits/{depositId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Insurance Plans - facility-scoped (Phase 2)

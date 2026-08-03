@@ -1,0 +1,4 @@
+      match /invoices/{invoiceId} {
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+

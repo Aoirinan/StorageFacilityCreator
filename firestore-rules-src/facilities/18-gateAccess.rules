@@ -1,0 +1,43 @@
+      match /gateAccess/{accessId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityStaff(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll([
+            'facilityId',
+            'accessCode',
+            'isActive',
+            'createdAt',
+            'updatedAt',
+            'createdBy'
+          ]) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.accessCode is string &&
+          request.resource.data.accessCode.size() > 0 &&
+          (!('allowedDays' in request.resource.data) ||
+            request.resource.data.allowedDays == null ||
+            (request.resource.data.allowedDays is list &&
+              request.resource.data.allowedDays.hasOnly(['Mon','Tue','Wed','Thu','Fri','Sat','Sun']))) &&
+          (!('allowedStartTime' in request.resource.data) ||
+            request.resource.data.allowedStartTime == null ||
+            stringMatchesTime(request.resource.data.allowedStartTime)) &&
+          (!('allowedEndTime' in request.resource.data) ||
+            request.resource.data.allowedEndTime == null ||
+            stringMatchesTime(request.resource.data.allowedEndTime));
+        allow update: if isFacilityStaff(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
+          (!('accessCode' in request.resource.data) ||
+            (request.resource.data.accessCode is string && request.resource.data.accessCode.size() > 0)) &&
+          (!('allowedDays' in request.resource.data) ||
+            request.resource.data.allowedDays == null ||
+            (request.resource.data.allowedDays is list &&
+              request.resource.data.allowedDays.hasOnly(['Mon','Tue','Wed','Thu','Fri','Sat','Sun']))) &&
+          (!('allowedStartTime' in request.resource.data) ||
+            request.resource.data.allowedStartTime == null ||
+            stringMatchesTime(request.resource.data.allowedStartTime)) &&
+          (!('allowedEndTime' in request.resource.data) ||
+            request.resource.data.allowedEndTime == null ||
+            stringMatchesTime(request.resource.data.allowedEndTime)) &&
+          (!('updatedBy' in request.resource.data) || request.resource.data.updatedBy == request.auth.uid);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+

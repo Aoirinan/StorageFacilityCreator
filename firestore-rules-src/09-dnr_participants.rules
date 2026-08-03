@@ -1,0 +1,80 @@
+    function creatorAccountActiveOwnedBy(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        creatorAccountData(accountId).ownerUid == request.auth.uid &&
+        creatorAccountData(accountId).subscriptionStatus == 'active';
+    }
+
+    function creatorAccountActive(accountId) {
+      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
+        creatorAccountData(accountId).subscriptionStatus == 'active';
+    }
+
+    // DNR is premium-only: paid 'active' subscription (no trial), matching the
+    // app's hasPremiumAccess. Accepts either a per-facility platform sub or the
+    // linked creator account.
+    function dnrFacilityHasPremium(facilityId) {
+      return facilityExists(facilityId) && (
+        (
+          'platformSubscriptionStatus' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).platformSubscriptionStatus == 'active'
+        ) ||
+        (
+          'facilityCreatorAccountId' in facilityDoc(facilityId) &&
+          facilityDoc(facilityId).facilityCreatorAccountId is string &&
+          facilityDoc(facilityId).facilityCreatorAccountId.size() > 0 &&
+          creatorAccountActive(facilityDoc(facilityId).facilityCreatorAccountId)
+        )
+      );
+    }
+
+    function dnrParticipantDoc() {
+      return get(/databases/$(database)/documents/dnr_participants/$(request.auth.uid)).data;
+    }
+
+    function isDnrParticipant() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/dnr_participants/$(request.auth.uid)) &&
+        dnrParticipantDoc().accepted == true &&
+        (
+          (
+            'accountId' in dnrParticipantDoc() &&
+            dnrParticipantDoc().accountId is string &&
+            creatorAccountActive(dnrParticipantDoc().accountId)
+          ) ||
+          (
+            'facilityId' in dnrParticipantDoc() &&
+            dnrParticipantDoc().facilityId is string &&
+            dnrFacilityHasPremium(dnrParticipantDoc().facilityId)
+          )
+        );
+    }
+
+    match /dnr_participants/{uid} {
+      allow read: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == uid);
+      // Acceptance can only be recorded by the user themselves, and only while
+      // they hold an active paid subscription (via their own creator account or
+      // a facility they own/manage).
+      allow create, update: if isAuthenticated() && request.auth.uid == uid
+        && request.resource.data.accepted == true
+        && request.resource.data.termsVersion is string
+        && (
+          (
+            request.resource.data.accountId is string &&
+            creatorAccountActiveOwnedBy(request.resource.data.accountId)
+          ) ||
+          (
+            request.resource.data.facilityId is string &&
+            isFacilityOwnerOrManager(request.resource.data.facilityId) &&
+            dnrFacilityHasPremium(request.resource.data.facilityId)
+          )
+        );
+      allow delete: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == uid);
+    }
+
+    // -------------------------------------------------------------------------
+    // Global DNR (Do Not Rent) - platform-wide across all SFC operator accounts
+    // ADDITIVE: New collection only; does not change facility-scoped DNR rules.
+    // Read: participating operators only (active paid subscription + recorded
+    // DNR terms acceptance) and super admins.
+    // Write: facility owner/manager/admin only (enforced via createdByFacilityId).
+    // -------------------------------------------------------------------------

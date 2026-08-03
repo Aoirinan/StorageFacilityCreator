@@ -1,0 +1,90 @@
+    match /user_roles/{roleId} {
+      // Super admins can read/write all roles
+      allow read, write: if isSuperAdmin();
+      
+      // Users can read their own roles
+      allow read: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      
+      // Facility owners/managers can read roles for their facilities
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+        (
+          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+          get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true
+        );
+      
+      // Allow create if user is super admin, facility owner, or has manageUsers permission
+      allow create: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          request.resource.data.userId is string &&
+          request.resource.data.facilityId is string &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy == request.auth.uid &&
+          exists(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(request.resource.data.facilityId)).data.managers[request.auth.uid] == true
+          )
+        ) ||
+        (
+          request.resource.data.inviteId is string &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.facilityId is string &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy is string &&
+          request.resource.data.isActive == true &&
+          pendingInviteMatchesUserRoleWrite(
+            request.resource.data.facilityId,
+            request.resource.data.inviteId,
+            request.resource.data.roleType,
+            request.resource.data.assignedBy
+          )
+        )
+      );
+      
+      // Allow update if super admin, facility owner, assignedBy self, or pending-invite acceptance (merge)
+      allow update: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          request.resource.data.userId == resource.data.userId &&
+          request.resource.data.facilityId == resource.data.facilityId &&
+          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
+            resource.data.assignedBy == request.auth.uid
+          )
+        ) ||
+        (
+          request.resource.data.inviteId is string &&
+          resource.data.userId == request.auth.uid &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.facilityId == resource.data.facilityId &&
+          request.resource.data.assignedBy == resource.data.assignedBy &&
+          request.resource.data.roleType is string &&
+          request.resource.data.assignedBy is string &&
+          pendingInviteMatchesUserRoleWrite(
+            resource.data.facilityId,
+            request.resource.data.inviteId,
+            request.resource.data.roleType,
+            request.resource.data.assignedBy
+          )
+        )
+      );
+
+      allow delete: if request.auth != null && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/facilities/$(resource.data.facilityId)) &&
+          (
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/facilities/$(resource.data.facilityId)).data.managers[request.auth.uid] == true ||
+            resource.data.assignedBy == request.auth.uid
+          )
+        )
+      );
+    }
+
+    // Bug reports: any authenticated user can create; only superadmin can read/update/delete

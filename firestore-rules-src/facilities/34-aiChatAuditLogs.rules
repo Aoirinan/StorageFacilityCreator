@@ -1,0 +1,5 @@
+      match /aiChatAuditLogs/{logId} {
+        allow read: if isSuperAdmin();
+        allow write: if false;
+      }
+

@@ -1,0 +1,10 @@
+    match /publicReservations/{reservationId} {
+      // Public access and state changes are handled by token-validating
+      // callables using the Admin SDK.
+      allow get, create, update, delete: if false;
+      allow list: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityStaff(resource.data.facilityId);
+    }
+    
+    // Super admin internal notes - only superadmin can read/write

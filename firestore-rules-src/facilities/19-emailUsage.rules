@@ -1,0 +1,6 @@
+      match /emailUsage/{usageId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityStaff(facilityId);
+        allow delete: if isFacilityStaff(facilityId);
+      }
+

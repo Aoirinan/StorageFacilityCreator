@@ -1,0 +1,17 @@
+    match /users/{uid} {
+      // Super admins can read/write all user documents
+      allow read, write: if isSuperAdmin();
+      
+      // Users can read/write their own document
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      
+      // REMOVED: Global read access for invites (security issue)
+      // Invite lookups now use Cloud Function: lookupUserByEmail
+      // This ensures secure, controlled user lookups with minimal data exposure
+      // User-scoped rate limit counters - Cloud Functions only (Admin SDK bypasses rules)
+      match /rateLimits/{docId} {
+        allow read, write: if false;
+      }
+    }
+    
+    // Facility Creator Accounts - users can only access their own account

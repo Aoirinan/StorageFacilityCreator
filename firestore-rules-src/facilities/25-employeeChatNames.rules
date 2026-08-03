@@ -1,0 +1,22 @@
+      match /employeeChatNames/{userId} {
+        function validEmployeeChatNameWrite() {
+          return request.resource.data.keys().hasOnly(['chatName', 'updatedAt']) &&
+            request.resource.data.chatName is string &&
+            request.resource.data.chatName.size() <= 80 &&
+            request.resource.data.updatedAt is timestamp;
+        }
+        allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
+        allow create: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)) &&
+            validEmployeeChatNameWrite());
+        allow update: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)) &&
+            validEmployeeChatNameWrite());
+        allow delete: if isSuperAdmin() ||
+          (isFacilityStaff(facilityId) &&
+            (request.auth.uid == userId || isFacilityOwnerOrManager(facilityId)));
+      }
+
+      // SMS conversations - facility owner or manager access (SuperAdmin bypass)

@@ -1,0 +1,16 @@
+    match /publicFacilityMaps/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null &&
+        request.resource.data.facilityId is string &&
+        isFacilityOwnerOrManager(request.resource.data.facilityId);
+      allow update: if request.auth != null &&
+        (
+          (resource != null && resource.data.facilityId is string && isFacilityOwnerOrManager(resource.data.facilityId)) ||
+          (request.resource.data.facilityId is string && isFacilityOwnerOrManager(request.resource.data.facilityId))
+        );
+      allow delete: if request.auth != null &&
+        resource.data.facilityId is string &&
+        isFacilityOwnerOrManager(resource.data.facilityId);
+    }
+
+    // Public payment links (/pay?token=...). Doc ID equals data.token (unguessable).

@@ -1,0 +1,31 @@
+    function isCreatorOrCreatorFacilityStaff(entryData) {
+      return isAuthenticated() && (
+        entryData.createdByUserId == request.auth.uid ||
+        (entryData.createdByFacilityId is string && isFacilityOwnerOrManager(entryData.createdByFacilityId))
+      );
+    }
+    match /global_dnr_entries/{entryId} {
+      allow read: if isSuperAdmin() || isDnrParticipant();
+      allow create: if isAuthenticated()
+        && request.resource.data.createdByUserId == request.auth.uid
+        && request.resource.data.createdByFacilityId is string
+        && request.resource.data.createdByFacilityId.size() > 0
+        && isFacilityOwnerOrManager(request.resource.data.createdByFacilityId)
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        // Submitter must attest the entry is factual, supported by records,
+        // and not based on a protected characteristic (recorded with the entry).
+        && request.resource.data.accuracyAttestation == true
+        // Submitter must be a registered DNR participant (terms accepted + paid sub).
+        && (isSuperAdmin() || isDnrParticipant());
+      allow update, delete: if isSuperAdmin()
+        || (resource != null && isCreatorOrCreatorFacilityStaff(resource.data));
+      match /evidence/{evidenceId} {
+        allow read: if isSuperAdmin() || isDnrParticipant();
+        allow create, update, delete: if isSuperAdmin()
+          || (get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByUserId == request.auth.uid
+              || isFacilityOwnerOrManager(get(/databases/$(database)/documents/global_dnr_entries/$(entryId)).data.createdByFacilityId));
+      }
+    }
+
+    // Rate limits for Cloud Functions (e.g. getContractBySigningToken) - Admin SDK only, deny client

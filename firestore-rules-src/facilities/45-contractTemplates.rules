@@ -1,0 +1,13 @@
+      match /contractTemplates/{templateId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          request.resource.data.facilityId == facilityId &&
+          request.resource.data.keys().hasAll(['name', 'content', 'createdAt', 'isActive', 'facilityId']) &&
+          request.resource.data.createdBy == request.auth.uid &&
+          (!('complianceStatus' in request.resource.data) || request.resource.data.complianceStatus == 'active');
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Rights Attestations - facility-scoped compliance records

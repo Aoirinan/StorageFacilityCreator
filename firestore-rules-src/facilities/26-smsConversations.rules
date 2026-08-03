@@ -1,0 +1,10 @@
+      match /smsConversations/{conversationId} {
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create, update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+
+        match /messages/{messageId} {
+          allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+          allow create, update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        }
+      }
+

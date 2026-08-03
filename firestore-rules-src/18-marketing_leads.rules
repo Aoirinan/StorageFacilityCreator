@@ -1,0 +1,20 @@
+    match /marketing_leads/{leadId} {
+      allow read: if request.auth != null &&
+        (isSuperAdmin() || resource.data.assignedToUid == request.auth.uid);
+      allow create: if request.auth != null && isSuperAdmin();
+      allow update: if request.auth != null &&
+        (isSuperAdmin() || resource.data.assignedToUid == request.auth.uid);
+      allow delete: if request.auth != null && isSuperAdmin();
+
+      match /activities/{activityId} {
+        allow read: if request.auth != null &&
+          (isSuperAdmin() ||
+           get(/databases/$(database)/documents/marketing_leads/$(leadId)).data.assignedToUid == request.auth.uid);
+        allow create: if request.auth != null &&
+          (isSuperAdmin() ||
+           get(/databases/$(database)/documents/marketing_leads/$(leadId)).data.assignedToUid == request.auth.uid);
+        allow update, delete: if request.auth != null && isSuperAdmin();
+      }
+    }
+
+    // Locked commission payout periods and rep payout statuses.

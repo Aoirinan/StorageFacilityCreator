@@ -1,0 +1,5 @@
+      match /liens/{lienId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+      }
+

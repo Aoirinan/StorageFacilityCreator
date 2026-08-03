@@ -1,0 +1,39 @@
+      match /conversations/{conversationId} {
+        // Read: facility staff, private participants, OR superadmin
+        allow read: if isSuperAdmin() ||
+                       isFacilityStaff(facilityId) || 
+                       isPrivateConversationParticipant(facilityId, conversationId);
+        
+        // Create: facility staff or superadmin
+        allow create: if isSuperAdmin() ||
+                         (isFacilityStaff(facilityId) && isValidConversationCreate(facilityId));
+        
+        // Update: facility staff, participants, OR superadmin
+        allow update: if isSuperAdmin() ||
+                         isFacilityStaff(facilityId) || 
+                         isPrivateConversationParticipant(facilityId, conversationId);
+        
+        // Delete: owners/managers or superadmin
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+
+        match /messages/{messageId} {
+          // Read: facility staff, participants, OR superadmin
+          allow read: if isSuperAdmin() ||
+                         isFacilityStaff(facilityId) || 
+                         isPrivateConversationParticipant(facilityId, conversationId);
+          
+          // Create: facility staff or superadmin
+          allow create: if isSuperAdmin() ||
+                           (isFacilityStaff(facilityId) && isValidMessageCreate(facilityId, conversationId));
+          
+          // Update: facility staff, sender, OR superadmin
+          allow update: if isSuperAdmin() ||
+                           isFacilityStaff(facilityId) || 
+                           (resource.data.senderUid == request.auth.uid);
+          
+          // Delete: owners/managers or superadmin
+          allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        }
+      }
+
+      // Employee chat display names (facility-scoped; staff can read; self or owner/manager can write)

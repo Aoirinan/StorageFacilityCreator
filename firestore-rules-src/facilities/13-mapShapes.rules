@@ -1,0 +1,6 @@
+      match /mapShapes/{shapeId} {
+        // Allow read/write if user owns the facility or is a manager
+        allow read, write: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      // Map Engine V2 (versioned map builder + publish metadata)
