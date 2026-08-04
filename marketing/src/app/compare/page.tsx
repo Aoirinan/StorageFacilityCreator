@@ -40,7 +40,7 @@ const COMPARE_ROWS: Row[] = [
   {
     area: 'Pricing model',
     sfc: `$${PRICE_MONTHLY}/facility/month — published rate`,
-    typical: 'Often per-facility and quote-based with tiered modules',
+    typical: 'Often quote-based; publicly listed examples in the category run $250–$300+/facility/month',
   },
   {
     area: 'Users per facility',
@@ -55,12 +55,12 @@ const COMPARE_ROWS: Row[] = [
   {
     area: 'Onboarding fee',
     sfc: 'None',
-    typical: 'Often includes setup or implementation fees',
+    typical: 'Often a one-time setup/implementation fee — publicly listed examples run close to $1,000',
   },
   {
     area: 'Trial',
-    sfc: '30-day trial + first month free',
-    typical: 'Often demo-first or limited trial',
+    sfc: '30-day trial + first month free — start without talking to sales',
+    typical: 'Often demo-first, with pricing available only after a sales call',
   },
   {
     area: 'Deployment',
@@ -133,7 +133,11 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'Is SFC cheaper than legacy storage software?',
-    a: `Sometimes, and sometimes not — but it is predictable. SFC is $${PRICE_MONTHLY} per facility per month with core features included. Other vendors often vary pricing by plan, modules, processing volume, and negotiation, which makes raw dollar comparisons difficult without a full quote. The honest framing: SFC trades quote-based flexibility for a published, predictable rate. Get an itemized quote from any vendor you are considering (including every module you actually need) and compare line-by-line.`,
+    a: `Sometimes, and sometimes not — but it is predictable. SFC is $${PRICE_MONTHLY} per facility per month with core features included, no setup fee. Other vendors often vary pricing by plan, modules, processing volume, and negotiation, which makes raw dollar comparisons difficult without a full quote — as one publicly listed example in the category, a platform we looked at prices around $295/facility/month plus a roughly $1,000 one-time implementation fee, discoverable only in an FAQ rather than on its main pricing page. That is one data point, not a market survey. The honest framing: SFC trades quote-based flexibility for a published, predictable rate. Get an itemized quote from any vendor you are considering (including every module and setup fee) and compare line-by-line, including year-one total cost, not just the monthly number.`,
+  },
+  {
+    q: 'Do I have to book a demo just to see pricing?',
+    a: `No — SFC's price is on the pricing page, and you can start a trial without a sales call. Some established platforms in the category require booking a demo or contacting sales before any number is shown at all, which can make quick cost comparisons harder during early research. If a vendor will not share pricing without a call, that is a reasonable thing to ask about directly: is the number simply not published, or is it customized per deal?`,
   },
   {
     q: 'Do I pay more per facility as I add sites?',
