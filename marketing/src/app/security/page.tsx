@@ -3,14 +3,13 @@ import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
 import { A2pSnippet } from '@/components/A2pSnippet';
-import { PAGE_OG_IMAGES, PRIMARY_CTA_HREF, SECONDARY_CTA_HREF, SITE_NAME } from '@/config/site';
+import { PRIMARY_CTA_HREF, SECONDARY_CTA_HREF, SITE_NAME } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Security',
   description:
-    'Security and trust overview for SFC: infrastructure, data protection, access controls, provider integrations, and legal transparency.',
-  openGraph: { images: [PAGE_OG_IMAGES.security] },
-  twitter: { images: [PAGE_OG_IMAGES.security] },
+    'Security and trust overview for SFC: infrastructure, data protection, access controls, and legal transparency.',
+  alternates: { canonical: '/security' },
 };
 
 export default function SecurityPage() {

@@ -4,14 +4,13 @@ import Script from 'next/script';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
 import { A2pSnippet } from '@/components/A2pSnippet';
-import { PAGE_OG_IMAGES, PRIMARY_CTA_HREF, SECONDARY_CTA_HREF } from '@/config/site';
+import { PRIMARY_CTA_HREF, SECONDARY_CTA_HREF } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'FAQ',
   description:
     'Frequently asked questions for self-storage operators evaluating SFC: pricing, setup, messaging, security, e-sign, facilities, integrations, and migration.',
-  openGraph: { images: [PAGE_OG_IMAGES.faq] },
-  twitter: { images: [PAGE_OG_IMAGES.faq] },
+  alternates: { canonical: '/faq' },
 };
 
 const FAQ_ITEMS = [

@@ -2,14 +2,13 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
-import { ONLINE_RENTALS_ADDON_MONTHLY, PAGE_OG_IMAGES, PRICE_MONTHLY } from '@/config/site';
+import { ONLINE_RENTALS_ADDON_MONTHLY, PRICE_MONTHLY } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Why SFC',
   description:
-    'See why storage operators choose SFC for published per-facility pricing, unlimited users, practical workflows, compliance transparency, and real-world integrations.',
-  openGraph: { images: [PAGE_OG_IMAGES['why-sfc']] },
-  twitter: { images: [PAGE_OG_IMAGES['why-sfc']] },
+    'Why storage operators choose SFC: published per-facility pricing, unlimited users, practical workflows, and real-world integrations.',
+  alternates: { canonical: '/why-sfc' },
 };
 
 const rows = [

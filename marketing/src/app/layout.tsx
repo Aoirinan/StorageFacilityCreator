@@ -5,7 +5,7 @@ import './globals.css';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
 import { StickyMobileCta } from '@/components/StickyMobileCta';
-import { DEFAULT_OG_IMAGE, LOGO_PATH, SITE_DOMAIN, SITE_NAME } from '@/config/site';
+import { LOGO_PATH, SITE_DOMAIN, SITE_NAME } from '@/config/site';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 const jakarta = Plus_Jakarta_Sans({
@@ -25,21 +25,19 @@ export const metadata: Metadata = {
     template: `%s | ${SITE_NAME}`,
   },
   description:
-    'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
+    'Modern self-storage management software for independent and multi-facility operators: operations, billing, messaging, and reporting.',
   openGraph: {
     title: `${SITE_NAME} | Self-Storage Management Software`,
     description:
-      'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
+      'Modern self-storage management software for independent and multi-facility operators: operations, billing, messaging, and reporting.',
     type: 'website',
     url: SITE_DOMAIN,
-    images: [{ url: DEFAULT_OG_IMAGE, width: 1200, height: 630, alt: `${SITE_NAME} dashboard` }],
   },
   twitter: {
     card: 'summary_large_image',
     title: `${SITE_NAME} | Self-Storage Management Software`,
     description:
-      'Modern self-storage management software for independent and multi-facility operators. Operations, billing, delinquency, messaging, reporting, and practical integrations.',
-    images: [DEFAULT_OG_IMAGE],
+      'Modern self-storage management software for independent and multi-facility operators: operations, billing, messaging, and reporting.',
   },
   robots: { index: true, follow: true },
   icons: { icon: LOGO_PATH },

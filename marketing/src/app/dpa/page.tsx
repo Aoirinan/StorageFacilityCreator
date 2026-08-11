@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Data Processing Agreement',
   description: `Data Processing Agreement (DPA) information for ${SITE_NAME} customers.`,
+  alternates: { canonical: '/dpa' },
 };
 
 const LAST_UPDATED = 'February 26, 2026';

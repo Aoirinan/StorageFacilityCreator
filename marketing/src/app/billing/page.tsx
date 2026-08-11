@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/si
 export const metadata: Metadata = {
   title: 'Billing & Refund Policy',
   description: `Billing and refund policy for ${SITE_NAME}: subscription renewal, cancellation, refunds, and chargebacks.`,
+  alternates: { canonical: '/billing' },
 };
 
 const LAST_UPDATED = 'February 26, 2026';

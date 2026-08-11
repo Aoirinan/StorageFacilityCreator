@@ -3,14 +3,13 @@ import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
 import { DemoFrame } from '@/components/DemoFrame';
-import { HERO_IMAGE_PATH, PAGE_OG_IMAGES } from '@/config/site';
+import { HERO_IMAGE_PATH } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Features',
   description:
-    'Explore SFC features for self-storage operations: tenant and unit workflows, billing, payments, delinquency management, messaging, reporting, security, and integrations.',
-  openGraph: { images: [PAGE_OG_IMAGES.features] },
-  twitter: { images: [PAGE_OG_IMAGES.features] },
+    'Explore SFC features for self-storage operators: tenant/unit workflows, billing, payments, delinquency, messaging, reporting, and integrations.',
+  alternates: { canonical: '/features' },
 };
 
 const FEATURE_GROUPS = [

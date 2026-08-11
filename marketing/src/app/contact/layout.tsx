@@ -3,7 +3,9 @@ import { PAGE_OG_IMAGES } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Contact',
-  description: 'Schedule a demo or contact Storage Facility Creator. We respond promptly.',
+  description:
+    'Schedule a demo, ask about pricing, or get support for Storage Facility Creator. Our team responds promptly to every inquiry.',
+  alternates: { canonical: '/contact' },
   openGraph: { images: [PAGE_OG_IMAGES.contact] },
   twitter: { images: [PAGE_OG_IMAGES.contact] },
 };

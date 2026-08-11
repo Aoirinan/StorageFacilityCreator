@@ -6,6 +6,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Cookie Policy',
   description: `Cookie policy for ${SITE_NAME}: what cookies we use and how to control them.`,
+  alternates: { canonical: '/cookies' },
 };
 
 const LAST_UPDATED = 'February 26, 2026';

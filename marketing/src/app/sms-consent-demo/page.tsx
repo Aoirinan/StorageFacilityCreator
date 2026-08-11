@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: 'SMS Opt-In Consent Demo',
   description: `Public demonstration of the tenant SMS opt-in consent step used by ${SITE_NAME} for A2P 10DLC carrier review.`,
   robots: { index: false, follow: true },
+  alternates: { canonical: '/sms-consent-demo' },
 };
 
 const LAST_UPDATED = 'July 13, 2026';

@@ -3,14 +3,13 @@ import Link from 'next/link';
 import { DemoFrame } from '@/components/DemoFrame';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
-import { EXTRA_DEMO_IMAGES, PAGE_OG_IMAGES } from '@/config/site';
+import { EXTRA_DEMO_IMAGES } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Product Tour',
   description:
     'Take a guided product tour of SFC with real screenshots and practical workflow highlights for self-storage operations.',
-  openGraph: { images: [PAGE_OG_IMAGES['product-tour']] },
-  twitter: { images: [PAGE_OG_IMAGES['product-tour']] },
+  alternates: { canonical: '/product-tour' },
 };
 
 const highlights = [

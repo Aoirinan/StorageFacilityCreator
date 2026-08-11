@@ -8,6 +8,7 @@ import { SITE_NAME, SUPPORT_EMAIL, SMS_CONSENT_CHECKBOX_TEXT } from '@/config/si
 export const metadata: Metadata = {
   title: 'SMS Terms',
   description: `SMS terms for ${SITE_NAME}: consent, opt-out, message frequency, and carrier disclosures.`,
+  alternates: { canonical: '/sms-terms' },
 };
 
 const LAST_UPDATED = 'June 23, 2026';

@@ -1,18 +1,21 @@
 import type { MetadataRoute } from 'next';
 import { SITE_DOMAIN } from '@/config/site';
 
-const routes = [
+const CORE_ROUTES = [
   '',
   '/features',
   '/pricing',
+  '/compare',
+  '/why-sfc',
   '/security',
+  '/integrations',
+  '/product-tour',
   '/faq',
   '/contact',
-  '/integrations',
-  '/compare',
-  '/product-tour',
-  '/why-sfc',
   '/migration',
+];
+
+const LEGAL_ROUTES = [
   '/terms',
   '/privacy',
   '/cookies',
@@ -26,11 +29,16 @@ const routes = [
 ];
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const now = new Date();
-  return routes.map((path) => ({
-    url: `${SITE_DOMAIN}${path}`,
-    lastModified: now,
-    changeFrequency: path === '' ? 'weekly' : 'monthly',
-    priority: path === '' ? 1 : 0.7,
-  }));
+  return [
+    ...CORE_ROUTES.map((path) => ({
+      url: `${SITE_DOMAIN}${path}`,
+      changeFrequency: (path === '' ? 'weekly' : 'monthly') as MetadataRoute.Sitemap[number]['changeFrequency'],
+      priority: path === '' ? 1 : 0.8,
+    })),
+    ...LEGAL_ROUTES.map((path) => ({
+      url: `${SITE_DOMAIN}${path}`,
+      changeFrequency: 'monthly' as MetadataRoute.Sitemap[number]['changeFrequency'],
+      priority: 0.4,
+    })),
+  ];
 }

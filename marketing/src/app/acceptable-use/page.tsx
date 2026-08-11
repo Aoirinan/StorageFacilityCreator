@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Acceptable Use Policy',
   description: `Acceptable use policy for ${SITE_NAME}: what is and is not permitted when using the Service.`,
+  alternates: { canonical: '/acceptable-use' },
 };
 
 const LAST_UPDATED = 'February 26, 2026';

@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Subprocessor List',
   description: `Third-party subprocessors used by ${SITE_NAME} to deliver the Service.`,
+  alternates: { canonical: '/subprocessors' },
 };
 
 const LAST_UPDATED = 'July 13, 2026';

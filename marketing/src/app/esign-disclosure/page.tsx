@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Electronic Signature Disclosure',
   description: `Electronic signature disclosure and consent agreement for ${SITE_NAME}. Understand your rights before signing documents electronically.`,
+  alternates: { canonical: '/esign-disclosure' },
 };
 
 const LAST_UPDATED = 'March 1, 2026';

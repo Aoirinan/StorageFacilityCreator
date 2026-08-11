@@ -8,6 +8,7 @@ import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/si
 export const metadata: Metadata = {
   title: 'Terms of Service',
   description: `Terms of service for ${SITE_NAME}: subscription, acceptable use, messaging terms, and customer responsibilities.`,
+  alternates: { canonical: '/terms' },
 };
 
 const LAST_UPDATED = 'July 13, 2026';

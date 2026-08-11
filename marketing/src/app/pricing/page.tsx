@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import Script from 'next/script';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
 import {
   ONLINE_RENTALS_ADDON_MONTHLY,
-  PAGE_OG_IMAGES,
   PRICE_MONTHLY,
   PRIMARY_CTA_HREF,
   SECONDARY_CTA_HREF,
@@ -13,9 +13,8 @@ import {
 
 export const metadata: Metadata = {
   title: 'Pricing',
-  description: `$${PRICE_MONTHLY} per facility, per month. Unlimited users per facility, all features included, no onboarding fee, and a 30-day trial. Transparent self-storage software pricing.`,
-  openGraph: { images: [PAGE_OG_IMAGES.pricing] },
-  twitter: { images: [PAGE_OG_IMAGES.pricing] },
+  description: `$${PRICE_MONTHLY}/mo per facility — unlimited users, all features included, no onboarding fee, ${TRIAL_LINE.toLowerCase()}.`,
+  alternates: { canonical: '/pricing' },
 };
 
 export default function PricingPage() {
@@ -39,8 +38,23 @@ export default function PricingPage() {
     ['What happens after the free trial?', 'You can continue on the paid monthly plan if SFC fits your operation.'],
   ] as const;
 
+  const faqSchema = {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: pricingFaqs.map(([q, a]) => ({
+      '@type': 'Question',
+      name: q,
+      acceptedAnswer: { '@type': 'Answer', text: a },
+    })),
+  };
+
   return (
     <>
+      <Script
+        id="pricing-faq-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+      />
       <Section className="pt-10 pb-6">
         <span className="eyebrow">Simple Pricing</span>
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Pricing</h1>

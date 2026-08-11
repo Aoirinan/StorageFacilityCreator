@@ -7,6 +7,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Do Not Rent Data Policy',
   description: `How ${SITE_NAME} governs Do Not Rent entries: submission requirements, safeguards, and the dispute and correction process.`,
+  alternates: { canonical: '/dnr-policy' },
 };
 
 const LAST_UPDATED = 'July 18, 2026';

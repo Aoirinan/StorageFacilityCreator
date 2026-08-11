@@ -2,14 +2,12 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { PageCtaBand } from '@/components/PageCtaBand';
-import { PAGE_OG_IMAGES } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Integrations',
   description:
-    'SFC integrations and connected services: Stripe payments, Twilio messaging, SendGrid email workflows, and QuickBooks accounting sync.',
-  openGraph: { images: [PAGE_OG_IMAGES.integrations] },
-  twitter: { images: [PAGE_OG_IMAGES.integrations] },
+    'SFC integrations: Stripe payments, Twilio messaging, SendGrid email workflows, and QuickBooks accounting sync.',
+  alternates: { canonical: '/integrations' },
 };
 
 const INTEGRATIONS = [

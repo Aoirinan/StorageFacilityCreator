@@ -1,5 +1,10 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
+
+export const metadata: Metadata = {
+  robots: { index: false, follow: true },
+};
 
 type ThanksPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;

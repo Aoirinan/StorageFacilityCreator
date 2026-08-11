@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: 'Migration',
   description:
     'Plan your migration to SFC with practical setup expectations, onboarding steps, and support guidance.',
+  alternates: { canonical: '/migration' },
   openGraph: { images: [PAGE_OG_IMAGES.migration] },
   twitter: { images: [PAGE_OG_IMAGES.migration] },
 };

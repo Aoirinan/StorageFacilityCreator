@@ -8,6 +8,7 @@ import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 export const metadata: Metadata = {
   title: 'Privacy Policy',
   description: `Privacy policy for ${SITE_NAME}: data we collect, how we use it, sharing, retention, and your rights.`,
+  alternates: { canonical: '/privacy' },
 };
 
 const LAST_UPDATED = 'July 18, 2026';

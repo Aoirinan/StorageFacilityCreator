@@ -6,7 +6,6 @@ import { CtaButton } from '@/components/CtaButton';
 import { Reveal } from '@/components/Reveal';
 import {
   ONLINE_RENTALS_ADDON_MONTHLY,
-  PAGE_OG_IMAGES,
   PRIMARY_CTA_HREF,
   PRIMARY_CTA_LABEL,
   SECONDARY_CTA_HREF,
@@ -17,17 +16,15 @@ import {
 } from '@/config/site';
 
 export const metadata: Metadata = {
-  title: 'Compare self-storage management software options',
+  title: 'Compare Self-Storage Software',
   description:
-    'A neutral side-by-side look at how Storage Facility Creator compares on pricing model, deployment, feature packaging, and operator fit — without naming or ranking other vendors.',
+    'A neutral side-by-side look at how Storage Facility Creator compares on pricing model, deployment, and operator fit — without naming or ranking other vendors.',
   alternates: { canonical: '/compare' },
   openGraph: {
-    title: 'Compare self-storage management software options',
+    title: 'Compare Self-Storage Software',
     description:
       'How Storage Facility Creator compares on published pricing, deployment, and operator fit using broad industry criteria.',
-    images: [PAGE_OG_IMAGES.compare],
   },
-  twitter: { images: [PAGE_OG_IMAGES.compare] },
 };
 
 type Row = {

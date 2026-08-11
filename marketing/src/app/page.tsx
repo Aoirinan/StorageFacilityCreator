@@ -14,6 +14,8 @@ import {
   SITE_DOMAIN,
   SITE_NAME,
   SUPPORT_EMAIL,
+  SUPPORT_PHONE,
+  LOGO_PATH,
   PRICE_MONTHLY,
   TRIAL_LINE,
   ONLINE_RENTALS_ADDON_MONTHLY,
@@ -216,6 +218,8 @@ export default function HomePage() {
     name: SITE_NAME,
     url: SITE_DOMAIN,
     email: SUPPORT_EMAIL,
+    telephone: SUPPORT_PHONE,
+    logo: `${SITE_DOMAIN}${LOGO_PATH}`,
   };
 
   const appSchema = {
