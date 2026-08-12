@@ -55,6 +55,13 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
     if (_error != null || _snapshot == null) {
       return Scaffold(body: Center(child: Text(_error ?? 'Unavailable')));
     }
+    // publicWebsite.ts gates every SSR entry point on this same flag (404s
+    // when off) — without the same check here, turning a facility's public
+    // website off in Website Setup would leave this Flutter route still
+    // serving a fully working map, disagreeing with the SSR site.
+    if (_snapshot!.publicSettings['enabled'] != true) {
+      return const Scaffold(body: Center(child: Text('Map not published')));
+    }
 
     final unitsById = {
       for (final u in _snapshot!.units)
