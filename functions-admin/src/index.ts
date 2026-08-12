@@ -37,6 +37,7 @@ export { lookupUserByEmail, runPhase2Migrations } from './lookupMigrations';
 export {
   superAdminGetHostingCustomDomainStatus,
   superAdminProvisionHostingCustomDomain,
+  superAdminRemoveHostingCustomDomain,
 } from '@sfc/functions-shared/hosting/hostingCustomDomains';
 
 export { enableStripeConnectAdmin } from './enableStripeConnectAdmin';

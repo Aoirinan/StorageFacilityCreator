@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_public_settings_model.dart';
 import '../models/facility_model.dart';
+import '../utils/renter_account_message.dart' show normalizeCustomDomain;
 
 /// Service for managing public facility pages and widgets
 class FacilityPublicService {
@@ -140,12 +141,55 @@ class FacilityPublicService {
         updatedBy: user.uid,
       );
 
+      final normalizedNewDomain =
+          customDomain != null ? normalizeCustomDomain(customDomain) : null;
+      final normalizedOldDomain =
+          normalizeCustomDomain(currentSettings?.customDomain ?? '');
+
+      if (normalizedNewDomain != null &&
+          normalizedNewDomain.isNotEmpty &&
+          normalizedNewDomain != normalizedOldDomain) {
+        final claimRef = _firestore
+            .collection('customDomainClaims')
+            .doc(normalizedNewDomain);
+        final claimSnap = await claimRef.get();
+        if (claimSnap.exists) {
+          final claimedFacilityId = claimSnap.data()?['facilityId'];
+          if (claimedFacilityId != facilityId) {
+            throw Exception(
+                'This domain is already connected to a different facility. Contact support if you believe this is an error.');
+          }
+          // Already claimed by this facility - do not re-set (rule denies update).
+        } else {
+          await claimRef.set({
+            'facilityId': facilityId,
+            'claimedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      }
+
       await _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('settings')
           .doc('public')
           .set(updatedSettings.toMap(), SetOptions(merge: true));
+
+      if (normalizedOldDomain.isNotEmpty &&
+          normalizedNewDomain != null &&
+          normalizedNewDomain != normalizedOldDomain) {
+        try {
+          await _firestore
+              .collection('customDomainClaims')
+              .doc(normalizedOldDomain)
+              .delete();
+        } catch (e) {
+          if (kDebugMode) {
+            print(
+                '⚠️ [FacilityPublic] Failed to release old domain claim: $e');
+          }
+        }
+      }
 
       if (kDebugMode) {
         print(

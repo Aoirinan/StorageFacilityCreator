@@ -33,6 +33,18 @@
         facilityRole(facilityId) == 'employee';
     }
 
+    function customDomainClaimHeldBy(facilityId, hostname) {
+      return exists(/databases/$(database)/documents/customDomainClaims/$(hostname)) &&
+        get(/databases/$(database)/documents/customDomainClaims/$(hostname)).data.facilityId == facilityId;
+    }
+
+    function customDomainWriteAllowed(facilityId, oldHost, newHost) {
+      return newHost == oldHost ||
+        newHost == null ||
+        newHost == '' ||
+        customDomainClaimHeldBy(facilityId, newHost);
+    }
+
     function authEmailLower() {
       return request.auth != null && request.auth.token.email != null
         ? request.auth.token.email.lower()

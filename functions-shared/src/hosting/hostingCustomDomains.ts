@@ -40,11 +40,38 @@ async function syncFacilityCustomDomain(facilityId: string, hostname: string): P
   const snap = await ref.get();
   const current = normalizeHostname(String(snap.get('customDomain') || ''));
   if (current === hostname) return;
+
+  // Guard against silently handing one facility's domain to another. `customDomain` is a
+  // free-text field with no uniqueness enforcement, so if a *different* facility already has
+  // this exact hostname on file, writing it here would create a collision: the public site
+  // resolver (resolveSlug) would then have two facilities claiming the same domain and could
+  // serve either one's content to real visitors. Provisioning a domain that's genuinely
+  // changing hands requires clearing it from the old facility first.
+  let existing;
+  try {
+    existing = await db.collectionGroup('settings').where('customDomain', '==', hostname).limit(10).get();
+  } catch (error) {
+    wrapFirestoreQueryError(error, 'Could not verify this domain is not already in use by another facility.');
+  }
+  const conflict = existing.docs.find((doc) => doc.ref.parent.parent?.id && doc.ref.parent.parent.id !== facilityId);
+  if (conflict) {
+    throw new functions.https.HttpsError(
+      'already-exists',
+      `Custom domain "${hostname}" is already set on a different facility (${conflict.ref.parent.parent?.id}). ` +
+        "Clear it from that facility's Website Setup first if this domain is intentionally moving, then try again.",
+    );
+  }
+
   await ref.set(
     {
       customDomain: hostname,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
+    { merge: true },
+  );
+
+  await db.doc(`customDomainClaims/${hostname}`).set(
+    { facilityId, claimedAt: admin.firestore.FieldValue.serverTimestamp() },
     { merge: true },
   );
 }
@@ -100,11 +127,25 @@ async function resolveFacilitySlugFromInput(input: {
         'Could not look up this website address. Enter Facility ID or Website URL name, or try again shortly.',
       );
     }
-    const enabled = settings.docs.find((doc) => {
+    const enabledMatches = settings.docs.filter((doc) => {
       const data = doc.data() as Record<string, unknown>;
       return data.enabled !== false;
     });
-    const facilityId = enabled?.ref.parent.parent?.id;
+    // `customDomain` is free text on each facility's own settings doc — nothing enforces it's
+    // unique. If more than one facility has it set, don't silently guess (that could point a
+    // hostname lookup, and any provisioning that follows it, at the wrong facility).
+    const distinctFacilityIds = new Set(
+      enabledMatches.map((doc) => doc.ref.parent.parent?.id).filter((id): id is string => !!id),
+    );
+    if (distinctFacilityIds.size > 1) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Multiple facilities have Custom domain set to "${normalizedHost}" (${[...distinctFacilityIds].join(
+          ', ',
+        )}). Provide Facility ID or Website URL name to disambiguate, and clear the stale value from the wrong facility's Website Setup.`,
+      );
+    }
+    const facilityId = enabledMatches[0]?.ref.parent.parent?.id;
     if (!facilityId) {
       throw new functions.https.HttpsError(
         'not-found',
@@ -463,6 +504,80 @@ export const superAdminGetHostingCustomDomainStatus = functions.https.onCall(
       hostState: customDomain?.hostState || null,
       ownershipState: customDomain?.ownershipState || null,
       customDomainName: customDomain?.name || null,
+      retrievedAt: new Date().toISOString(),
+    };
+  },
+);
+
+export const superAdminRemoveHostingCustomDomain = functions.https.onCall(
+  async (
+    data: {
+      hostname?: string;
+      facilityId?: string;
+      slug?: string;
+    },
+    context,
+  ) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const callerEmail = context.auth.token?.email as string | undefined;
+    if (!isSuperAdmin(callerEmail)) {
+      throw new functions.https.HttpsError('permission-denied', 'Only super admins can remove custom domains');
+    }
+
+    const hostname = normalizeHostname(String(data?.hostname || ''));
+    if (!isValidHostname(hostname)) {
+      throw new functions.https.HttpsError('invalid-argument', 'A valid hostname is required (e.g. rent.example.com).');
+    }
+
+    const resolved = await resolveFacilitySlugFromInput({
+      facilityId: String(data?.facilityId || ''),
+      slug: String(data?.slug || ''),
+      hostname,
+    });
+
+    const { getProjectId, getSiteId } = requireHostingConfig();
+    const projectId = getProjectId().trim();
+    const siteId = getSiteId().trim();
+    const encoded = encodeURIComponent(hostname);
+
+    try {
+      await hostingApiRequest(`projects/${projectId}/sites/${siteId}/customDomains/${encoded}`, { method: 'DELETE' });
+    } catch (error) {
+      const code = error instanceof functions.https.HttpsError ? error.code : '';
+      // Already gone from Hosting — treat as success so this callable is safely re-runnable.
+      if (code !== 'not-found') throw error;
+    }
+
+    const db = admin.firestore();
+    const settingsRef = db.doc(`facilities/${resolved.facilityId}/settings/public`);
+    const settingsSnap = await settingsRef.get();
+    const currentDomain = normalizeHostname(String(settingsSnap.get('customDomain') || ''));
+    if (currentDomain === hostname) {
+      await settingsRef.set(
+        { customDomain: admin.firestore.FieldValue.delete(), updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    }
+
+    const claimRef = db.doc(`customDomainClaims/${hostname}`);
+    const claimSnap = await claimRef.get();
+    if (claimSnap.exists && claimSnap.get('facilityId') === resolved.facilityId) {
+      await claimRef.delete();
+    }
+
+    return {
+      hostname,
+      facilityId: resolved.facilityId,
+      slug: resolved.slug,
+      status: 'removed',
+      detail: `Domain "${hostname}" was detached from Firebase Hosting and released for reuse.`,
+      records: [] as DomainRecord[],
+      certState: null,
+      hostState: null,
+      ownershipState: null,
+      customDomainName: null,
       retrievedAt: new Date().toISOString(),
     };
   },

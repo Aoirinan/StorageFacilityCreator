@@ -1,0 +1,11 @@
+    match /customDomainClaims/{hostname} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null &&
+        request.resource.data.keys().hasOnly(['facilityId', 'claimedAt']) &&
+        request.resource.data.facilityId is string &&
+        request.resource.data.claimedAt == request.time &&
+        isFacilityOwnerOrManager(request.resource.data.facilityId);
+      allow update: if false;
+      allow delete: if request.auth != null &&
+        (isSuperAdmin() || isFacilityOwnerOrManager(resource.data.facilityId));
+    }

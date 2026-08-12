@@ -1,5 +1,14 @@
       match /settings/{settingId} {
-        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          customDomainWriteAllowed(facilityId, null, request.resource.data.get('customDomain', null))
+        );
+        allow update: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          customDomainWriteAllowed(facilityId, resource.data.get('customDomain', null), request.resource.data.get('customDomain', null))
+        );
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
       
       // Rate limit counters (per facility) - Cloud Functions only (Admin SDK bypasses rules)

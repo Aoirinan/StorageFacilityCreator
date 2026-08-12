@@ -36,6 +36,18 @@ service cloud.firestore {
         facilityRole(facilityId) == 'employee';
     }
 
+    function customDomainClaimHeldBy(facilityId, hostname) {
+      return exists(/databases/$(database)/documents/customDomainClaims/$(hostname)) &&
+        get(/databases/$(database)/documents/customDomainClaims/$(hostname)).data.facilityId == facilityId;
+    }
+
+    function customDomainWriteAllowed(facilityId, oldHost, newHost) {
+      return newHost == oldHost ||
+        newHost == null ||
+        newHost == '' ||
+        customDomainClaimHeldBy(facilityId, newHost);
+    }
+
     function authEmailLower() {
       return request.auth != null && request.auth.token.email != null
         ? request.auth.token.email.lower()
@@ -622,7 +634,16 @@ service cloud.firestore {
 
       // Facility-level settings (including settings/public used by online rentals)
       match /settings/{settingId} {
-        allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow read: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          customDomainWriteAllowed(facilityId, null, request.resource.data.get('customDomain', null))
+        );
+        allow update: if isSuperAdmin() || (
+          isFacilityOwnerOrManager(facilityId) &&
+          customDomainWriteAllowed(facilityId, resource.data.get('customDomain', null), request.resource.data.get('customDomain', null))
+        );
+        allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
       
       // Rate limit counters (per facility) - Cloud Functions only (Admin SDK bypasses rules)
@@ -1722,6 +1743,17 @@ service cloud.firestore {
     match /bug_reports/{reportId} {
       allow create: if isAuthenticated();
       allow read, update, delete: if isSuperAdmin();
+    }
+    match /customDomainClaims/{hostname} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null &&
+        request.resource.data.keys().hasOnly(['facilityId', 'claimedAt']) &&
+        request.resource.data.facilityId is string &&
+        request.resource.data.claimedAt == request.time &&
+        isFacilityOwnerOrManager(request.resource.data.facilityId);
+      allow update: if false;
+      allow delete: if request.auth != null &&
+        (isSuperAdmin() || isFacilityOwnerOrManager(resource.data.facilityId));
     }
     
   }

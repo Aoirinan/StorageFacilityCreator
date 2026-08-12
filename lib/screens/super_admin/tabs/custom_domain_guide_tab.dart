@@ -102,6 +102,56 @@ Storage Facility Creator support''';
     }
   }
 
+  Future<void> _removeDomain() async {
+    final hostname = (_result?.hostname ?? _hostnameCtrl.text).trim();
+    if (hostname.isEmpty) {
+      setState(() => _error = 'Enter the website address you want to remove.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove custom domain?'),
+        content: Text(
+          'This detaches "$hostname" from Firebase Hosting (including its SSL certificate) '
+          'and releases it so it can be claimed by another facility. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove domain'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final res = await SuperAdminDataService.removeHostingCustomDomain(
+        hostname: hostname,
+        facilityId: _facilityIdCtrl.text.trim().isEmpty
+            ? null
+            : _facilityIdCtrl.text.trim(),
+        slug: _slugCtrl.text.trim().isEmpty ? null : _slugCtrl.text.trim(),
+      );
+      setState(() => _result = res);
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -279,6 +329,14 @@ Storage Facility Creator support''';
                               onPressed: _busy ? null : _refreshStatus,
                               icon: const Icon(Icons.refresh, size: 18),
                               label: const Text('Check progress'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: _busy ? null : _removeDomain,
+                              icon: const Icon(Icons.link_off, size: 18),
+                              label: const Text('Remove domain'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppTheme.error,
+                              ),
                             ),
                           ],
                         ),

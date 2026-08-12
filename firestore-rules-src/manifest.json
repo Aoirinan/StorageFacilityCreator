@@ -75,6 +75,7 @@
     "19-commission_payout_periods.rules",
     "20-user_roles.rules",
     "21-bug_reports.rules",
+    "23-customDomainClaims.rules",
     "22-footer.rules"
   ]
 }

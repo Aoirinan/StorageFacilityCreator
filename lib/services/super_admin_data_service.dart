@@ -1143,6 +1143,25 @@ class SuperAdminDataService {
     );
   }
 
+  static Future<HostingCustomDomainProvisionResult>
+      removeHostingCustomDomain({
+    required String hostname,
+    String? facilityId,
+    String? slug,
+  }) async {
+    final callable =
+        _functions.httpsCallable('superAdminRemoveHostingCustomDomain');
+    final result = await callable.call<Map<String, dynamic>>({
+      'hostname': hostname.trim(),
+      if (facilityId != null && facilityId.trim().isNotEmpty)
+        'facilityId': facilityId.trim(),
+      if (slug != null && slug.trim().isNotEmpty) 'slug': slug.trim(),
+    });
+    return HostingCustomDomainProvisionResult.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+  }
+
   static Future<List<ReferralPendingItem>> listReferralRewardsPending({
     int limit = 100,
   }) async {

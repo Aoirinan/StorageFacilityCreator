@@ -304,6 +304,133 @@ test('superadmin can run the website settings collection group query', async () 
   await assertFails(owner.firestore().collectionGroup('settings').get());
 });
 
+test('customDomainClaims: owner can create a claim for their own facility, not for someone else\'s', async () => {
+  const secondFacilityId = 'fac-domain-2';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(secondFacilityId).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+
+  await assertSucceeds(
+    owner.collection('customDomainClaims').doc('owner-claim.com').set({
+      facilityId: FACILITY_ID,
+      claimedAt: serverTimestamp(),
+    }),
+  );
+
+  await assertFails(
+    owner.collection('customDomainClaims').doc('other-claim.com').set({
+      facilityId: secondFacilityId,
+      claimedAt: serverTimestamp(),
+    }),
+  );
+});
+
+test('customDomainClaims: a second facility cannot claim a hostname already claimed by the first', async () => {
+  const secondFacilityId = 'fac-domain-2';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(secondFacilityId).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const outsider = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+
+  await assertSucceeds(
+    owner.collection('customDomainClaims').doc('shared.com').set({
+      facilityId: FACILITY_ID,
+      claimedAt: serverTimestamp(),
+    }),
+  );
+
+  // Doc already exists, so this hits `allow update: if false` regardless of caller.
+  await assertFails(
+    outsider.collection('customDomainClaims').doc('shared.com').set({
+      facilityId: secondFacilityId,
+      claimedAt: serverTimestamp(),
+    }),
+  );
+});
+
+test('settings/public: customDomain writes are gated on holding the matching claim', async () => {
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('settings')
+      .doc('public')
+      .set({ enabled: true, customDomain: 'old.example.com' });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const settingsRef = owner
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('settings')
+    .doc('public');
+
+  // Unchanged value: allowed even without a claim.
+  await assertSucceeds(
+    settingsRef.set({ enabled: true, customDomain: 'old.example.com' }, { merge: true }),
+  );
+
+  // Unclaimed new value: denied.
+  await assertFails(
+    settingsRef.set({ customDomain: 'unclaimed.example.com' }, { merge: true }),
+  );
+
+  // Claim the new value, then the same write is allowed.
+  await assertSucceeds(
+    owner.collection('customDomainClaims').doc('new.example.com').set({
+      facilityId: FACILITY_ID,
+      claimedAt: serverTimestamp(),
+    }),
+  );
+  await assertSucceeds(
+    settingsRef.set({ customDomain: 'new.example.com' }, { merge: true }),
+  );
+});
+
+test('customDomainClaims: only the owning facility or superadmin can delete a claim', async () => {
+  const secondFacilityId = 'fac-domain-2';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(secondFacilityId).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+    await db.collection('customDomainClaims').doc('delete-test.com').set({
+      facilityId: FACILITY_ID,
+      claimedAt: serverTimestamp(),
+    });
+  });
+
+  const outsider = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const admin = testEnv.authenticatedContext('admin-user', { superadmin: true }).firestore();
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+
+  await assertFails(outsider.collection('customDomainClaims').doc('delete-test.com').delete());
+  await assertSucceeds(owner.collection('customDomainClaims').doc('delete-test.com').delete());
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('customDomainClaims').doc('delete-test-2.com').set({
+      facilityId: FACILITY_ID,
+      claimedAt: serverTimestamp(),
+    });
+  });
+  await assertSucceeds(admin.collection('customDomainClaims').doc('delete-test-2.com').delete());
+});
+
 test('role assigners cannot retarget an existing role to another facility or user', async () => {
   const secondFacilityId = 'fac-test-2';
   await testEnv.withSecurityRulesDisabled(async (context) => {
