@@ -691,8 +691,15 @@ function toHtml(payload: {
 </section>`;
 
   const startingLabel = payload.startingAt == null ? 'Call for rates' : `$${payload.startingAt.toFixed(2)}`;
+  // Quoted url("...") — not escapeHtml, and not a bare url(...) — is deliberate: heroBg is
+  // already a validated https:// URL (safeHttpsImageUrl), whose serialization can still
+  // contain a literal ")" (parentheses aren't in the URL spec's percent-encode set), which
+  // would otherwise close the CSS url() early and let the rest of the string be interpreted
+  // as CSS inside this rule. Quoting closes that hole (a literal '"' cannot survive URL
+  // serialization). escapeHtml is wrong here regardless: this is a CSS value, not HTML, so it
+  // would mangle a legitimate "&" in a query string into a literal "&amp;" in the URL.
   const heroStyle = heroBg
-    ? `--hero-image:url(${escapeHtml(heroBg)});`
+    ? `--hero-image:url("${heroBg}");`
     : `--hero-image:linear-gradient(135deg,#0f7669 0%,#134e4a 55%,#0f172a 100%);`;
 
   const logoBlock = logoSrc
@@ -1399,12 +1406,28 @@ export async function resolveSlug(slug?: string, domain?: string, hostHeader?: s
     .limit(10)
     .get();
   if (settings.empty) return null;
-  const matching = settings.docs.find((doc) => {
+  const enabledMatches = settings.docs.filter((doc) => {
     const data = doc.data() as Record<string, unknown>;
     return data.enabled === true;
   });
-  if (!matching) return null;
-  const facilityId = matching.ref.parent.parent?.id;
+  if (enabledMatches.length === 0) return null;
+  // `customDomain` is a free-text field any facility owner/manager can set on their own
+  // settings doc (see firestore-rules-src/facilities/06-settings.rules) — nothing enforces
+  // it's unique across facilities. If more than one *different* facility has claimed the
+  // same hostname, we cannot safely guess which one should be served: silently picking one
+  // (e.g. the first Firestore returns) would let a facility that merely typed in someone
+  // else's live domain hijack that domain's visitors. Fail closed instead.
+  const distinctFacilityIds = new Set(
+    enabledMatches.map((doc) => doc.ref.parent.parent?.id).filter((id): id is string => !!id),
+  );
+  if (distinctFacilityIds.size > 1) {
+    functions.logger.error('resolveSlug: custom domain is claimed by multiple facilities', {
+      candidateDomain,
+      facilityIds: [...distinctFacilityIds],
+    });
+    return null;
+  }
+  const facilityId = enabledMatches[0].ref.parent.parent?.id;
   if (!facilityId || !(await facilityWebsiteIsEntitled(facilityId))) return null;
 
   const meta = await db.doc(`facilities/${facilityId}/mapEngine/meta`).get();
@@ -1442,75 +1465,80 @@ export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res)
     res.status(405).json({ error: 'Method not allowed.' });
     return;
   }
-  const slug = await resolveSlug(String(req.query.slug || ''), String(req.query.domain || ''), String(req.headers.host || ''));
-  if (!slug) {
-    res.status(404).json({ error: 'Website not found.' });
-    return;
-  }
-  const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
-  if (!snap.exists) {
-    res.status(404).json({ error: 'Website not found.' });
-    return;
-  }
-  const data = snap.data() || {};
-  const facilityName = String(data.facilityName || 'Storage Facility');
-  const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
-  const facilityId = String(data.facilityId || '');
-  if (publicSettings.enabled !== true || !(await facilityWebsiteIsEntitled(facilityId))) {
-    res.status(404).json({ error: 'Website not found.' });
-    return;
-  }
-  const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
-  // isRentable already folds in status, tenant links, unit-type visibility, and the
-  // per-unit publicListingEnabled flag — do not re-derive availability from raw status
-  // here, or staff-only units (manager residence, office, personal-use, etc.) that are
-  // internally `available` (to avoid billing implications) leak into the public storefront.
-  const available = units.filter((u) => u.isRentable === true);
-  const startingAt = available.reduce<number | null>((acc, u) => {
-    const rate = asNumber(u.monthlyRate);
-    if (rate == null) return acc;
-    if (acc == null) return rate;
-    return Math.min(acc, rate);
-  }, null);
-  const categories = new Map<string, { count: number; startingAt: number | null }>();
-  for (const unit of available) {
-    const key = String(unit.categorySlug || unit.unitType || 'storage-units').trim().toLowerCase();
-    const rate = asNumber(unit.monthlyRate);
-    const prev = categories.get(key);
-    if (!prev) {
-      categories.set(key, { count: 1, startingAt: rate });
-      continue;
+  try {
+    const slug = await resolveSlug(String(req.query.slug || ''), String(req.query.domain || ''), String(req.headers.host || ''));
+    if (!slug) {
+      res.status(404).json({ error: 'Website not found.' });
+      return;
     }
-    const next =
-      prev.startingAt == null ? rate : rate == null ? prev.startingAt : Math.min(prev.startingAt, rate);
-    categories.set(key, { count: prev.count + 1, startingAt: next });
-  }
+    const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
+    if (!snap.exists) {
+      res.status(404).json({ error: 'Website not found.' });
+      return;
+    }
+    const data = snap.data() || {};
+    const facilityName = String(data.facilityName || 'Storage Facility');
+    const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
+    const facilityId = String(data.facilityId || '');
+    if (publicSettings.enabled !== true || !(await facilityWebsiteIsEntitled(facilityId))) {
+      res.status(404).json({ error: 'Website not found.' });
+      return;
+    }
+    const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
+    // isRentable already folds in status, tenant links, unit-type visibility, and the
+    // per-unit publicListingEnabled flag — do not re-derive availability from raw status
+    // here, or staff-only units (manager residence, office, personal-use, etc.) that are
+    // internally `available` (to avoid billing implications) leak into the public storefront.
+    const available = units.filter((u) => u.isRentable === true);
+    const startingAt = available.reduce<number | null>((acc, u) => {
+      const rate = asNumber(u.monthlyRate);
+      if (rate == null) return acc;
+      if (acc == null) return rate;
+      return Math.min(acc, rate);
+    }, null);
+    const categories = new Map<string, { count: number; startingAt: number | null }>();
+    for (const unit of available) {
+      const key = String(unit.categorySlug || unit.unitType || 'storage-units').trim().toLowerCase();
+      const rate = asNumber(unit.monthlyRate);
+      const prev = categories.get(key);
+      if (!prev) {
+        categories.set(key, { count: 1, startingAt: rate });
+        continue;
+      }
+      const next =
+        prev.startingAt == null ? rate : rate == null ? prev.startingAt : Math.min(prev.startingAt, rate);
+      categories.set(key, { count: prev.count + 1, startingAt: next });
+    }
 
-  res.json({
-    facilityId,
-    facilitySlug: slug,
-    facilityName,
-    pageTitle: String(publicSettings.pageTitle || `${facilityName} | Storage`),
-    pageDescription: String(publicSettings.pageDescription || data.facilityDescription || ''),
-    marketingContent: String(publicSettings.marketingContent || data.facilityDescription || ''),
-    facilityPhone: String(data.facilityPhone || ''),
-    facilityLogoUrl: typeof data.facilityLogoUrl === 'string' ? data.facilityLogoUrl : null,
-    customDomain: typeof publicSettings.customDomain === 'string' ? publicSettings.customDomain : null,
-    availableCount: available.length,
-    startingAt,
-    categories: [...categories.entries()].map(([name, value]) => ({
-      name,
-      count: value.count,
-      startingAt: value.startingAt,
-    })),
-    websiteConfig:
-      (publicSettings.websiteConfig as Record<string, unknown> | undefined) ??
-      ((publicSettings.widgets as Record<string, unknown> | undefined)?.websiteConfig as Record<string, unknown> | undefined) ??
-      {},
-    rentUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
-    availableUnitsUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
-    generatedAt: new Date().toISOString(),
-  });
+    res.json({
+      facilityId,
+      facilitySlug: slug,
+      facilityName,
+      pageTitle: String(publicSettings.pageTitle || `${facilityName} | Storage`),
+      pageDescription: String(publicSettings.pageDescription || data.facilityDescription || ''),
+      marketingContent: String(publicSettings.marketingContent || data.facilityDescription || ''),
+      facilityPhone: String(data.facilityPhone || ''),
+      facilityLogoUrl: typeof data.facilityLogoUrl === 'string' ? data.facilityLogoUrl : null,
+      customDomain: typeof publicSettings.customDomain === 'string' ? publicSettings.customDomain : null,
+      availableCount: available.length,
+      startingAt,
+      categories: [...categories.entries()].map(([name, value]) => ({
+        name,
+        count: value.count,
+        startingAt: value.startingAt,
+      })),
+      websiteConfig:
+        (publicSettings.websiteConfig as Record<string, unknown> | undefined) ??
+        ((publicSettings.widgets as Record<string, unknown> | undefined)?.websiteConfig as Record<string, unknown> | undefined) ??
+        {},
+      rentUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
+      availableUnitsUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    functions.logger.error('getPublicWebsiteConfig failed', { error: (err as Error)?.message || String(err) });
+    res.status(500).json({ error: 'Internal error.' });
+  }
 });
 
 export const renderPublicWebsite = functions.https.onRequest(async (req, res) => {
@@ -1518,6 +1546,7 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
     res.status(405).type('text/plain').send('Method not allowed.');
     return;
   }
+  try {
   const routeFromPath = extractWebsiteRouteFromPath(req.path || req.originalUrl || '');
   const slugFromPath = routeFromPath.slug;
   const categoryFromPath = routeFromPath.categorySlug;
@@ -1803,6 +1832,12 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       unitRows,
     }),
   );
+  } catch (err) {
+    functions.logger.error('renderPublicWebsite failed', { error: (err as Error)?.message || String(err) });
+    res.status(500).type('text/html').send(
+      '<!doctype html><meta charset="utf-8"><title>Temporarily unavailable</title><p>This site is temporarily unavailable. Please try again shortly.</p>',
+    );
+  }
 });
 
 function normalizeHostHeader(hostHeader: string): string {
@@ -1830,19 +1865,24 @@ export const routeCustomDomainRoot = functions.https.onRequest(async (req, res) 
     return;
   }
 
-  const host = String(req.headers.host || '');
-  if (isPrimaryOperatorHost(host)) {
-    res.redirect(302, '/index.html');
-    return;
-  }
+  try {
+    const host = String(req.headers.host || '');
+    if (isPrimaryOperatorHost(host)) {
+      res.redirect(302, '/index.html');
+      return;
+    }
 
-  const slug = await resolveSlug('', '', host);
-  if (!slug) {
-    res.redirect(302, '/index.html');
-    return;
-  }
+    const slug = await resolveSlug('', '', host);
+    if (!slug) {
+      res.redirect(302, '/index.html');
+      return;
+    }
 
-  res.redirect(302, `/w/${encodeURIComponent(slug)}`);
+    res.redirect(302, `/w/${encodeURIComponent(slug)}`);
+  } catch (err) {
+    functions.logger.error('routeCustomDomainRoot failed', { error: (err as Error)?.message || String(err) });
+    res.redirect(302, '/index.html');
+  }
 });
 
 /**
@@ -1861,14 +1901,19 @@ export const robotsTxt = functions.https.onRequest(async (req, res) => {
     res.status(200).type('text/plain').send('User-agent: *\nDisallow: /\n');
     return;
   }
-  const slug = host ? await resolveSlug('', '', host) : null;
-  if (!slug) {
+  try {
+    const slug = host ? await resolveSlug('', '', host) : null;
+    if (!slug) {
+      res.status(200).type('text/plain').send('User-agent: *\nAllow: /\n');
+      return;
+    }
+    res.status(200).type('text/plain').send(
+      `User-agent: *\nAllow: /\nSitemap: https://${host}/sitemap.xml\n`,
+    );
+  } catch (err) {
+    functions.logger.error('robotsTxt failed', { error: (err as Error)?.message || String(err) });
     res.status(200).type('text/plain').send('User-agent: *\nAllow: /\n');
-    return;
   }
-  res.status(200).type('text/plain').send(
-    `User-agent: *\nAllow: /\nSitemap: https://${host}/sitemap.xml\n`,
-  );
 });
 
 /** Real sitemap.xml for facility custom domains — same Host-header approach as robotsTxt. */
@@ -1880,32 +1925,37 @@ export const sitemapXml = functions.https.onRequest(async (req, res) => {
     res.status(200).type('application/xml').send(emptySitemap);
     return;
   }
-  const slug = await resolveSlug('', '', host);
-  if (!slug) {
+  try {
+    const slug = await resolveSlug('', '', host);
+    if (!slug) {
+      res.status(200).type('application/xml').send(emptySitemap);
+      return;
+    }
+    const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
+    if (!snap.exists) {
+      res.status(200).type('application/xml').send(emptySitemap);
+      return;
+    }
+    const data = snap.data() || {};
+    const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
+    if (publicSettings.enabled !== true) {
+      res.status(200).type('application/xml').send(emptySitemap);
+      return;
+    }
+    const widgetsBlock = (publicSettings.widgets || {}) as Record<string, unknown>;
+    const websiteConfig = (publicSettings.websiteConfig || widgetsBlock.websiteConfig || {}) as Record<string, unknown>;
+    const unitCategories = Array.isArray(websiteConfig.unitCategories)
+      ? (websiteConfig.unitCategories as Record<string, unknown>[])
+          .map((entry) => String(entry.slug || '').trim().toLowerCase())
+          .filter((s) => s.length > 0)
+      : [];
+    const urls = [`https://${host}/`, ...unitCategories.map((s) => `https://${host}/${encodeURIComponent(s)}`)];
+    const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+      .map((u) => `  <url><loc>${escapeHtml(u)}</loc></url>`)
+      .join('\n')}\n</urlset>`;
+    res.status(200).type('application/xml').send(body);
+  } catch (err) {
+    functions.logger.error('sitemapXml failed', { error: (err as Error)?.message || String(err) });
     res.status(200).type('application/xml').send(emptySitemap);
-    return;
   }
-  const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
-  if (!snap.exists) {
-    res.status(200).type('application/xml').send(emptySitemap);
-    return;
-  }
-  const data = snap.data() || {};
-  const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
-  if (publicSettings.enabled !== true) {
-    res.status(200).type('application/xml').send(emptySitemap);
-    return;
-  }
-  const widgetsBlock = (publicSettings.widgets || {}) as Record<string, unknown>;
-  const websiteConfig = (publicSettings.websiteConfig || widgetsBlock.websiteConfig || {}) as Record<string, unknown>;
-  const unitCategories = Array.isArray(websiteConfig.unitCategories)
-    ? (websiteConfig.unitCategories as Record<string, unknown>[])
-        .map((entry) => String(entry.slug || '').trim().toLowerCase())
-        .filter((s) => s.length > 0)
-    : [];
-  const urls = [`https://${host}/`, ...unitCategories.map((s) => `https://${host}/${encodeURIComponent(s)}`)];
-  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
-    .map((u) => `  <url><loc>${escapeHtml(u)}</loc></url>`)
-    .join('\n')}\n</urlset>`;
-  res.status(200).type('application/xml').send(body);
 });
