@@ -27,6 +27,20 @@ interface UnitInput {
   id: string;
   status: string;
   tenantId?: string | null;
+  publicListingEnabled?: boolean;
+}
+
+/**
+ * Units that count toward rentable-inventory stats (Total/Occupied/Vacant/
+ * Available Units). Excludes staff-only spaces (manager residence, office,
+ * personal-use) that have `publicListingEnabled === false` — the same flag
+ * that already keeps them off the public map/website (mirrors Flutter
+ * FacilityStatsService._rentableUnits), so an operator's internal-use
+ * tracking entries don't inflate their own dashboard numbers. Orphan healing
+ * below deliberately still scans every unit, rentable or not.
+ */
+function isRentableUnit(unit: UnitInput): boolean {
+  return unit.publicListingEnabled !== false;
 }
 
 function countCanonicalOccupied(
@@ -109,6 +123,7 @@ export const facilityStatsTestUtils = {
   isTenantLate,
   calculateDaysLate,
   countCanonicalOccupied,
+  isRentableUnit,
 };
 
 /**
@@ -122,9 +137,13 @@ async function getCanonicalOccupiedCountAndHeal(
 ): Promise<{ occupiedUnits: number; orphanIds: string[] }> {
   const units = unitsSnapshot.docs.map((doc) => ({
     id: doc.id,
-    ...(doc.data() as { status: string; tenantId?: string | null }),
+    ...(doc.data() as { status: string; tenantId?: string | null; publicListingEnabled?: boolean }),
   }));
-  const { occupiedUnits, orphanIds } = countCanonicalOccupied(units, tenantIds);
+  // Healing scans every unit (rentable or not) so a stale tenantId on an
+  // office/staff unit still gets cleared; only the returned occupiedUnits
+  // count (a dashboard metric) excludes non-rentable units.
+  const { orphanIds } = countCanonicalOccupied(units, tenantIds);
+  const { occupiedUnits } = countCanonicalOccupied(units.filter(isRentableUnit), tenantIds);
   const BATCH_LIMIT = 500;
   if (orphanIds.length > 0) {
     const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
@@ -184,6 +203,9 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
       .doc(facilityId)
       .collection('units')
       .get();
+    const rentableUnitCount = unitsSnapshot.docs.filter((doc) =>
+      isRentableUnit(doc.data() as UnitInput),
+    ).length;
 
     const allTenantsSnapshot = await getFirestore()
       .collection('facilities')
@@ -206,7 +228,7 @@ async function computeFacilityStats(facilityId: string): Promise<Record<string, 
       tenantIds,
     );
 
-    const totalUnits = unitsSnapshot.size;
+    const totalUnits = rentableUnitCount;
     const availableUnits = Math.max(0, totalUnits - occupiedUnits);
     const totalTenantsActive = activeTenantsSnapshot.size;
 

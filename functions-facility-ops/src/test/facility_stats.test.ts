@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as admin from 'firebase-admin';
 import { facilityStatsTestUtils } from '../facility_stats';
 
-const { tenantAutopayOn, calculateDaysLate, countCanonicalOccupied } = facilityStatsTestUtils;
+const { tenantAutopayOn, calculateDaysLate, countCanonicalOccupied, isRentableUnit } =
+  facilityStatsTestUtils;
 
 function ts(date: Date): admin.firestore.Timestamp {
   return admin.firestore.Timestamp.fromDate(date);
@@ -62,4 +63,11 @@ test('countCanonicalOccupied ignores orphan occupied units', () => {
   );
   assert.equal(occupiedUnits, 1);
   assert.deepEqual(orphanIds, ['u2']);
+});
+
+test('isRentableUnit excludes only units explicitly marked publicListingEnabled=false', () => {
+  assert.equal(isRentableUnit({ id: 'u1', status: 'available', publicListingEnabled: true }), true);
+  assert.equal(isRentableUnit({ id: 'u2', status: 'available', publicListingEnabled: false }), false);
+  // Field absent (legacy unit docs predating this flag) must default to rentable.
+  assert.equal(isRentableUnit({ id: 'u3', status: 'available' }), true);
 });

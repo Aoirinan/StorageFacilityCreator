@@ -63,6 +63,15 @@ class FacilityStatsService {
     ).length;
   }
 
+  /// Units that count toward rentable-inventory stats (Total/Occupied/Vacant/
+  /// Available Units). Excludes staff-only spaces (manager residence, office,
+  /// personal-use) that have `publicListingEnabled == false` — the same flag
+  /// that already keeps them off the public map/website, so an operator's
+  /// internal-use tracking entries don't inflate their own dashboard numbers.
+  static List<UnitModel> _rentableUnits(List<UnitModel> units) {
+    return units.where((u) => u.publicListingEnabled).toList();
+  }
+
   /// Orphan units: status==occupied but tenantId null or tenant does not exist. These are healed.
   static List<UnitModel> _orphanOccupiedUnits(List<UnitModel> units, Set<String> tenantIds) {
     return units.where((u) =>
@@ -73,11 +82,11 @@ class FacilityStatsService {
 
   /// Compute total and occupied unit counts using canonical rule (no heal).
   /// Returns (totalUnits, occupiedUnits). `totalUnits` is the count of unit
-  /// documents that actually exist for the facility — the user-set capacity max
-  /// is never used here.
+  /// documents that actually exist for the facility (excluding staff-only
+  /// spaces — see [_rentableUnits]) — the user-set capacity max is never used here.
   static Future<({int totalUnits, int occupiedUnits})> computeUnitCounts(String facilityId) async {
     try {
-      final units = await UnitService.getUnitsForFacility(facilityId);
+      final units = _rentableUnits(await UnitService.getUnitsForFacility(facilityId));
       final tenantIds = await _getTenantIdsForFacility(facilityId);
       final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
       final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
@@ -124,7 +133,7 @@ class FacilityStatsService {
       }
 
       final facility = await FacilityService.getFacility(facilityId);
-      final units = await UnitService.getUnitsForFacility(facilityId);
+      final units = _rentableUnits(await UnitService.getUnitsForFacility(facilityId));
       final tenantIds = await _getTenantIdsForFacility(facilityId);
       final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
       final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
