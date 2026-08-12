@@ -15,6 +15,7 @@ import '../services/facility_service.dart';
 import '../services/facility_public_service.dart';
 import '../models/invoice_line_item_model.dart';
 import '../theme/app_theme.dart';
+import '../widgets/keyboard_scrollable.dart';
 import '../router/app_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -683,7 +684,8 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
 
     return Scaffold(
       backgroundColor: bgPage,
-      body: _isLoading
+      body: KeyboardScrollable(
+        child: _isLoading
           ? const Center(child: CircularProgressIndicator(color: teal))
           : _error != null
               ? Center(
@@ -1174,9 +1176,14 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                               ),
                               const SizedBox(height: 14),
                               Text(
-                                (_stripePaymentRequired && _totalAmount > 0)
+                                (_stripePaymentRequired &&
+                                        _totalAmount > 0 &&
+                                        _paymentIntentId == null)
                                     ? 'Payment is required today to complete this move-in.'
-                                    : 'After submission, our team will review your information and finalize your move-in.',
+                                    : (_stripePaymentRequired &&
+                                            _totalAmount > 0)
+                                        ? 'Payment received — submit below to finish.'
+                                        : 'After submission, our team will review your information and finalize your move-in.',
                                 style: const TextStyle(
                                   color: muted,
                                   fontSize: 13,
@@ -1189,6 +1196,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                         ),
                       ),
                     ),
+      ),
     );
   }
 
@@ -1229,12 +1237,18 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
 
   Widget _buildChargesCard() {
     final currency = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    // A returning Stripe redirect (checkout=success) already verified payment
+    // and set this before the form re-renders — without a visible change here,
+    // the card looks identical to its pre-payment state and a customer who
+    // just paid has no on-page confirmation anything happened.
+    final paid = _paymentIntentId != null;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(
+            color: paid ? AppTheme.success : const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x080F172A),
@@ -1248,29 +1262,39 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.receipt_long_outlined,
-                  size: 18, color: Color(0xFF0F7669)),
+              Icon(
+                paid ? Icons.check_circle : Icons.receipt_long_outlined,
+                size: 18,
+                color: paid ? AppTheme.success : const Color(0xFF0F7669),
+              ),
               const SizedBox(width: 8),
-              const Text(
-                'Due Today',
+              Text(
+                paid ? 'Payment Received' : 'Due Today',
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 17,
-                  color: Color(0xFF0F172A),
+                  color: paid ? AppTheme.success : const Color(0xFF0F172A),
                 ),
               ),
               const Spacer(),
               Text(
                 currency.format(_totalAmount),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 20,
-                  color: Color(0xFF0F172A),
+                  color: paid ? AppTheme.success : const Color(0xFF0F172A),
                   letterSpacing: -0.3,
                 ),
               ),
             ],
           ),
+          if (paid) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'Your payment was received. Review and submit below to finish your move-in.',
+              style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+            ),
+          ],
           const SizedBox(height: 10),
           if (_lineItems.isEmpty)
             const Text(
