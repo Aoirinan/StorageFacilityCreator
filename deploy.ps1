@@ -65,9 +65,10 @@ Write-Host 'Step 4a: Deploying Cloud Functions...' -ForegroundColor Cyan
 # function list. With this many codebases cold-starting back to back, that
 # default is too tight and intermittently times out with "Cannot determine
 # backend specification" on a codebase that has nothing wrong with it -
-# retrying (or just giving it more time up front) succeeds. 30s has been
-# reliable; raise further if this still flakes on a slower machine.
-$env:FUNCTIONS_DISCOVERY_TIMEOUT = '30'
+# retrying (or just giving it more time up front) succeeds. 30s still timed
+# out once under load; 60s has been reliable since. Raise further if this
+# still flakes on a slower machine.
+$env:FUNCTIONS_DISCOVERY_TIMEOUT = '60'
 firebase deploy --only functions
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Functions deployment failed' -ForegroundColor Red
