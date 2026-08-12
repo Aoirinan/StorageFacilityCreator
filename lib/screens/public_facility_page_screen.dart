@@ -8,6 +8,7 @@ import '../models/facility_public_settings_model.dart';
 import '../widgets/unit_availability_widget.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_map_v2_service.dart';
+import '../widgets/keyboard_scrollable.dart';
 
 /// Public facility showcase page
 /// Accessible via /facility/:facilityId or custom domain
@@ -101,7 +102,8 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _isLoading
+      body: KeyboardScrollable(
+        child: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(
@@ -129,6 +131,7 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
                         ],
                       ),
                     ),
+      ),
     );
   }
 

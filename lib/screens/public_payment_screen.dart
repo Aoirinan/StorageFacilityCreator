@@ -8,6 +8,7 @@ import '../services/stripe_service.dart';
 import '../services/tenant_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
+import '../widgets/keyboard_scrollable.dart';
 
 /// Public payment screen - accessible via /pay?token=...
 /// No authentication required
@@ -253,7 +254,8 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   Widget build(BuildContext context) {
     // Public page - no ModernPageWrapper (no sidebar)
     return Scaffold(
-      body: _isLoading
+      body: KeyboardScrollable(
+        child: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? _buildErrorView()
@@ -262,6 +264,7 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
                   : _paymentLink!.status == 'paid'
                       ? _buildSuccessView()
                       : _buildPaymentView(),
+      ),
     );
   }
 

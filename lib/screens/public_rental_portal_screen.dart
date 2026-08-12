@@ -9,6 +9,7 @@ import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/public_rental_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class PublicRentalPortalScreen extends StatefulWidget {
@@ -608,7 +609,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     final sheetBg = _isEmbeddedMode ? Colors.white : const Color(0xFFF7FAFC);
     return Scaffold(
       backgroundColor: sheetBg,
-      body: RefreshIndicator(
+      body: KeyboardScrollable(
+        child: RefreshIndicator(
         onRefresh: _reloadInventoryFromPublishedSnapshot,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -683,6 +685,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

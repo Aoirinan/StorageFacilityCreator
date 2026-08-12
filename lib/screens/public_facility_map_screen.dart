@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
 class PublicFacilityMapScreen extends StatefulWidget {
   final String facilitySlug;
@@ -100,7 +101,9 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
           ),
         ],
       ),
-      body: _listView ? _buildListFallback(rentableUnits) : _buildMap(unitsById),
+      body: KeyboardScrollable(
+        child: _listView ? _buildListFallback(rentableUnits) : _buildMap(unitsById),
+      ),
     );
   }
 
