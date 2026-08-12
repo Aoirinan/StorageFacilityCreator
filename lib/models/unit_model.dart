@@ -53,6 +53,11 @@ class UnitModel {
   final double? mapHeight;
   /// Manager overlock state (auditable). If absent, treat as not overlocked.
   final OverlockInfo? overlock;
+  /// Whether this unit can appear as rentable on the facility's public website.
+  /// Defaults to true; set false for staff-only spaces (manager residence,
+  /// office, personal-use units) that are `available` internally but must
+  /// never be publicly rentable.
+  final bool publicListingEnabled;
 
   const UnitModel({
     required this.id,
@@ -85,6 +90,7 @@ class UnitModel {
     this.mapWidth,
     this.mapHeight,
     this.overlock,
+    this.publicListingEnabled = true,
   });
 
   factory UnitModel.fromFirestore(DocumentSnapshot doc) {
@@ -132,6 +138,7 @@ class UnitModel {
       overlock: data['overlock'] != null
           ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
           : null,
+      publicListingEnabled: data['publicListingEnabled'] as bool? ?? true,
     );
   }
 
@@ -161,6 +168,7 @@ class UnitModel {
       'updatedAt': updatedAt,
       'createdBy': createdBy,
       'updatedBy': updatedBy,
+      'publicListingEnabled': publicListingEnabled,
     };
     if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
       map['mapLayout'] = {
@@ -204,6 +212,7 @@ class UnitModel {
     double? mapWidth,
     double? mapHeight,
     OverlockInfo? overlock,
+    bool? publicListingEnabled,
   }) {
     return UnitModel(
       id: id ?? this.id,
@@ -236,6 +245,7 @@ class UnitModel {
       mapWidth: mapWidth ?? this.mapWidth,
       mapHeight: mapHeight ?? this.mapHeight,
       overlock: overlock ?? this.overlock,
+      publicListingEnabled: publicListingEnabled ?? this.publicListingEnabled,
     );
   }
 

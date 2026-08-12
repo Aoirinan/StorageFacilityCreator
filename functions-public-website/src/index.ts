@@ -29,7 +29,7 @@ export {
   syncPublicFacilityMapInventoryOnTenantWrite,
   syncPublicFacilityMapInventoryOnUnitWrite,
 } from './publicFacilityMapInventorySync';
-export { getPublicWebsiteConfig, renderPublicWebsite, routeCustomDomainRoot } from './publicWebsite';
+export { getPublicWebsiteConfig, renderPublicWebsite, routeCustomDomainRoot, robotsTxt, sitemapXml } from './publicWebsite';
 export {
   getPublicReservationByToken,
   createPublicReservationHold,

@@ -44,9 +44,24 @@ class _DataIntegrityScreenState extends ConsumerState<DataIntegrityScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Data Integrity'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Data Integrity',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+        ),
         actions: [
           if (_selectedFacilityId.isNotEmpty) ...[
             IconButton(
@@ -615,7 +630,10 @@ class _DataIntegrityScreenState extends ConsumerState<DataIntegrityScreen> {
       });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error checking data integrity: ${e.toString()}')),
+        SnackBar(
+          content: Text('Error checking data integrity: ${e.toString()}'),
+          backgroundColor: AppTheme.error,
+        ),
       );
     } finally {
       setState(() {
@@ -651,7 +669,10 @@ class _DataIntegrityScreenState extends ConsumerState<DataIntegrityScreen> {
       await _checkDataIntegrity();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error fixing issues: ${e.toString()}')),
+        SnackBar(
+          content: Text('Error fixing issues: ${e.toString()}'),
+          backgroundColor: AppTheme.error,
+        ),
       );
     } finally {
       setState(() {

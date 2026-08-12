@@ -386,11 +386,14 @@ class FacilityMapV2Service {
       final isRentable = statusAllowsRental &&
           !hasTenantLink &&
           !claimedByActiveTenant &&
-          isPubliclyEnabledType;
+          isPubliclyEnabledType &&
+          unit.publicListingEnabled;
 
-      final publicStatus = (hasTenantLink || claimedByActiveTenant)
-          ? 'rented'
-          : statusToPublicStatus(unit.status);
+      final publicStatus = !unit.publicListingEnabled
+          ? 'unavailable'
+          : (hasTenantLink || claimedByActiveTenant)
+              ? 'rented'
+              : statusToPublicStatus(unit.status);
 
       return <String, dynamic>{
         'unitId': unit.id,
@@ -406,6 +409,7 @@ class FacilityMapV2Service {
         'description': unit.description,
         'monthlyRate': showPublicPricing ? unit.monthlyRate : null,
         'isRentable': isRentable,
+        'publicListingEnabled': unit.publicListingEnabled,
       };
     }).toList();
   }
@@ -517,6 +521,7 @@ class FacilityMapV2Service {
       publishedVersionId: publishedVersionId,
       publishedAt: DateTime.now(),
       publicSettings: <String, dynamic>{
+        'enabled': publicSettingsModel?.enabled ?? false,
         'facilityName': facilityName,
         'facilityDescription': publicDescription,
         'facilityPhone': facilityPhone,

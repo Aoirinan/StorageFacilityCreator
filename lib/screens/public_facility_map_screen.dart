@@ -60,13 +60,31 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
       for (final u in _snapshot!.units)
         if (u['unitId'] is String) u['unitId'] as String: u,
     };
-    final rentableUnits = _snapshot!.units
-        .where((u) => u['status'] == 'available' || u['status'] == 'reserved')
-        .toList();
+    // isRentable already folds in status, tenant links, unit-type visibility, and the
+    // per-unit publicListingEnabled flag — do not re-derive from raw status here, or
+    // staff-only units (manager residence, office, personal-use, etc.) leak into the
+    // public map's rentable list even though they're internally `available`.
+    final rentableUnits =
+        _snapshot!.units.where((u) => u['isRentable'] == true).toList();
 
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text('Facility Map • ${_snapshot!.facilitySlug}'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Facility Map • ${_snapshot!.facilitySlug}',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+        ),
         actions: [
           IconButton(
             onPressed: () => setState(() => _listView = !_listView),

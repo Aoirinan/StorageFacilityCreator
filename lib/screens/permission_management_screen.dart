@@ -7,6 +7,7 @@ import '../models/permission_model.dart';
 import '../models/facility_model.dart';
 import '../services/permission_service.dart';
 import '../services/facility_service.dart';
+import '../providers/facility_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
 
@@ -66,7 +67,10 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
     if (!mounted) return;
     setState(() => _isLoading = true);
     try {
-      final facilities = await FacilityService.getUserFacilities();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final facilities = uid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(userFacilitiesProvider(uid).future);
       if (!mounted) return;
       setState(() {
         _facilities = facilities;

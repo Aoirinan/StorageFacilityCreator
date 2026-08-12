@@ -737,15 +737,33 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
     return pdf.save();
   }
 
+  PreferredSizeWidget _buildAppBar(BuildContext context, {Widget? leading}) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return AppBar(
+      backgroundColor: cs.surface,
+      foregroundColor: cs.onSurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 1,
+      title: Text(
+        'Sign Contract',
+        style: theme.textTheme.titleLarge
+            ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+      ),
+      leading: leading,
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(1),
+        child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Sign Contract'),
-          backgroundColor: AppTheme.primaryBlueDark,
-          foregroundColor: AppTheme.textOnDark,
-        ),
+        appBar: _buildAppBar(context),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -753,11 +771,8 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
     if (_errorMessage != null && _contract == null) {
       return Scaffold(
         backgroundColor: AppTheme.backgroundLight,
-        appBar: AppBar(
-          title: const Text('Sign Contract'),
-          backgroundColor: AppTheme.primaryBlueDark,
-          foregroundColor: AppTheme.textOnDark,
-          elevation: 0,
+        appBar: _buildAppBar(
+          context,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () => Navigator.of(context).pop(),
@@ -819,11 +834,8 @@ class _ContractSigningScreenState extends ConsumerState<ContractSigningScreen> {
 
     return Scaffold(
       backgroundColor: AppTheme.backgroundLight,
-      appBar: AppBar(
-        title: const Text('Sign Contract'),
-        backgroundColor: AppTheme.primaryBlueDark,
-        foregroundColor: AppTheme.textOnDark,
-        elevation: 0,
+      appBar: _buildAppBar(
+        context,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),

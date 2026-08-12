@@ -73,7 +73,7 @@ class MapLegend extends StatelessWidget {
       case UnitStatus.reserved:
         return AppTheme.warning;
       case UnitStatus.maintenance:
-        return AppTheme.error;
+        return Colors.deepPurple;
       case UnitStatus.outOfOrder:
         return Colors.grey;
       case UnitStatus.overlocked:

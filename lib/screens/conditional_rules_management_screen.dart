@@ -472,7 +472,10 @@ class _ConditionalRulesManagementScreenState extends ConsumerState<ConditionalRu
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],

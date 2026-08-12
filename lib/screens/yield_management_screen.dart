@@ -5,7 +5,6 @@ import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
-import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
@@ -30,7 +29,7 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final facilities = await FacilityService.getUserFacilities();
+    final facilities = await ref.read(userFacilitiesProvider(user.uid).future);
     if (facilities.isNotEmpty && mounted) {
       // Sync with global facility selector (same as Late Dashboard, Unit List, etc.)
       final activeId = ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);

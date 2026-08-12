@@ -168,6 +168,57 @@ class ModernNavigationService {
     });
   }
 
+  /// Resolves which facility to use for a sidebar destination that needs one:
+  /// prefer the already-active facility (so switching screens doesn't force a
+  /// re-pick), fall back to the single facility, else prompt with the picker.
+  ///
+  /// Whenever the resolved facility differs from what's already active, it's
+  /// written back to [activeFacilityIdProvider] so the top-bar facility
+  /// selector stays in sync with what the destination screen is showing.
+  static Future<String?> _resolveFacilityId(
+      BuildContext context, List<dynamic> facilities) async {
+    final facilityIds = facilities.map((f) => f.id as String).toSet();
+
+    String? activeId;
+    ProviderContainer? container;
+    try {
+      container = ProviderScope.containerOf(context, listen: false);
+      activeId =
+          container.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
+      if (activeId != null &&
+          activeId.isNotEmpty &&
+          facilityIds.contains(activeId)) {
+        return activeId;
+      }
+    } catch (_) {
+      // No ProviderScope in context — fall through to picker / single facility
+    }
+
+    String? resolvedId;
+    if (facilities.length == 1) {
+      resolvedId = facilities.first.id as String;
+    } else {
+      if (!context.mounted) return null;
+      final selected = await showModalBottomSheet<FacilitySelectResult>(
+        context: context,
+        builder: (context) => FacilityPickerSheet(facilities: facilities.cast()),
+      );
+      resolvedId = selected?.id;
+    }
+
+    if (resolvedId != null && resolvedId != activeId && container != null) {
+      try {
+        await container
+            .read(activeFacilityIdProvider.notifier)
+            .setActiveFacilityId(resolvedId);
+      } catch (_) {
+        // Best-effort sync — navigation should proceed either way.
+      }
+    }
+
+    return resolvedId;
+  }
+
   // Helper method to navigate to map with facility selection
   static Future<void> _navigateToMapWithFacilitySelection(
       BuildContext context) async {
@@ -187,20 +238,10 @@ class ModernNavigationService {
         return;
       }
 
-      // If only one facility, use it directly
-      if (facilities.length == 1) {
-        context.go('/units/map?facilityId=${facilities.first.id}');
-        return;
-      }
-
-      // Multiple facilities - show picker
-      final selected = await showModalBottomSheet<FacilitySelectResult>(
-        context: context,
-        builder: (context) => FacilityPickerSheet(facilities: facilities),
-      );
-
-      if (selected != null) {
-        context.go('/units/map?facilityId=${selected.id}');
+      if (!context.mounted) return;
+      final facilityId = await _resolveFacilityId(context, facilities);
+      if (facilityId != null && context.mounted) {
+        context.go('/units/map?facilityId=$facilityId');
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -229,23 +270,12 @@ class ModernNavigationService {
         return;
       }
 
-      // If only one facility, use it directly
-      if (facilities.length == 1) {
-        final facility = facilities.first;
+      if (!context.mounted) return;
+      final facilityId = await _resolveFacilityId(context, facilities);
+      if (facilityId != null && context.mounted) {
+        final facility = facilities.firstWhere((f) => f.id == facilityId);
         context.go(
             '/access?facilityId=${facility.id}&facilityName=${Uri.encodeComponent(facility.name)}');
-        return;
-      }
-
-      // Multiple facilities - show picker
-      final selected = await showModalBottomSheet<FacilitySelectResult>(
-        context: context,
-        builder: (context) => FacilityPickerSheet(facilities: facilities),
-      );
-
-      if (selected != null) {
-        context.go(
-            '/access?facilityId=${selected.id}&facilityName=${Uri.encodeComponent(selected.name)}');
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -274,18 +304,10 @@ class ModernNavigationService {
         return;
       }
 
-      if (facilities.length == 1) {
-        context.go('${AppRoute.websiteSetup}?facilityId=${facilities.first.id}');
-        return;
-      }
-
-      final selected = await showModalBottomSheet<FacilitySelectResult>(
-        context: context,
-        builder: (context) => FacilityPickerSheet(facilities: facilities),
-      );
-
-      if (selected != null) {
-        context.go('${AppRoute.websiteSetup}?facilityId=${selected.id}');
+      if (!context.mounted) return;
+      final facilityId = await _resolveFacilityId(context, facilities);
+      if (facilityId != null && context.mounted) {
+        context.go('${AppRoute.websiteSetup}?facilityId=$facilityId');
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -362,48 +384,21 @@ class ModernNavigationService {
         return;
       }
 
-      // If only one facility, use it directly
-      if (facilities.length == 1) {
-        // #region agent log
-        DebugLogger.log(
-          hypothesisId: 'H1',
-          location:
-              'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
-          message: 'Single facility found, navigating directly',
-          data: {'facilityId': facilities.first.id},
-        );
-        // #endregion
-        context.go('/messaging?facilityId=${facilities.first.id}');
-        return;
-      }
-
-      // Multiple facilities - show picker
-      // #region agent log
-      DebugLogger.log(
-        hypothesisId: 'H1',
-        location:
-            'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
-        message: 'Multiple facilities found, showing picker',
-        data: {'facilityCount': facilities.length},
-      );
-      // #endregion
-      final selected = await showModalBottomSheet<FacilitySelectResult>(
-        context: context,
-        builder: (context) => FacilityPickerSheet(facilities: facilities),
-      );
+      if (!context.mounted) return;
+      final facilityId = await _resolveFacilityId(context, facilities);
 
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H1',
         location:
             'modern_navigation_service.dart:_navigateToCommsWithFacilitySelection',
-        message: 'Facility picker closed',
-        data: {'selected': selected != null, 'selectedId': selected?.id},
+        message: 'Facility resolved',
+        data: {'facilityId': facilityId},
       );
       // #endregion
 
-      if (selected != null) {
-        context.go('/messaging?facilityId=${selected.id}');
+      if (facilityId != null && context.mounted) {
+        context.go('/messaging?facilityId=$facilityId');
       }
     } catch (e, stackTrace) {
       // #region agent log
@@ -439,31 +434,8 @@ class ModernNavigationService {
         return;
       }
 
-      final facilityIds = facilities.map((f) => f.id).toSet();
-      String? chosenId;
-
-      try {
-        final container = ProviderScope.containerOf(context, listen: false);
-        final activeId =
-            container.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
-        if (activeId != null &&
-            activeId.isNotEmpty &&
-            facilityIds.contains(activeId)) {
-          chosenId = activeId;
-        }
-      } catch (_) {
-        // No ProviderScope in context — fall through to picker / single facility
-      }
-
-      chosenId ??= facilities.length == 1 ? facilities.first.id : null;
-
-      if (chosenId == null) {
-        final selected = await showModalBottomSheet<FacilitySelectResult>(
-          context: context,
-          builder: (context) => FacilityPickerSheet(facilities: facilities),
-        );
-        chosenId = selected?.id;
-      }
+      if (!context.mounted) return;
+      final chosenId = await _resolveFacilityId(context, facilities);
 
       if (chosenId != null &&
           chosenId.isNotEmpty &&

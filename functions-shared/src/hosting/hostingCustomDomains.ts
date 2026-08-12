@@ -206,7 +206,9 @@ function flattenDnsRecords(customDomain: any): DomainRecord[] {
   }
 
   // Prefer records the customer still needs to ADD; fall back to full list.
-  const toAdd = records.filter((r) => !r.requiredAction || r.requiredAction === 'ADD');
+  // (A missing/empty requiredAction means Firebase considers the record already
+  // satisfied — it must NOT be treated as still needing to be added.)
+  const toAdd = records.filter((r) => r.requiredAction === 'ADD');
   const preferred = toAdd.length > 0 ? toAdd : records;
 
   const seen = new Set<string>();
@@ -226,7 +228,9 @@ function summarizeStatus(customDomain: any): string {
   const setup = String(customDomain?.status || '').toLowerCase();
 
   if (cert === 'CERT_ACTIVE' && (host === 'HOST_ACTIVE' || host === '')) return 'connected';
-  if (cert === 'CERT_ACTIVE') return 'connected';
+  // Certificate issued but hosting isn't routing traffic yet (e.g. HOST_MISMATCH) —
+  // almost there, but NOT actually serving the site. Must not report as connected/Live.
+  if (cert === 'CERT_ACTIVE') return 'provisioning_ssl';
   if (cert === 'CERT_PROPAGATING' || cert === 'CERT_PENDING') return 'provisioning_ssl';
   if (cert === 'CERT_VALIDATING' || cert === 'CERT_PREPARING') return 'pending_dns';
   if (ownership === 'OWNERSHIP_MISSING' || ownership === 'OWNERSHIP_PENDING') return 'pending_dns';
@@ -249,9 +253,10 @@ function explainStatus(customDomain: any, records: DomainRecord[]): string {
     : [];
 
   const lines: string[] = [];
-  if (records.length > 0) {
+  const needsAction = records.some((r) => r.requiredAction === 'ADD');
+  if (needsAction) {
     lines.push(
-      `Firebase needs ${records.length} DNS change(s) at GoDaddy before the site can go live. ` +
+      `Firebase needs ${records.filter((r) => r.requiredAction === 'ADD').length} DNS change(s) at GoDaddy before the site can go live. ` +
         'Add every row below exactly (Type / Name / Value), wait a few minutes, then tap Check progress.',
     );
   } else if (String(customDomain?.cert?.state || '').toUpperCase() === 'CERT_VALIDATING') {
@@ -259,6 +264,11 @@ function explainStatus(customDomain: any, records: DomainRecord[]): string {
       'Firebase is validating DNS for the SSL certificate (CERT_VALIDATING). ' +
         'If GoDaddy still has old A/CNAME/forwarding records for this domain, remove or replace them with the records Firebase shows. ' +
         'Tap Check progress again in 1–2 minutes — records often appear after the next DNS check.',
+    );
+  } else if (records.length > 0) {
+    lines.push(
+      'DNS already matches what Firebase expects — nothing more to add at GoDaddy. ' +
+        "Firebase is still finishing setup on its own end (certificate/routing). Tap Check progress again in a few minutes.",
     );
   } else {
     lines.push(

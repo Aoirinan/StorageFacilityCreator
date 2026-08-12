@@ -342,7 +342,10 @@ class _EmailSequenceManagementScreenState extends ConsumerState<EmailSequenceMan
         );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Sequence deleted successfully')),
+            const SnackBar(
+              content: Text('Sequence deleted successfully'),
+              backgroundColor: AppTheme.success,
+            ),
           );
           _loadSequences();
         }

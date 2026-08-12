@@ -149,14 +149,27 @@ class _EditContractTemplateScreenState
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Template'),
-        backgroundColor: AppTheme.primaryBlueDark,
-        foregroundColor: AppTheme.textOnDark,
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Edit Template',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
         ),
         actions: [
           if (_isSaving)

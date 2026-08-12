@@ -218,12 +218,26 @@ class _CancellationRetentionWizardState
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Before you cancel'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Before you cancel',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
         ),
       ),
       body: _loading

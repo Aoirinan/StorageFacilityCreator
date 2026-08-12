@@ -113,22 +113,41 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
     }
   }
 
+  PreferredSizeWidget _buildAppBar(BuildContext context, String title, {List<Widget>? actions}) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return AppBar(
+      backgroundColor: cs.surface,
+      foregroundColor: cs.onSurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 1,
+      centerTitle: false,
+      title: Text(
+        title,
+        style: theme.textTheme.titleLarge
+            ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+      ),
+      actions: actions,
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(1),
+        child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Loading Unit...'),
-        ),
+        appBar: _buildAppBar(context, 'Loading Unit...'),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_errorMessage != null || _unit == null) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Unit Not Found'),
-        ),
+        appBar: _buildAppBar(context, 'Unit Not Found'),
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -151,9 +170,9 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Unit ${_unit!.unitNumber}'),
-        centerTitle: true,
+      appBar: _buildAppBar(
+        context,
+        'Unit ${_unit!.unitNumber}',
         actions: [
           IconButton(
             onPressed: () => _navigateToEditUnit(context),

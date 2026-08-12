@@ -11,6 +11,7 @@ import '../models/tenant_model.dart';
 import '../models/dnr_model.dart';
 import '../providers/contract_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/facility_provider.dart';
 import '../services/facility_service.dart';
 import '../services/tenant_service.dart';
 import '../services/contract_service.dart';
@@ -217,7 +218,10 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
   Future<void> _loadInitialData() async {
     if (_selectedFacilityId == null) {
       try {
-        final facilities = await FacilityService.getUserFacilities();
+        final uid = ref.read(authStateProvider).maybeWhen(data: (u) => u?.uid, orElse: () => null);
+        final facilities = uid == null
+            ? await FacilityService.getUserFacilities()
+            : await ref.read(userFacilitiesProvider(uid).future);
         if (facilities.isNotEmpty) {
           setState(() {
             _selectedFacilityId = facilities.first.id;

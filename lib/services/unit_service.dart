@@ -23,6 +23,7 @@ class UnitService {
     String? notes,
     double? securityDeposit,
     Map<String, dynamic>? customFields,
+    bool publicListingEnabled = true,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -79,6 +80,7 @@ class UnitService {
         'createdBy': user.uid,
         'isActive': true,
         'archived': false, // Default to not archived
+        'publicListingEnabled': publicListingEnabled,
       };
 
       await ref.set(unitData);
@@ -276,6 +278,7 @@ class UnitService {
     double? mapY,
     double? mapWidth,
     double? mapHeight,
+    bool? publicListingEnabled,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -328,6 +331,9 @@ class UnitService {
       if (reservationExpiry != null) updateData['reservationExpiry'] = Timestamp.fromDate(reservationExpiry);
       if (reservedBy != null) updateData['reservedBy'] = reservedBy;
       if (customFields != null) updateData['customFields'] = customFields;
+      if (publicListingEnabled != null) {
+        updateData['publicListingEnabled'] = publicListingEnabled;
+      }
       // Handle map layout updates - merge with existing layout if only partial update
       if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
         // Get existing layout data if available (we'll merge it)

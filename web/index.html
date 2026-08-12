@@ -1,12 +1,59 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!-- Default Firebase Hosting domains → canonical site (301-like client redirect). -->
+  <!-- Default Firebase Hosting domains → canonical site (301-like client redirect).
+       Facility custom domains (root path only) → the facility's published website.
+       Firebase Hosting always serves this static index.html for `/` before evaluating
+       the `routeCustomDomainRoot` function rewrite (exact static-file matches win over
+       rewrites), so that server-side redirect never actually fires — this client-side
+       check is the real mechanism. Mirrors isPrimaryOperatorHost() in
+       functions-public-website/src/publicWebsite.ts; keep both in sync.
+
+       flutter_bootstrap.js is loaded dynamically (not as a static tag) so that on a
+       custom-domain root request we can hold off booting the operator app until the
+       domain lookup below resolves — otherwise the operator UI flashes on screen for
+       the ~1-2s the lookup takes before the redirect fires. -->
   <script>
     (function () {
       var h = location.hostname;
-      if (h === 'storage-facility-creator.web.app' || h === 'storage-facility-creator.firebaseapp.com') {
+      var isDefaultFirebaseHost = h === 'storage-facility-creator.web.app' || h === 'storage-facility-creator.firebaseapp.com';
+      if (isDefaultFirebaseHost) {
         location.replace('https://www.storagefacilitycreator.com' + location.pathname + location.search + location.hash);
+        return;
+      }
+
+      function loadFlutter() {
+        var s = document.createElement('script');
+        s.src = 'flutter_bootstrap.js';
+        s.async = true;
+        document.head.appendChild(s);
+      }
+
+      var isOperatorHost = h === 'app.storagefacilitycreator.com' || h === 'localhost' || h === '127.0.0.1';
+      if (!isOperatorHost && location.pathname === '/') {
+        var settled = false;
+        var proceed = function () {
+          if (settled) return;
+          settled = true;
+          loadFlutter();
+        };
+        // Pass the domain explicitly rather than relying on the request's Host header —
+        // Firebase Hosting's rewrite-to-function forwarding does not reliably preserve
+        // the original custom-domain host for this site, but the browser always knows it.
+        fetch('/api/public-website?domain=' + encodeURIComponent(h), { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (data && data.facilitySlug) {
+              location.replace('/w/' + encodeURIComponent(data.facilitySlug) + location.search + location.hash);
+            } else {
+              proceed();
+            }
+          })
+          .catch(proceed);
+        // Safety net: never block boot forever if the lookup hangs or is offline.
+        setTimeout(proceed, 2500);
+      } else {
+        loadFlutter();
       }
     })();
   </script>
@@ -233,6 +280,5 @@
       });
     })();
   </script>
-  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

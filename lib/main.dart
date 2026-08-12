@@ -381,11 +381,18 @@ class SFCApp extends ConsumerWidget {
 class _AppScrollBehavior extends MaterialScrollBehavior {
   const _AppScrollBehavior();
 
+  // Deliberately excludes mouse and trackpad: including them here makes
+  // Flutter treat wheel/trackpad scroll signals as candidate click-drag
+  // gestures competing in the gesture arena, instead of passing them
+  // straight through as scroll deltas. In practice that meant mouse wheel
+  // and keyboard scrolling stopped working app-wide — only an actual
+  // sustained drag (e.g. grabbing the scrollbar thumb) would resolve.
+  // touch/stylus keep drag-to-scroll for touchscreens; desktop mouse/
+  // trackpad scrolling is handled natively by Flutter without being a
+  // registered drag device.
   @override
   Set<PointerDeviceKind> get dragDevices => {
         PointerDeviceKind.touch,
-        PointerDeviceKind.mouse,
-        PointerDeviceKind.trackpad,
         PointerDeviceKind.stylus,
       };
 

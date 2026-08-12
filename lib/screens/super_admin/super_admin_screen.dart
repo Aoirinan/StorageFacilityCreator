@@ -23,6 +23,7 @@ import 'package:sfcapp/screens/super_admin/tabs/platform_reset_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/message_logs_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/websites_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/retention_tab.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
 class SuperAdminScreen extends ConsumerStatefulWidget {
   const SuperAdminScreen({super.key});
@@ -240,27 +241,29 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
               .toList(),
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: const [
-          MetricsTab(),
-          FacilitiesTab(),
-          AccountsTab(),
-          UsersTab(),
-          FeatureFlagsTab(),
-          DnrModerationTab(),
-          AiLogsTab(),
-          MessageLogsTab(),
-          LeadsTab(),
-          CommissionTab(),
-          MessagingGuardTab(),
-          ReferralsTab(),
-          BugReportsTab(),
-          WebsitesTab(),
-          CustomDomainGuideTab(),
-          RetentionTab(),
-          PlatformResetTab(),
-        ],
+      body: KeyboardScrollable(
+        child: TabBarView(
+          controller: _tabController,
+          children: const [
+            MetricsTab(),
+            FacilitiesTab(),
+            AccountsTab(),
+            UsersTab(),
+            FeatureFlagsTab(),
+            DnrModerationTab(),
+            AiLogsTab(),
+            MessageLogsTab(),
+            LeadsTab(),
+            CommissionTab(),
+            MessagingGuardTab(),
+            ReferralsTab(),
+            BugReportsTab(),
+            WebsitesTab(),
+            CustomDomainGuideTab(),
+            RetentionTab(),
+            PlatformResetTab(),
+          ],
+        ),
       ),
     );
   }

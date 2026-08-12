@@ -51,10 +51,25 @@ class _ReminderScheduleScreenState extends ConsumerState<ReminderScheduleScreen>
   @override
   Widget build(BuildContext context) {
     final schedulesAsync = ref.watch(reminderSchedulesProvider(widget.facilityId));
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Reminder Schedules • ${widget.facilityName}'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Reminder Schedules • ${widget.facilityName}',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+        ),
       ),
       floatingActionButton: _canManageSchedules
           ? FloatingActionButton.extended(

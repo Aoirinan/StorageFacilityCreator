@@ -159,6 +159,15 @@ class AppTheme {
         ),
         color: surface,
       ),
+      dialogTheme: DialogThemeData(
+        elevation: 0,
+        backgroundColor: surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: borderLight, width: 1),
+        ),
+      ),
       appBarTheme: const AppBarTheme(
         elevation: 0,
         centerTitle: false,
@@ -187,6 +196,49 @@ class AppTheme {
             fontWeight: FontWeight.w600,
             letterSpacing: 0.5,
           ),
+        ),
+      ),
+      // FilledButton/OutlinedButton default to Material 3's pill (stadium) shape when
+      // unthemed, which clashes with the rounded-rect ElevatedButton style used
+      // elsewhere. Match the same shape/padding so button shape is consistent app-wide.
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          backgroundColor: primaryBlue,
+          foregroundColor: textOnDark,
+          textStyle: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          side: const BorderSide(color: primaryBlue),
+          foregroundColor: primaryBlue,
+          textStyle: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+      // Unthemed SegmentedButton picks its selected color from
+      // colorScheme.secondaryContainer, which this palette maps to orange —
+      // pin it to the same blue used for every other selected/active state.
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: SegmentedButton.styleFrom(
+          selectedBackgroundColor: primaryBlue,
+          selectedForegroundColor: Colors.white,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -284,6 +336,15 @@ class AppTheme {
         ),
         color: darkSurface,
       ),
+      dialogTheme: DialogThemeData(
+        elevation: 0,
+        backgroundColor: darkSurface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: darkBorder, width: 1),
+        ),
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: darkSurface,
@@ -356,9 +417,46 @@ class AppTheme {
           ),
         ),
       ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          backgroundColor: primaryBlueLight,
+          foregroundColor: Colors.white,
+          textStyle: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          side: const BorderSide(color: primaryBlueLight),
+          foregroundColor: primaryBlueLight,
+          textStyle: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: SegmentedButton.styleFrom(
+          selectedBackgroundColor: primaryBlueLight,
+          selectedForegroundColor: Colors.white,
+        ),
+      ),
     );
   }
-  
+
   // Dashboard-specific colors for metrics
   static const Color metricPrimary = primaryBlue;
   static const Color metricSuccess = success;

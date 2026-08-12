@@ -1487,16 +1487,16 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Cancel'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              
+
               try {
                 await TenantService.archiveTenant(
                   facilityId: tenant.facilityId,
                   tenantId: tenant.id!,
                 );
-                
+
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -1518,6 +1518,10 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 }
               }
             },
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Archive'),
           ),
         ],
@@ -1536,16 +1540,16 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Cancel'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              
+
               try {
                 await TenantService.deleteTenant(
                   facilityId: tenant.facilityId,
                   tenantId: tenant.id!,
                 );
-                
+
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -1567,7 +1571,11 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 }
               }
             },
-            child: Text('Delete', style: TextStyle(color: AppTheme.error)),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete'),
           ),
         ],
       ),
@@ -2141,7 +2149,10 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update: $e')),
+          SnackBar(
+            content: Text('Failed to update: $e'),
+            backgroundColor: AppTheme.error,
+          ),
         );
         setState(() => _isSavingMonthStatus = false);
       }
@@ -2621,9 +2632,12 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         content: const Text('Are you sure you want to remove the insurance proof document?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Remove'),
           ),
         ],

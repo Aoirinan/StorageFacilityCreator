@@ -11,6 +11,7 @@ import '../services/insurance_service.dart';
 import '../models/facility_model.dart';
 import '../models/tenant_insurance_model.dart';
 import '../providers/search_provider.dart';
+import '../providers/facility_provider.dart' as cached_facility_providers;
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -55,7 +56,10 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
   Future<void> _loadFacilities() async {
     try {
       await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-      final facilities = await FacilityService.getUserFacilities();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final facilities = uid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(cached_facility_providers.userFacilitiesProvider(uid).future);
       if (mounted) {
         // Respect global picker if already set, otherwise default to All Facilities
         final globalFacility = ref.read(selectedFacilityProvider);

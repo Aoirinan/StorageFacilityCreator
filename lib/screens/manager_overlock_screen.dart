@@ -1168,11 +1168,25 @@ class _UnitOverlockDetailSheet extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Column(
       children: [
         AppBar(
-          title: Text('Unit ${unit.unitNumber}'),
+          backgroundColor: cs.surface,
+          foregroundColor: cs.onSurface,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          title: Text(
+            'Unit ${unit.unitNumber}',
+            style: theme.textTheme.titleLarge
+                ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+          ),
           actions: [IconButton(icon: const Icon(Icons.close), onPressed: onClose)],
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(1),
+            child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+          ),
         ),
         Expanded(
           child: ListView(
@@ -1302,9 +1316,20 @@ class _OverlockPrintView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Overlock List'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          'Overlock List',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.print),
@@ -1312,6 +1337,10 @@ class _OverlockPrintView extends StatelessWidget {
             tooltip: 'Print overlock list',
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+        ),
       ),
       body: Center(
         child: SingleChildScrollView(

@@ -1007,7 +1007,10 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
 
       if (tenant == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Linked tenant could not be found.')),
+          const SnackBar(
+            content: Text('Linked tenant could not be found.'),
+            backgroundColor: AppTheme.error,
+          ),
         );
         return;
       }
@@ -1016,7 +1019,10 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error loading tenant: $e')),
+        SnackBar(
+          content: Text('Error loading tenant: $e'),
+          backgroundColor: AppTheme.error,
+        ),
       );
     }
   }
@@ -1050,14 +1056,24 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 // Invalidate all global DNR entries (family provider)
       ref.invalidate(globalDnrEntriesProvider);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('DNR entry archived')),
+                  const SnackBar(
+                    content: Text('DNR entry archived'),
+                    backgroundColor: AppTheme.success,
+                  ),
                 );
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error archiving DNR entry: $e')),
+                  SnackBar(
+                    content: Text('Error archiving DNR entry: $e'),
+                    backgroundColor: AppTheme.error,
+                  ),
                 );
               }
             },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Archive'),
           ),
         ],
@@ -1102,11 +1118,17 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 // Invalidate all global DNR entries (family provider)
       ref.invalidate(globalDnrEntriesProvider);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('DNR entry restored')),
+                  const SnackBar(
+                    content: Text('DNR entry restored'),
+                    backgroundColor: AppTheme.success,
+                  ),
                 );
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error restoring DNR entry: $e')),
+                  SnackBar(
+                    content: Text('Error restoring DNR entry: $e'),
+                    backgroundColor: AppTheme.error,
+                  ),
                 );
               }
             },
@@ -1143,15 +1165,24 @@ class _DNRListScreenState extends ConsumerState<DNRListScreen> {
                 // Invalidate all global DNR entries (family provider)
       ref.invalidate(globalDnrEntriesProvider);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('DNR entry deleted')),
+                  const SnackBar(
+                    content: Text('DNR entry deleted'),
+                    backgroundColor: AppTheme.success,
+                  ),
                 );
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error deleting DNR entry: $e')),
+                  SnackBar(
+                    content: Text('Error deleting DNR entry: $e'),
+                    backgroundColor: AppTheme.error,
+                  ),
                 );
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],

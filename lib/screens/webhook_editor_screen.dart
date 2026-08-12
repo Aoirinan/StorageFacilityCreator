@@ -171,9 +171,24 @@ class _WebhookEditorScreenState extends ConsumerState<WebhookEditorScreen> {
       );
     }
 
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.webhookId != null ? 'Edit Webhook' : 'Create Webhook'),
+        backgroundColor: cs.surface,
+        foregroundColor: cs.onSurface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        title: Text(
+          widget.webhookId != null ? 'Edit Webhook' : 'Create Webhook',
+          style: theme.textTheme.titleLarge
+              ?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: cs.outlineVariant),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.save),

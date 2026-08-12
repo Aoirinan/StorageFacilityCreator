@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'modern_sidebar.dart';
+import 'keyboard_scrollable.dart';
 import '../services/modern_navigation_service.dart';
 import '../providers/messaging_provider.dart';
 
@@ -50,7 +51,7 @@ class ModernPageWrapper extends StatelessWidget {
         body: Column(
           children: [
             _buildTopBar(context, isMobile),
-            Expanded(child: child),
+            Expanded(child: KeyboardScrollable(child: child)),
           ],
         ),
         floatingActionButton: floatingActionButton,
@@ -94,9 +95,9 @@ class ModernPageWrapper extends StatelessWidget {
               children: [
                 // Top bar
                 _buildTopBar(context, isMobile),
-                
+
                 // Main content area
-                Expanded(child: child),
+                Expanded(child: KeyboardScrollable(child: child)),
               ],
             ),
           ),

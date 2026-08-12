@@ -545,9 +545,12 @@ class _CouponManagementScreenState extends ConsumerState<CouponManagementScreen>
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('Cancel'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],

@@ -39,6 +39,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   String? _selectedTenantId;
   String? _selectedTenantName;
   List<String> _selectedFeatures = [];
+  bool _publicListingEnabled = true;
   bool _isLoading = false;
   String? _errorMessage;
   bool _isBulkCreateMode = false;
@@ -207,6 +208,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
       _selectedTenantName = unit.tenantName;
     }
     _selectedFeatures = unit.features ?? [];
+    _publicListingEnabled = unit.publicListingEnabled;
 
     if (unit.dimensions != null) {
       _widthController.text = unit.dimensions!['width']?.toString() ?? '';
@@ -723,6 +725,25 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                             ),
                             const SizedBox(height: 20),
 
+                            SwitchListTile.adaptive(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('List on public website'),
+                              subtitle: const Text(
+                                'Turn off for staff-only spaces (manager residence, office, '
+                                'personal use) that should never be publicly rentable, even '
+                                'while marked Available.',
+                              ),
+                              value: _publicListingEnabled,
+                              onChanged: (enabled) {
+                                if (mounted) {
+                                  setState(() {
+                                    _publicListingEnabled = enabled;
+                                  });
+                                }
+                              },
+                            ),
+                            const SizedBox(height: 20),
+
                             // Tenant Selection (only show if status is not "Available" or if editing an occupied unit)
                             if (_selectedStatus != UnitStatus.available ||
                                 (widget.unit != null &&
@@ -1175,6 +1196,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
               securityDeposit: _securityDepositController.text.trim().isEmpty
                   ? null
                   : double.tryParse(_securityDepositController.text),
+              publicListingEnabled: _publicListingEnabled,
             );
             createdCount++;
           } catch (error) {
@@ -1283,6 +1305,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           notes: _notesController.text.trim().isEmpty
               ? null
               : _notesController.text.trim(),
+          publicListingEnabled: _publicListingEnabled,
         );
 
         if (mounted) {

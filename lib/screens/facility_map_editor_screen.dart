@@ -186,7 +186,8 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
   bool _isDeletingAllShapes = false;
   bool _isDuplicatingRow = false;
   /// When true, blocks cannot be dragged, resized, or nudged with arrow keys (prevents accidental moves).
-  bool _mapPositionsLocked = false;
+  /// Defaults to locked so a stray click-drag while browsing the map can't silently move a unit.
+  bool _mapPositionsLocked = true;
   final FocusNode _mapKeyboardFocus = FocusNode(debugLabel: 'mapEditorKeyboard');
   List<_ClipboardShapeItem>? _clipboardUnassignedItems;
 
@@ -507,7 +508,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       _didAutoSeedBottomRow = false;
       _isSeedingBottomRow = false;
       _clipboardUnassignedItems = null;
-      _mapPositionsLocked = false;
+      _mapPositionsLocked = true;
     }
   }
 
@@ -550,8 +551,11 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       for (final id in bulk) {
         final s = shapesList.where((x) => x.id == id).firstOrNull;
         if (s == null) continue;
-        var nx = (s.x + dx).clamp(0.0, double.infinity);
-        var ny = (s.y + dy).clamp(0.0, double.infinity);
+        // No lower-bound clamp: the workspace is unbounded in every direction
+        // (see _computeWorkspaceBounds, which grows minX/minY to fit shapes
+        // placed above/left of the origin).
+        var nx = s.x + dx;
+        var ny = s.y + dy;
         if (_snapToGrid) {
           nx = _snapToGridValue(nx);
           ny = _snapToGridValue(ny);
@@ -589,16 +593,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       return;
     }
 
-    final newX = (shape.x + dx).clamp(0.0, double.infinity);
-    final newY = (shape.y + dy).clamp(0.0, double.infinity);
+    final newX = shape.x + dx;
+    final newY = shape.y + dy;
     final snappedX = _snapToGrid ? _snapToGridValue(newX) : newX;
     final snappedY = _snapToGrid ? _snapToGridValue(newY) : newY;
     try {
       await MapLayoutService.updateMapShape(
         facilityId: widget.facilityId,
         shapeId: shape.id,
-        x: snappedX.clamp(0.0, double.infinity),
-        y: snappedY.clamp(0.0, double.infinity),
+        x: snappedX,
+        y: snappedY,
       );
     } catch (e) {
       if (mounted) {
@@ -621,9 +625,10 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       final selectedId = _selectedShapeId;
       if (selectedId == null) return;
       final shape = shapes.firstWhere((s) => s.id == selectedId, orElse: () => throw StateError('Shape not found'));
-      // Allow shapes to be positioned anywhere (no clamping to original bounds)
-      final newX = (shape.x + deltaX).clamp(0.0, double.infinity);
-      final newY = (shape.y + deltaY).clamp(0.0, double.infinity);
+      // Allow shapes to be positioned anywhere (no clamping to original bounds,
+      // and no artificial lower bound at 0 — the workspace grows in every direction).
+      final newX = shape.x + deltaX;
+      final newY = shape.y + deltaY;
 
       MapLayoutService.updateMapShape(
         facilityId: widget.facilityId,
@@ -1519,13 +1524,16 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-          ElevatedButton.icon(
-            onPressed: _addRectangle,
-            icon: const Icon(Icons.add_box, size: 20),
-            label: const Text('Add Unit'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: cs.primary,
-              foregroundColor: cs.onPrimary,
+          Tooltip(
+            message: 'Adds a blank box to the map — assign it to a unit afterward',
+            child: ElevatedButton.icon(
+              onPressed: _addRectangle,
+              icon: const Icon(Icons.add_box, size: 20),
+              label: const Text('Add Blank Box'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: cs.primary,
+                foregroundColor: cs.onPrimary,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -2197,27 +2205,30 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
     double ddx,
     double ddy,
   ) {
+    // Position clamps are derived from the (already width/height-clamped) size so the
+    // opposite edge/corner stays anchored, instead of clamping to a hardcoded 0..2000/1500
+    // workspace — the workspace itself is unbounded (see _computeWorkspaceBounds).
     switch (corner) {
       case _MapResizeCorner.topLeft:
-        final newWidth = (current.width - ddx).clamp(20.0, 2000.0);
-        final newHeight = (current.height - ddy).clamp(20.0, 1500.0);
-        final newX = (current.x + ddx).clamp(0.0, 2000.0 - newWidth);
-        final newY = (current.y + ddy).clamp(0.0, 1500.0 - newHeight);
+        final newWidth = (current.width - ddx).clamp(20.0, double.infinity);
+        final newHeight = (current.height - ddy).clamp(20.0, double.infinity);
+        final newX = current.x + current.width - newWidth;
+        final newY = current.y + current.height - newHeight;
         return current.copyWith(
             x: newX, y: newY, width: newWidth, height: newHeight);
       case _MapResizeCorner.topRight:
-        final newWidth = (current.width + ddx).clamp(20.0, 2000.0 - current.x);
-        final newHeight = (current.height - ddy).clamp(20.0, 1500.0);
-        final newY = (current.y + ddy).clamp(0.0, 1500.0 - newHeight);
+        final newWidth = (current.width + ddx).clamp(20.0, double.infinity);
+        final newHeight = (current.height - ddy).clamp(20.0, double.infinity);
+        final newY = current.y + current.height - newHeight;
         return current.copyWith(y: newY, width: newWidth, height: newHeight);
       case _MapResizeCorner.bottomLeft:
-        final newWidth = (current.width - ddx).clamp(20.0, 2000.0);
-        final newHeight = (current.height + ddy).clamp(20.0, 1500.0 - current.y);
-        final newX = (current.x + ddx).clamp(0.0, 2000.0 - newWidth);
+        final newWidth = (current.width - ddx).clamp(20.0, double.infinity);
+        final newHeight = (current.height + ddy).clamp(20.0, double.infinity);
+        final newX = current.x + current.width - newWidth;
         return current.copyWith(x: newX, width: newWidth, height: newHeight);
       case _MapResizeCorner.bottomRight:
-        final newWidth = (current.width + ddx).clamp(20.0, 2000.0 - current.x);
-        final newHeight = (current.height + ddy).clamp(20.0, 1500.0 - current.y);
+        final newWidth = (current.width + ddx).clamp(20.0, double.infinity);
+        final newHeight = (current.height + ddy).clamp(20.0, double.infinity);
         return current.copyWith(width: newWidth, height: newHeight);
     }
   }
@@ -2697,7 +2708,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       case UnitStatus.reserved:
         return AppTheme.warning;
       case UnitStatus.maintenance:
-        return AppTheme.error;
+        return Colors.deepPurple;
       case UnitStatus.outOfOrder:
         return AppTheme.textTertiary;
       case UnitStatus.overlocked:
@@ -2705,7 +2716,7 @@ class _FacilityMapEditorScreenState extends ConsumerState<FacilityMapEditorScree
       case UnitStatus.lockout:
         return AppTheme.error;
       case UnitStatus.auction:
-        return AppTheme.warning;
+        return Colors.orange;
     }
   }
 

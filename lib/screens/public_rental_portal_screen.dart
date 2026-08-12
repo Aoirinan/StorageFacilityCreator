@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -7,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/public_rental_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class PublicRentalPortalScreen extends StatefulWidget {
@@ -312,8 +314,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   bool _autoStartFired = false;
+  bool _autoSubmitAbandoned = false;
 
   bool get _isAutoSubmitMode {
+    if (_autoSubmitAbandoned) return false;
     final params = _locationQueryParams();
     return params['autoSubmit'] == '1' &&
         (params['email']?.trim().isNotEmpty == true);
@@ -408,7 +412,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         moveInDate: (moveInDateStr != null && moveInDateStr.isNotEmpty)
             ? DateTime.tryParse(moveInDateStr)
             : null,
-        expirationDuration: const Duration(minutes: 10),
+        // The move-in form (contact info, mailing address, optional ID,
+        // emergency contact, signature, terms) routinely takes longer than
+        // 10 minutes to complete — give real customers enough room that the
+        // hold doesn't expire out from under them mid-checkout.
+        expirationDuration: const Duration(minutes: 30),
         metadata: <String, dynamic>{
           'source': 'publicWebsite',
           'facilitySlug': _facilitySlug,
@@ -423,7 +431,9 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Unable to complete reservation. Please try again.';
+        _error = e is FirebaseFunctionsException && e.code == 'already-exists'
+            ? 'That unit was just reserved by someone else. Please go back and choose another unit.'
+            : ErrorMessageHelper.getUserFriendlyMessage(e);
         _isLoading = false;
       });
     }
@@ -548,7 +558,24 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text(_error!, textAlign: TextAlign.center),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.error_outline, size: 56, color: AppTheme.error),
+                const SizedBox(height: 16),
+                Text(_error!, textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _error = null;
+                      _autoSubmitAbandoned = true;
+                    });
+                  },
+                  child: const Text('Browse available units'),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -1592,7 +1619,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         moveInDate: reservationPayload['moveInDate'] == null
             ? null
             : DateTime.parse(reservationPayload['moveInDate']!),
-        expirationDuration: const Duration(minutes: 10),
+        // The move-in form (contact info, mailing address, optional ID,
+        // emergency contact, signature, terms) routinely takes longer than
+        // 10 minutes to complete — give real customers enough room that the
+        // hold doesn't expire out from under them mid-checkout.
+        expirationDuration: const Duration(minutes: 30),
         metadata: <String, dynamic>{
           'source': 'publicRentalLinks',
           'facilitySlug': _facilitySlug,

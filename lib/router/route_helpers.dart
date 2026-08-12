@@ -13,6 +13,7 @@ import '../widgets/subscription_lock_overlay.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/subscription_guard_service.dart';
 import '../widgets/modern_sidebar.dart';
+import '../widgets/keyboard_scrollable.dart';
 import '../providers/messaging_provider.dart';
 import '../widgets/facility_switcher.dart';
 import '../theme/app_theme.dart';
@@ -315,9 +316,9 @@ class AppShell extends ConsumerWidget {
                       children: [
                         // Top bar
                         _buildTopBar(context, isMobile, currentRoute),
-                        
+
                         // Page content
-                        Expanded(child: child),
+                        Expanded(child: KeyboardScrollable(child: child)),
                       ],
                     ),
                   ),

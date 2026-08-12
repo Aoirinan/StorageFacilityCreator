@@ -186,6 +186,7 @@ function toHtml(payload: {
   primaryCtaLabel: string;
   secondaryCtaLabel: string;
   paymentUrl: string;
+  tenantPortalUrl: string;
   address: string;
   officeHours: string;
   amenities: string[];
@@ -247,6 +248,13 @@ function toHtml(payload: {
   aboutSectionBody?: string;
   aboutSectionImageUrl?: string;
   faqs?: Array<{ question: string; answer: string }>;
+  pageUrl?: string;
+  stepChooseIconUrl?: string;
+  stepDetailsIconUrl?: string;
+  stepReserveIconUrl?: string;
+  promiseSecurityIconUrl?: string;
+  promiseServiceIconUrl?: string;
+  promiseConvenienceIconUrl?: string;
   categoryPage?: {
     slug: string;
     name: string;
@@ -257,8 +265,11 @@ function toHtml(payload: {
     ctaLabel?: string;
   } | null;
 }): string {
+  // "Make a Payment/Login" is for existing tenants, not prospective renters — it must never
+  // fall back to the rental flow (rentUrl/unitsUrl) or the operator admin login. Default to
+  // the tenant portal unless the operator has set an explicit override in Website Setup.
   const paymentHref =
-    safeHttpUrl(payload.paymentUrl) || safeHttpUrl(payload.rentUrl) || safeHttpUrl(payload.unitsUrl) || '#';
+    safeHttpUrl(payload.paymentUrl) || safeHttpUrl(payload.tenantPortalUrl) || '#';
   // Keep rental navigation in-page for a smooth single-page flow.
   const unitsHref = '#unit-list';
   const promoCtaHref = safeHttpUrl(payload.promoCtaUrl);
@@ -504,7 +515,7 @@ function toHtml(payload: {
             : ''
         }
       </div>
-      ${partnershipImageUrl ? `<img src="${escapeHtml(partnershipImageUrl)}" alt="" style="width:160px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
+      ${partnershipImageUrl ? `<img src="${escapeHtml(partnershipImageUrl)}" alt="${escapeHtml(String(partnershipBand?.title || payload.facilityName))}" loading="lazy" style="width:160px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
     </div>
   </div>
 </section>`
@@ -520,7 +531,7 @@ function toHtml(payload: {
         <h2 class="section-title" style="margin:0 0 8px">${escapeHtml(String(payload.aboutSectionTitle || 'Our story'))}</h2>
         <p class="muted" style="margin:0;font-size:1rem">${markdownToSafeHtml(String(payload.aboutSectionBody || ''))}</p>
       </div>
-      ${aboutImage ? `<img src="${escapeHtml(aboutImage)}" alt="" style="width:180px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
+      ${aboutImage ? `<img src="${escapeHtml(aboutImage)}" alt="About ${escapeHtml(payload.facilityName)}" loading="lazy" style="width:180px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
     </div>
   </div>
 </section>`
@@ -634,11 +645,50 @@ function toHtml(payload: {
         <h2 class="section-title" style="margin:0 0 8px">${escapeHtml(String(categoryPage?.name || 'Category'))}</h2>
         <p class="muted" style="margin:0">${markdownToSafeHtml(String(categoryPage?.longDescription || categoryPage?.shortBlurb || ''))}</p>
       </div>
-      ${categoryHeroImage ? `<img src="${escapeHtml(categoryHeroImage)}" alt="" style="width:190px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
+      ${categoryHeroImage ? `<img src="${escapeHtml(categoryHeroImage)}" alt="${escapeHtml(String(categoryPage?.name || payload.facilityName))} storage" loading="lazy" style="width:190px;max-width:100%;border-radius:12px;border:1px solid var(--line)" />` : ''}
     </div>
   </div>
 </section>`
     : '';
+
+  const stepChooseIcon = safeHttpsImageUrl(String(payload.stepChooseIconUrl || ''));
+  const stepDetailsIcon = safeHttpsImageUrl(String(payload.stepDetailsIconUrl || ''));
+  const stepReserveIcon = safeHttpsImageUrl(String(payload.stepReserveIconUrl || ''));
+  const promiseSecurityIcon = safeHttpsImageUrl(String(payload.promiseSecurityIconUrl || ''));
+  const promiseServiceIcon = safeHttpsImageUrl(String(payload.promiseServiceIconUrl || ''));
+  const promiseConvenienceIcon = safeHttpsImageUrl(String(payload.promiseConvenienceIconUrl || ''));
+  /** Renders an operator-uploaded icon image if set, otherwise a default Lucide icon. */
+  const cardIcon = (uploadedUrl: string | null, lucideName: string, alt: string): string =>
+    uploadedUrl
+      ? `<img class="card-icon-img" src="${escapeHtml(uploadedUrl)}" alt="${escapeHtml(alt)}" width="28" height="28" loading="lazy" />`
+      : `<i class="card-icon-glyph" data-lucide="${escapeHtml(lucideName)}" aria-hidden="true"></i>`;
+
+  const howItWorksSection = isCategoryPage
+    ? ''
+    : `<section class="section" id="how-it-works">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="section-title">How it works</h2>
+    </div>
+    <div class="steps-grid">
+      <article class="step-card">
+        <div class="card-icon-badge">${cardIcon(stepChooseIcon, 'search', 'Choose your unit')}</div>
+        <h3>1. Choose your unit</h3>
+        <p>Browse live availability and pick the size that fits.</p>
+      </article>
+      <article class="step-card">
+        <div class="card-icon-badge">${cardIcon(stepDetailsIcon, 'clipboard-list', 'Enter your details')}</div>
+        <h3>2. Enter your details</h3>
+        <p>A quick online form — no office visit required.</p>
+      </article>
+      <article class="step-card">
+        <div class="card-icon-badge">${cardIcon(stepReserveIcon, 'key-round', 'Reserve online')}</div>
+        <h3>3. Reserve online</h3>
+        <p>Move in on your schedule with instant confirmation.</p>
+      </article>
+    </div>
+  </div>
+</section>`;
 
   const startingLabel = payload.startingAt == null ? 'Call for rates' : `$${payload.startingAt.toFixed(2)}`;
   const heroStyle = heroBg
@@ -646,7 +696,7 @@ function toHtml(payload: {
     : `--hero-image:linear-gradient(135deg,#0f7669 0%,#134e4a 55%,#0f172a 100%);`;
 
   const logoBlock = logoSrc
-    ? `<img class="brand-logo" src="${escapeHtml(logoSrc)}" alt="" width="48" height="48" />`
+    ? `<img class="brand-logo" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(payload.facilityName)} logo" width="48" height="48" />`
     : `<div class="brand-mark" aria-hidden="true">${escapeHtml(payload.facilityName.trim().charAt(0) || 'S')}</div>`;
 
   const topPhone =
@@ -677,9 +727,27 @@ function toHtml(payload: {
   const footerLegalText =
     String(payload.footerLegalText || '').trim() || 'Powered by Storage Facility Creator';
   const footerTagline = String(payload.footerTagline || '').trim();
-  const canonicalTag = safeHttpUrl(String(payload.canonicalUrl || ''));
-  const ogImageTag = safeHttpsImageUrl(String(payload.ogImageUrl || ''));
+  const pageUrl = safeHttpUrl(String(payload.pageUrl || ''));
+  // Canonical/OG URL always resolves to something — an operator-set override, or this
+  // page's own real address — so social unfurlers and search engines never see a blank.
+  const canonicalHref = safeHttpUrl(String(payload.canonicalUrl || '')) || pageUrl;
+  const ogImage = safeHttpsImageUrl(String(payload.ogImageUrl || '')) || heroBg || logoSrc;
   const metaKeywords = String(payload.metaKeywords || '').trim();
+  const ogTitle = escapeHtml(payload.title);
+  const ogDescription = escapeHtml(payload.description.slice(0, 300));
+
+  const jsonLd: Record<string, unknown> = {
+    '@context': 'https://schema.org',
+    '@type': 'SelfStorage',
+    name: payload.facilityName,
+  };
+  if (pageUrl) jsonLd.url = pageUrl;
+  if (ogImage) jsonLd.image = ogImage;
+  if (payload.facilityPhone.trim()) jsonLd.telephone = payload.facilityPhone.trim();
+  if (payload.address.trim()) {
+    jsonLd.address = { '@type': 'PostalAddress', streetAddress: payload.address.trim() };
+  }
+  const jsonLdScript = `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -689,8 +757,19 @@ function toHtml(payload: {
   <title>${escapeHtml(payload.title)}</title>
   <meta name="description" content="${escapeHtml(payload.description)}" />
   ${metaKeywords ? `<meta name="keywords" content="${escapeHtml(metaKeywords)}" />` : ''}
-  ${ogImageTag ? `<meta property="og:image" content="${escapeHtml(ogImageTag)}" />` : ''}
-  ${canonicalTag ? `<link rel="canonical" href="${escapeHtml(canonicalTag)}" />` : ''}
+  <meta name="robots" content="index, follow" />
+  ${canonicalHref ? `<link rel="canonical" href="${escapeHtml(canonicalHref)}" />` : ''}
+  <meta property="og:type" content="business.business" />
+  <meta property="og:site_name" content="${escapeHtml(payload.facilityName)}" />
+  <meta property="og:title" content="${ogTitle}" />
+  <meta property="og:description" content="${ogDescription}" />
+  ${pageUrl ? `<meta property="og:url" content="${escapeHtml(pageUrl)}" />` : ''}
+  ${ogImage ? `<meta property="og:image" content="${escapeHtml(ogImage)}" />` : ''}
+  <meta name="twitter:card" content="${ogImage ? 'summary_large_image' : 'summary'}" />
+  <meta name="twitter:title" content="${ogTitle}" />
+  <meta name="twitter:description" content="${ogDescription}" />
+  ${ogImage ? `<meta name="twitter:image" content="${escapeHtml(ogImage)}" />` : ''}
+  ${jsonLdScript}
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
@@ -822,6 +901,13 @@ function toHtml(payload: {
     .promise-card{background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);box-shadow:var(--shadow)}
     .promise-card h3{margin:0 0 10px;font-size:1.05rem}
     .promise-card p{margin:0;color:var(--muted);font-size:.95rem}
+    .steps-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+    .step-card{background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);box-shadow:var(--shadow)}
+    .step-card h3{margin:0 0 10px;font-size:1.05rem}
+    .step-card p{margin:0;color:var(--muted);font-size:.95rem}
+    .card-icon-badge{width:44px;height:44px;border-radius:12px;background:rgba(15,118,105,.1);display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+    .card-icon-glyph{width:22px;height:22px;color:var(--accent)}
+    .card-icon-img{width:26px;height:26px;object-fit:contain;border-radius:6px}
     .quotes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
     .quote-card{
       background:var(--surface);border-radius:var(--radius);padding:22px;border:1px solid var(--line);
@@ -969,6 +1055,7 @@ function toHtml(payload: {
 
   <main>
     ${categoryIntroSection}
+    ${howItWorksSection}
     <section class="section" id="about">
       <div class="wrap">
         <div class="section-head">
@@ -1023,14 +1110,17 @@ function toHtml(payload: {
         <h2 class="section-title" style="margin-bottom:18px">Our promise to you</h2>
         <div class="promise-grid">
           <article class="promise-card">
+            <div class="card-icon-badge">${cardIcon(promiseSecurityIcon, 'shield-check', 'Security')}</div>
             <h3>Security</h3>
             <p>${promiseS}</p>
           </article>
           <article class="promise-card">
+            <div class="card-icon-badge">${cardIcon(promiseServiceIcon, 'headset', 'Customer service')}</div>
             <h3>Customer service</h3>
             <p>${promiseSv}</p>
           </article>
           <article class="promise-card">
+            <div class="card-icon-badge">${cardIcon(promiseConvenienceIcon, 'clock', 'Convenience')}</div>
             <h3>Convenience</h3>
             <p>${promiseC}</p>
           </article>
@@ -1371,7 +1461,11 @@ export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res)
     return;
   }
   const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
-  const available = units.filter((u) => String(u.status || '').toLowerCase() === 'available');
+  // isRentable already folds in status, tenant links, unit-type visibility, and the
+  // per-unit publicListingEnabled flag — do not re-derive availability from raw status
+  // here, or staff-only units (manager residence, office, personal-use, etc.) that are
+  // internally `available` (to avoid billing implications) leak into the public storefront.
+  const available = units.filter((u) => u.isRentable === true);
   const startingAt = available.reduce<number | null>((acc, u) => {
     const rate = asNumber(u.monthlyRate);
     if (rate == null) return acc;
@@ -1442,6 +1536,7 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       primaryCtaLabel: 'See Units',
       secondaryCtaLabel: 'Rent Online',
       paymentUrl: '#',
+      tenantPortalUrl: '#',
       address: '',
       officeHours: '',
       amenities: [],
@@ -1482,6 +1577,7 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       primaryCtaLabel: 'See Units',
       secondaryCtaLabel: 'Rent Online',
       paymentUrl: '#',
+      tenantPortalUrl: '#',
       address: '',
       officeHours: '',
       amenities: [],
@@ -1531,7 +1627,11 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
     .map((v) => v.trim())
     .filter((v) => v.length > 0);
   const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
-  const available = units.filter((u) => String(u.status || '').toLowerCase() === 'available');
+  // isRentable already folds in status, tenant links, unit-type visibility, and the
+  // per-unit publicListingEnabled flag — do not re-derive availability from raw status
+  // here, or staff-only units (manager residence, office, personal-use, etc.) that are
+  // internally `available` (to avoid billing implications) leak into the public storefront.
+  const available = units.filter((u) => u.isRentable === true);
   const startingAt = available.reduce<number | null>((acc, u) => {
     const rate = asNumber(u.monthlyRate);
     if (rate == null) return acc;
@@ -1613,6 +1713,10 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
     res.status(404).type('text/html').send('Category not found.');
     return;
   }
+  const customDomain = typeof publicSettings.customDomain === 'string' ? publicSettings.customDomain.trim() : '';
+  const pageUrl =
+    (customDomain ? `https://${customDomain}` : `https://app.storagefacilitycreator.com/w/${slug}`) +
+    (categoryPage ? `/${categoryPage.slug}` : '');
   res.status(200).type('text/html').send(
     toHtml({
       title: String(publicSettings.pageTitle || `${facilityName} | Self Storage`),
@@ -1625,6 +1729,7 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       primaryCtaLabel: String(websiteConfig.primaryCtaLabel || 'See Units'),
       secondaryCtaLabel: String(websiteConfig.secondaryCtaLabel || 'Make a Payment/Login'),
       paymentUrl: String(websiteConfig.paymentUrl || ''),
+      tenantPortalUrl: 'https://app.storagefacilitycreator.com/#/tenant-portal',
       address: String(websiteConfig.address || ''),
       officeHours: String(websiteConfig.officeHours || ''),
       amenities,
@@ -1677,6 +1782,13 @@ export const renderPublicWebsite = functions.https.onRequest(async (req, res) =>
       faqs: Array.isArray(websiteConfig.faqs)
         ? (websiteConfig.faqs as Array<{ question: string; answer: string }>)
         : [],
+      pageUrl,
+      stepChooseIconUrl: String(websiteConfig.stepChooseIconUrl || ''),
+      stepDetailsIconUrl: String(websiteConfig.stepDetailsIconUrl || ''),
+      stepReserveIconUrl: String(websiteConfig.stepReserveIconUrl || ''),
+      promiseSecurityIconUrl: String(websiteConfig.promiseSecurityIconUrl || ''),
+      promiseServiceIconUrl: String(websiteConfig.promiseServiceIconUrl || ''),
+      promiseConvenienceIconUrl: String(websiteConfig.promiseConvenienceIconUrl || ''),
       categoryPage,
       startingAt,
       availableCount: available.length,
@@ -1731,4 +1843,69 @@ export const routeCustomDomainRoot = functions.https.onRequest(async (req, res) 
   }
 
   res.redirect(302, `/w/${encodeURIComponent(slug)}`);
+});
+
+/**
+ * Real robots.txt for facility custom domains — previously this path fell through to the
+ * generic Flutter shell (a static-file match always wins over a rewrite for the same path),
+ * so every facility site effectively had no robots.txt at all. There's no way to pass a
+ * `?domain=` query param here (crawlers request the bare path), so this relies on the
+ * request's Host header, which Firebase Hosting forwards as-received for paths that don't
+ * collide with a static file (unlike `/` and `/w/**`, no static robots.txt exists to compete).
+ */
+export const robotsTxt = functions.https.onRequest(async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  const host = normalizeHostHeader(String(req.headers.host || ''));
+  if (isPrimaryOperatorHost(host)) {
+    // The operator dashboard is an authenticated SaaS app, not public content.
+    res.status(200).type('text/plain').send('User-agent: *\nDisallow: /\n');
+    return;
+  }
+  const slug = host ? await resolveSlug('', '', host) : null;
+  if (!slug) {
+    res.status(200).type('text/plain').send('User-agent: *\nAllow: /\n');
+    return;
+  }
+  res.status(200).type('text/plain').send(
+    `User-agent: *\nAllow: /\nSitemap: https://${host}/sitemap.xml\n`,
+  );
+});
+
+/** Real sitemap.xml for facility custom domains — same Host-header approach as robotsTxt. */
+export const sitemapXml = functions.https.onRequest(async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  const host = normalizeHostHeader(String(req.headers.host || ''));
+  const emptySitemap = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>';
+  if (!host || isPrimaryOperatorHost(host)) {
+    res.status(200).type('application/xml').send(emptySitemap);
+    return;
+  }
+  const slug = await resolveSlug('', '', host);
+  if (!slug) {
+    res.status(200).type('application/xml').send(emptySitemap);
+    return;
+  }
+  const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
+  if (!snap.exists) {
+    res.status(200).type('application/xml').send(emptySitemap);
+    return;
+  }
+  const data = snap.data() || {};
+  const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
+  if (publicSettings.enabled !== true) {
+    res.status(200).type('application/xml').send(emptySitemap);
+    return;
+  }
+  const widgetsBlock = (publicSettings.widgets || {}) as Record<string, unknown>;
+  const websiteConfig = (publicSettings.websiteConfig || widgetsBlock.websiteConfig || {}) as Record<string, unknown>;
+  const unitCategories = Array.isArray(websiteConfig.unitCategories)
+    ? (websiteConfig.unitCategories as Record<string, unknown>[])
+        .map((entry) => String(entry.slug || '').trim().toLowerCase())
+        .filter((s) => s.length > 0)
+    : [];
+  const urls = [`https://${host}/`, ...unitCategories.map((s) => `https://${host}/${encodeURIComponent(s)}`)];
+  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+    .map((u) => `  <url><loc>${escapeHtml(u)}</loc></url>`)
+    .join('\n')}\n</urlset>`;
+  res.status(200).type('application/xml').send(body);
 });

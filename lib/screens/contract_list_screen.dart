@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/contract_model.dart';
 import '../providers/contract_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/active_facility_provider.dart';
+import '../providers/facility_provider.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
@@ -50,7 +52,10 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
 
   Future<void> _loadUserFacilities() async {
     try {
-      final facilities = await FacilityService.getUserFacilities();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final facilities = uid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(userFacilitiesProvider(uid).future);
       if (!mounted) return;
       setState(() {
         _cachedFacilities = facilities;
@@ -771,7 +776,10 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
                 _invalidateContractsList(contract);
               });
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],

@@ -2,12 +2,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/facility_model.dart';
+import '../providers/facility_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
@@ -17,7 +19,7 @@ import '../services/stripe_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
 
-class FacilityWebsiteSetupScreen extends StatefulWidget {
+class FacilityWebsiteSetupScreen extends ConsumerStatefulWidget {
   final String facilityId;
 
   const FacilityWebsiteSetupScreen({
@@ -26,12 +28,12 @@ class FacilityWebsiteSetupScreen extends StatefulWidget {
   });
 
   @override
-  State<FacilityWebsiteSetupScreen> createState() =>
+  ConsumerState<FacilityWebsiteSetupScreen> createState() =>
       _FacilityWebsiteSetupScreenState();
 }
 
 class _FacilityWebsiteSetupScreenState
-    extends State<FacilityWebsiteSetupScreen> {
+    extends ConsumerState<FacilityWebsiteSetupScreen> {
   static const List<String> _dayOrder = <String>[
     'sunday',
     'monday',
@@ -317,7 +319,10 @@ class _FacilityWebsiteSetupScreenState
       _error = null;
     });
     try {
-      final facilities = await FacilityService.getUserFacilities();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final facilities = uid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(userFacilitiesProvider(uid).future);
       final facility = await FacilityService.getFacility(widget.facilityId);
       if (facility == null || !facility.hasActiveWebsiteSubscription) {
         if (!mounted) return;

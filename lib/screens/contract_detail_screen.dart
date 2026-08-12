@@ -820,7 +820,10 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
               Navigator.of(context).pop();
               ref.read(contractOperationsProvider.notifier).deleteContract(contract.facilityId, contract.id);
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],

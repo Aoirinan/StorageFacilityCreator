@@ -36,7 +36,10 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   }
 
   Future<void> _loadFacilities() async {
-    final facilities = await FacilityService.getUserFacilities();
+    final uid = ref.read(authStateProvider).maybeWhen(data: (u) => u?.uid, orElse: () => null);
+    final facilities = uid == null
+        ? await FacilityService.getUserFacilities()
+        : await ref.read(userFacilitiesProvider(uid).future);
     if (facilities.isNotEmpty && mounted) {
       final activeId =
           ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
@@ -477,7 +480,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                   child: Text(
-                    '$occupied / $total units',
+                    '$occupied / $total units occupied',
                     style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,

@@ -13,6 +13,7 @@ const INVENTORY_KEYS = [
   'dimensions',
   'archived',
   'isActive',
+  'publicListingEnabled',
 ];
 
 function slugify(raw: string): string {
@@ -79,13 +80,18 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
     const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
     const statusAllowsRental = st === 'available' || st === 'reserved';
+    const publicListingEnabled = d.publicListingEnabled !== false;
     const isRentable =
       statusAllowsRental &&
       !hasTenantLink &&
       !claimedByActiveTenant &&
-      isPubliclyEnabledType;
-    const publicStatus =
-      hasTenantLink || claimedByActiveTenant ? 'rented' : statusToPublicStatus(st);
+      isPubliclyEnabledType &&
+      publicListingEnabled;
+    const publicStatus = !publicListingEnabled
+      ? 'unavailable'
+      : hasTenantLink || claimedByActiveTenant
+      ? 'rented'
+      : statusToPublicStatus(st);
 
     const dims = (d.dimensions || {}) as Record<string, any>;
     const width = Number(dims.width);
@@ -109,6 +115,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       description: d.description ?? null,
       monthlyRate: showPublicPricing ? d.monthlyRate : null,
       isRentable,
+      publicListingEnabled,
     });
   }
 

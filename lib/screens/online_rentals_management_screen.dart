@@ -1,14 +1,17 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../models/contract_template_model.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
+import '../providers/facility_provider.dart';
 import '../services/contract_service.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
@@ -17,7 +20,7 @@ import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
 
-class OnlineRentalsManagementScreen extends StatefulWidget {
+class OnlineRentalsManagementScreen extends ConsumerStatefulWidget {
   final String facilityId;
 
   const OnlineRentalsManagementScreen({
@@ -26,12 +29,12 @@ class OnlineRentalsManagementScreen extends StatefulWidget {
   });
 
   @override
-  State<OnlineRentalsManagementScreen> createState() =>
+  ConsumerState<OnlineRentalsManagementScreen> createState() =>
       _OnlineRentalsManagementScreenState();
 }
 
 class _OnlineRentalsManagementScreenState
-    extends State<OnlineRentalsManagementScreen> {
+    extends ConsumerState<OnlineRentalsManagementScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   String? _error;
@@ -113,7 +116,10 @@ class _OnlineRentalsManagementScreenState
       _error = null;
     });
     try {
-      final facilities = await FacilityService.getUserFacilities();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final facilities = uid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(userFacilitiesProvider(uid).future);
       final facility = await FacilityService.getFacility(widget.facilityId);
       final settings =
           await FacilityPublicService.getPublicSettings(widget.facilityId);

@@ -293,7 +293,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppTheme.error,
+          ),
         );
       }
     }
@@ -921,7 +924,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               icon: Icons.warning,
               color: stats.pastDueCount > 0 ? AppTheme.error : AppTheme.success,
               onTap: stats.pastDueCount > 0
-                  ? () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsPastDue)
+                  ? () => ModernNavigationService.navigateToRoute(context, '/delinquency')
                   : null,
             ),
           ],
@@ -1134,7 +1137,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   'Billing',
                   Icons.payment,
                   AppTheme.success,
-                  () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsInvoices),
+                  () => ModernNavigationService.navigateToRoute(context, '/billing'),
                 ),
                 _buildQuickActionCard(
                   'Reports',
@@ -1358,7 +1361,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppTheme.error,
+          ),
         );
       }
     }
@@ -1385,7 +1391,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppTheme.error,
+          ),
         );
       }
     }
@@ -1528,7 +1537,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                 ),
                 const Spacer(),
                 TextButton(
-                  onPressed: () => ModernNavigationService.navigateToRoute(context, AppRoute.paymentsPastDue),
+                  onPressed: () => ModernNavigationService.navigateToRoute(context, '/delinquency'),
                   child: const Text('View All'),
                 ),
               ],

@@ -82,7 +82,10 @@ class _DNREntryScreenState extends ConsumerState<DNREntryScreen> {
     }
 
     try {
-      final facilities = await FacilityService.getUserFacilities();
+      final loadUid = ref.read(authStateProvider).maybeWhen(data: (u) => u?.uid, orElse: () => null);
+      final facilities = loadUid == null
+          ? await FacilityService.getUserFacilities()
+          : await ref.read(userFacilitiesProvider(loadUid).future);
       final facility = facilities.firstWhere(
         (f) => f.id == targetFacilityId,
         orElse: () => throw Exception('Facility not found: $targetFacilityId'),

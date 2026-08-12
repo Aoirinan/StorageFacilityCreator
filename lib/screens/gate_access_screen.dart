@@ -281,7 +281,10 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to update access code: $e')),
+        SnackBar(
+          content: Text('Unable to update access code: $e'),
+          backgroundColor: AppTheme.error,
+        ),
       );
     }
   }
@@ -643,7 +646,10 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
                           } catch (e) {
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Unable to save access code: $e')),
+                              SnackBar(
+                                content: Text('Unable to save access code: $e'),
+                                backgroundColor: AppTheme.error,
+                              ),
                             );
                           }
                         },
@@ -678,6 +684,10 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],
@@ -693,12 +703,18 @@ class _GateAccessScreenState extends ConsumerState<GateAccessScreen> {
       if (!mounted) return;
       ref.invalidate(gateAccessProvider(widget.facilityId));
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Access code ${entry.accessCode} deleted')),
+        SnackBar(
+          content: Text('Access code ${entry.accessCode} deleted'),
+          backgroundColor: AppTheme.success,
+        ),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to delete access code: $e')),
+        SnackBar(
+          content: Text('Unable to delete access code: $e'),
+          backgroundColor: AppTheme.error,
+        ),
       );
     }
   }

@@ -351,7 +351,10 @@ class _ApiKeysManagementScreenState extends ConsumerState<ApiKeysManagementScree
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],
@@ -366,7 +369,10 @@ class _ApiKeysManagementScreenState extends ConsumerState<ApiKeysManagementScree
         );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('API key deleted successfully')),
+            const SnackBar(
+              content: Text('API key deleted successfully'),
+              backgroundColor: AppTheme.success,
+            ),
           );
           _loadApiKeys();
         }
