@@ -60,6 +60,14 @@ Write-Host 'Build output verified.' -ForegroundColor Green
 # Step 4: Deploy Cloud Functions (includes new attachTenantPaymentMethodFromRedirect for Stripe Link)
 Write-Host ''
 Write-Host 'Step 4a: Deploying Cloud Functions...' -ForegroundColor Cyan
+# Firebase CLI's codebase-discovery step spins up each of our 12 functions
+# codebases in a child process and waits (default 10s) for it to report its
+# function list. With this many codebases cold-starting back to back, that
+# default is too tight and intermittently times out with "Cannot determine
+# backend specification" on a codebase that has nothing wrong with it -
+# retrying (or just giving it more time up front) succeeds. 30s has been
+# reliable; raise further if this still flakes on a slower machine.
+$env:FUNCTIONS_DISCOVERY_TIMEOUT = '30'
 firebase deploy --only functions
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Functions deployment failed' -ForegroundColor Red
