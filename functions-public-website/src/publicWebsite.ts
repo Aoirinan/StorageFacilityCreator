@@ -1454,7 +1454,12 @@ function extractWebsiteRouteFromPath(pathValue: string): { slug: string; categor
   return { slug: segments[segments.length - 1].toLowerCase(), categorySlug: null };
 }
 
-export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res) => {
+// minInstances: 1 keeps a warm instance so the index.html root-redirect lookup (see
+// web/index.html) never eats a cold start on top of its own 2.5s safety-net timeout —
+// a cold instance here previously meant real customers occasionally landed on the raw
+// operator app instead of the facility's site. Same reasoning for renderPublicWebsite
+// and routeCustomDomainRoot below.
+export const getPublicWebsiteConfig = functions.runWith({ minInstances: 1 }).https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') {
@@ -1541,7 +1546,7 @@ export const getPublicWebsiteConfig = functions.https.onRequest(async (req, res)
   }
 });
 
-export const renderPublicWebsite = functions.https.onRequest(async (req, res) => {
+export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.onRequest(async (req, res) => {
   if (req.method !== 'GET') {
     res.status(405).type('text/plain').send('Method not allowed.');
     return;
@@ -1859,7 +1864,7 @@ function isPrimaryOperatorHost(hostHeader: string): boolean {
  * For facility vanity hosts that share this same Hosting site, route `/` to the
  * matching marketing page instead of the Flutter operator SPA shell.
  */
-export const routeCustomDomainRoot = functions.https.onRequest(async (req, res) => {
+export const routeCustomDomainRoot = functions.runWith({ minInstances: 1 }).https.onRequest(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.status(405).type('text/plain').send('Method not allowed.');
     return;

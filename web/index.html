@@ -11,8 +11,12 @@
 
        flutter_bootstrap.js is loaded dynamically (not as a static tag) so that on a
        custom-domain root request we can hold off booting the operator app until the
-       domain lookup below resolves — otherwise the operator UI flashes on screen for
-       the ~1-2s the lookup takes before the redirect fires. -->
+       domain lookup below resolves - getPublicWebsiteConfig/routeCustomDomainRoot/
+       renderPublicWebsite run with minInstances:1 specifically so this lookup rarely
+       takes more than a few hundred ms. On a facility's own domain, loadFlutter() is
+       never called as a fallback: a slow lookup retries (a cold instance still
+       resolves shortly after), and a genuine failure shows a neutral "unavailable"
+       message - a real customer must never land on the unrelated operator app. -->
   <script>
     (function () {
       var h = location.hostname;
@@ -30,31 +34,70 @@
       }
 
       var isOperatorHost = h === 'app.storagefacilitycreator.com' || h === 'localhost' || h === '127.0.0.1';
-      if (!isOperatorHost && location.pathname === '/') {
-        var settled = false;
-        var proceed = function () {
-          if (settled) return;
-          settled = true;
-          loadFlutter();
-        };
+      if (isOperatorHost || location.pathname !== '/') {
+        loadFlutter();
+        return;
+      }
+
+      // A real customer's facility domain must NEVER fall through to the operator
+      // app — that used to happen on any lookup failure or timeout (e.g. a cold
+      // Cloud Functions instance), landing a paying customer's visitor on the
+      // unrelated SFC operator login instead of the facility's own site. Retry a
+      // few times (a slow-but-succeeding lookup, e.g. a cold start, resolves on
+      // retry) before ever showing a neutral "unavailable" state — loadFlutter()
+      // is not called anywhere in this branch.
+      var attempt = 0;
+      var maxAttempts = 3;
+
+      function showUnavailable() {
+        document.body.innerHTML =
+          '<div style="font-family:system-ui,sans-serif;max-width:420px;margin:15vh auto;text-align:center;color:#334155;padding:0 20px;">' +
+          '<p style="font-size:16px;">This site is temporarily unavailable.</p>' +
+          '<p style="font-size:14px;color:#64748b;">Please try again in a moment.</p>' +
+          '<button onclick="location.reload()" style="margin-top:12px;padding:8px 20px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;cursor:pointer;">Retry</button>' +
+          '</div>';
+      }
+
+      function attemptLookup() {
+        attempt++;
+        var timedOut = false;
+        var timer = setTimeout(function () {
+          timedOut = true;
+          if (attempt < maxAttempts) {
+            attemptLookup();
+          } else {
+            showUnavailable();
+          }
+        }, 3000);
+
         // Pass the domain explicitly rather than relying on the request's Host header —
         // Firebase Hosting's rewrite-to-function forwarding does not reliably preserve
         // the original custom-domain host for this site, but the browser always knows it.
         fetch('/api/public-website?domain=' + encodeURIComponent(h), { cache: 'no-store' })
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (data) {
+            if (timedOut) return; // the timeout branch already took over
+            clearTimeout(timer);
             if (data && data.facilitySlug) {
               location.replace('/w/' + encodeURIComponent(data.facilitySlug) + location.search + location.hash);
             } else {
-              proceed();
+              // A clean response with no facility match means this domain genuinely
+              // isn't connected to any facility - not transient, so don't retry.
+              showUnavailable();
             }
           })
-          .catch(proceed);
-        // Safety net: never block boot forever if the lookup hangs or is offline.
-        setTimeout(proceed, 2500);
-      } else {
-        loadFlutter();
+          .catch(function () {
+            if (timedOut) return;
+            clearTimeout(timer);
+            if (attempt < maxAttempts) {
+              attemptLookup();
+            } else {
+              showUnavailable();
+            }
+          });
       }
+
+      attemptLookup();
     })();
   </script>
   <base href="$FLUTTER_BASE_HREF">
