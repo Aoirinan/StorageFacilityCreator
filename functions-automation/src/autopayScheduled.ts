@@ -23,6 +23,17 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
       for (const facilityDoc of facilitiesSnapshot.docs) {
         const facilityId = facilityDoc.id;
         try {
+          const facilityData = facilityDoc.data();
+          const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
+          const chargesEnabled = !!facilityData?.stripeStatus?.chargesEnabled;
+
+          if (!connectAccountId || !chargesEnabled) {
+            functions.logger.warn(
+              `Skipping autopay for facility ${facilityId}: Stripe Connect not ready (connectAccountId=${!!connectAccountId}, chargesEnabled=${chargesEnabled})`,
+            );
+            continue;
+          }
+
           // Get all tenants with autopay enabled
           const tenantsSnapshot = await admin.firestore()
             .collection('facilities')
@@ -81,7 +92,6 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
 
                     // Add insurance if configured
                     if (autopaySchedule.includeInsurance) {
-                      const facilityData = facilityDoc.data();
                       const defaultInsurance = facilityData?.billingSettings?.['defaultInsuranceAmount'];
                       if (defaultInsurance) {
                         amount += defaultInsurance;
@@ -106,6 +116,8 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
                           paymentMethodId: methodDoc.id,
                           autopay: 'true',
                         },
+                      }, {
+                        stripeAccount: connectAccountId, // Charge on the facility's connected account, not the platform account
                       });
 
                       if (paymentIntent.status === 'succeeded') {
