@@ -2,6 +2,14 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
+import {
+  calculateNextAutopayRun,
+  isAutopayDue,
+  isFacilityChargeReady,
+  resolveChargeAmount,
+  shouldAttemptCharge,
+  sumLedgerBalance,
+} from './autopayScheduledHelpers';
 
 export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRETS }).pubsub
   .schedule('0 2 * * *') // Daily at 2:00 AM UTC
@@ -25,11 +33,12 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
         try {
           const facilityData = facilityDoc.data();
           const connectAccountId = facilityData?.stripeConnectAccountId as string | undefined;
-          const chargesEnabled = !!facilityData?.stripeStatus?.chargesEnabled;
 
-          if (!connectAccountId || !chargesEnabled) {
+          if (!isFacilityChargeReady(facilityData)) {
             functions.logger.warn(
-              `Skipping autopay for facility ${facilityId}: Stripe Connect not ready (connectAccountId=${!!connectAccountId}, chargesEnabled=${chargesEnabled})`,
+              `Skipping autopay for facility ${facilityId}: Stripe Connect not ready ` +
+                `(connectAccountId=${!!connectAccountId}, ` +
+                `chargesEnabled=${!!facilityData?.stripeStatus?.chargesEnabled})`,
             );
             continue;
           }
@@ -68,7 +77,7 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
                   const now = new Date();
 
                   // Check if autopay is due
-                  if (nextRun && now >= nextRun) {
+                  if (isAutopayDue(nextRun, now)) {
                     // Get ledger balance
                     const ledgerSnapshot = await admin.firestore()
                       .collection('facilities')
@@ -78,27 +87,17 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
                       .where('status', '==', 'posted')
                       .get();
 
-                    let balance = 0;
-                    for (const entryDoc of ledgerSnapshot.docs) {
-                      const entryData = entryDoc.data();
-                      balance += entryData.amount || 0;
-                    }
+                    const balance = sumLedgerBalance(
+                      ledgerSnapshot.docs.map((entryDoc) => entryDoc.data()),
+                    );
 
-                    // Calculate amount to charge
-                    let amount = balance;
-                    if (autopaySchedule.amount && autopaySchedule.amount > 0) {
-                      amount = autopaySchedule.amount;
-                    }
+                    const amount = resolveChargeAmount(
+                      balance,
+                      autopaySchedule,
+                      facilityData,
+                    );
 
-                    // Add insurance if configured
-                    if (autopaySchedule.includeInsurance) {
-                      const defaultInsurance = facilityData?.billingSettings?.['defaultInsuranceAmount'];
-                      if (defaultInsurance) {
-                        amount += defaultInsurance;
-                      }
-                    }
-
-                    if (amount > 0 && methodData.stripePaymentMethodId) {
+                    if (shouldAttemptCharge(amount, methodData.stripePaymentMethodId)) {
                       // Process payment via Stripe
                       const stripe = getStripeClient();
                       
@@ -150,7 +149,9 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
                         await methodDoc.ref.update({
                           'autopayLastRun': admin.firestore.FieldValue.serverTimestamp(),
                           'autopayLastResult': 'success',
-                          'autopayNextRun': _calculateNextAutopayRun(autopaySchedule),
+                          'autopayNextRun': admin.firestore.Timestamp.fromDate(
+                            calculateNextAutopayRun(autopaySchedule, new Date()),
+                          ),
                         });
 
                         // Audit log
@@ -212,22 +213,8 @@ export const processAutopayPayments = functions.runWith({ secrets: STRIPE_SECRET
     }
   });
 
-function _calculateNextAutopayRun(schedule: any): admin.firestore.Timestamp {
-  const now = new Date();
-  const frequency = schedule.frequency || 'monthly';
-  const dayOfMonth = schedule.dayOfMonth || 1;
-
-  if (frequency === 'monthly') {
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, dayOfMonth);
-    return admin.firestore.Timestamp.fromDate(nextMonth);
-  } else if (frequency === 'weekly') {
-    const dayOfWeek = schedule.dayOfWeek || 1;
-    const daysUntilNext = (dayOfWeek - now.getDay()) % 7;
-    const nextRun = new Date(now);
-    nextRun.setDate(nextRun.getDate() + (daysUntilNext === 0 ? 7 : daysUntilNext));
-    return admin.firestore.Timestamp.fromDate(nextRun);
-  }
-
-  // Default to next month
-  return admin.firestore.Timestamp.fromDate(new Date(now.getFullYear(), now.getMonth() + 1, 1));
-}
+// Next-run scheduling now lives in ./autopayScheduledHelpers (calculateNextAutopayRun)
+// so it can be unit-tested. The previous inline version computed weekly runs with
+// (dayOfWeek - now.getDay()) % 7, which is negative when the target weekday is
+// earlier in the week than today — scheduling the next run in the past and letting
+// the following night's cron charge the tenant again.

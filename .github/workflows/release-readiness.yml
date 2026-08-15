@@ -96,6 +96,28 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  functions-automation:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions-automation
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions-automation/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm test
+
   functions-ai:
     runs-on: ubuntu-latest
     defaults:
