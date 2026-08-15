@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../widgets/keyboard_scrollable.dart';
+import '../widgets/payment_processor_chooser.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -45,7 +46,12 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   final _lateFeeAmountController = TextEditingController(text: '25.00');
   String _lateFeeType = 'flat'; // 'flat' or 'percentage'
   final _totalUnitsController = TextEditingController(text: '');
-  
+
+  /// null = "I'll decide later", which is the default so processor choice never
+  /// blocks facility creation. Owners can set it later in Billing → Payment
+  /// Processing.
+  String? _paymentProcessor;
+
   bool _isLoading = false;
   String? _errorMessage;
   
@@ -513,6 +519,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
           email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
           timeZone: _selectedTimeZone ?? TimeZoneHelper.defaultTimeZoneId,
           billingSettings: billingSettings,
+          paymentProcessor: _paymentProcessor,
           totalUnits: totalUnits,
         );
       } catch (e) {
@@ -1098,8 +1105,66 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                         ),
                       ),
                     ),
+                    const SizedBox(height: 16),
+
+                    // Payment Processing Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: AppTheme.borderLight, width: 1),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.success.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.credit_card,
+                                    color: AppTheme.success,
+                                    size: 20,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                const Text(
+                                  'Payment Processing',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Who should process your tenants\' card payments? '
+                              'You can skip this and set it up later.',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            PaymentProcessorChooser(
+                              selected: _paymentProcessor,
+                              onChanged: (value) =>
+                                  setState(() => _paymentProcessor = value),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 24),
-                    
+
                     // Error Message
                     if (_errorMessage != null)
                       Card(

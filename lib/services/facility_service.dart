@@ -205,6 +205,7 @@ class FacilityService {
         Map<String, dynamic>? businessHours,
         Map<String, dynamic>? gateHours,
         Map<String, dynamic>? billingSettings,
+        String? paymentProcessor, // 'stripe' | 'square'; null = decide later
         int totalUnits = 0, // Physical capacity - set at creation, used for occupancy math
         bool skipSubscriptionCheck = false, // For superadmins or testing
       }) async {
@@ -272,6 +273,7 @@ class FacilityService {
             if (businessHours != null) 'businessHours': businessHours,
             if (gateHours != null) 'gateHours': gateHours,
             if (billingSettings != null) 'billingSettings': billingSettings,
+            if (paymentProcessor != null) 'paymentProcessor': paymentProcessor,
           };
 
           if (kDebugMode) {
@@ -720,6 +722,7 @@ class FacilityService {
     Map<String, dynamic>? gateHours,
     Map<String, dynamic>? billingSettings,
     Map<String, dynamic>? insuranceSettings,
+    String? paymentProcessor, // 'stripe' | 'square'
     int? totalUnits, // Physical capacity - when provided, updates facility capacity
   }) async {
     try {
@@ -752,6 +755,7 @@ class FacilityService {
       if (gateHours != null) updateData['gateHours'] = gateHours;
       if (billingSettings != null) updateData['billingSettings'] = billingSettings;
       if (insuranceSettings != null) updateData['insuranceSettings'] = insuranceSettings;
+      if (paymentProcessor != null) updateData['paymentProcessor'] = paymentProcessor;
       if (totalUnits != null) {
         if (totalUnits < 1 || totalUnits > kMaxFacilityCapacityUnits) {
           throw Exception(

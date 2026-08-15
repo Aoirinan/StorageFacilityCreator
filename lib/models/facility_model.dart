@@ -45,6 +45,13 @@ class FacilityModel {
   final Map<String, dynamic>?
       insuranceSettings; // TPP settings, auto-enrollment rules
 
+  // Which processor handles tenant payments for this facility.
+  // 'stripe' | 'square' | null. Null means the owner hasn't chosen yet and can
+  // decide later from Billing → Payment Processing. Existing facilities predate
+  // this field, so null must keep behaving exactly like Stripe: every Stripe
+  // code path keys off stripeConnectAccountId/stripeStatus, never off this.
+  final String? paymentProcessor;
+
   // Stripe Connect integration
   final String? stripeConnectAccountId; // Connected Stripe account ID
   final bool stripeConnectOnboardingComplete; // Whether onboarding is complete
@@ -117,6 +124,7 @@ class FacilityModel {
     this.gateHours,
     this.billingSettings,
     this.insuranceSettings,
+    this.paymentProcessor,
     this.stripeConnectAccountId,
     this.stripeConnectOnboardingComplete = false,
     this.stripeStatus,
@@ -190,6 +198,7 @@ class FacilityModel {
       insuranceSettings: data?['insuranceSettings'] != null
           ? Map<String, dynamic>.from(data!['insuranceSettings'])
           : null,
+      paymentProcessor: data?['paymentProcessor'] as String?,
       stripeConnectAccountId: data?['stripeConnectAccountId'],
       stripeConnectOnboardingComplete:
           data?['stripeConnectOnboardingComplete'] ?? false,
@@ -290,6 +299,7 @@ class FacilityModel {
       'gateHours': gateHours,
       'billingSettings': billingSettings,
       'insuranceSettings': insuranceSettings,
+      if (paymentProcessor != null) 'paymentProcessor': paymentProcessor,
       'stripeConnectAccountId': stripeConnectAccountId,
       'stripeConnectOnboardingComplete': stripeConnectOnboardingComplete,
       if (stripeStatus != null) 'stripeStatus': stripeStatus!.toMap(),
@@ -353,6 +363,7 @@ class FacilityModel {
     Map<String, dynamic>? gateHours,
     Map<String, dynamic>? billingSettings,
     Map<String, dynamic>? insuranceSettings,
+    String? paymentProcessor,
     String? stripeConnectAccountId,
     bool? stripeConnectOnboardingComplete,
     StripeConnectStatusModel? stripeStatus,
@@ -415,6 +426,7 @@ class FacilityModel {
       gateHours: gateHours ?? this.gateHours,
       billingSettings: billingSettings ?? this.billingSettings,
       insuranceSettings: insuranceSettings ?? this.insuranceSettings,
+      paymentProcessor: paymentProcessor ?? this.paymentProcessor,
       stripeConnectAccountId:
           stripeConnectAccountId ?? this.stripeConnectAccountId,
       stripeConnectOnboardingComplete: stripeConnectOnboardingComplete ??

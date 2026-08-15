@@ -7,7 +7,10 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/screens/quickbooks_integration_screen.dart';
 import 'package:sfcapp/screens/subscription_test_screen.dart';
 import 'package:sfcapp/screens/stripe_connect_onboarding_screen.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/payment_processor_chooser.dart';
 import 'package:sfcapp/router/app_route.dart';
 
 /// Combined Billing & Payments screen with Subscription and Payment Processing tabs.
@@ -130,9 +133,44 @@ class _BillingAndPaymentsScreenState extends ConsumerState<BillingAndPaymentsScr
   }
 }
 
-class _PaymentProcessingTab extends ConsumerWidget {
+class _PaymentProcessingTab extends ConsumerStatefulWidget {
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_PaymentProcessingTab> createState() =>
+      _PaymentProcessingTabState();
+}
+
+class _PaymentProcessingTabState extends ConsumerState<_PaymentProcessingTab> {
+  /// Set once the owner picks a processor in this session, so the UI advances
+  /// immediately instead of waiting for the facility stream to round-trip.
+  String? _justChosen;
+  bool _saving = false;
+
+  Future<void> _choose(String facilityId, String processor) async {
+    setState(() => _saving = true);
+    try {
+      await FacilityService.updateFacility(
+        facilityId: facilityId,
+        paymentProcessor: processor,
+      );
+      if (mounted) setState(() => _justChosen = processor);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not save your choice: ${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+            ),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final facilitiesAsync = ref.watch(
       userFacilitiesProvider(ref.watch(authStateProvider).whenOrNull(data: (d) => d)?.uid ?? ''),
     );
@@ -149,10 +187,90 @@ class _PaymentProcessingTab extends ConsumerWidget {
                 orElse: () => facilities.first,
               )
             : facilities.first;
-        return StripeConnectOnboardingScreen(facility: facility);
+        final processor = _justChosen ?? facility.paymentProcessor;
+
+        // Already on Stripe — including every facility that predates this
+        // field, and any that already started Connect onboarding.
+        if (processor == PaymentProcessor.stripe ||
+            facility.stripeConnectAccountId != null) {
+          return StripeConnectOnboardingScreen(facility: facility);
+        }
+
+        if (processor == PaymentProcessor.square) {
+          return _buildSquareComingSoon(context);
+        }
+
+        return _buildProcessorChoice(context, facility.id);
       },
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (_, __) => _buildNoFacilityMessage(context),
+    );
+  }
+
+  Widget _buildProcessorChoice(BuildContext context, String facilityId) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'How do you want to get paid?',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Choose who processes your tenants\' card payments. You can change '
+            'this later, as long as you haven\'t connected an account yet.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+          ),
+          const SizedBox(height: 24),
+          if (_saving)
+            const Center(child: CircularProgressIndicator())
+          else
+            PaymentProcessorChooser(
+              selected: null,
+              allowDefer: false,
+              onChanged: (value) {
+                if (value != null) _choose(facilityId, value);
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSquareComingSoon(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.hourglass_empty, size: 64, color: AppTheme.textTertiary),
+            const SizedBox(height: 24),
+            Text(
+              'Square support is on the way',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'You\'ve marked this facility as using Square. Connecting your '
+              'Square account isn\'t available yet — we\'ll let you know as '
+              'soon as it is.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
