@@ -28,7 +28,7 @@ registerSendgridMailConfigProvider({
 export { generateMonthlyRentCharges } from './monthlyRentCharges';
 export { scheduledGenerateMonthlyRentCharges } from './scheduledMonthlyRentCharges';
 export { processDelinquencyAutomation } from './delinquencyAutomation';
-export { processAutopayPayments } from './autopayScheduled';
+export { processAutopayPayments, processFacilityAutopayJob } from './autopayScheduled';
 export { resetMonthlySMSUsage } from './smsUsageReset';
 export { autoProtectMoveIn, autoProtectAudit, checkInsuranceCompliance } from './insuranceAutomation';
 export { processPaymentReminders } from './paymentRemindersScheduled';
