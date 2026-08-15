@@ -148,6 +148,12 @@ service cloud.firestore {
 
   function facilityEntitlementWriteForbiddenKeys() {
     return [
+      // Payment-processor connection state. Backend-only: the scheduled autopay
+      // job gates real charges on stripeStatus.chargesEnabled, so an owner must
+      // not be able to set it from the client.
+      'stripeConnectAccountId',
+      'stripeConnectOnboardingComplete',
+      'stripeStatus',
       'stripePlatformSubscriptionId',
       'platformSubscriptionStatus',
       'platformSubscriptionCurrentPeriodStart',
