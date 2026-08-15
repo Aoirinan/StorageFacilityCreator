@@ -161,34 +161,46 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
     return 0;
   }
 
-  const tenantsSnapshot = await admin
+  // Payment methods live at facilities/{id}/tenants/{tid}/paymentMethods — that
+  // is where every attach flow writes them. A collection-group query pulls this
+  // facility's armed cards in one round trip instead of one query per tenant,
+  // which matters for facilities with thousands of tenants.
+  const methodsSnapshot = await admin
     .firestore()
-    .collection('facilities')
-    .doc(facilityId)
-    .collection('tenants')
+    .collectionGroup('paymentMethods')
+    .where('facilityId', '==', facilityId)
+    .where('autopayEnabled', '==', true)
     .where('isActive', '==', true)
     .get();
 
   let processed = 0;
 
-  for (const tenantDoc of tenantsSnapshot.docs) {
+  for (const methodDoc of methodsSnapshot.docs) {
     try {
-      const tenantData = tenantDoc.data();
-      const tenantId = tenantDoc.id;
+      const methodData = methodDoc.data();
+      const tenantId = methodData.tenantId as string | undefined;
+      if (!tenantId) {
+        functions.logger.warn(`Payment method ${methodDoc.id} has no tenantId; skipping`);
+        continue;
+      }
 
-      const paymentMethodsSnapshot = await admin
+      // The card carries no tenant status, so confirm the tenant is still active
+      // before charging — a moved-out tenant must not keep getting billed.
+      const tenantDoc = await admin
         .firestore()
         .collection('facilities')
         .doc(facilityId)
-        .collection('paymentMethods')
-        .where('tenantId', '==', tenantId)
-        .where('autopayEnabled', '==', true)
-        .where('isActive', '==', true)
+        .collection('tenants')
+        .doc(tenantId)
         .get();
 
-      for (const methodDoc of paymentMethodsSnapshot.docs) {
+      const tenantData = tenantDoc.data();
+      if (!tenantDoc.exists || tenantData?.isActive !== true) {
+        continue;
+      }
+
+      {
         try {
-          const methodData = methodDoc.data();
           const autopaySchedule = methodData.autopaySchedule;
           if (!autopaySchedule) continue;
 
@@ -304,7 +316,10 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
         }
       }
     } catch (error: any) {
-      functions.logger.error(`Error processing autopay for tenant ${tenantDoc.id}:`, error);
+      functions.logger.error(
+        `Error processing autopay for payment method ${methodDoc.id}:`,
+        error,
+      );
     }
   }
 

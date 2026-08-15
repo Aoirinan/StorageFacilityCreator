@@ -355,8 +355,9 @@ export async function toggleAutopay(
       .firestore()
       .collection('facilities')
       .doc(facilityId)
+      .collection('tenants')
+      .doc(tenantId)
       .collection('paymentMethods')
-      .where('tenantId', '==', tenantId)
       .where('isActive', '==', true)
       .get();
 
@@ -417,8 +418,9 @@ export async function toggleAutopay(
     .firestore()
     .collection('facilities')
     .doc(facilityId)
+    .collection('tenants')
+    .doc(tenantId)
     .collection('paymentMethods')
-    .where('tenantId', '==', tenantId)
     .where('autopayEnabled', '==', true)
     .get();
 

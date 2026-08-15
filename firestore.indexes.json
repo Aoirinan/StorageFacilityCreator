@@ -9,6 +9,15 @@
       ]
     },
     {
+      "collectionGroup": "paymentMethods",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {"fieldPath": "facilityId", "order": "ASCENDING"},
+        {"fieldPath": "autopayEnabled", "order": "ASCENDING"},
+        {"fieldPath": "isActive", "order": "ASCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "global_dnr_entries",
       "queryScope": "COLLECTION",
       "fields": [
