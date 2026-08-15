@@ -48,10 +48,11 @@ class ErrorMessageHelper {
       return 'Network connection error. Please check your internet connection and try again.';
     }
 
-    // Index errors
-    if (errorString.contains('index') || 
-        errorString.contains('the query requires an index')) {
-      return 'Database index is being created. Please wait a moment and refresh the page.';
+    // Index errors. Match only Firestore's actual missing-index wording — a bare
+    // 'index' substring also matches unrelated errors (e.g. RangeError: index out
+    // of range) and would mask their real cause.
+    if (errorString.contains('requires an index')) {
+      return 'This feature needs a database index that hasn\'t been set up yet. Please contact support.';
     }
 
     // Not found errors
@@ -114,8 +115,8 @@ class ErrorMessageHelper {
       case 'already-exists':
         return 'This item already exists.';
       case 'failed-precondition':
-        if (error.message?.toLowerCase().contains('index') == true) {
-          return 'Database index is being created. Please wait a moment and refresh.';
+        if (error.message?.toLowerCase().contains('requires an index') == true) {
+          return 'This feature needs a database index that hasn\'t been set up yet. Please contact support.';
         }
         return 'Operation cannot be completed at this time. Please try again.';
       case 'aborted':
