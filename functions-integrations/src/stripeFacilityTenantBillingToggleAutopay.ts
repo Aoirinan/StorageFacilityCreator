@@ -7,7 +7,11 @@ import * as stripeTenantBilling from './stripe/tenant_billing';
 import { STRIPE_SECRETS } from './secrets';
 
 /**
- * Toggle AutoPay for tenant (Stripe subscription for monthly rent)
+ * Toggle AutoPay for a tenant.
+ *
+ * Arms the nightly scheduled charge job by flagging the tenant's stored card on
+ * the facility's connected account. It does NOT create a Stripe Subscription —
+ * that older behaviour ran on the platform account and never armed the job.
  */
 export const toggleAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   enforceAppCheckOrThrow(context);

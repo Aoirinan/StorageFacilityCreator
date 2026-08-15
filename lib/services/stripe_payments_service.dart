@@ -65,8 +65,11 @@ class StripePaymentsService {
     );
   }
 
-  /// Toggle AutoPay
-  static Future<({bool autopayEnabled, String? subscriptionId})> toggleAutopay({
+  /// Toggle AutoPay.
+  ///
+  /// Arms the nightly scheduled charge job against the tenant's stored card on
+  /// the facility's connected Stripe account. No Stripe Subscription is created.
+  static Future<bool> toggleAutopay({
     required String facilityId,
     required String tenantId,
     required bool enable,
@@ -77,10 +80,7 @@ class StripePaymentsService {
       'enable': enable,
     });
     final data = result.data as Map<String, dynamic>;
-    return (
-      autopayEnabled: data['autopayEnabled'] as bool,
-      subscriptionId: data['subscriptionId'] as String?,
-    );
+    return data['autopayEnabled'] as bool;
   }
 
   /// List saved payment methods
