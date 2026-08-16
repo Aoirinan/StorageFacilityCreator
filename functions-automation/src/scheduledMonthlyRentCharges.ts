@@ -5,14 +5,15 @@ import * as admin from 'firebase-admin';
  * Scheduled function: Generate monthly rent charges on the 1st of each month at 12:00 AM UTC
  * This function runs for all facilities
  */
-// Generates the monthly rent charges every other billing feature depends on,
-// walking facilities -> tenants -> ledgers sequentially. On the gen-1 default
-// 60s timeout this would die partway once there are more than a few dozen
-// facilities, and because it dies with no checkpoint the facilities after the
-// cut-off would simply never have rent charges raised that month — owners
-// would under-bill their tenants and likely not notice. 540s is the gen-1
-// maximum; this still needs per-facility fan-out before serious scale.
-export const scheduledGenerateMonthlyRentCharges = functions
+// SUPERSEDED by scheduleMonthlyRentChargeJobs + processFacilityRentChargeJob in
+// ./rentChargeJob, which fan out one job per facility.
+//
+// This single-invocation version walked facilities -> tenants -> ledgers
+// sequentially. It is retained, unscheduled, only so the logic can be compared
+// against the fanned-out version during rollout; it is no longer exported from
+// index.ts and therefore no longer deployed. Delete once the fan-out has run a
+// full billing cycle.
+const _supersededGenerateMonthlyRentCharges = functions
   .runWith({ timeoutSeconds: 540, memory: '512MB' })
   .pubsub
   .schedule('0 0 1 * *') // 1st of each month at 12:00 AM UTC
@@ -190,3 +191,7 @@ export const scheduledGenerateMonthlyRentCharges = functions
       throw error;
     }
   });
+
+// Referenced so the superseded implementation still type-checks while it is
+// kept for comparison. It is not exported from index.ts, so it is not deployed.
+void _supersededGenerateMonthlyRentCharges;

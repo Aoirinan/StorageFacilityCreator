@@ -446,7 +446,8 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Tenant assigned to unit successfully');
       }
-      await FacilityStatsService.updateFacilityStats(facilityId);
+      // force: occupancy just changed and the operator is looking at it.
+      await FacilityStatsService.updateFacilityStats(facilityId, force: true);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error assigning tenant to unit: $e');

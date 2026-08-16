@@ -9,6 +9,16 @@
       ]
     },
     {
+      "collectionGroup": "ledgers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "tenantId", "order": "ASCENDING"},
+        {"fieldPath": "type", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "entryDate", "order": "ASCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "paymentMethods",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

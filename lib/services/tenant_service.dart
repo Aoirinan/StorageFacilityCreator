@@ -877,8 +877,9 @@ class TenantService {
         print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${unitsWithTenant.length} unit(s)');
       }
 
-      // 3) Refresh facility counts so dashboard/list stay correct
-      await FacilityStatsService.updateFacilityStats(facilityId);
+      // 3) Refresh facility counts so dashboard/list stay correct.
+      // force: a delete must be reflected immediately, not swallowed by the cooldown.
+      await FacilityStatsService.updateFacilityStats(facilityId, force: true);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [TenantService] Error deleting tenant: $e');
@@ -954,7 +955,9 @@ class TenantService {
         print('✅ [TenantService] Deleted ${tenantIds.length} tenants, unlinked $unlinked unit(s)');
       }
 
-      await FacilityStatsService.updateFacilityStats(facilityId);
+      // force: a bulk delete must be reflected immediately, not swallowed by
+      // the cooldown. One call for the whole batch, not one per tenant.
+      await FacilityStatsService.updateFacilityStats(facilityId, force: true);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [TenantService] Error deleting tenants: $e');

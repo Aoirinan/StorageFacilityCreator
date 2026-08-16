@@ -220,8 +220,42 @@ class FacilityStatsService {
   /// Also mirrors the canonical unit counts (`occupiedUnits`, `unitDocCount`) onto the
   /// facility document so the super admin metrics stream and other consumers can read
   /// the actual unit-doc total without a sub-collection query.
-  static Future<void> updateFacilityStats(String facilityId) async {
+  /// In-process cooldown, keyed by facility.
+  ///
+  /// A recompute reads every unit and every tenant for the facility and then
+  /// writes both the stats doc and the facility doc. Callers fire it from a lot
+  /// of places — tenant edits, unit assignment, and the dashboard whenever its
+  /// live past-due count disagrees with the cached one — so without a guard a
+  /// dashboard that keeps disagreeing will recompute on every single load, and
+  /// several staff on one facility can push it past Firestore's ~1 sustained
+  /// write/sec per document.
+  static final Map<String, DateTime> _lastStatsRefresh = {};
+  static const Duration _statsRefreshCooldown = Duration(seconds: 30);
+
+  /// Drops the cooldown so the next call recomputes immediately. Use after a
+  /// change the user must see reflected right away.
+  static void invalidateStatsCooldown(String facilityId) {
+    _lastStatsRefresh.remove(facilityId);
+  }
+
+  static Future<void> updateFacilityStats(
+    String facilityId, {
+    /// Skip the cooldown. For deliberate, user-visible refreshes.
+    bool force = false,
+  }) async {
     try {
+      if (!force) {
+        final last = _lastStatsRefresh[facilityId];
+        if (last != null &&
+            DateTime.now().difference(last) < _statsRefreshCooldown) {
+          if (kDebugMode) {
+            print('⏭️ [FacilityStatsService] Skipping recompute for $facilityId (cooldown)');
+          }
+          return;
+        }
+      }
+      _lastStatsRefresh[facilityId] = DateTime.now();
+
       final stats = await computeFacilityStats(facilityId, healFirst: true);
       final occupied = (stats['occupiedUnits'] as int?) ?? 0;
       final unitDocCount = (stats['totalUnits'] as int?) ?? 0;

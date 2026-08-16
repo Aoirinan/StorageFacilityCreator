@@ -26,7 +26,12 @@ registerSendgridMailConfigProvider({
 });
 
 export { generateMonthlyRentCharges } from './monthlyRentCharges';
-export { scheduledGenerateMonthlyRentCharges } from './scheduledMonthlyRentCharges';
+// Monthly rent charges fan out one job per facility; see rentChargeJob.ts for
+// why the previous single-invocation scheduler could not scale.
+export {
+  scheduledGenerateMonthlyRentCharges,
+  processFacilityRentChargeJob,
+} from './rentChargeJob';
 export { processDelinquencyAutomation } from './delinquencyAutomation';
 export { processAutopayPayments, processFacilityAutopayJob } from './autopayScheduled';
 export { resetMonthlySMSUsage } from './smsUsageReset';
