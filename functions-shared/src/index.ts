@@ -73,6 +73,11 @@ export { getTwilioClient, isTwilioDryRunEnabled } from './twilio/client';
 export { verifyTwilioWebhookSignature } from './twilio/webhooks';
 export type { A2PStatus } from './twilio/textingOnboardingHelpers';
 export {
+  buildA2PRejectionReason,
+  parseA2PErrors,
+} from './twilio/a2pFailureDetails';
+export type { A2PFailureDetail } from './twilio/a2pFailureDetails';
+export {
   normalizeKeyword,
   isStopKeyword,
   isStartKeyword,

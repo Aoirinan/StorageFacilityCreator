@@ -2,7 +2,7 @@
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { formatPhoneNumber, isSuperAdmin } from '@sfc/functions-shared';
-import { computeA2PStatus, ensureIdempotentResource } from '@sfc/functions-shared';
+import { buildA2PRejectionReason, computeA2PStatus, ensureIdempotentResource } from '@sfc/functions-shared';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -1727,13 +1727,21 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
       const twilio = getTwilioClient() as any;
       let brandStatus: string | undefined;
       let campaignStatus: string | undefined;
+      let brandErrors: unknown;
+      let brandFailureReason: unknown;
+      let campaignErrors: unknown;
       if (facilityData.twilioBrandSid) {
         const brand = await twilio.messaging.v1.brandRegistrations(facilityData.twilioBrandSid).fetch();
         brandStatus = brand.status;
+        // Twilio returns the actionable detail here; the status alone is just
+        // "FAILED", which tells the operator nothing about what to fix.
+        brandErrors = brand.errors;
+        brandFailureReason = brand.failureReason;
       }
       if (facilityData.twilioCampaignSid) {
         const campaign = await twilio.messaging.v1.campaigns(facilityData.twilioCampaignSid).fetch();
         campaignStatus = campaign.status;
+        campaignErrors = campaign.errors;
       }
       const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
       const next = computeA2PStatus(current, brandStatus, campaignStatus);
@@ -1741,7 +1749,15 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
         a2pStatus: next,
         a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
         a2pLastError: null,
-        a2pRejectionReason: next === 'rejected' ? (campaignStatus || brandStatus || 'Rejected by Twilio') : null,
+        a2pRejectionReason: next === 'rejected'
+          ? (buildA2PRejectionReason({
+              campaignErrors,
+              brandErrors,
+              brandFailureReason,
+              campaignStatus,
+              brandStatus,
+            }) ?? 'Rejected by Twilio')
+          : null,
         ...(next !== 'approved' ? {
           textingPlatformApproved: false,
           textingPlatformApprovedAt: null,

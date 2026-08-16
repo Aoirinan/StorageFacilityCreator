@@ -18,6 +18,9 @@ registerSfcLeadConfigProvider({
 });
 
 export { sendSMS } from './twilioCallables';
+// Hourly sweep so a carrier rejection reaches the product without an operator
+// happening to press "refresh" in the texting UI.
+export { pollA2PRegistrationStatus } from './a2pStatusPoll';
 export {
   getTextingOnboardingStatus,
   saveTextingBusinessInfo,
