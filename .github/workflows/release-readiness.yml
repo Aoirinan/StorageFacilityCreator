@@ -184,6 +184,43 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # Remaining function packages. These had no CI job at all — they were not even
+  # compiled on push, so a type error could reach production unnoticed. A matrix
+  # keeps them covered without six near-identical jobs; `npm test --if-present`
+  # runs tests for the packages that have them and no-ops for the rest.
+  functions-remaining:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - functions-admin
+          - functions-marketing
+          - functions-messaging-twilio
+          - functions-outbound-email
+          - functions-public-website
+          - functions-tenant-lifecycle
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ${{ matrix.package }}/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm run build
+      - run: npm test --if-present
+
   firestore-rules:
     runs-on: ubuntu-latest
     defaults:
