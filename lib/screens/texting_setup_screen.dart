@@ -492,9 +492,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             label: 'Support phone',
             enabled: !locked,
             keyboardType: TextInputType.phone,
-            validator: (value) => _digits(value).length >= 10
-                ? null
-                : 'Enter a valid support phone number.',
+            validator: _validateSupportPhone,
             autofillHints: const [AutofillHints.telephoneNumber],
           ),
           const SizedBox(height: 28),
@@ -921,6 +919,28 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
 
   static String? Function(String?) _required(String message) {
     return (value) => value?.trim().isNotEmpty == true ? null : message;
+  }
+
+  /// Mirrors the server-side rule in functions-shared/twilio/a2pBusinessValidation.
+  /// Carriers vet this number, so a placeholder here costs a failed brand
+  /// registration and days of turnaround.
+  static String? _validateSupportPhone(String? value) {
+    var digits = _digits(value);
+    if (digits.length == 11 && digits.startsWith('1')) {
+      digits = digits.substring(1);
+    }
+    if (digits.length != 10) {
+      return 'Enter a 10-digit US phone number.';
+    }
+    // NANP: neither the area code nor the exchange may start with 0 or 1.
+    if (RegExp(r'^[01]').hasMatch(digits) ||
+        RegExp(r'^[01]').hasMatch(digits.substring(3))) {
+      return 'Enter a valid US phone number.';
+    }
+    if (RegExp(r'^(\d)\1{9}$').hasMatch(digits)) {
+      return 'Enter a real support phone number.';
+    }
+    return null;
   }
 
   static String? _validateEmail(String? value) {

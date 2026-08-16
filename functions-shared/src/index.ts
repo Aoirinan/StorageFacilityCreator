@@ -78,6 +78,17 @@ export {
 } from './twilio/a2pFailureDetails';
 export type { A2PFailureDetail } from './twilio/a2pFailureDetails';
 export {
+  formatA2PValidationIssues,
+  isValidEinLast4,
+  isValidUsPhone,
+  isValidWebsite,
+  validateA2PBusinessData,
+} from './twilio/a2pBusinessValidation';
+export type {
+  A2PBusinessData,
+  A2PValidationIssue,
+} from './twilio/a2pBusinessValidation';
+export {
   normalizeKeyword,
   isStopKeyword,
   isStartKeyword,

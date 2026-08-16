@@ -2,7 +2,13 @@
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { formatPhoneNumber, isSuperAdmin } from '@sfc/functions-shared';
-import { buildA2PRejectionReason, computeA2PStatus, ensureIdempotentResource } from '@sfc/functions-shared';
+import {
+  buildA2PRejectionReason,
+  computeA2PStatus,
+  ensureIdempotentResource,
+  formatA2PValidationIssues,
+  validateA2PBusinessData,
+} from '@sfc/functions-shared';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -1498,6 +1504,18 @@ export const saveTextingBusinessInfo = functions.runWith({ secrets: TWILIO_SECRE
     const { facilityId, businessData } = data || {};
     if (!facilityId || !businessData?.legalBusinessName) {
       throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
+    }
+    // Carrier brand vetting checks these against public records, and a failed
+    // brand costs real money and days of turnaround before the owner can send
+    // anything. Enforce server-side: client validation alone let a live
+    // facility through with postal code "959595" and support phone "99999".
+    const validationIssues = validateA2PBusinessData(businessData);
+    if (validationIssues.length > 0) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        `Business details cannot be submitted for carrier review yet. ${formatA2PValidationIssues(validationIssues)}`,
+        { validationIssues },
+      );
     }
     await assertTextingOnboardingEnabled(facilityId);
     const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
