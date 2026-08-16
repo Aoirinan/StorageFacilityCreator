@@ -8,7 +8,15 @@ import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './sec
  * Sends payment reminders to tenants 3 days before their due date
  * Runs daily at 9:00 AM UTC
  */
-export const processPaymentReminders = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
+// Walks facilities -> tenants -> ledgers sequentially. One facility with no
+// reminders due already took ~1s, so the gen-1 default 60s timeout would be
+// exhausted at roughly sixty facilities — and a timed-out scheduler dies with
+// no checkpoint, silently skipping every facility after the cut-off. 540s is
+// the gen-1 maximum; past a few hundred facilities this needs the same
+// per-facility fan-out as processAutopayPayments.
+export const processPaymentReminders = functions
+  .runWith({ secrets: SENDGRID_SECRETS, timeoutSeconds: 540, memory: '512MB' })
+  .pubsub
   .schedule('0 9 * * *') // Daily at 9:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {

@@ -5,7 +5,16 @@ import * as admin from 'firebase-admin';
  * Scheduled function: Generate monthly rent charges on the 1st of each month at 12:00 AM UTC
  * This function runs for all facilities
  */
-export const scheduledGenerateMonthlyRentCharges = functions.pubsub
+// Generates the monthly rent charges every other billing feature depends on,
+// walking facilities -> tenants -> ledgers sequentially. On the gen-1 default
+// 60s timeout this would die partway once there are more than a few dozen
+// facilities, and because it dies with no checkpoint the facilities after the
+// cut-off would simply never have rent charges raised that month — owners
+// would under-bill their tenants and likely not notice. 540s is the gen-1
+// maximum; this still needs per-facility fan-out before serious scale.
+export const scheduledGenerateMonthlyRentCharges = functions
+  .runWith({ timeoutSeconds: 540, memory: '512MB' })
+  .pubsub
   .schedule('0 0 1 * *') // 1st of each month at 12:00 AM UTC
   .timeZone('UTC')
   .onRun(async (context) => {
