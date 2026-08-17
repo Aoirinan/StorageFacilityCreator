@@ -1331,6 +1331,53 @@ async function createOrUpdateA2PProfileInternal(
   return { trustProfileSid, trustProductSid };
 }
 
+/**
+ * Refuse to submit a brand unless Twilio has approved both TrustHub bundles.
+ *
+ * A2P brand registration charges per attempt and carriers vet the bundle
+ * contents, so submitting an empty or unapproved bundle burns the fee and
+ * returns a rejection days later. Twilio marks a bundle `twilio-approved` only
+ * once the business-information end user and supporting documents are attached
+ * and the profile has passed evaluation — the step this codebase does not yet
+ * perform. Failing here with an actionable message is much cheaper than
+ * discovering it from a carrier rejection notice.
+ */
+async function assertTrustBundleReadyForBrand(
+  twilio: any,
+  trustProfileSid: string | undefined,
+  trustProductSid: string | undefined,
+): Promise<void> {
+  if (!trustProfileSid || !trustProductSid) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Business profile has not been created yet. Save your business details first.',
+    );
+  }
+
+  const [profile, product] = await Promise.all([
+    twilio.trusthub.v1.customerProfiles(trustProfileSid).fetch(),
+    twilio.trusthub.v1.trustProducts(trustProductSid).fetch(),
+  ]);
+
+  const approved = (status: unknown) => String(status || '').toLowerCase() === 'twilio-approved';
+  if (approved(profile.status) && approved(product.status)) return;
+
+  functions.logger.error('Refusing brand submission: TrustHub bundles not approved', {
+    trustProfileSid,
+    trustProductSid,
+    profileStatus: profile.status,
+    productStatus: product.status,
+  });
+
+  throw new functions.https.HttpsError(
+    'failed-precondition',
+    'Your business profile has not been approved by Twilio yet, so carrier brand registration ' +
+      `cannot be submitted (profile: ${profile.status}, A2P profile: ${product.status}). ` +
+      'Submitting now would incur the registration fee and be rejected. Contact SFC support to ' +
+      'complete the business profile review.',
+  );
+}
+
 async function submitBrandRegistrationInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
@@ -1342,6 +1389,19 @@ async function submitBrandRegistrationInternal(
     sid = buildTwilioDryRunSid('BN', facilityRef.id);
   } else {
     const twilio = getTwilioClient() as any;
+
+    // Brand registration costs a non-refundable fee per attempt and is vetted
+    // against public records, so refuse to submit a bundle that Twilio has not
+    // approved yet. createOrUpdateA2PProfileInternal only creates the customer
+    // profile and trust product shells (friendlyName + email); the business
+    // information end-user, supporting documents and profile evaluation are not
+    // wired up, so an un-approved bundle here means a guaranteed rejection.
+    await assertTrustBundleReadyForBrand(
+      twilio,
+      facilityData.twilioTrustProfileSid as string | undefined,
+      facilityData.twilioTrustProductSid as string | undefined,
+    );
+
     const brand = await twilio.messaging.v1.brandRegistrations.create({
       customerProfileBundleSid: facilityData.twilioTrustProfileSid,
       a2pProfileBundleSid: facilityData.twilioTrustProductSid,
