@@ -10,7 +10,7 @@ import {
   formatEvaluationFailures,
   validateA2PBusinessData,
 } from '@sfc/functions-shared';
-import { buildAndEvaluateTrustBundle, submitBundlesForReview } from './a2pTrustBundle';
+import { buildAndEvaluateTrustBundle } from './a2pTrustBundle';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -1319,16 +1319,12 @@ async function createOrUpdateA2PProfileInternal(
       .filter(Boolean)
       .join(' | ');
 
-    // A compliant bundle still sits in `draft` until it is handed to Twilio for
-    // review, and only review produces the `twilio-approved` state that brand
-    // registration needs. Review is free, so submit as soon as it passes.
-    if (bundleReady) {
-      const statuses = await submitBundlesForReview(twilio, result.sids);
-      functions.logger.info('A2P bundles submitted for Twilio review', {
-        facilityId: facilityRef.id,
-        ...statuses,
-      });
-    }
+    functions.logger.info('A2P bundle built and evaluated', {
+      facilityId: facilityRef.id,
+      bundleReady,
+      profileStatus: result.customerProfileEvaluation.status,
+      productStatus: result.trustProductEvaluation.status,
+    });
   }
 
   await facilityRef.set({

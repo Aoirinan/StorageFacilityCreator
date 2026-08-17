@@ -35,6 +35,52 @@ import {
   type TrustBundleInput,
 } from '@sfc/functions-shared';
 
+/**
+ * Policy of the platform's own Primary Customer Profile.
+ *
+ * A facility's profile is a *secondary* profile in Twilio's ISV model: it is
+ * only valid when it references an approved primary profile belonging to the
+ * platform. Verified against the live account — an otherwise complete secondary
+ * profile evaluates as "Primary customer profile bundle is null" without it,
+ * and "compliant" with it.
+ */
+const PRIMARY_CUSTOMER_PROFILE_POLICY_SID = 'RN6433641899984f951173ef1738c3bdd0';
+
+/** Resolved once per instance; the platform's primary profile does not change. */
+let cachedPrimaryProfileSid: string | undefined;
+
+/**
+ * Find the platform's approved Primary Customer Profile.
+ *
+ * Every facility's bundle hangs off this one profile, so it is resolved rather
+ * than hard-coded: the SID differs between the production account and any test
+ * account, and pinning it in source would silently break the other.
+ */
+export async function resolvePrimaryCustomerProfileSid(twilio: any): Promise<string> {
+  const override = (process.env.TWILIO_PRIMARY_CUSTOMER_PROFILE_SID || '').trim();
+  if (override) return override;
+  if (cachedPrimaryProfileSid) return cachedPrimaryProfileSid;
+
+  const profiles = await twilio.trusthub.v1.customerProfiles.list({ limit: 100 });
+  const approved = (profiles as any[]).find(
+    (p) =>
+      p?.policySid === PRIMARY_CUSTOMER_PROFILE_POLICY_SID &&
+      String(p?.status || '').toLowerCase() === 'twilio-approved',
+  );
+
+  if (!approved?.sid) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'The platform does not have an approved Primary Customer Profile in Twilio, so ' +
+        'facility business profiles cannot be registered. This is a platform-level ' +
+        'setup step, not something the facility owner can fix.',
+    );
+  }
+
+  cachedPrimaryProfileSid = approved.sid as string;
+  return cachedPrimaryProfileSid;
+}
+
 /** SIDs of the TrustHub resources that make up a facility's A2P bundle. */
 export interface TrustBundleSids {
   trustProfileSid: string;
@@ -148,6 +194,26 @@ export async function buildAndEvaluateTrustBundle(
 
   const { customerProfilePolicySid, trustProductPolicySid } = policySids;
 
+  // A bundle that is already with Twilio must not be rewritten underneath the
+  // reviewer. Editing an in-review bundle either errors or invalidates the
+  // review, so refuse and say so rather than silently restarting the clock.
+  const existingProfileSid = (facilityData.twilioTrustProfileSid as string | undefined)?.trim();
+  if (existingProfileSid) {
+    const existing = await twilio.trusthub.v1
+      .customerProfiles(existingProfileSid)
+      .fetch()
+      .catch(() => undefined);
+    const status = String(existing?.status || '').toLowerCase();
+    if (status === 'pending-review' || status === 'in-review') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Your business profile is currently being reviewed by Twilio and cannot be edited ' +
+          'until the review finishes. If the details are wrong, wait for the result and then ' +
+          'update them.',
+      );
+    }
+  }
+
   // ---- customer profile shell ----
   let trustProfileSid = (facilityData.twilioTrustProfileSid as string | undefined)?.trim();
   if (!trustProfileSid) {
@@ -219,10 +285,39 @@ export async function buildAndEvaluateTrustBundle(
     addressDocumentSid = doc.sid as string;
   }
 
+  // The secondary profile is only valid once it references the platform's
+  // approved primary profile; without this the evaluation fails with
+  // "Primary customer profile bundle is null".
+  const primaryProfileSid = await resolvePrimaryCustomerProfileSid(twilio);
+
   const profileAssignments = twilio.trusthub.v1.customerProfiles(trustProfileSid)
     .customerProfilesEntityAssignments;
-  for (const objectSid of [businessInfoEndUserSid, authorizedRepEndUserSid, addressDocumentSid]) {
+  for (const objectSid of [
+    businessInfoEndUserSid,
+    authorizedRepEndUserSid,
+    addressDocumentSid,
+    primaryProfileSid,
+  ]) {
     await ensureAssignment(profileAssignments, objectSid, trustProfileSid);
+  }
+
+  // ---- evaluate the customer profile, then get it into review ----
+  //
+  // Order matters. The A2P trust product's own policy requires the secondary
+  // customer profile to be "at least in review state", so the profile has to be
+  // evaluated and submitted before the product is evaluated. Evaluating both up
+  // front would fail the product every time on sequencing alone.
+  const customerProfileEvaluation = summarizeEvaluation(
+    await twilio.trusthub.v1
+      .customerProfiles(trustProfileSid)
+      .customerProfilesEvaluations.create({ policySid: customerProfilePolicySid }),
+  );
+
+  if (customerProfileEvaluation.compliant) {
+    await submitBundleForReview(
+      twilio.trusthub.v1.customerProfiles(trustProfileSid),
+      'business profile',
+    );
   }
 
   // ---- A2P trust product ----
@@ -252,17 +347,32 @@ export async function buildAndEvaluateTrustBundle(
     await ensureAssignment(productAssignments, objectSid, trustProductSid);
   }
 
-  // ---- evaluate both bundles (free) ----
-  const customerProfileEvaluation = summarizeEvaluation(
-    await twilio.trusthub.v1
-      .customerProfiles(trustProfileSid)
-      .customerProfilesEvaluations.create({ policySid: customerProfilePolicySid }),
-  );
-  const trustProductEvaluation = summarizeEvaluation(
-    await twilio.trusthub.v1
-      .trustProducts(trustProductSid)
-      .trustProductsEvaluations.create({ policySid: trustProductPolicySid }),
-  );
+  // The product can only be judged once the profile above is in review.
+  const trustProductEvaluation = customerProfileEvaluation.compliant
+    ? summarizeEvaluation(
+        await twilio.trusthub.v1
+          .trustProducts(trustProductSid)
+          .trustProductsEvaluations.create({ policySid: trustProductPolicySid }),
+      )
+    : {
+        compliant: false,
+        status: 'blocked',
+        failures: [
+          {
+            objectType: 'A2P messaging profile',
+            field: 'business profile',
+            reason:
+              'Cannot be checked until the business profile above passes and enters review.',
+          },
+        ],
+      };
+
+  if (trustProductEvaluation.compliant) {
+    await submitBundleForReview(
+      twilio.trusthub.v1.trustProducts(trustProductSid),
+      'A2P messaging profile',
+    );
+  }
 
   const sids: TrustBundleSids = {
     trustProfileSid,
@@ -308,43 +418,27 @@ export async function buildAndEvaluateTrustBundle(
 const BUNDLE_REVIEW_IN_FLIGHT = new Set(['pending-review', 'in-review', 'twilio-approved']);
 
 /**
- * Hand both bundles to Twilio for review.
+ * Hand one bundle to Twilio for review.
  *
  * Bundle review is free and is the step that turns a compliant draft into the
- * `twilio-approved` state that brand registration requires. Without it a
- * perfectly valid bundle sits in `draft` forever and the owner never gets a
- * brand — which is exactly the state every existing facility is in.
+ * `twilio-approved` state brand registration requires. Without it a perfectly
+ * valid bundle sits in `draft` forever and the owner never gets a brand — which
+ * is exactly the state every existing facility is in.
  *
  * Only call this once evaluation is compliant: submitting a draft that fails
  * policy just gets it rejected and forces the owner to start over.
  */
-export async function submitBundlesForReview(
-  twilio: any,
-  sids: Pick<TrustBundleSids, 'trustProfileSid' | 'trustProductSid'>,
-): Promise<{ profileStatus: string; productStatus: string }> {
-  const submit = async (fetchUpdate: any, label: string): Promise<string> => {
-    const current = await fetchUpdate.fetch();
-    const status = String(current.status || '').toLowerCase();
-    if (BUNDLE_REVIEW_IN_FLIGHT.has(status)) return status;
-    try {
-      const updated = await fetchUpdate.update({ status: 'pending-review' });
-      return String(updated.status || 'pending-review').toLowerCase();
-    } catch (error: any) {
-      throw new functions.https.HttpsError(
-        'internal',
-        `Could not submit the ${label} for Twilio review: ${error?.message}`,
-      );
-    }
-  };
-
-  const profileStatus = await submit(
-    twilio.trusthub.v1.customerProfiles(sids.trustProfileSid),
-    'business profile',
-  );
-  const productStatus = await submit(
-    twilio.trusthub.v1.trustProducts(sids.trustProductSid),
-    'A2P messaging profile',
-  );
-
-  return { profileStatus, productStatus };
+async function submitBundleForReview(bundle: any, label: string): Promise<string> {
+  const current = await bundle.fetch();
+  const status = String(current.status || '').toLowerCase();
+  if (BUNDLE_REVIEW_IN_FLIGHT.has(status)) return status;
+  try {
+    const updated = await bundle.update({ status: 'pending-review' });
+    return String(updated.status || 'pending-review').toLowerCase();
+  } catch (error: any) {
+    throw new functions.https.HttpsError(
+      'internal',
+      `Could not submit the ${label} for Twilio review: ${error?.message}`,
+    );
+  }
 }
