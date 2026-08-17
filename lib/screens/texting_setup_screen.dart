@@ -352,6 +352,18 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             ),
           ],
           const SizedBox(height: 24),
+          const _InfoCallout(
+            icon: Icons.schedule_rounded,
+            title: 'How long approval takes',
+            message:
+                'Mobile carriers — not SFC — review every texting registration. '
+                'Typically: business profile same day, brand registration within '
+                'about a business day, and campaign review 1–5 business days. Plan '
+                'on roughly 1–2 weeks end to end. If carriers reject the campaign '
+                'you will see the exact reason here and can fix and resubmit, which '
+                'restarts the review. You cannot send texts until it is approved.',
+          ),
+          const SizedBox(height: 24),
           _SectionLabel('Business identity'),
           const SizedBox(height: 12),
           _field(
@@ -406,9 +418,14 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           const SizedBox(height: 12),
           const _InfoCallout(
             icon: Icons.info_outline_rounded,
-            title: 'Sole proprietor?',
+            title: 'Sole proprietor or no EIN?',
             message:
-                'Sole proprietor registrations require manual carrier setup. Contact SFC support instead of continuing here.',
+                'This form needs a registered business with a federal EIN. Sole '
+                'proprietors can still send texts, but carriers handle them as a '
+                'separate registration type: it is set up manually, usually takes '
+                'longer than the 1–2 weeks above, and carriers cap sole-proprietor '
+                'senders at a much lower daily message volume. Contact SFC support '
+                'to start that instead of continuing here.',
           ),
           const SizedBox(height: 24),
           _SectionLabel('Registered address'),
