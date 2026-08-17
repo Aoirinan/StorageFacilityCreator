@@ -172,7 +172,51 @@ service cloud.firestore {
       'websiteAdminTrialReason',
       'websiteAdminTrialRevokedAt',
       'websiteAdminTrialRevokedByUid',
-      'websiteAdminTrialRevokedByEmail'
+      'websiteAdminTrialRevokedByEmail',
+
+      // A2P 10DLC / Twilio registration state. Backend-only, and a genuine
+      // privilege escalation if it is not: the SMS send path reads
+      // textingOnboardingEnabled, a2pStatus and textingPlatformApproved
+      // straight off this document, so an owner who could write them could
+      // either mark themselves carrier-approved or switch the gate off
+      // entirely, and send unregistered 10DLC traffic through the platform's
+      // Twilio account. That is what gets a sender blocked and fined, and it
+      // bypasses the superadmin approval step that exists to prevent it.
+      // None of these are ever written by the client; every one is set by a
+      // callable or the status poller.
+      'textingOnboardingEnabled',
+      'textingPlatformApproved',
+      'textingPlatformApprovedAt',
+      'textingPlatformApprovedBy',
+      'a2pStatus',
+      'a2pApprovedAt',
+      'a2pRejectedAt',
+      'a2pRejectionReason',
+      'a2pSubmittedAt',
+      'a2pLastError',
+      'a2pLastUpdatedAt',
+      'a2pRegistrationRequired',
+      'a2pBundleReady',
+      'a2pBundleApproved',
+      'a2pBundleIssues',
+      'a2pBundleEvaluatedAt',
+      'a2pBundleProfileStatus',
+      'a2pBundleProductStatus',
+      'a2pBundleStatusUpdatedAt',
+      'a2pProfileBundleSid',
+      'twilioAccountSid',
+      'twilioTrustProfileSid',
+      'twilioTrustProductSid',
+      'twilioBusinessInfoEndUserSid',
+      'twilioAuthorizedRepEndUserSid',
+      'twilioA2pProfileEndUserSid',
+      'twilioAddressSid',
+      'twilioAddressDocumentSid',
+      'twilioBrandSid',
+      'twilioCampaignSid',
+      'twilioMessagingServiceSid',
+      'twilioPhoneNumber',
+      'twilioPhoneNumberSid'
     ];
   }
 

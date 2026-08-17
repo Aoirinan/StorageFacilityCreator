@@ -258,6 +258,28 @@ test('facility owners cannot write platform or website subscription entitlements
   await assertSucceeds(facilityRef.update({ facilityCreatorAccountId: 'account-1' }));
 });
 
+test('facility owners cannot forge A2P texting approval state', async () => {
+  // The SMS send path reads these straight off the facility document. If an
+  // owner could write them they could mark themselves carrier-approved, or
+  // switch the gate off entirely with textingOnboardingEnabled:false, and push
+  // unregistered 10DLC traffic through the platform's Twilio account.
+  await seedFacility();
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const facilityRef = owner.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(facilityRef.update({ a2pStatus: 'approved' }));
+  await assertFails(facilityRef.update({ textingPlatformApproved: true }));
+  await assertFails(facilityRef.update({ textingOnboardingEnabled: false }));
+  await assertFails(facilityRef.update({ a2pBundleReady: true }));
+  await assertFails(facilityRef.update({ twilioBrandSid: 'BN_forged' }));
+  await assertFails(facilityRef.update({ twilioCampaignSid: 'CM_forged' }));
+  await assertFails(facilityRef.update({ twilioMessagingServiceSid: 'MG_forged' }));
+  await assertFails(facilityRef.update({ twilioTrustProfileSid: 'BU_forged' }));
+  await assertFails(
+    facilityRef.update({ textingPlatformApprovedBy: 'owner@example.com' }),
+  );
+});
+
 test('superadmin custom claim can write website entitlements; others cannot', async () => {
   await seedFacility();
   // Superadmin access is granted by a server-set custom claim, not by email, so

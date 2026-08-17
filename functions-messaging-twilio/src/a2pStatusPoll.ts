@@ -22,6 +22,72 @@ import { TWILIO_SECRETS } from './secrets';
  * Runs hourly: carrier review is measured in days, so this is purely about not
  * needing a human to poll.
  */
+/**
+ * Refresh the TrustHub bundle review state for facilities waiting on it.
+ *
+ * Records the outcome on the facility so the UI can tell the owner whether the
+ * profile is still with Twilio, approved and ready for brand registration, or
+ * rejected and in need of corrections. Skips facilities that already have a
+ * brand, since the bundle stage is behind them.
+ *
+ * Returns how many facilities were checked.
+ */
+async function pollTrustBundleReviews(
+  twilio: any,
+  docs: admin.firestore.QueryDocumentSnapshot[],
+): Promise<number> {
+  let checked = 0;
+
+  for (const doc of docs) {
+    const data = doc.data();
+    if (data.twilioBrandSid) continue;
+    const profileSid = (data.twilioTrustProfileSid as string | undefined)?.trim();
+    const productSid = (data.twilioTrustProductSid as string | undefined)?.trim();
+    if (!profileSid || !productSid) continue;
+
+    try {
+      const [profile, product] = await Promise.all([
+        twilio.trusthub.v1.customerProfiles(profileSid).fetch(),
+        twilio.trusthub.v1.trustProducts(productSid).fetch(),
+      ]);
+      checked += 1;
+
+      const profileStatus = String(profile.status || '').toLowerCase();
+      const productStatus = String(product.status || '').toLowerCase();
+      if (
+        profileStatus === data.a2pBundleProfileStatus &&
+        productStatus === data.a2pBundleProductStatus
+      ) {
+        continue;
+      }
+
+      const approved = profileStatus === 'twilio-approved' && productStatus === 'twilio-approved';
+      const rejected = profileStatus === 'twilio-rejected' || productStatus === 'twilio-rejected';
+
+      await doc.ref.set(
+        {
+          a2pBundleProfileStatus: profileStatus,
+          a2pBundleProductStatus: productStatus,
+          a2pBundleApproved: approved,
+          // A rejected bundle has to be rebuilt before anything else can
+          // happen, so clear the ready flag that gates brand submission.
+          ...(rejected ? { a2pBundleReady: false } : {}),
+          a2pBundleStatusUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      functions.logger.info(
+        `A2P poll: facility ${doc.id} bundle profile=${profileStatus} product=${productStatus}`,
+      );
+    } catch (error: any) {
+      functions.logger.error(`A2P poll: bundle check failed for facility ${doc.id}:`, error);
+    }
+  }
+
+  return checked;
+}
+
 export const pollA2PRegistrationStatus = functions
   .runWith({ secrets: TWILIO_SECRETS, timeoutSeconds: 540, memory: '256MB' })
   .pubsub.schedule('15 * * * *')
@@ -40,13 +106,28 @@ export const pollA2PRegistrationStatus = functions
       .where('a2pStatus', 'in', ['submitted', 'pending'])
       .get();
 
+    const twilio = getTwilioClient() as any;
+
+    // Facilities whose TrustHub bundle is with Twilio but whose brand has not
+    // been submitted yet sit at a2pStatus 'draft', so the query above misses
+    // them entirely. Bundle review is the step before brand registration and
+    // takes about a business day; without this the owner has no way to learn it
+    // finished short of opening the page and pressing refresh.
+    const awaitingBundle = await admin
+      .firestore()
+      .collection('facilities')
+      .where('a2pBundleReady', '==', true)
+      .get();
+    const bundleChecked = await pollTrustBundleReviews(twilio, awaitingBundle.docs);
+
     if (snapshot.empty) {
-      functions.logger.info('A2P poll: no facilities awaiting review');
+      functions.logger.info(
+        `A2P poll: no facilities awaiting registration (${bundleChecked} bundle review(s) checked)`,
+      );
       return null;
     }
 
     functions.logger.info(`A2P poll: checking ${snapshot.size} facility registration(s)`);
-    const twilio = getTwilioClient() as any;
     let changed = 0;
 
     for (const doc of snapshot.docs) {
