@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   formatA2PValidationIssues,
   isValidEinLast4,
+  isValidFullEin,
   isValidUsPhone,
   isValidWebsite,
   validateA2PBusinessData,
@@ -11,7 +12,7 @@ import {
 const VALID = {
   legalBusinessName: 'Keepsake Self Storage LLC',
   businessType: 'LLC',
-  einLast4: '6565',
+  ein: '12-3456565',
   addressLine1: '4180 US HWY 82 East',
   city: 'Paris',
   state: 'TX',
@@ -20,6 +21,8 @@ const VALID = {
   supportEmail: 'support@keepsakeselfstorage.com',
   supportPhone: '903-715-7504',
   website: 'https://keepsakeselfstorage.com',
+  representativeFirstName: 'Russell',
+  representativeLastName: 'Forsyth',
 };
 
 test('validateA2PBusinessData accepts a complete, real submission', () => {
@@ -46,14 +49,57 @@ test('validateA2PBusinessData reports every problem at once', () => {
     'addressLine1',
     'businessType',
     'city',
-    'einLast4',
+    'ein',
     'legalBusinessName',
     'postalCode',
+    'representativeFirstName',
+    'representativeLastName',
     'state',
     'supportEmail',
     'supportPhone',
     'website',
   ]);
+});
+
+// --- EIN --------------------------------------------------------------------
+
+test('validateA2PBusinessData accepts the full EIN the submission form sends', () => {
+  // Regression: the validator only read `einLast4`, but the form posts `ein`,
+  // so every business-info save was rejected with "enter the last 4 digits".
+  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '123456565' }), []);
+  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '12-3456565' }), []);
+});
+
+test('validateA2PBusinessData falls back to a stored einLast4', () => {
+  const { ein, ...withoutEin } = VALID;
+  assert.deepEqual(validateA2PBusinessData({ ...withoutEin, einLast4: '6565' }), []);
+});
+
+test('validateA2PBusinessData rejects a malformed or placeholder EIN', () => {
+  for (const bad of ['1234', '12345678', '1234567890', '000000000', '111111111']) {
+    const fields = validateA2PBusinessData({ ...VALID, ein: bad }).map((i) => i.field);
+    assert.ok(fields.includes('ein'), `EIN ${bad} must be rejected`);
+  }
+});
+
+test('isValidFullEin requires nine non-repeating digits', () => {
+  assert.equal(isValidFullEin('12-3456789'), true);
+  assert.equal(isValidFullEin('123456789'), true);
+  assert.equal(isValidFullEin('12345678'), false);
+  assert.equal(isValidFullEin('999999999'), false);
+  assert.equal(isValidFullEin(undefined), false);
+});
+
+// --- authorized representative ----------------------------------------------
+
+test('validateA2PBusinessData requires a named authorized representative', () => {
+  const fields = validateA2PBusinessData({
+    ...VALID,
+    representativeFirstName: '',
+    representativeLastName: 'X',
+  }).map((i) => i.field);
+  assert.ok(fields.includes('representativeFirstName'));
+  assert.ok(fields.includes('representativeLastName'));
 });
 
 // --- phone ------------------------------------------------------------------

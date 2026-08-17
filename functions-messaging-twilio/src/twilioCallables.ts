@@ -7,8 +7,10 @@ import {
   computeA2PStatus,
   ensureIdempotentResource,
   formatA2PValidationIssues,
+  formatEvaluationFailures,
   validateA2PBusinessData,
 } from '@sfc/functions-shared';
+import { buildAndEvaluateTrustBundle, submitBundlesForReview } from './a2pTrustBundle';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -1055,6 +1057,13 @@ interface TextingBusinessData {
   website: string;
   supportEmail: string;
   supportPhone: string;
+  /**
+   * Authorized representative the carrier can hold accountable for the brand.
+   * Required by the customer profile policy (`authorized_representative_1`).
+   */
+  representativeFirstName?: string;
+  representativeLastName?: string;
+  representativeBusinessTitle?: string;
 }
 
 interface CampaignData {
@@ -1254,51 +1263,71 @@ async function createOrUpdateA2PProfileInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
   businessData: TextingBusinessData,
-): Promise<{ trustProfileSid: string; trustProductSid: string }> {
-  if (facilityData.twilioTrustProfileSid && facilityData.twilioTrustProductSid) {
-    return {
-      trustProfileSid: facilityData.twilioTrustProfileSid as string,
-      trustProductSid: facilityData.twilioTrustProductSid as string,
-    };
-  }
-
+): Promise<{
+  trustProfileSid: string;
+  trustProductSid: string;
+  bundleReady: boolean;
+  bundleIssues: string;
+}> {
   let trustProfileSid: string;
   let trustProductSid: string;
+  let bundleReady = false;
+  let bundleIssues = '';
+
   if (isTwilioDryRunEnabled()) {
     trustProfileSid = buildTwilioDryRunSid('BU', facilityRef.id);
     trustProductSid = buildTwilioDryRunSid('TP', facilityRef.id);
+    bundleReady = true;
   } else {
     const twilio = getTwilioClient() as any;
-    const { customerProfilePolicySid, trustProductPolicySid } = await resolveTrustHubA2PPolicySids(twilio);
+    const policySids = await resolveTrustHubA2PPolicySids(twilio);
 
-    const existingProfileSid = facilityData.twilioTrustProfileSid as string | undefined;
-    const existingProductSid = facilityData.twilioTrustProductSid as string | undefined;
+    // Build the full bundle — business information, authorized representative
+    // and registered address — then evaluate it. Previously this created only
+    // the profile/product shells, which can never be approved. The full EIN is
+    // passed through here and never persisted below.
+    const result = await buildAndEvaluateTrustBundle(
+      twilio,
+      facilityRef,
+      facilityData,
+      {
+        legalBusinessName: businessData.legalBusinessName,
+        businessType: businessData.businessType,
+        ein: businessData.ein,
+        addressLine1: businessData.addressLine1,
+        city: businessData.city,
+        state: businessData.state,
+        postalCode: businessData.postalCode,
+        country: businessData.country,
+        website: businessData.website,
+        supportEmail: businessData.supportEmail,
+        supportPhone: businessData.supportPhone,
+        representativeFirstName: businessData.representativeFirstName || '',
+        representativeLastName: businessData.representativeLastName || '',
+        representativeBusinessTitle: businessData.representativeBusinessTitle,
+      },
+      policySids,
+    );
 
-    if (existingProfileSid?.trim()) {
-      trustProfileSid = existingProfileSid.trim();
-    } else {
-      const profile = await twilio.trusthub.v1.customerProfiles.create({
-        friendlyName: `SFC ${facilityRef.id} ${businessData.legalBusinessName}`.slice(0, 60),
-        email: businessData.supportEmail,
-        policySid: customerProfilePolicySid,
+    trustProfileSid = result.sids.trustProfileSid;
+    trustProductSid = result.sids.trustProductSid;
+    bundleReady = result.readyForBrand;
+    bundleIssues = [
+      formatEvaluationFailures(result.customerProfileEvaluation),
+      formatEvaluationFailures(result.trustProductEvaluation),
+    ]
+      .filter(Boolean)
+      .join(' | ');
+
+    // A compliant bundle still sits in `draft` until it is handed to Twilio for
+    // review, and only review produces the `twilio-approved` state that brand
+    // registration needs. Review is free, so submit as soon as it passes.
+    if (bundleReady) {
+      const statuses = await submitBundlesForReview(twilio, result.sids);
+      functions.logger.info('A2P bundles submitted for Twilio review', {
+        facilityId: facilityRef.id,
+        ...statuses,
       });
-      trustProfileSid = profile.sid;
-    }
-
-    if (existingProductSid?.trim()) {
-      trustProductSid = existingProductSid.trim();
-    } else {
-      const trustProduct = await twilio.trusthub.v1.trustProducts.create({
-        friendlyName: `SFC ${facilityRef.id} A2P`,
-        email: businessData.supportEmail,
-        policySid: trustProductPolicySid,
-      });
-      trustProductSid = trustProduct.sid;
-      await twilio.trusthub.v1
-        .trustProducts(trustProductSid)
-        .trustProductsEntityAssignments.create({
-          objectSid: trustProfileSid,
-        });
     }
   }
 
@@ -1320,6 +1349,9 @@ async function createOrUpdateA2PProfileInternal(
       website: businessData.website,
       supportEmail: businessData.supportEmail,
       supportPhone: businessData.supportPhone,
+      representativeFirstName: businessData.representativeFirstName || null,
+      representativeLastName: businessData.representativeLastName || null,
+      representativeBusinessTitle: businessData.representativeBusinessTitle || null,
     },
     a2pStatus: 'draft',
     textingPlatformApproved: false,
@@ -1328,19 +1360,18 @@ async function createOrUpdateA2PProfileInternal(
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  return { trustProfileSid, trustProductSid };
+  return { trustProfileSid, trustProductSid, bundleReady, bundleIssues };
 }
 
 /**
  * Refuse to submit a brand unless Twilio has approved both TrustHub bundles.
  *
  * A2P brand registration charges per attempt and carriers vet the bundle
- * contents, so submitting an empty or unapproved bundle burns the fee and
- * returns a rejection days later. Twilio marks a bundle `twilio-approved` only
- * once the business-information end user and supporting documents are attached
- * and the profile has passed evaluation — the step this codebase does not yet
- * perform. Failing here with an actionable message is much cheaper than
- * discovering it from a carrier rejection notice.
+ * contents, so submitting an unapproved bundle burns the fee and returns a
+ * rejection days later. Saving business details now builds the full bundle and
+ * hands it to Twilio for review, but review is asynchronous — the bundle sits
+ * in `pending-review` for a while before it becomes `twilio-approved`, and it
+ * can come back rejected. Both cases must block the paid step.
  */
 async function assertTrustBundleReadyForBrand(
   twilio: any,
@@ -1369,12 +1400,24 @@ async function assertTrustBundleReadyForBrand(
     productStatus: product.status,
   });
 
+  const pending = (status: unknown) =>
+    ['pending-review', 'in-review'].includes(String(status || '').toLowerCase());
+
+  if (pending(profile.status) || pending(product.status)) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Your business profile is still being reviewed by Twilio. This usually takes about a ' +
+        'business day. You will be able to submit for carrier registration once it is approved — ' +
+        'no action is needed in the meantime.',
+    );
+  }
+
   throw new functions.https.HttpsError(
     'failed-precondition',
     'Your business profile has not been approved by Twilio yet, so carrier brand registration ' +
       `cannot be submitted (profile: ${profile.status}, A2P profile: ${product.status}). ` +
-      'Submitting now would incur the registration fee and be rejected. Contact SFC support to ' +
-      'complete the business profile review.',
+      'Submitting now would incur the registration fee and be rejected. Re-save your business ' +
+      'details to rebuild and resubmit the profile.',
   );
 }
 

@@ -84,6 +84,10 @@ const _business = TextingBusinessDetails(
   website: 'https://keepsake.example',
   supportEmail: 'help@keepsake.example',
   supportPhone: '5125550100',
+  // Carrier vetting requires a named authorized representative, so business
+  // details are not complete without one.
+  representativeFirstName: 'Dana',
+  representativeLastName: 'Reyes',
 );
 
 const _draftSnapshot = TextingOnboardingSnapshot(
@@ -191,6 +195,26 @@ void main() {
         find.text('Enter a full website URL, including https://.'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('requires a named authorized representative', (tester) async {
+      // The carrier customer-profile policy will not approve a bundle without
+      // authorized_representative_1, so the form has to collect it.
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _draftSnapshot,
+          }));
+
+      expect(find.byKey(const Key('rep-first-name')), findsOneWidget);
+      expect(find.byKey(const Key('rep-last-name')), findsOneWidget);
+
+      final action = find.byKey(const Key('primary-stage-action'));
+      tester.widget<FilledButton>(action).onPressed!();
+      await tester.pump();
+
+      expect(find.text("Enter the representative's first name."), findsOneWidget);
+      expect(find.text("Enter the representative's last name."), findsOneWidget);
     });
 
     testWidgets('opens pending registration on status dashboard',

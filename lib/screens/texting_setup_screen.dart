@@ -58,6 +58,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   final _supportEmail = TextEditingController();
   final _supportPhone = TextEditingController();
   final _areaCode = TextEditingController();
+  // Carriers require a named human they can hold accountable for the brand.
+  final _repFirstName = TextEditingController();
+  final _repLastName = TextEditingController();
+  final _repTitle = TextEditingController();
   String _businessType = 'LLC';
   bool _consent = false;
 
@@ -94,6 +98,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _supportEmail,
       _supportPhone,
       _areaCode,
+      _repFirstName,
+      _repLastName,
+      _repTitle,
     ]) {
       textController.dispose();
     }
@@ -142,6 +149,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _website.text = details.website;
       _supportEmail.text = details.supportEmail;
       _supportPhone.text = details.supportPhone;
+      _repFirstName.text = details.representativeFirstName ?? '';
+      _repLastName.text = details.representativeLastName ?? '';
+      _repTitle.text = details.representativeBusinessTitle ?? '';
     }
     if (snapshot.useCases.isNotEmpty) {
       final savedUseCases = snapshot.useCases.map((useCase) {
@@ -512,6 +522,45 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             validator: _validateSupportPhone,
             autofillHints: const [AutofillHints.telephoneNumber],
           ),
+          const SizedBox(height: 24),
+          Text(
+            'Authorized representative',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Carriers require a named person who can answer for this brand. '
+            'Use someone listed on the business registration.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          _field(
+            key: const Key('rep-first-name'),
+            controller: _repFirstName,
+            label: 'Representative first name',
+            enabled: !locked,
+            validator: (value) => _validateRequiredName(value, 'first name'),
+            autofillHints: const [AutofillHints.givenName],
+          ),
+          const SizedBox(height: 12),
+          _field(
+            key: const Key('rep-last-name'),
+            controller: _repLastName,
+            label: 'Representative last name',
+            enabled: !locked,
+            validator: (value) => _validateRequiredName(value, 'last name'),
+            autofillHints: const [AutofillHints.familyName],
+          ),
+          const SizedBox(height: 12),
+          _field(
+            key: const Key('rep-title'),
+            controller: _repTitle,
+            label: 'Representative title (optional)',
+            hint: 'Owner',
+            enabled: !locked,
+          ),
           const SizedBox(height: 28),
           _StageActions(
             busy: _controller.isWorking,
@@ -835,6 +884,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       'website': _website.text.trim(),
       'supportEmail': _supportEmail.text.trim(),
       'supportPhone': _supportPhone.text.trim(),
+      'representativeFirstName': _repFirstName.text.trim(),
+      'representativeLastName': _repLastName.text.trim(),
+      'representativeBusinessTitle': _emptyToNull(_repTitle.text),
     });
   }
 
@@ -941,6 +993,15 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   /// Mirrors the server-side rule in functions-shared/twilio/a2pBusinessValidation.
   /// Carriers vet this number, so a placeholder here costs a failed brand
   /// registration and days of turnaround.
+  /// Carrier vetting matches the representative against the business
+  /// registration, so a blank or single-letter placeholder fails review.
+  static String? _validateRequiredName(String? value, String label) {
+    if ((value ?? '').trim().length < 2) {
+      return 'Enter the representative\'s $label.';
+    }
+    return null;
+  }
+
   static String? _validateSupportPhone(String? value) {
     var digits = _digits(value);
     if (digits.length == 11 && digits.startsWith('1')) {

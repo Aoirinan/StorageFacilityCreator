@@ -80,6 +80,7 @@ export type { A2PFailureDetail } from './twilio/a2pFailureDetails';
 export {
   formatA2PValidationIssues,
   isValidEinLast4,
+  isValidFullEin,
   isValidUsPhone,
   isValidWebsite,
   validateA2PBusinessData,
@@ -88,6 +89,30 @@ export type {
   A2PBusinessData,
   A2PValidationIssue,
 } from './twilio/a2pBusinessValidation';
+export {
+  A2P_BUSINESS_IDENTITY,
+  A2P_BUSINESS_INDUSTRY,
+  A2P_REGIONS_OF_OPERATION,
+  A2P_REGISTRATION_IDENTIFIER,
+  buildA2pMessagingProfileAttributes,
+  buildAddressPayload,
+  buildAuthorizedRepresentativeAttributes,
+  buildBusinessInformationAttributes,
+  formatEvaluationFailures,
+  mapBusinessType,
+  normalizeEin,
+  normalizeWebsiteUrl,
+  summarizeEvaluation,
+  toE164UsPhone,
+} from './twilio/a2pTrustBundleMapping';
+export type {
+  AppBusinessType,
+  EvaluationFieldFailure,
+  EvaluationSummary,
+  TrustBundleInput,
+  TrustHubBusinessType,
+  TrustHubCompanyType,
+} from './twilio/a2pTrustBundleMapping';
 export {
   normalizeKeyword,
   isStopKeyword,

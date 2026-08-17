@@ -14,7 +14,16 @@
 export interface A2PBusinessData {
   legalBusinessName?: unknown;
   businessType?: unknown;
+  /**
+   * Full EIN as submitted from the form. Carrier vetting matches all nine
+   * digits against public registration records, so this is what a submission
+   * must carry — only the last four are ever persisted.
+   */
+  ein?: unknown;
+  /** Last four, as persisted on the facility after a submission. */
   einLast4?: unknown;
+  representativeFirstName?: unknown;
+  representativeLastName?: unknown;
   addressLine1?: unknown;
   city?: unknown;
   state?: unknown;
@@ -58,6 +67,15 @@ export function isValidEinLast4(value: unknown): boolean {
   return /^\d{4}$/.test(str(value));
 }
 
+/** A full EIN is nine digits; formatting such as "12-3456789" is fine. */
+export function isValidFullEin(value: unknown): boolean {
+  const digits = str(value).replace(/\D/g, '');
+  if (digits.length !== 9) return false;
+  // 000000000 / 111111111 and friends are placeholders, not EINs.
+  if (/^(\d)\1{8}$/.test(digits)) return false;
+  return true;
+}
+
 /**
  * Website must be a syntactically valid http(s) URL with a dotted host.
  * Carriers actually visit this, so "russ.com" style guesses are worth catching
@@ -97,8 +115,29 @@ export function validateA2PBusinessData(data: A2PBusinessData): A2PValidationIss
     add('businessType', 'Select a business type.');
   }
 
-  if (!isValidEinLast4(data.einLast4)) {
-    add('einLast4', 'Enter the last 4 digits of the business EIN.');
+  // The submission form sends the full EIN; a facility that has already been
+  // saved carries only the last four. Accept whichever is present, because
+  // requiring `einLast4` alone rejected every submission the form could make.
+  if (data.ein !== undefined && data.ein !== null && str(data.ein) !== '') {
+    if (!isValidFullEin(data.ein)) {
+      add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
+    }
+  } else if (!isValidEinLast4(data.einLast4)) {
+    add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
+  }
+
+  if (str(data.representativeFirstName).length < 2) {
+    add(
+      'representativeFirstName',
+      "Enter the authorized representative's first name — carriers require a named contact.",
+    );
+  }
+
+  if (str(data.representativeLastName).length < 2) {
+    add(
+      'representativeLastName',
+      "Enter the authorized representative's last name — carriers require a named contact.",
+    );
   }
 
   if (str(data.addressLine1).length < 3) {

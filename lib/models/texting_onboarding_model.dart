@@ -28,6 +28,10 @@ class TextingBusinessDetails {
   final String website;
   final String supportEmail;
   final String supportPhone;
+  // Carrier vetting requires a named authorized representative for the brand.
+  final String? representativeFirstName;
+  final String? representativeLastName;
+  final String? representativeBusinessTitle;
 
   const TextingBusinessDetails({
     required this.legalBusinessName,
@@ -42,6 +46,9 @@ class TextingBusinessDetails {
     required this.website,
     required this.supportEmail,
     required this.supportPhone,
+    this.representativeFirstName,
+    this.representativeLastName,
+    this.representativeBusinessTitle,
   });
 
   bool get isComplete =>
@@ -53,12 +60,19 @@ class TextingBusinessDetails {
       postalCode.isNotEmpty &&
       website.isNotEmpty &&
       supportEmail.isNotEmpty &&
-      supportPhone.isNotEmpty;
+      supportPhone.isNotEmpty &&
+      (representativeFirstName ?? '').isNotEmpty &&
+      (representativeLastName ?? '').isNotEmpty;
 
   factory TextingBusinessDetails.fromMap(Map<String, dynamic> map) {
     String value(String key) => (map[key] as String? ?? '').trim();
     final dba = value('dba');
     final einLast4 = value('einLast4');
+    String? optional(String key) {
+      final v = value(key);
+      return v.isEmpty ? null : v;
+    }
+
     return TextingBusinessDetails(
       legalBusinessName: value('legalBusinessName'),
       dba: dba.isEmpty ? null : dba,
@@ -72,6 +86,9 @@ class TextingBusinessDetails {
       website: value('website'),
       supportEmail: value('supportEmail'),
       supportPhone: value('supportPhone'),
+      representativeFirstName: optional('representativeFirstName'),
+      representativeLastName: optional('representativeLastName'),
+      representativeBusinessTitle: optional('representativeBusinessTitle'),
     );
   }
 }
