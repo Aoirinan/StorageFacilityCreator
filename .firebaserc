@@ -7,6 +7,9 @@
       "hosting": {
         "prod": [
           "storage-facility-creator"
+        ],
+        "sites": [
+          "sfc-facility-sites"
         ]
       }
     }
