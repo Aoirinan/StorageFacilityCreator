@@ -121,6 +121,37 @@ const _approvedSnapshot = TextingOnboardingSnapshot(
   hasTrustProfile: true,
 );
 
+/// Keepsake's actual situation: a trust profile exists, but the saved details
+/// predate the authorized-representative fields, so they are incomplete.
+const _businessMissingRep = TextingBusinessDetails(
+  legalBusinessName: 'Keepsake',
+  businessType: 'LLC',
+  einLast4: '6565',
+  addressLine1: '4180 US HWY 82 East',
+  city: 'Paris',
+  state: 'TX',
+  postalCode: '75460',
+  website: 'https://keepsake.example',
+  supportEmail: 'help@keepsake.example',
+  supportPhone: '9037157504',
+);
+
+const _profileWithIncompleteDetails = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _businessMissingRep,
+  hasTrustProfile: true,
+);
+
+/// Bundle handed to Twilio: editing now would restart the review.
+const _lockedSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _businessMissingRep,
+  hasTrustProfile: true,
+  businessDetailsLocked: true,
+);
+
 const _rejectedSnapshot = TextingOnboardingSnapshot(
   status: TextingRegistrationStatus.rejected,
   platformApproved: false,
@@ -195,6 +226,36 @@ void main() {
         find.text('Enter a full website URL, including https://.'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('business details stay editable while the bundle is a draft',
+        (tester) async {
+      // Regression: the form locked as soon as a trust profile SID existed.
+      // Keepsake had a profile holding an empty shell and placeholder details,
+      // so the owner was locked out of correcting the very data that was
+      // blocking registration. A draft bundle can be rebuilt, so it must edit.
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _profileWithIncompleteDetails,
+          }));
+
+      expect(_profileWithIncompleteDetails.hasTrustProfile, isTrue);
+      final ein = tester.widget<TextFormField>(find.byKey(const Key('ein')));
+      expect(ein.enabled, isNot(false));
+      expect(find.text('Business profile submitted'), findsNothing);
+    });
+
+    testWidgets('business details lock once the carrier is reviewing them',
+        (tester) async {
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _lockedSnapshot,
+          }));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Business profile submitted'), findsOneWidget);
     });
 
     testWidgets('requires a named authorized representative', (tester) async {

@@ -106,6 +106,15 @@ class TextingOnboardingSnapshot {
   final DateTime? approvedAt;
   final DateTime? rejectedAt;
   final bool hasTrustProfile;
+  /// Whether the carrier bundle is far enough along that edits are unsafe.
+  /// Not the same as simply having a trust profile: a draft bundle can still
+  /// be rebuilt, and locking on the profile's existence stranded owners whose
+  /// saved details were wrong.
+  final bool businessDetailsLocked;
+  /// Set once the bundle passes evaluation and goes to Twilio for review.
+  final bool bundleReady;
+  /// Which carrier-policy fields failed, when the bundle is not ready.
+  final String? bundleIssues;
 
   const TextingOnboardingSnapshot({
     required this.status,
@@ -120,6 +129,9 @@ class TextingOnboardingSnapshot {
     this.approvedAt,
     this.rejectedAt,
     required this.hasTrustProfile,
+    this.businessDetailsLocked = false,
+    this.bundleReady = false,
+    this.bundleIssues,
   });
 
   bool get isUnderReview =>
@@ -160,6 +172,11 @@ class TextingOnboardingSnapshot {
       rejectedAt: _dateTime(map['rejectedAt']),
       hasTrustProfile: map['hasTrustProfile'] == true ||
           (map['twilioTrustProfileSid'] as String?)?.isNotEmpty == true,
+      businessDetailsLocked: map['businessDetailsLocked'] == true,
+      bundleReady: map['bundleReady'] == true,
+      bundleIssues: (map['bundleIssues'] as String?)?.isEmpty == true
+          ? null
+          : map['bundleIssues'] as String?,
     );
   }
 

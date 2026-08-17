@@ -340,7 +340,12 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Widget _buildBusinessStage() {
-    final locked = _controller.snapshot?.hasTrustProfile == true;
+    // Locked only once the bundle is actually with Twilio or the brand is
+    // filed. Locking merely because a profile SID exists left owners unable to
+    // correct the details that were blocking their own registration.
+    final snapshot = _controller.snapshot;
+    final locked = snapshot?.businessDetailsLocked == true;
+    final bundleIssues = snapshot?.bundleIssues;
     return Form(
       key: _businessFormKey,
       child: Column(
@@ -356,9 +361,21 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             const SizedBox(height: 20),
             const _InfoCallout(
               icon: Icons.lock_outline_rounded,
-              title: 'Business profile saved',
+              title: 'Business profile submitted',
               message:
-                  'These details are locked after the carrier profile is created. Contact SFC support if something needs to change.',
+                  'These details are locked while the carrier reviews them. '
+                  'Editing now would restart the review. Contact SFC support if '
+                  'something is wrong.',
+            ),
+          ],
+          if (!locked && bundleIssues != null) ...[
+            const SizedBox(height: 20),
+            _InfoCallout(
+              icon: Icons.error_outline_rounded,
+              title: 'Carrier profile needs corrections',
+              message:
+                  'Twilio checked these details against the carrier policy and '
+                  'flagged: $bundleIssues',
             ),
           ],
           const SizedBox(height: 24),

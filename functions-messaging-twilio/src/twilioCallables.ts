@@ -1528,6 +1528,27 @@ async function submitCampaignInternal(
   return sid;
 }
 
+/**
+ * Whether the owner may still edit their business details.
+ *
+ * The UI used to lock the form as soon as a trust profile SID existed, on the
+ * assumption that the profile was immutable once created. It is not: end users
+ * are updated in place and a draft bundle can be rebuilt freely. That
+ * assumption stranded Keepsake — it had a profile SID holding an empty shell
+ * and placeholder details, so the owner was locked out of fixing the very data
+ * that was blocking registration, with no route forward but support.
+ *
+ * Editing is only genuinely unsafe once the bundle is with Twilio or the brand
+ * has been filed, so lock on that instead.
+ */
+function areBusinessDetailsLocked(facilityData: Record<string, any>): boolean {
+  const bundleStatus = String(facilityData.a2pBundleProfileStatus || '').toLowerCase();
+  if (bundleStatus === 'pending-review' || bundleStatus === 'in-review') return true;
+  if (facilityData.twilioBrandSid) return true;
+  const a2pStatus = String(facilityData.a2pStatus || 'draft').toLowerCase();
+  return a2pStatus === 'approved' || a2pStatus === 'submitted' || a2pStatus === 'pending';
+}
+
 function getTextingOnboardingState(facilityData: Record<string, any>): TextingOnboardingState {
   return {
     a2pStatus: ((facilityData.a2pStatus as string) || 'draft') as A2PStatus,
@@ -1589,6 +1610,10 @@ export const getTextingOnboardingStatus = functions.https.onCall(async (data: { 
     useCases: Array.isArray(facilityData.textingUseCases) ? facilityData.textingUseCases : [],
     sampleMessages: Array.isArray(facilityData.textingSampleMessages) ? facilityData.textingSampleMessages : [],
     hasTrustProfile: Boolean(facilityData.twilioTrustProfileSid && facilityData.twilioTrustProductSid),
+    businessDetailsLocked: areBusinessDetailsLocked(facilityData),
+    bundleReady: facilityData.a2pBundleReady === true,
+    bundleIssues: facilityData.a2pBundleIssues || null,
+    bundleProfileStatus: facilityData.a2pBundleProfileStatus || null,
     hasPhoneNumber: Boolean(facilityData.twilioPhoneNumberSid && facilityData.twilioPhoneNumberE164),
     submittedAt: facilityData.a2pSubmittedAt || null,
     approvedAt: facilityData.a2pApprovedAt || null,
