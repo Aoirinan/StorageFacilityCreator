@@ -1862,6 +1862,27 @@ function normalizeHostHeader(hostHeader: string): string {
   return String(hostHeader || '').trim().toLowerCase().split(':')[0];
 }
 
+/**
+ * The hostname the visitor actually typed.
+ *
+ * When Firebase Hosting rewrites a request to a function, `Host` is the
+ * function's own host; the visitor's domain arrives in `x-forwarded-host`.
+ * Reading `Host` therefore looks fine in isolation but never matches a
+ * facility's custom domain, so host-based routing silently resolves to nothing
+ * and every facility domain falls through to the operator app.
+ *
+ * This went unnoticed because "/" collided with the operator site's static
+ * index.html and the routing function was never reached at all. Path-based
+ * routes such as /w/<slug> were unaffected, since the slug is in the path.
+ * `redirectToCustomDomain` already read the forwarded header; these did not.
+ */
+function requestHost(req: { headers: Record<string, any>; get?: (name: string) => string | undefined }): string {
+  const forwarded = req.headers?.['x-forwarded-host'] ?? req.get?.('x-forwarded-host');
+  // A proxy chain can produce a comma-separated list; the original is first.
+  const first = String(forwarded || '').split(',')[0];
+  return normalizeHostHeader(first || String(req.headers?.host || ''));
+}
+
 function isPrimaryOperatorHost(hostHeader: string): boolean {
   const host = normalizeHostHeader(hostHeader);
   return (
@@ -1884,7 +1905,7 @@ export const routeCustomDomainRoot = functions.runWith({ minInstances: 1 }).http
   }
 
   try {
-    const host = String(req.headers.host || '');
+    const host = requestHost(req);
     if (isPrimaryOperatorHost(host)) {
       res.redirect(302, '/index.html');
       return;
@@ -1913,7 +1934,7 @@ export const routeCustomDomainRoot = functions.runWith({ minInstances: 1 }).http
  */
 export const robotsTxt = functions.https.onRequest(async (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600');
-  const host = normalizeHostHeader(String(req.headers.host || ''));
+  const host = requestHost(req);
   if (isPrimaryOperatorHost(host)) {
     // The operator dashboard is an authenticated SaaS app, not public content.
     res.status(200).type('text/plain').send('User-agent: *\nDisallow: /\n');
@@ -1937,7 +1958,7 @@ export const robotsTxt = functions.https.onRequest(async (req, res) => {
 /** Real sitemap.xml for facility custom domains — same Host-header approach as robotsTxt. */
 export const sitemapXml = functions.https.onRequest(async (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600');
-  const host = normalizeHostHeader(String(req.headers.host || ''));
+  const host = requestHost(req);
   const emptySitemap = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>';
   if (!host || isPrimaryOperatorHost(host)) {
     res.status(200).type('application/xml').send(emptySitemap);
