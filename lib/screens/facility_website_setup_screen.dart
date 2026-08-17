@@ -18,6 +18,7 @@ import '../screens/cancellation/cancellation_retention_wizard.dart';
 import '../services/stripe_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
+import '../widgets/custom_domain_panel.dart';
 
 class FacilityWebsiteSetupScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -1219,20 +1220,13 @@ class _FacilityWebsiteSetupScreenState
               ),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _customDomainController,
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(
-                labelText: 'Custom Domain (optional)',
-                hintText: 'yourfacility.com',
-                helperText:
-                    'Your real domain — apex (yourfacility.com), www, or a subdomain. Must match what Super Admin connects in Hosting. '
-                    'After Connect, add the DNS records Firebase shows at GoDaddy (or your registrar). '
-                    'Until DNS is live, use the public /w/… link below.',
-                helperMaxLines: 4,
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.language),
-              ),
+            // Connecting a domain is self-serve: it registers apex and www,
+            // then shows the exact DNS rows and tracks them to live. It used to
+            // depend on a super admin doing it by hand, which does not survive
+            // contact with a thousand facilities.
+            CustomDomainPanel(
+              facilityId: widget.facilityId,
+              initialDomain: _customDomainController.text,
             ),
           ],
         ),
