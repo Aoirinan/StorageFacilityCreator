@@ -3,7 +3,14 @@ import { GoogleAuth } from 'google-auth-library';
 import * as admin from 'firebase-admin';
 
 import { isSuperAdmin } from '../auth/superAdmin';
-import { requireHostingConfig } from './hostingConfigRegistry';
+import { getFacilityDataForUserOrThrow } from '../auth/facilityAccess';
+import { facilitySiteId, requireHostingConfig } from './hostingConfigRegistry';
+import {
+  combineHostnameStatuses,
+  isDomainLive,
+  mergeDomainRecords,
+  planDomainPair,
+} from './facilityDomainPlan';
 
 function normalizeHostname(raw: string): string {
   return raw
@@ -326,10 +333,10 @@ function explainStatus(customDomain: any, records: DomainRecord[]): string {
   return lines.join('\n');
 }
 
-async function getCustomDomain(hostname: string): Promise<any> {
+async function getCustomDomain(hostname: string, siteIdOverride?: string): Promise<any> {
   const { getProjectId, getSiteId } = requireHostingConfig();
   const projectId = getProjectId().trim();
-  const siteId = getSiteId().trim();
+  const siteId = (siteIdOverride || getSiteId()).trim();
   const encoded = encodeURIComponent(hostname);
   return hostingApiRequest(`projects/${projectId}/sites/${siteId}/customDomains/${encoded}`, { method: 'GET' });
 }
@@ -358,7 +365,11 @@ async function pollHostingOperation(operationName: string): Promise<any> {
  * After `customDomains.create`, the API returns an Operation (not a CustomDomain).
  * Resolve the CustomDomain payload for DNS / status fields.
  */
-async function resolveCustomDomainAfterCreate(hostname: string, createResult: any): Promise<any> {
+async function resolveCustomDomainAfterCreate(
+  hostname: string,
+  createResult: any,
+  siteIdOverride?: string,
+): Promise<any> {
   if (!createResult || typeof createResult !== 'object') {
     throw new functions.https.HttpsError('internal', 'Unexpected response from Hosting customDomains.create.');
   }
@@ -394,7 +405,7 @@ async function resolveCustomDomainAfterCreate(hostname: string, createResult: an
   // Fallback: GET the CustomDomain by id (may lag briefly after create).
   for (let i = 0; i < 20; i += 1) {
     try {
-      return await getCustomDomain(hostname);
+      return await getCustomDomain(hostname, siteIdOverride);
     } catch (e: any) {
       const code = e instanceof functions.https.HttpsError ? e.code : '';
       if (code === 'not-found' && i < 19) {
@@ -580,5 +591,228 @@ export const superAdminRemoveHostingCustomDomain = functions.https.onCall(
       customDomainName: null,
       retrievedAt: new Date().toISOString(),
     };
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Facility self-serve custom domains
+//
+// The superAdmin* callables above need a platform admin in the loop and
+// register against the operator app's Hosting site. Neither works for a product
+// where a thousand facility owners connect their own domain: the operator site
+// can never serve a facility website at "/" (its static index.html always wins
+// over the host-routing rewrite), and a support conversation per facility is
+// not a $25/month product.
+//
+// These register against the facility Hosting site, cover apex and www in one
+// call, and persist what the operator still has to do so the app can show it
+// and detect completion without anyone at SFC being involved.
+// ---------------------------------------------------------------------------
+
+/** Per-hostname state persisted on the facility and returned to the client. */
+interface FacilityHostnameState {
+  hostname: string;
+  status: string;
+  certState: string | null;
+  hostState: string | null;
+  ownershipState: string | null;
+}
+
+/** Register one hostname on the facility site, tolerating "already exists". */
+async function ensureFacilityHostname(hostname: string, siteId: string): Promise<any> {
+  const { getProjectId } = requireHostingConfig();
+  const projectId = getProjectId().trim();
+  const parent = `projects/${projectId}/sites/${siteId}`;
+  const query = new URLSearchParams({ customDomainId: hostname }).toString();
+
+  try {
+    const createResult = await hostingApiRequest(`${parent}/customDomains?${query}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    return await resolveCustomDomainAfterCreate(hostname, createResult, siteId);
+  } catch (error: any) {
+    const msg = String(error?.message || '');
+    if (msg.includes('already exists') || msg.includes('ALREADY_EXISTS')) {
+      // Re-running setup has to be safe: an operator who taps Connect twice, or
+      // returns a day later to check, should see status rather than an error
+      // about a domain they already registered.
+      return getCustomDomain(hostname, siteId);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Read and persist the current state of a facility's domain.
+ *
+ * Persisting rather than only returning means the dashboard can render the
+ * same answer without re-hitting the Hosting API, and a scheduled sweep can
+ * move a facility to live while nobody is looking at the page.
+ */
+async function refreshFacilityDomainState(
+  facilityId: string,
+  hostnames: string[],
+  siteId: string,
+): Promise<{
+  status: string;
+  live: boolean;
+  records: DomainRecord[];
+  hostnameStates: FacilityHostnameState[];
+  detail: string;
+}> {
+  const perHostRecords: DomainRecord[][] = [];
+  const states: FacilityHostnameState[] = [];
+  const details: string[] = [];
+
+  for (const hostname of hostnames) {
+    let customDomain: any = null;
+    try {
+      customDomain = await getCustomDomain(hostname, siteId);
+    } catch (error: any) {
+      const code = error instanceof functions.https.HttpsError ? error.code : '';
+      if (code !== 'not-found') throw error;
+      // Not registered yet. Report it rather than failing the whole refresh, so
+      // one missing hostname cannot hide the other one's progress.
+      states.push({
+        hostname,
+        status: 'pending_dns',
+        certState: null,
+        hostState: null,
+        ownershipState: null,
+      });
+      details.push(`${hostname}: not registered yet.`);
+      continue;
+    }
+
+    const records = flattenDnsRecords(customDomain);
+    perHostRecords.push(records);
+    states.push({
+      hostname,
+      status: summarizeStatus(customDomain),
+      certState: customDomain?.cert?.state || null,
+      hostState: customDomain?.hostState || null,
+      ownershipState: customDomain?.ownershipState || null,
+    });
+    details.push(`${hostname}: ${explainStatus(customDomain, records)}`);
+  }
+
+  const records = mergeDomainRecords(perHostRecords);
+  const status = combineHostnameStatuses(states);
+  const live = isDomainLive(states);
+  const detail = details.join('\n\n');
+
+  await admin
+    .firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .set(
+      {
+        customDomainStatus: status,
+        customDomainLive: live,
+        customDomainHostnames: states,
+        customDomainRecords: records,
+        customDomainDetail: detail,
+        customDomainCheckedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+  return { status, live, records, hostnameStates: states, detail };
+}
+
+/**
+ * Connect a facility's own domain to its website.
+ *
+ * Callable by the facility's own staff: this is the product, not an admin task.
+ * Registers apex and www together, because a site that answers only one of them
+ * looks broken to half the people who type it.
+ */
+export const provisionFacilityCustomDomain = functions.https.onCall(
+  async (data: { facilityId?: string; domain?: string }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const facilityId = String(data?.facilityId || '').trim();
+    if (!facilityId) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+    await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+
+    const pair = planDomainPair(data?.domain);
+    if (!pair) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Enter a domain like example.com, with no http:// and no path.',
+      );
+    }
+
+    const hostnames = [pair.apex, ...(pair.www ? [pair.www] : [])];
+
+    // Refuse before touching the Hosting API if another facility already holds
+    // this domain. `customDomain` is free text on a settings doc, so a second
+    // facility claiming a live hostname would break the first one's website.
+    const existing = await admin
+      .firestore()
+      .collectionGroup('settings')
+      .where('customDomain', '==', pair.apex)
+      .limit(5)
+      .get();
+    for (const doc of existing.docs) {
+      const owner = doc.ref.parent.parent?.id;
+      if (owner && owner !== facilityId) {
+        throw new functions.https.HttpsError(
+          'already-exists',
+          'That domain is already connected to another facility. Contact support if it belongs to you.',
+        );
+      }
+    }
+
+    const siteId = facilitySiteId();
+    for (const hostname of hostnames) {
+      await ensureFacilityHostname(hostname, siteId);
+    }
+
+    // The website lookup matches on this field, so it has to agree with what was
+    // registered or the domain resolves to no facility at all.
+    await syncFacilityCustomDomain(facilityId, pair.apex);
+
+    const state = await refreshFacilityDomainState(facilityId, hostnames, siteId);
+    return { facilityId, domain: pair.apex, hostnames, ...state };
+  },
+);
+
+/** Re-check a facility's domain and persist the result. */
+export const getFacilityCustomDomainStatus = functions.https.onCall(
+  async (data: { facilityId?: string }, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+    const facilityId = String(data?.facilityId || '').trim();
+    if (!facilityId) {
+      throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+    }
+    await getFacilityDataForUserOrThrow(context.auth.uid, facilityId);
+
+    const settings = await admin
+      .firestore()
+      .doc(`facilities/${facilityId}/settings/public`)
+      .get();
+    const pair = planDomainPair(settings.get('customDomain'));
+    if (!pair) {
+      return {
+        facilityId,
+        domain: null,
+        hostnameStates: [] as FacilityHostnameState[],
+        status: 'not_configured',
+        live: false,
+        records: [] as DomainRecord[],
+        detail: 'No custom domain is connected to this facility yet.',
+      };
+    }
+
+    const hostnames = [pair.apex, ...(pair.www ? [pair.www] : [])];
+    const state = await refreshFacilityDomainState(facilityId, hostnames, facilitySiteId());
+    return { facilityId, domain: pair.apex, hostnames, ...state };
   },
 );

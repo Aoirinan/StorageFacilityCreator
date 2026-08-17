@@ -16,3 +16,9 @@ export const STRIPE_SECRETS = [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_
 
 export const HOSTING_PROJECT_ID = defineString('HOSTING_PROJECT_ID', { default: 'storage-facility-creator' });
 export const HOSTING_SITE_ID = defineString('HOSTING_SITE_ID', { default: 'storage-facility-creator' });
+/**
+ * Hosting site that serves facility websites on their own domains.
+ * Must not be the operator site: there, a static index.html at "/" always
+ * beats the host-routing rewrite, so a facility domain can never be served.
+ */
+export const HOSTING_FACILITY_SITE_ID = defineString('HOSTING_FACILITY_SITE_ID', { default: 'sfc-facility-sites' });

@@ -9,6 +9,7 @@ import { registerStripeKeysProvider } from '@sfc/functions-shared/stripe/keysReg
 
 import {
   HOSTING_PROJECT_ID,
+  HOSTING_FACILITY_SITE_ID,
   HOSTING_SITE_ID,
   SENDGRID_API_KEY,
   SENDGRID_FROM_EMAIL,
@@ -29,12 +30,15 @@ registerSendgridMailConfigProvider({
 registerHostingConfigProvider({
   getProjectId: () => HOSTING_PROJECT_ID.value(),
   getSiteId: () => HOSTING_SITE_ID.value(),
+  getFacilitySiteId: () => HOSTING_FACILITY_SITE_ID.value(),
 });
 
 export * from './superAdminCallables';
 export { superAdminPurgePlatformData } from './superAdminPlatformPurge';
 export { lookupUserByEmail, runPhase2Migrations } from './lookupMigrations';
 export {
+  getFacilityCustomDomainStatus,
+  provisionFacilityCustomDomain,
   superAdminGetHostingCustomDomainStatus,
   superAdminProvisionHostingCustomDomain,
   superAdminRemoveHostingCustomDomain,
