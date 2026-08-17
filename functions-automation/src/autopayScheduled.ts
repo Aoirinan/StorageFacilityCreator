@@ -228,8 +228,25 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
               currency: 'usd',
               payment_method: methodData.stripePaymentMethodId,
               customer: methodData.stripeCustomerId,
-              confirmation_method: 'automatic',
+              // No confirmation_method here: Stripe rejects it alongside
+              // automatic_payment_methods, and 'automatic' was its default.
               confirm: true,
+              // Nobody is present to be redirected: this runs from a scheduled
+              // job hours after the tenant saved their card. Without this
+              // Stripe rejects the whole PaymentIntent, because the connected
+              // account has redirect-based methods enabled in its Dashboard and
+              // those would need a return_url. That rejection is not
+              // tenant-specific or card-specific -- it failed every autopay
+              // charge for every facility, and only surfaced when a real card
+              // was finally charged.
+              automatic_payment_methods: {
+                enabled: true,
+                allow_redirects: 'never',
+              },
+              // Card is on file and the tenant is not in the loop; tells Stripe
+              // this is a merchant-initiated transaction so the right network
+              // rules and 3DS exemptions apply.
+              off_session: true,
               description: `Autopay - ${tenantData.name}`,
               metadata: {
                 facilityId,
@@ -271,11 +288,18 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
             createdBy: 'system',
           });
 
-          // Advancing next-run is also what stops a retry re-charging this tenant.
+          // Advancing next-run is also what stops a retry re-charging this
+          // tenant. It must be written to the SAME nested field the due check
+          // reads (`autopaySchedule.autopayNextRun`) — writing a top-level
+          // `autopayNextRun` looked correct but was never read, so the schedule
+          // never advanced. The effect was not a missed update: it silently
+          // turned monthly autopay into "collect any outstanding balance every
+          // night", which would bill a tenant the moment a late fee posted
+          // instead of on the day they agreed to.
           await methodDoc.ref.update({
             autopayLastRun: admin.firestore.FieldValue.serverTimestamp(),
             autopayLastResult: 'success',
-            autopayNextRun: admin.firestore.Timestamp.fromDate(
+            'autopaySchedule.autopayNextRun': admin.firestore.Timestamp.fromDate(
               calculateNextAutopayRun(autopaySchedule, new Date()),
             ),
           });
