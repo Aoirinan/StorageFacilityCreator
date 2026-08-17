@@ -1213,6 +1213,17 @@ function toHtml(payload: {
         <input id="rent-phone" type="tel" class="rent-modal-input" placeholder="(555) 123-4567" />
         <label class="rent-modal-label" for="rent-date">Preferred Move-In Date</label>
         <input id="rent-date" type="date" class="rent-modal-input" />
+        <!--
+          SMS opt-in. Unchecked by default and never pre-checked: A2P 10DLC
+          review requires express consent, and the campaign's message flow
+          tells carriers this exact checkbox appears on this form. If it is not
+          here, that claim is false and the campaign is rejected for an
+          unverifiable CTA.
+        -->
+        <label class="rent-consent" for="rent-sms-consent" style="display:flex;gap:8px;align-items:flex-start;margin:14px 0 0;font-size:.82rem;line-height:1.45;color:#475569">
+          <input id="rent-sms-consent" type="checkbox" style="margin-top:3px;flex:0 0 auto" />
+          <span>I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message &amp; data rates may apply. Reply STOP to opt out, HELP for help. Consent is not a condition of renting a unit.</span>
+        </label>
         <div id="rent-form-error" style="display:none;color:#b91c1c;font-size:.88rem;margin:8px 0 0"></div>
         <div style="display:flex;gap:10px;margin-top:14px">
           <button type="button" class="rent-modal-back" id="rent-back">Back</button>
@@ -1344,6 +1355,8 @@ function toHtml(payload: {
             if (name.trim()) href += '&name=' + encodeURIComponent(name.trim());
             if (phone.trim()) href += '&phone=' + encodeURIComponent(phone.trim());
             if (date) href += '&moveInDate=' + encodeURIComponent(date);
+            var consentEl = document.getElementById('rent-sms-consent');
+            href += '&smsConsent=' + (consentEl && consentEl.checked ? 'true' : 'false');
             closeModal();
             window.location.href = href;
           });

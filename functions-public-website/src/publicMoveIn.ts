@@ -18,6 +18,7 @@ import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
 import { generateAccessCode } from './accessCode';
 import { createAutopayNotificationAndEvent } from './autopayNotification';
+import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 
@@ -1168,6 +1169,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       isActive: true,
       isOnDNR: false,
       leadSource: 'onlineRental',
+      // SMS opt-in captured on the public rental form.
+      ...resolveSmsConsentFields(reservationMetadata, nowTs),
       governmentIdType: normalizedGovernmentIdType.length > 0 ? normalizedGovernmentIdType : null,
       governmentIdNumber: normalizedGovernmentIdNumber.length > 0 ? normalizedGovernmentIdNumber : null,
       governmentIdState: normalizedGovernmentIdState.length > 0 ? normalizedGovernmentIdState : null,

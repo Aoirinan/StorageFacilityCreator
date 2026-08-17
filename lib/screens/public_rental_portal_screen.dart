@@ -423,6 +423,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           'facilitySlug': _facilitySlug,
           'autoAssigned': _preferredUnitId == null,
           'directFromWebsite': true,
+          // Arrives from the public site's pre-fill modal. Absent means the
+          // customer never saw a consent box, which is not consent.
+          'smsConsent': params['smsConsent'] == 'true',
+          'smsConsentSource': 'publicRentalForm',
         },
       );
 
@@ -1632,6 +1636,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           'facilitySlug': _facilitySlug,
           'autoAssigned': !_allowUnitSelection,
           'requestedCategory': _selectedCategorySlug,
+          // Carried so the tenant created at move-in inherits the opt-in the
+          // customer actually gave, rather than the checkbox being decorative.
+          'smsConsent': reservationPayload['smsConsent'] == 'true',
+          'smsConsentSource': 'publicRentalForm',
         },
       );
 
@@ -2128,6 +2136,14 @@ class _ReservationDialogState extends State<_ReservationDialog> {
   final _phoneController = TextEditingController();
   DateTime? _moveInDate;
 
+  /// Unchecked by default, and must stay that way. A2P 10DLC review requires
+  /// express opt-in: a pre-checked box is not consent, and carriers reject
+  /// campaigns whose opt-in cannot be verified. The wording below is identical
+  /// to the operator portal and to the public /sms-consent-demo page a
+  /// reviewer is pointed at, because the campaign's message flow tells
+  /// carriers this exact checkbox appears on this form.
+  bool _smsConsent = false;
+
   @override
   void dispose() {
     _emailController.dispose();
@@ -2215,6 +2231,37 @@ class _ReservationDialogState extends State<_ReservationDialog> {
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              // Always rendered, never pre-checked. A carrier reviewer has to
+              // be able to see the opt-in on this page without filling the
+              // form in first — hiding it behind another field is how a
+              // campaign ends up rejected for an unverifiable CTA.
+              Row(
+                key: const Key('public-rental-sms-consent'),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Checkbox(
+                    value: _smsConsent,
+                    onChanged: (value) =>
+                        setState(() => _smsConsent = value ?? false),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => setState(() => _smsConsent = !_smsConsent),
+                      child: const Padding(
+                        padding: EdgeInsets.only(top: 12),
+                        child: Text(
+                          'I consent to receive SMS notifications regarding my '
+                          'storage account. Message frequency varies. Message & '
+                          'data rates may apply. Reply STOP to opt out, HELP for '
+                          'help. Consent is not a condition of renting a unit.',
+                          style: TextStyle(fontSize: 12, height: 1.4),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -2236,6 +2283,9 @@ class _ReservationDialogState extends State<_ReservationDialog> {
                   ? null
                   : _phoneController.text.trim(),
               'moveInDate': _moveInDate?.toIso8601String(),
+              // Recorded either way: proof that consent was refused matters as
+              // much as proof it was given if a complaint is ever raised.
+              'smsConsent': _smsConsent ? 'true' : 'false',
             });
           },
           child: const Text('Continue'),
