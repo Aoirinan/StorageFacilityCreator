@@ -68,13 +68,82 @@ export async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent
         expMonth: card?.exp_month ?? null,
         expYear: card?.exp_year ?? null,
       };
-      await admin.firestore().collection('facilities').doc(facilityId).collection('tenants').doc(tenantId).update({
+      const tenantRef = admin
+        .firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('tenants')
+        .doc(tenantId);
+
+      await tenantRef.update({
         'stripe.defaultPaymentMethodId': paymentMethodId,
         'stripe.paymentMethodSummary': paymentMethodSummary,
         'stripe.customerId': customerId,
         stripeConnectedCustomerId: customerId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
+      // Record the card in `paymentMethods` as well.
+      //
+      // This is the only collection the autopay worker reads, and the only one
+      // toggleAutopay looks at. Writing just the tenant/billing fields above
+      // left a tenant who saved a card in the portal invisible to autopay
+      // forever, and made "enable autopay" fail with "Add a payment method
+      // first" immediately after they had added one. The staff-side attach
+      // callable always wrote this document; the portal path never did, so
+      // self-service could not produce a single autopay collection.
+      const paymentMethodsRef = tenantRef.collection('paymentMethods');
+      const existing = await paymentMethodsRef
+        .where('stripePaymentMethodId', '==', paymentMethodId)
+        .limit(1)
+        .get();
+
+      // Stripe redelivers webhooks; re-saving the same card must not stack up
+      // duplicate rows, which would let the nightly job charge once per row.
+      const targetRef = existing.empty ? paymentMethodsRef.doc() : existing.docs[0].ref;
+
+      // A newly saved card becomes the default, so clear the flag on the rest
+      // rather than leaving two cards both claiming it.
+      const others = await paymentMethodsRef.where('isDefault', '==', true).get();
+      for (const doc of others.docs) {
+        if (doc.id !== targetRef.id) {
+          await doc.ref.update({ isDefault: false });
+        }
+      }
+
+      await targetRef.set(
+        {
+          tenantId,
+          // Required by the worker's collection-group query.
+          facilityId,
+          type: 'creditCard',
+          stripePaymentMethodId: paymentMethodId,
+          stripeCustomerId: customerId,
+          stripeConnectedAccountId: connectedAccountId,
+          last4: paymentMethodSummary.last4,
+          brand: paymentMethodSummary.brand,
+          expiryMonth: paymentMethodSummary.expMonth,
+          expiryYear: paymentMethodSummary.expYear,
+          isDefault: true,
+          isActive: true,
+          // Saving a card is not consent to be charged automatically; autopay
+          // is armed separately by the tenant or by staff.
+          ...(existing.empty ? { autopayEnabled: false } : {}),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(existing.empty
+            ? {
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdBy: 'setupIntentWebhook',
+              }
+            : {}),
+        },
+        { merge: true },
+      );
+
+      functions.logger.info(
+        `Payment method ${paymentMethodId} recorded for tenant ${tenantId} ` +
+          `(${existing.empty ? 'created' : 'updated'}); autopay can now see it`,
+      );
     }
   } catch (error: any) {
     functions.logger.error('Error handling setup intent succeeded:', error);
