@@ -724,18 +724,27 @@ class StripeService {
     };
   }
 
-  /// Portal: attach payment method after SetupIntent confirm (optional; webhook also updates tenant.stripe).
+  /// Portal: record the card after the SetupIntent is confirmed.
+  ///
+  /// Not optional, despite what this used to say. The card is only visible to
+  /// autopay once a `paymentMethods` document exists, and the webhook that was
+  /// supposed to write it fires on the facility's connected account — which
+  /// only reaches us if the Stripe endpoint subscribes to Connect events.
+  /// Where it does not, the tenant is told their card saved and is then never
+  /// charged. Both paths are idempotent, so calling this is safe either way.
+  ///
+  /// Takes only the SetupIntent id: the server resolves the payment method from
+  /// Stripe and checks the intent really belongs to this tenant, rather than
+  /// trusting a payment method id supplied by the browser.
   static Future<void> attachTenantPaymentMethodFromPortal({
     required String email,
     required String accessCode,
-    required String paymentMethodId,
-    String? setupIntentId,
+    required String setupIntentId,
     String? tenantId,
   }) async {
     await _functions.httpsCallable('attachTenantPaymentMethodFromPortal').call({
       'email': email.trim().toLowerCase(),
       'accessCode': accessCode.trim(),
-      'paymentMethodId': paymentMethodId,
       'setupIntentId': setupIntentId,
       if (tenantId != null && tenantId.isNotEmpty) 'tenantId': tenantId,
     });

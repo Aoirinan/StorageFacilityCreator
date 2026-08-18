@@ -1744,12 +1744,34 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         context: context,
         clientSecret: clientSecret,
         mode: 'setup',
-        returnUrl: '$baseUrl/#/portal',
+        // '/portal' is not a route. Stripe redirects here after Link or 3DS,
+        // so the tenant landed on "Page not found" immediately after typing
+        // their card number — the most alarming possible moment to show it.
+        returnUrl: '$baseUrl/#${AppRoute.tenantPortal}',
         publishableKeyFromBackend: publishableKey,
         stripeAccount: connectedAccountId,
       );
       if (!mounted) return;
       if (dialogResult != null && dialogResult.succeeded) {
+        // Record the card server-side rather than trusting the
+        // setup_intent.succeeded webhook. That webhook fires on the facility's
+        // connected account, and connected-account events only arrive if the
+        // Stripe endpoint is subscribed to Connect events — when it is not, the
+        // tenant is told the card saved while autopay never sees it at all.
+        final setupIntentId = result['setupIntentId'] as String?;
+        if (setupIntentId != null && setupIntentId.isNotEmpty) {
+          try {
+            await StripeService.attachTenantPaymentMethodFromPortal(
+              email: widget.lookup.email,
+              accessCode: widget.lookup.accessCode,
+              tenantId: resolvedTenantId,
+              setupIntentId: setupIntentId,
+            );
+          } catch (_) {
+            // The webhook may still record it, and both paths are idempotent —
+            // so don't tell the tenant their card failed when it did save.
+          }
+        }
         _showSnack('Card saved. Refreshing…');
         await _reloadTenantPortal();
         final data = ref.read(tenantPortalProvider(widget.lookup)).whenOrNull(data: (d) => d);
