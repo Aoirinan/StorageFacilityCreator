@@ -1,8 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 import * as Sentry from '@sentry/node';
-import { getStripeClient } from '@sfc/functions-shared';
-import { STRIPE_SECRETS, STRIPE_WEBHOOK_SECRET } from './secrets';
+import { getStripeClient, parseWebhookSecrets, verifyWithAnySecret } from '@sfc/functions-shared';
+import {
+  STRIPE_WEBHOOK_SECRET,
+  STRIPE_WEBHOOK_SECRET_CONNECT,
+  STRIPE_WEBHOOK_SECRETS,
+} from './secrets';
 import { isStripeEventProcessed, markStripeEventProcessed } from './stripeWebhookIdempotency';
 import {
   handleChargeRefunded,
@@ -87,7 +91,7 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
 /**
  * Stripe webhook handler for subscription and Connect events (exported name must stay `stripeWebhook`).
  */
-export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).https.onRequest(async (req, res) => {
+export const stripeWebhook = functions.runWith({ secrets: STRIPE_WEBHOOK_SECRETS }).https.onRequest(async (req, res) => {
   const sig = req.headers['stripe-signature'] as string;
 
   if (!sig) {
@@ -97,7 +101,22 @@ export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).http
   }
 
   try {
-    const webhookSecret = STRIPE_WEBHOOK_SECRET.value();
+    // Stripe fixes "Events from" when a destination is created, so receiving
+    // connected-account events requires a second destination — which signs with
+    // its own secret. Verifying against only one produces a uniquely misleading
+    // failure: Connect events start arriving and every one is rejected as an
+    // invalid signature, so delivery looks broken when only verification is.
+    const webhookSecrets = parseWebhookSecrets(
+      STRIPE_WEBHOOK_SECRET.value(),
+      // Optional: absent until a Connect destination exists.
+      (() => {
+        try {
+          return STRIPE_WEBHOOK_SECRET_CONNECT.value();
+        } catch {
+          return undefined;
+        }
+      })(),
+    );
     const stripe = getStripeClient();
 
     let event: Stripe.Event;
@@ -107,9 +126,22 @@ export const stripeWebhook = functions.runWith({ secrets: STRIPE_SECRETS }).http
         rawBody ??
         (typeof req.body === 'string' ? Buffer.from(req.body) : Buffer.from(JSON.stringify(req.body || {})));
 
-      event = stripe.webhooks.constructEvent(payload, sig, webhookSecret);
+      const verified = verifyWithAnySecret<Stripe.Event>(
+        (secret) => stripe.webhooks.constructEvent(payload, sig, secret),
+        webhookSecrets,
+      );
+      event = verified.event;
+      if (verified.secretIndex > 0) {
+        // Which destination signed, without logging the secret itself.
+        functions.logger.info(
+          `Webhook verified with secret #${verified.secretIndex + 1} (Connect destination)`,
+        );
+      }
     } catch (err: any) {
-      functions.logger.error('Webhook signature verification failed', err);
+      functions.logger.error(
+        `Webhook signature verification failed against ${webhookSecrets.length} configured secret(s)`,
+        err,
+      );
       res.status(400).send(`Webhook Error: ${err.message}`);
       return;
     }

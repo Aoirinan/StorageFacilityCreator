@@ -63,6 +63,7 @@ export {
   getStripeClient,
 } from './stripe/client';
 export { subPeriodEnd, subPeriodStart, invoiceSubscriptionId } from './stripe/invoiceHelpers';
+export { parseWebhookSecrets, verifyWithAnySecret } from './stripe/webhookSecrets';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 
