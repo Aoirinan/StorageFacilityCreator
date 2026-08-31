@@ -1,4 +1,5 @@
 import * as functions from 'firebase-functions/v1';
+import { setTenantAutopayArming } from './autopayArming';
 import * as admin from 'firebase-admin';
 import { canAccessFacility, getStripeClient, rejectClientSuppliedStripeKeys } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
@@ -90,6 +91,10 @@ export const setTenantAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).h
     if (!hasPm) {
       throw new functions.https.HttpsError('failed-precondition', 'Tenant must have a saved payment method before enabling autopay. Add a card first.', { code: 'missing_payment_method' });
     }
+    // Arm the card before writing display state: this callable used to write
+    // only tenant.autopay.*, which the nightly worker never reads, so autopay
+    // showed ON and no charge was ever attempted.
+    await setTenantAutopayArming(facilityId, tenantId, true);
     await tenantRef.update({
       'autopay.requested': true,
       'autopay.enabled': true,
@@ -110,6 +115,9 @@ export const setTenantAutopay = functions.runWith({ secrets: STRIPE_SECRETS }).h
     return { enabled: true, status: 'ON' };
   } else {
     const disabledReason = src === 'TENANT' ? 'Tenant disabled in portal' : src === 'FACILITY' ? 'Disabled by facility' : 'System';
+    // Disarm first, so a failure cannot leave a card charging after the
+    // operator has been told autopay is off.
+    await setTenantAutopayArming(facilityId, tenantId, false);
     await tenantRef.update({
       'autopay.requested': false,
       'autopay.enabled': false,
