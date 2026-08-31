@@ -1,4 +1,5 @@
 import * as functions from 'firebase-functions/v1';
+import { resolveAutopayFailureOutcome } from './autopayFailureHelpers';
 import * as admin from 'firebase-admin';
 import { getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
@@ -299,6 +300,10 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
           await methodDoc.ref.update({
             autopayLastRun: admin.firestore.FieldValue.serverTimestamp(),
             autopayLastResult: 'success',
+            // Reset on success: consecutive means consecutive, otherwise a
+            // single decline months ago would count toward switching autopay off.
+            autopayConsecutiveFailures: 0,
+            autopayLastError: null,
             'autopaySchedule.autopayNextRun': admin.firestore.Timestamp.fromDate(
               calculateNextAutopayRun(autopaySchedule, new Date()),
             ),
@@ -332,11 +337,64 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
             `Error processing autopay for payment method ${methodDoc.id}:`,
             error,
           );
+
+          // A failure used to record a flag and nothing else, leaving
+          // autopayNextRun in the past — so a card that can never succeed was
+          // retried every night forever. Back off, and stop entirely once it is
+          // clear the card needs replacing.
+          const outcome = resolveAutopayFailureOutcome({
+            previousFailures: methodData.autopayConsecutiveFailures,
+            declineCode: error?.decline_code || error?.code,
+            message: error?.message,
+            now: new Date(),
+          });
+
           await methodDoc.ref.update({
             autopayLastRun: admin.firestore.FieldValue.serverTimestamp(),
             autopayLastResult: 'failed',
-            autopayLastError: error?.message ?? String(error),
+            autopayLastError: outcome.reason,
+            autopayConsecutiveFailures: outcome.failures,
+            ...(outcome.disarm
+              ? {
+                  autopayEnabled: false,
+                  autopayDisabledReason: outcome.reason,
+                  autopayDisabledAt: admin.firestore.FieldValue.serverTimestamp(),
+                }
+              : {
+                  'autopaySchedule.autopayNextRun': admin.firestore.Timestamp.fromDate(
+                    outcome.nextRun as Date,
+                  ),
+                }),
           });
+
+          // Tell somebody. A silent failure means the tenant believes rent is
+          // being collected while it is not, and the operator finds out when
+          // they go delinquent.
+          await admin
+            .firestore()
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('Notifications')
+            .add({
+              facilityId,
+              tenantId,
+              type: outcome.disarm ? 'AUTOPAY_DISABLED_AFTER_FAILURE' : 'AUTOPAY_PAYMENT_FAILED',
+              title: outcome.disarm
+                ? `Autopay turned off for ${tenantData.name}`
+                : `Autopay payment failed for ${tenantData.name}`,
+              body: outcome.needsNewCard
+                ? `${outcome.reason} The tenant needs to add a new card.`
+                : outcome.reason,
+              severity: outcome.disarm ? 'high' : 'normal',
+              read: false,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              createdBy: 'system@autopay',
+            });
+
+          functions.logger.warn(
+            `Autopay failure ${outcome.failures} for tenant ${tenantId}: ` +
+              `${outcome.disarm ? 'disarmed' : `retry ${outcome.nextRun?.toISOString()}`} — ${outcome.reason}`,
+          );
         }
       }
     } catch (error: any) {
