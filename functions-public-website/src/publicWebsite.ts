@@ -1,5 +1,10 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
+import {
+  categoryNavLabel,
+  resolveHeroHeadline,
+  resolveLocationLabel,
+} from './websiteSeo';
 
 function normalizeDomain(raw: string): string {
   return raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
@@ -285,26 +290,33 @@ function toHtml(payload: {
   const browseStripHtml =
     categorySlugListForNav.length > 0
       ? `<div class="browse-strip">
-  <div class="wrap browse-pills">
-    <a class="browse-pill" href="#home">Home</a>
-    <a class="browse-pill" href="#about">About</a>
-    ${categorySlugListForNav
-      .map(
-        (cat) =>
-          `<a class="browse-pill" href="#${escapeHtml(`cat-${slugToDomId(cat)}`)}">${escapeHtml(
-            titleCaseWords(cat),
-          )}</a>`,
-      )
-      .join('')}
-    <a class="browse-pill" href="#map">Map</a>
-    <a class="browse-pill" href="#contact">Contact us</a>
-  </div>
+  <!--
+    The second navigation row was removed. It duplicated the primary nav's
+    destinations with different labels ("Contact" above, "Contact us" here),
+    which is the clearest visual tell of an unfinished template. The category
+    links it carried now live in the primary nav, where they also do SEO work.
+  -->
 </div>`
       : '';
 
   const amenityList = payload.amenities.length
     ? payload.amenities.slice(0, 14)
     : ['Online rentals', 'Online bill pay', 'Secure access', 'Variety of unit sizes'];
+
+  // Category links carry the words customers actually search. The nav used the
+  // raw slug ("Standard", "Outdoor"), which is internal jargon that matches no
+  // query; the operator's display name plus the category noun reads as a real
+  // phrase ("Standard Self Storage").
+  const categoryNavHtml = categorySlugListForNav
+    .map((cat) => {
+      const configured = (payload.unitCategories || []).find((c) => c.slug === cat) || null;
+      const label = categoryNavLabel(configured, cat);
+      if (!label) return '';
+      return `<a href="#${escapeHtml(`cat-${slugToDomId(cat)}`)}">${escapeHtml(label)}</a>`;
+    })
+    .filter(Boolean)
+    .join('');
+
   const amenityChips = amenityList.map((a) => `<span class="chip">${escapeHtml(a)}</span>`).join('');
 
   const visibleUnitRows =
@@ -1038,7 +1050,7 @@ function toHtml(payload: {
       <nav aria-label="Primary">
         <a href="#home">Home</a>
         <a href="#about">About</a>
-        <a href="#units">Units</a>
+        ${categoryNavHtml || '<a href="#units">Units</a>'}
         <a href="#map">Map</a>
         <a href="#contact">Contact</a>
       </nav>
@@ -1769,7 +1781,19 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
       title: String(publicSettings.pageTitle || `${facilityName} | Self Storage`),
       description,
       marketingContent: description,
-      heroHeadline: String(websiteConfig.heroHeadline || facilityName),
+      // Location-aware by default. A storage facility competes in "self storage
+      // <town>" searches, and a slogan that names no town cannot win one. The
+      // seeded placeholder headline is treated as unset so facilities already
+      // onboarded gain this too, not just new ones.
+      heroHeadline: resolveHeroHeadline({
+        configured: websiteConfig.heroHeadline,
+        facilityName,
+        location: resolveLocationLabel({
+          city: (data as Record<string, unknown>).facilityCity,
+          state: (data as Record<string, unknown>).facilityState,
+          address: websiteConfig.address || (data as Record<string, unknown>).facilityAddress,
+        }),
+      }),
       heroSubheadline: String(
         websiteConfig.heroSubheadline || 'Secure, convenient, and reliable storage with online rentals.',
       ),

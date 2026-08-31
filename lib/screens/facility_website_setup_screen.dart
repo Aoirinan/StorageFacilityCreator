@@ -1351,8 +1351,58 @@ class _FacilityWebsiteSetupScreenState
               ),
             ),
             const SizedBox(height: 12),
+            // The hero photo is the single biggest difference between a site
+            // that looks like this facility and one that looks like any
+            // facility. Competitors' cookie-cutter sites use a real wide shot
+            // down their own row of units; a stock image reads as a template
+            // nobody finished. We cannot detect a stock photo, so say it plainly
+            // here and flag the empty case hard.
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _heroImageUrlController.text.trim().isEmpty
+                    ? AppTheme.error.withValues(alpha: 0.08)
+                    : AppTheme.primaryBlue.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _heroImageUrlController.text.trim().isEmpty
+                      ? AppTheme.error.withValues(alpha: 0.35)
+                      : AppTheme.primaryBlue.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    _heroImageUrlController.text.trim().isEmpty
+                        ? Icons.warning_amber_rounded
+                        : Icons.photo_camera_outlined,
+                    size: 18,
+                    color: _heroImageUrlController.text.trim().isEmpty
+                        ? AppTheme.error
+                        : AppTheme.primaryBlue,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _heroImageUrlController.text.trim().isEmpty
+                          ? 'Add a hero photo before publishing. Without one your '
+                              'site shows a generic placeholder, which is the '
+                              'clearest sign to a customer that nobody finished it.'
+                          : 'Use a real photo of your facility — a wide shot down '
+                              'your row of units, taken in daylight. Stock photos '
+                              'look like every other storage site; yours should look '
+                              'like yours.',
+                      style: const TextStyle(fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
             TextField(
               controller: _heroImageUrlController,
+              onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 labelText: 'Hero Background Image URL (https only)',
                 hintText: 'https://.../photo.jpg',
