@@ -147,15 +147,25 @@ export const attachTenantPaymentMethodFromPortal = functions
       { merge: true },
     );
 
+    // Written as a nested object, NOT dotted keys. set({merge:true}) treats
+    // 'stripe.defaultPaymentMethodId' as a literal field name containing a dot
+    // — only update() interprets dots as a path. Getting that wrong wrote a
+    // top-level "stripe.defaultPaymentMethodId" while the real nested field
+    // stayed empty, so setTenantAutopayFromPortal (which reads the nested one)
+    // still told a tenant to "add a payment method first" after they had added
+    // one. Nested maps merge recursively here, so existing stripe.* fields
+    // survive.
     await tenantRef.set(
       {
-        'stripe.defaultPaymentMethodId': paymentMethodId,
-        'stripe.customerId': customerId || null,
-        'stripe.paymentMethodSummary': {
-          brand: card?.brand ?? null,
-          last4: card?.last4 ?? null,
-          expMonth: card?.exp_month ?? null,
-          expYear: card?.exp_year ?? null,
+        stripe: {
+          defaultPaymentMethodId: paymentMethodId,
+          customerId: customerId || null,
+          paymentMethodSummary: {
+            brand: card?.brand ?? null,
+            last4: card?.last4 ?? null,
+            expMonth: card?.exp_month ?? null,
+            expYear: card?.exp_year ?? null,
+          },
         },
         stripeConnectedCustomerId: customerId || null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
