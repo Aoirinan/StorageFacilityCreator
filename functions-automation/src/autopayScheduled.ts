@@ -12,6 +12,7 @@ import {
   shouldAttemptCharge,
   sumLedgerBalance,
 } from './autopayScheduledHelpers';
+import { enqueueFacilityJobs } from './facilityJobEnqueue';
 import {
   AUTOPAY_JOBS_COLLECTION,
   autopayJobId,
@@ -51,34 +52,12 @@ export const processAutopayPayments = functions
       const facilityIds = facilitiesSnapshot.docs.map((doc) => doc.id);
       functions.logger.info(`Found ${facilityIds.length} active facilities`);
 
-      let enqueued = 0;
-      // Batched writes cap at 500, so a thousand-facility fan-out needs chunking.
-      for (const chunk of chunkForBatchedWrites(facilityIds)) {
-        const batch = admin.firestore().batch();
-        for (const facilityId of chunk) {
-          const ref = admin
-            .firestore()
-            .collection(AUTOPAY_JOBS_COLLECTION)
-            .doc(autopayJobId(runDate, facilityId));
-          // Deterministic id + create() means a second scheduler run on the same
-          // day cannot enqueue a duplicate charge run for a facility.
-          batch.create(ref, {
-            facilityId,
-            runDate,
-            status: 'pending',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-        try {
-          await batch.commit();
-          enqueued += chunk.length;
-        } catch (error: any) {
-          // ALREADY_EXISTS means this run was already enqueued — not an error.
-          functions.logger.warn(
-            `Autopay job batch for ${runDate} partially or fully already existed: ${error?.message}`,
-          );
-        }
-      }
+      const enqueued = await enqueueFacilityJobs({
+        collection: AUTOPAY_JOBS_COLLECTION,
+        runDate,
+        facilityIds,
+        label: 'Autopay job',
+      });
 
       functions.logger.info(`Autopay fan-out complete for ${runDate}: ${enqueued} job(s) enqueued`);
       return { runDate, enqueued };

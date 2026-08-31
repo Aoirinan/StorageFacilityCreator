@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import { enqueueFacilityJobs } from './facilityJobEnqueue';
 import {
   canClaimFacilityJob,
   chunkForBatchedWrites,
@@ -42,32 +43,12 @@ export const scheduledGenerateMonthlyRentCharges = functions
     const facilityIds = facilitiesSnapshot.docs.map((doc) => doc.id);
     functions.logger.info(`Found ${facilityIds.length} active facilities`);
 
-    let enqueued = 0;
-    for (const chunk of chunkForBatchedWrites(facilityIds)) {
-      const batch = admin.firestore().batch();
-      for (const facilityId of chunk) {
-        const ref = admin
-          .firestore()
-          .collection(RENT_CHARGE_JOBS_COLLECTION)
-          .doc(facilityJobId(runDate, facilityId));
-        // Deterministic id + create() means re-running the scheduler in the
-        // same UTC day cannot raise a second month of charges.
-        batch.create(ref, {
-          facilityId,
-          runDate,
-          status: 'pending',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-      try {
-        await batch.commit();
-        enqueued += chunk.length;
-      } catch (error: any) {
-        functions.logger.warn(
-          `Rent-charge job batch for ${runDate} partially or fully already existed: ${error?.message}`,
-        );
-      }
-    }
+    const enqueued = await enqueueFacilityJobs({
+      collection: RENT_CHARGE_JOBS_COLLECTION,
+      runDate,
+      facilityIds,
+      label: 'Rent-charge job',
+    });
 
     functions.logger.info(`Rent-charge fan-out complete for ${runDate}: ${enqueued} job(s) enqueued`);
     return { runDate, enqueued };
