@@ -5,6 +5,7 @@ import {
   isAutopayDue,
   isFacilityChargeReady,
   resolveChargeAmount,
+  roundMoney,
   shouldAttemptCharge,
   sumLedgerBalance,
 } from '../autopayScheduledHelpers';
@@ -164,4 +165,40 @@ test('calculateNextAutopayRun pushes a same-weekday weekly run a full week out',
 
   assert.equal(next.getDate(), 27, 'same weekday means next week, not today');
   assert.equal(next.getDay(), 5);
+});
+
+// --- money precision --------------------------------------------------------
+
+test('roundMoney turns float residue into a real money value', () => {
+  assert.equal(roundMoney(0.1 + 0.2), 0.3);
+  assert.equal(roundMoney(14.677419354838708), 14.68);
+  assert.equal(roundMoney(5.551115123125783e-17), 0);
+  assert.equal(roundMoney(Number.NaN), 0);
+});
+
+test('a settled balance with float residue is not charged', () => {
+  // The live facility already holds ledger amounts with sub-cent precision, so
+  // summing a paid-off account can leave 1e-15 behind. That used to pass
+  // `amount > 0`, reach Stripe as a zero-cent charge, and fail every night —
+  // eventually disarming autopay for someone who owed nothing.
+  const residue = 0.1 + 0.2 - 0.3;
+  assert.ok(residue > 0, 'precondition: residue really is greater than zero');
+  assert.equal(shouldAttemptCharge(residue, 'pm_123'), false);
+});
+
+test('a balance below the Stripe minimum is left to accumulate', () => {
+  // Stripe rejects anything under 50 cents, so attempting it is a guaranteed
+  // failure. Better to carry it forward than to fail nightly.
+  assert.equal(shouldAttemptCharge(0.25, 'pm_123'), false);
+  assert.equal(shouldAttemptCharge(0.5, 'pm_123'), true);
+});
+
+test('normal balances still charge', () => {
+  assert.equal(shouldAttemptCharge(65, 'pm_123'), true);
+  assert.equal(shouldAttemptCharge(14.68, 'pm_123'), true);
+});
+
+test('a missing payment method still blocks the charge', () => {
+  assert.equal(shouldAttemptCharge(65, ''), false);
+  assert.equal(shouldAttemptCharge(65, undefined), false);
 });

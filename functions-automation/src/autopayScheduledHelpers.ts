@@ -98,15 +98,48 @@ export function resolveChargeAmount(
     }
   }
 
-  return amount;
+  return roundMoney(amount);
 }
 
 /** Only charge a positive amount against a stored payment method. */
+/**
+ * Smallest charge Stripe accepts in USD. Below this a PaymentIntent is
+ * rejected outright, so attempting one is a guaranteed failure.
+ */
+export const MIN_CHARGEABLE_USD = 0.5;
+
+/**
+ * Round a money value to whole cents.
+ *
+ * Ledger amounts are floating point and prorated rent is
+ * monthlyRate * days / daysInMonth, which is rarely exact — six of the ninety
+ * three entries in the live facility already carry sub-cent precision. Summing
+ * those leaves residue like 1e-15 on an account that is actually settled.
+ */
+export function roundMoney(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 100) / 100;
+}
+
 export function shouldAttemptCharge(
   amount: number,
   stripePaymentMethodId: unknown,
 ): boolean {
-  return amount > 0 && typeof stripePaymentMethodId === 'string' && stripePaymentMethodId.length > 0;
+  // `amount > 0` let floating-point residue through: a tenant who had paid in
+  // full could carry a balance of 1e-15, pass this check, and then be sent to
+  // Stripe as a zero-cent charge, which is rejected. That failed every run, and
+  // with failure handling now disarming after three declines it would switch
+  // off autopay for someone who owed nothing.
+  //
+  // Rounding to cents first, then requiring Stripe's minimum, means we only
+  // attempt charges that can actually succeed. A genuine sub-minimum balance is
+  // left to accumulate rather than failing nightly.
+  const cents = roundMoney(amount);
+  return (
+    cents >= MIN_CHARGEABLE_USD &&
+    typeof stripePaymentMethodId === 'string' &&
+    stripePaymentMethodId.length > 0
+  );
 }
 
 /**

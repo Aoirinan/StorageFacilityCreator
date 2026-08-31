@@ -33,7 +33,10 @@ export function calculateProratedRent(monthlyRate: number, moveInDate: Date): nu
   const daysRemaining =
     Math.floor((lastDayOfMonth.getTime() - moveInDate.getTime()) / 86_400_000) + 1;
   const dailyRate = monthlyRate / daysInMonth;
-  return dailyRate * daysRemaining;
+  // Round to whole cents. Unrounded, this returns values like
+  // 14.677419354838708, which is not an amount of money — it enters the ledger
+  // at full float precision and leaves residue when the balance is settled.
+  return Math.round(dailyRate * daysRemaining * 100) / 100;
 }
 
 function resolveMonthlyRent(
