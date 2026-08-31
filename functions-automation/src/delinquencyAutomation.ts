@@ -1,3 +1,8 @@
+// Ledger entries live at facilities/{facilityId}/ledgers, tagged with
+// tenantId. This file used facilities/{id}/tenants/{id}/ledger — a different
+// collection at a different depth — so everything it wrote was invisible to the
+// twelve other writers, to the autopay balance query, and to every ledger read
+// in the app. A late fee charged there would never be collected and never shown.
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
@@ -188,9 +193,8 @@ async function processDelinquencyForFacility(
         const ledgerSnapshot = await admin.firestore()
           .collection('facilities')
           .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .collection('ledger')
+          .collection('ledgers')
+          .where('tenantId', '==', tenantId)
           .get();
 
         let balance = 0;
@@ -218,9 +222,8 @@ async function processDelinquencyForFacility(
           const lateFeeSnapshot = await admin.firestore()
             .collection('facilities')
             .doc(facilityId)
-            .collection('tenants')
-            .doc(tenantId)
-            .collection('ledger')
+            .collection('ledgers')
+            .where('tenantId', '==', tenantId)
             .where('type', '==', 'lateFee')
             .where('status', '==', 'posted')
             .where('entryDate', '>=', admin.firestore.Timestamp.fromDate(thisMonth))
@@ -235,9 +238,7 @@ async function processDelinquencyForFacility(
               const ledgerEntryRef = await admin.firestore()
                 .collection('facilities')
                 .doc(facilityId)
-                .collection('tenants')
-                .doc(tenantId)
-                .collection('ledger')
+                .collection('ledgers')
                 .add({
                   type: 'lateFee',
                   amount: lateFee,

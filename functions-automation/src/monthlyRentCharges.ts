@@ -1,3 +1,8 @@
+// Ledger entries live at facilities/{facilityId}/ledgers, tagged with
+// tenantId. This file used facilities/{id}/tenants/{id}/ledger — a different
+// collection at a different depth — so everything it wrote was invisible to the
+// twelve other writers, to the autopay balance query, and to every ledger read
+// in the app. A late fee charged there would never be collected and never shown.
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { writeAuditLog } from './guardrails';
@@ -124,9 +129,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
               const existingEntryRef = admin.firestore()
                 .collection('facilities')
                 .doc(facilityId)
-                .collection('tenants')
-                .doc(tenantId)
-                .collection('ledger')
+                .collection('ledgers')
                 .doc(existingEntryId);
               
               const existingEntryDoc = await existingEntryRef.get();
@@ -147,12 +150,17 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
         }
 
         // Also check ledger entries as fallback (for backward compatibility)
+        //
+        // Must be scoped to this tenant. The collection holds every tenant's
+        // entries, so without the filter this duplicate-charge guard would see
+        // any tenant's rent charge and skip charging everyone after the first.
+        // It also bounds the read, which matters for a facility with thousands
+        // of tenants and years of history.
         const ledgerSnapshot = await admin.firestore()
           .collection('facilities')
           .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .collection('ledger')
+          .collection('ledgers')
+          .where('tenantId', '==', tenantId)
           .where('type', '==', 'rentCharge')
           .where('status', '==', 'posted')
           .get();
@@ -229,9 +237,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           const ledgerEntryRef = admin.firestore()
             .collection('facilities')
             .doc(facilityId)
-            .collection('tenants')
-            .doc(tenantId)
-            .collection('ledger')
+            .collection('ledgers')
             .doc();
 
           const ledgerEntryData = {
@@ -279,9 +285,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
               const ledgerEntryRef = admin.firestore()
                 .collection('facilities')
                 .doc(facilityId)
-                .collection('tenants')
-                .doc(tenantId)
-                .collection('ledger')
+                .collection('ledgers')
                 .doc();
 
               await ledgerEntryRef.set({

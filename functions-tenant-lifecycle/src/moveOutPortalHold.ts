@@ -102,6 +102,24 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         throw new Error('Tenant not found');
       }
 
+      // 3b. Does this tenant still rent anything else?
+      //
+      // Moving out of one unit was unconditionally marking the whole tenant
+      // inactive. A tenant renting two units who vacates one would be
+      // deactivated entirely — and the autopay worker skips inactive tenants,
+      // so rent on the unit they still occupy would silently stop being
+      // collected. The portal offers renting an additional unit, so multi-unit
+      // tenants are an expected case, not an edge one.
+      const otherContractsSnap = await transaction.get(
+        admin.firestore()
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('contracts')
+          .where('tenantId', '==', tenantId)
+          .where('isActive', '==', true),
+      );
+      const stillRentsElsewhere = otherContractsSnap.docs.some((d) => d.id !== contractId);
+
       // 4. Update contract - mark as ended
       transaction.update(contractRef, {
         moveOutStatus: 'completed',
@@ -124,10 +142,11 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         updatedBy: userId,
       });
 
-      // 6. Update tenant - clear unit assignment
+      // 6. Update tenant — only end the tenancy if this was their last unit.
       transaction.update(tenantRef, {
-        unitNumber: '',
-        isActive: false,
+        ...(stillRentsElsewhere
+          ? {}
+          : { unitNumber: '', isActive: false }),
         updatedAt: now,
       });
 
