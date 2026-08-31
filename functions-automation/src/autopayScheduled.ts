@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import { resolveAutopayFailureOutcome } from './autopayFailureHelpers';
+import { autopayIdempotencyKey, hasLedgerEntryForPayment } from './autopayIdempotency';
 import * as admin from 'firebase-admin';
 import { getStripeClient } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
@@ -223,6 +224,17 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
           if (!shouldAttemptCharge(amount, methodData.stripePaymentMethodId)) continue;
 
           const stripe = getStripeClient();
+          // Scoped to the scheduled run, not the moment of the attempt, so a
+          // retry after a crash between charging and bookkeeping reuses the key
+          // and Stripe returns the original charge instead of making a second
+          // one. Without this the tenant is billed twice for one month.
+          const idempotencyKey = autopayIdempotencyKey({
+            facilityId,
+            tenantId,
+            paymentMethodDocId: methodDoc.id,
+            scheduledRun: nextRun,
+            amountCents: Math.round(amount * 100),
+          });
           const paymentIntent = await stripe.paymentIntents.create(
             {
               amount: Math.round(amount * 100),
@@ -259,10 +271,24 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
             {
               // Charge on the facility's connected account, not the platform account.
               stripeAccount: connectAccountId,
+              idempotencyKey,
             },
           );
 
           if (paymentIntent.status !== 'succeeded') continue;
+
+          // A retry gets the original succeeded PaymentIntent back, so writing
+          // unconditionally would credit the tenant twice for a single charge —
+          // turning a prevented double charge into a double credit.
+          if (hasLedgerEntryForPayment(
+            ledgerSnapshot.docs.map((entry) => entry.data()),
+            paymentIntent.id,
+          )) {
+            functions.logger.info(
+              `Autopay payment ${paymentIntent.id} already recorded for tenant ${tenantId}; skipping ledger write`,
+            );
+            continue;
+          }
 
           const paymentEntryRef = admin
             .firestore()

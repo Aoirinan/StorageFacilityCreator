@@ -62,6 +62,15 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
       await handlePaymentIntentSucceeded(paymentIntent);
       break;
     }
+    case 'charge.dispute.closed':
+    case 'charge.dispute.updated': {
+      // Disputes change state after they are opened; without these the record
+      // would be frozen at "created" and an operator could not tell whether
+      // they had won or lost.
+      const dispute = event.data.object as Stripe.Dispute;
+      await handleDisputeCreated(dispute);
+      break;
+    }
     case 'payment_intent.payment_failed': {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
       await handlePaymentIntentFailed(paymentIntent);
@@ -75,7 +84,10 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
     }
     case 'charge.refunded': {
       const charge = event.data.object as Stripe.Charge;
-      await handleChargeRefunded(charge);
+      // Tenant charges live on the facility's connected account, so the
+      // handler needs the account to look anything up.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handleChargeRefunded(charge, connectedAccountId);
       break;
     }
     case 'charge.dispute.created': {
