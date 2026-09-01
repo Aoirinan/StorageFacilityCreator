@@ -311,6 +311,15 @@ const STATS_COALESCE_WINDOW_MS = 15_000;
 /** Bounded so a long burst cannot hold an invocation open until the function times out. */
 const STATS_MAX_DRAIN_PASSES = 3;
 
+/**
+ * Pure claim decision, split out so the window logic is testable without Firestore.
+ * A facility whose last claim has aged out is recomputed immediately; one inside a
+ * live window is left to the claim holder.
+ */
+function shouldClaimStatsRecompute(claimedAtMs: number, nowMs: number): boolean {
+  return nowMs - claimedAtMs >= STATS_COALESCE_WINDOW_MS;
+}
+
 function statsClaimRef(facilityId: string) {
   return getFirestore()
     .collection('facilities')
@@ -327,7 +336,7 @@ async function claimStatsRecompute(facilityId: string): Promise<boolean> {
     const now = Date.now();
     const claimedAt: number = snap.data()?.claimedAt?.toMillis?.() ?? 0;
 
-    if (now - claimedAt < STATS_COALESCE_WINDOW_MS) {
+    if (!shouldClaimStatsRecompute(claimedAt, now)) {
       tx.set(ref, { dirty: true }, { merge: true });
       return false;
     }
@@ -351,22 +360,41 @@ async function consumeStatsDirtyFlag(facilityId: string): Promise<boolean> {
   });
 }
 
+/** Seams for tests; production passes the real Firestore-backed implementations. */
+export interface StatsCoalesceHooks {
+  claim: (facilityId: string) => Promise<boolean>;
+  consumeDirty: (facilityId: string) => Promise<boolean>;
+  recompute: (facilityId: string) => Promise<void>;
+}
+
+const firestoreStatsCoalesceHooks: StatsCoalesceHooks = {
+  claim: claimStatsRecompute,
+  consumeDirty: consumeStatsDirtyFlag,
+  recompute: async (facilityId: string) => {
+    const stats = await computeFacilityStats(facilityId);
+    await persistFacilityStats(facilityId, stats);
+  },
+};
+
 /**
  * Recompute and persist a facility's stats, collapsing concurrent writes into a
  * single pass. Errors are logged rather than thrown: a stats refresh must never
  * fail the tenant or unit write that triggered it.
  */
-async function recomputeFacilityStatsCoalesced(facilityId: string, reason: string): Promise<void> {
+async function recomputeFacilityStatsCoalesced(
+  facilityId: string,
+  reason: string,
+  hooks: StatsCoalesceHooks = firestoreStatsCoalesceHooks,
+): Promise<void> {
   try {
-    if (!(await claimStatsRecompute(facilityId))) {
+    if (!(await hooks.claim(facilityId))) {
       console.log(`⏭️ Stats recompute for ${facilityId} coalesced into an in-flight pass (${reason})`);
       return;
     }
 
     for (let pass = 0; pass < STATS_MAX_DRAIN_PASSES; pass++) {
-      const stats = await computeFacilityStats(facilityId);
-      await persistFacilityStats(facilityId, stats);
-      if (!(await consumeStatsDirtyFlag(facilityId))) break;
+      await hooks.recompute(facilityId);
+      if (!(await hooks.consumeDirty(facilityId))) break;
     }
 
     console.log(`✅ Stats updated for facility ${facilityId} (${reason})`);
@@ -455,3 +483,14 @@ export const updateFacilityStatsManual = functions.https.onCall(async (data, con
     throw new functions.https.HttpsError('internal', 'Failed to update stats');
   }
 });
+
+/**
+ * Coalescing seams for tests. Kept separate from facilityStatsTestUtils, which is
+ * declared above the constants below and would hit the temporal dead zone.
+ */
+export const statsCoalesceTestUtils = {
+  shouldClaimStatsRecompute,
+  recomputeFacilityStatsCoalesced,
+  STATS_COALESCE_WINDOW_MS,
+  STATS_MAX_DRAIN_PASSES,
+};
