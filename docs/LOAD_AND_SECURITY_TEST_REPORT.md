@@ -1,6 +1,7 @@
 # Storage Facility Creator – Comprehensive Load, Security & UX Test Report
 
 **Generated:** 2026-02-27  
+**Updated:** 2026-09-01 — added measured results from the 2026-08-31 production load run (see [Trigger amplification](#measured-trigger-amplification-2026-08-31-production-run))  
 **Simulation engine:** `node scripts/simulate_100_facilities.js [N] --cost`  
 **Scenarios modeled:** 100 concurrent users (baseline) and 500 concurrent users (stress spike)
 
@@ -106,6 +107,40 @@ The system handles **100 concurrent facilities** comfortably on the current arch
 | Monthly rent day writes (spike) | +19,953 | +99,763 |
 | Total document count | ~765,099 | ~3,825,422 |
 | Blaze plan required | Yes | Yes |
+
+### Measured: trigger amplification (2026-08-31 production run)
+
+The projections above model reads from **user sessions only**. They do not account for
+Firestore trigger fan-out. A live load run on 2026-08-31, 05:00–06:00 UTC, exposed the gap.
+
+| Measure | Value |
+|---|---|
+| Tenant documents written | ~30,000 |
+| `onTenantWrite` invocations | 30,005 |
+| `syncPublicFacilityMapInventoryOnTenantWrite` invocations | 30,000 |
+| Firestore reads in that single hour | 5,085,165 |
+| Reads per one tenant write | ~167 |
+| Share of the whole month's reads | 96% |
+| Billed cost | $3.06 |
+
+**Cause.** `onTenantWrite` called `computeFacilityStats()` on every write, and that function
+reads the facility doc, the full `units` collection, and the `tenants` collection twice. So a
+single tenant write costs `1 + units + (2 × tenants)` reads. The `LOADTEST-fac-*` facilities
+were small; a real 500-unit, 500-tenant facility would cost roughly **1,500 reads per single
+tenant edit**.
+
+**Calibration.** This table projects 510,552 reads/day at 100 facilities. The actual run produced
+ten times that in one hour at a comparable facility count, because
+`scripts/simulate_100_facilities.js` has no model for trigger fan-out. Treat the read
+projections above as a floor, not an estimate, until that model is added.
+
+**Why it matters.** The dollar figure is trivial and the test data has since been removed. The
+pattern is not: any bulk write path — `backfillContractComplianceFields`, a data import, a
+migration, or a re-run of this very test — re-triggers it, and the cost scales with facility
+size rather than with the size of the change. Addressed on branch
+`fix/facility-stats-trigger-amplification` by collapsing a burst into one recompute; **not yet
+merged or deployed** as of 2026-09-01.
+
 
 ### Query performance
 
@@ -709,41 +744,42 @@ Firebase Cloud Functions are stateless and horizontally scalable. Google Cloud m
 
 | # | Action | Impact |
 |---|---|---|
-| 1 | **Enable Firestore PITR and daily GCS export** | Data loss prevention |
-| 2 | **Migrate scheduled jobs to Cloud Tasks fan-out** | Prevents timeout at 300+ facilities |
-| 3 | **Add idempotency check for Stripe webhooks** (store processed event IDs) | Prevents duplicate ledger entries |
-| 4 | **Wrap contract signing in a Firestore transaction** | Prevents concurrent signing conflicts |
+| 1 | **Coalesce facility-stats recomputes** (branch `fix/facility-stats-trigger-amplification`) | 30k writes cost 5.0M reads on 2026-08-31; scales with facility size, not change size |
+| 2 | **Enable Firestore PITR and daily GCS export** | Data loss prevention |
+| 3 | **Migrate scheduled jobs to Cloud Tasks fan-out** | Prevents timeout at 300+ facilities |
+| 4 | **Add idempotency check for Stripe webhooks** (store processed event IDs) | Prevents duplicate ledger entries |
+| 5 | **Wrap contract signing in a Firestore transaction** | Prevents concurrent signing conflicts |
 
 ### P1 – High (address within next sprint)
 
 | # | Action | Impact |
 |---|---|---|
-| 5 | **Use `FieldValue.increment` for all stats counter fields** | Prevents concurrent write conflicts on stats docs |
-| 6 | **Add processing lock to prevent concurrent scheduled job runs** | Prevents double-autopay |
-| 7 | **Add access code expiry (15 min) to tenant portal** | Security improvement |
-| 8 | **Enable Firebase App Check** | Prevents API abuse from non-app clients |
-| 9 | **Add retry logic for SendGrid / Twilio failures** | Improves notification reliability |
+| 6 | **Use `FieldValue.increment` for all stats counter fields** | Prevents concurrent write conflicts on stats docs |
+| 7 | **Add processing lock to prevent concurrent scheduled job runs** | Prevents double-autopay |
+| 8 | **Add access code expiry (15 min) to tenant portal** | Security improvement |
+| 9 | **Enable Firebase App Check** | Prevents API abuse from non-app clients |
+| 10 | **Add retry logic for SendGrid / Twilio failures** | Improves notification reliability |
 
 ### P2 – Medium (address before 500-facility scale)
 
 | # | Action | Impact |
 |---|---|---|
-| 10 | **Upgrade SendGrid plan** to match email volume | Prevents quota errors |
-| 11 | **Add Twilio Messaging Service** with multiple numbers | Handles 5,000+ SMS/day throughput |
-| 12 | **Implement client-side inactivity timeout** (30 min) | Session security |
-| 13 | **Add "Sign out all devices" feature** | Account compromise recovery |
-| 14 | **Evaluate DocuSign alternatives** (HelloSign, in-app e-sign) | $1,000–$7,000/month savings |
-| 15 | **Set `minInstances: 1`** for payment and AI callables | Eliminates cold start latency |
+| 11 | **Upgrade SendGrid plan** to match email volume | Prevents quota errors |
+| 12 | **Add Twilio Messaging Service** with multiple numbers | Handles 5,000+ SMS/day throughput |
+| 13 | **Implement client-side inactivity timeout** (30 min) | Session security |
+| 14 | **Add "Sign out all devices" feature** | Account compromise recovery |
+| 15 | **Evaluate DocuSign alternatives** (HelloSign, in-app e-sign) | $1,000–$7,000/month savings |
+| 16 | **Set `minInstances: 1`** for payment and AI callables | Eliminates cold start latency |
 
 ### P3 – Low (nice to have)
 
 | # | Action | Impact |
 |---|---|---|
-| 16 | **Serve HTML renderer on mobile** via user-agent detection | Faster initial load on mobile |
-| 17 | **Add structured error codes** to all callable responses | Better client-side error handling |
-| 18 | **Build Cloud Monitoring dashboard** with alerts | Proactive incident detection |
-| 19 | **Add dead-letter queue** for failed autopay items | Automatic retry for transient failures |
-| 20 | **Instrument custom Firebase Analytics events** | Better product insights |
+| 17 | **Serve HTML renderer on mobile** via user-agent detection | Faster initial load on mobile |
+| 18 | **Add structured error codes** to all callable responses | Better client-side error handling |
+| 19 | **Build Cloud Monitoring dashboard** with alerts | Proactive incident detection |
+| 20 | **Add dead-letter queue** for failed autopay items | Automatic retry for transient failures |
+| 21 | **Instrument custom Firebase Analytics events** | Better product insights |
 
 ---
 
