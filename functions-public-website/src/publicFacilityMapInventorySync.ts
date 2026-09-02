@@ -35,6 +35,63 @@ function statusToPublicStatus(status: string): string {
  * Rebuilds only `publicFacilityMaps.{slug}.units` from live unit docs so online
  * rentals match dashboard occupancy (including Cloud Function move-ins).
  */
+const INVENTORY_PAGE_SIZE = 1000;
+
+/**
+ * The published unit list lives inside one Firestore document, and a document is capped at 1 MiB.
+ * Stop well short of it: the array is not the only field, and a write that overshoots fails
+ * outright, which would leave the public map frozen at whatever it last held.
+ */
+const MAX_PUBLISHED_UNITS_BYTES = 700_000;
+
+/**
+ * Every document in a collection, in pages.
+ *
+ * This replaced `.limit(500)` on tenants and `.limit(400)` on units. Neither had an `orderBy`, so
+ * Firestore fell back to document-id order and the caps took an arbitrary slice rather than a
+ * meaningful one. On units that quietly hid real units from the public map. On tenants it was
+ * worse: `tenantClaimed` is what marks a unit as taken, so a tenant past the cap left their unit
+ * advertised as available, and a stranger could try to rent a unit somebody already lives in.
+ */
+/**
+ * Trim a sorted unit list until it fits in one document, from the end, and say how much went.
+ *
+ * Exported for tests. Pure on purpose: the loop below is the only part of the truncation that can
+ * be got subtly wrong -- overshoot and the write fails, undershoot and it never terminates -- and
+ * it should not need a Firestore to check.
+ */
+export function fitUnitsToDocument(
+  units: Record<string, any>[],
+  maxBytes: number = MAX_PUBLISHED_UNITS_BYTES,
+): { published: Record<string, any>[]; omitted: number } {
+  const bytes = (u: Record<string, any>[]) => Buffer.byteLength(JSON.stringify(u), 'utf8');
+  if (bytes(units) <= maxBytes) return { published: units, omitted: 0 };
+
+  let published = units;
+  // Shrinking by a tenth converges in a handful of steps and, because Math.floor of a length
+  // above 1 is always smaller, cannot stall.
+  while (published.length > 1 && bytes(published) > maxBytes) {
+    published = published.slice(0, Math.floor(published.length * 0.9));
+  }
+  return { published, omitted: units.length - published.length };
+}
+
+export async function readEveryDoc(
+  col: admin.firestore.CollectionReference,
+): Promise<admin.firestore.QueryDocumentSnapshot[]> {
+  const out: admin.firestore.QueryDocumentSnapshot[] = [];
+  let cursor: admin.firestore.QueryDocumentSnapshot | undefined;
+  for (;;) {
+    let q = col.orderBy(admin.firestore.FieldPath.documentId()).limit(INVENTORY_PAGE_SIZE);
+    if (cursor) q = q.startAfter(cursor);
+    const page = await q.get();
+    out.push(...page.docs);
+    if (page.size < INVENTORY_PAGE_SIZE) break;
+    cursor = page.docs[page.docs.length - 1];
+  }
+  return out;
+}
+
 export async function syncPublicFacilityMapInventoryForFacility(facilityId: string): Promise<void> {
   const db = admin.firestore();
   const metaSnap = await db.doc(`facilities/${facilityId}/mapEngine/meta`).get();
@@ -54,19 +111,20 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     ? enabledRaw.map((e: any) => String(e).trim()).filter((e: string) => e.length > 0)
     : [];
 
-  const tenantsSnap = await db.collection(`facilities/${facilityId}/tenants`).limit(500).get();
+  // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
+  const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
   const tenantClaimed = new Set<string>();
-  for (const tdoc of tenantsSnap.docs) {
+  for (const tdoc of tenantDocs) {
     const td = tdoc.data();
     if (td.isActive === false) continue;
     const n = String(td.unitNumber || '').trim().toLowerCase();
     if (n.length > 0) tenantClaimed.add(n);
   }
 
-  const unitsSnap = await db.collection(`facilities/${facilityId}/units`).limit(400).get();
+  const unitDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/units`));
   const units: Record<string, any>[] = [];
 
-  for (const doc of unitsSnap.docs) {
+  for (const doc of unitDocs) {
     const d = doc.data();
     if (d.archived === true) continue;
 
@@ -126,8 +184,24 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     }),
   );
 
+  // If the list genuinely will not fit in a document, drop from the end of the *sorted* list and
+  // say so in the document, rather than silently publishing an arbitrary subset the way the old
+  // caps did. Deterministic, visible, and complained about in the logs.
+  const { published, omitted } = fitUnitsToDocument(units);
+  if (omitted > 0) {
+    functions.logger.error('publicFacilityMap unit list does not fit in one document', {
+      facilityId,
+      publicSlug,
+      unitsTotal: units.length,
+      unitsPublished: published.length,
+      unitsOmitted: omitted,
+    });
+  }
+
   await publicRef.update({
-    units,
+    units: published,
+    unitsTotal: units.length,
+    unitsOmitted: omitted,
     inventorySyncedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 }
