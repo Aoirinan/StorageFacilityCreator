@@ -108,6 +108,16 @@ Set back to `Storage Facility Creator` in all eleven files, matching both the co
 `functions/.env.example`, which was correct all along. **`.env` is gitignored, so this fix is local
 only and takes effect on the next deploy** — if you deploy from another machine, check there too.
 
+**Quote any `.env` value containing spaces.** Written unquoted, `account-security` failed to deploy
+with `User code failed to load. Cannot determine backend specification. Timeout after 10000`, which
+names neither the file nor the variable and sends you looking at slow imports instead. The same
+unquoted value deployed fine in `admin` and `public-website`, so this does not fail consistently —
+which makes it worse to diagnose, not better. `SENDGRID_FROM_NAME="Storage Facility Creator"`
+deploys everywhere and the parser strips the quotes.
+
+Deployed 2026-09-02: `admin` (password reset, admin bulk) and `account-security` (OTP) both carry
+the corrected name. The other nine codebases still hold the old value until their next deploy.
+
 ### SendGrid keys (TWO keys, two systems)
 - **`Firebase Functions - Production v2`** → used by Cloud Functions, stored in GCP `SENDGRID_API_KEY` secret
 - **`SFC Email Service`** → used by Vercel marketing site, stored in Vercel env var `SENDGRID_API_KEY`
