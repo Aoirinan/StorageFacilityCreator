@@ -29,10 +29,19 @@ class EmailUsageService {
         }
       }
       
-      // If no limit set, check account subscription status
+      // If no limit set, check subscription status. A facility with its own
+      // platform subscription is judged by that; the account-level trial is
+      // a legacy leftover for those owners.
       final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
       if (facilityDoc.exists) {
-        final ownerUid = facilityDoc.data()?['ownerUid'] as String?;
+        final data = facilityDoc.data() ?? {};
+        final perFacilitySub = (data['stripePlatformSubscriptionId'] as String?)?.trim() ?? '';
+        if (perFacilitySub.isNotEmpty) {
+          return emailMonthlyLimitForAccount(
+            isTrialing: data['platformSubscriptionStatus'] == 'trialing',
+          );
+        }
+        final ownerUid = data['ownerUid'] as String?;
         if (ownerUid != null) {
           final account = await FacilityCreatorAccountService.getAccountByOwnerUid(ownerUid);
           
