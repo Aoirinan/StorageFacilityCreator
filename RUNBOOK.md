@@ -183,10 +183,24 @@ the corrected name. The other nine codebases still hold the old value until thei
 - **Marketing (Vercel):** contact API uses `SENDGRID_API_KEY` in that project’s env (`marketing/.env.example`). Rotate there too if the contact form must keep working.
 - **Unsubscribe tokens** are derived from the API key (`getEmailUnsubscribeSecretKey`); rotating the key invalidates old unsubscribe links until you accept that tradeoff or redesign token storage.
 
+## Facility offboarding (automated)
+- **What runs:** `processFacilityOffboarding` (automation codebase), daily 06:00 UTC. Details in `docs/FACILITY_OFFBOARDING.md`.
+- **What you see:** one email to the super-admin addresses on any night it did something (owner notices sent, facilities offboarded, orphaned Stripe accounts detached, errors). No email means nothing happened; that is normal.
+- **What to do:** nothing, unless the email lists an error. The common one is `STRIPE_CONNECT_CLIENT_ID not configured`, which means the secret is missing from the automation deploy; the job leaves that facility untouched and retries the next night.
+- **Run it now:** `gcloud scheduler jobs run firebase-schedule-processFacilityOffboarding-us-central1 --location us-central1`, then read `gcloud functions logs read processFacilityOffboarding --region us-central1 --limit 40`.
+- **Owner asks to come back inside the 30 days:** they re-subscribe in the app; the facility drops out of the candidate set on its own. After the 30 days the tenant details are gone and a new subscription starts fresh.
+
+## Checking whether a leaked key is still live
+Before rotating anything, ask the provider. For Stripe:
+```
+curl -s -u "sk_live_...:" https://api.stripe.com/v1/balance
+```
+`Expired API Key provided` or `Invalid API Key provided` means it is already dead and only file cleanup remains. For SendGrid, `GET https://api.sendgrid.com/v3/scopes` with the key as a bearer token; 401 means dead. Never paste the key into a chat or a log; read it from the file into a shell variable.
+
 ## Known Issues / Tech Debt
 - VPC connector minInstances=2 could potentially be reduced to 1 to save ~$2/mo (untested under QuickBooks load)
 - No Terraform/IaC for cloud resources; all changes via console/gcloud
 - Network Intelligence Center cannot be disabled via gcloud; requires support ticket when credit expires
 
 ## Last Updated
-April 30, 2026 — SendGrid rotation notes + aligned `setup_secrets.ps1` with `defineSecret` / `defineString` in `functions/src/index.ts`
+September 14, 2026 — facility offboarding automation + leaked-key liveness check
