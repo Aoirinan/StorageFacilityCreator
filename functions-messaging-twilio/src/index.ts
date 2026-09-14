@@ -21,6 +21,9 @@ export { sendSMS } from './twilioCallables';
 // Hourly sweep so a carrier rejection reaches the product without an operator
 // happening to press "refresh" in the texting UI.
 export { pollA2PRegistrationStatus } from './a2pStatusPoll';
+// Six-hourly probe of account status and balance, so a suspension or a dead
+// card reaches the super admins instead of silently failing every send.
+export { checkTwilioAccountHealthScheduled } from './twilioAccountHealth';
 export {
   getTextingOnboardingStatus,
   saveTextingBusinessInfo,

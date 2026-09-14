@@ -83,6 +83,25 @@ pressing it.
    and caused the suspension, was deleted the same day. There is no backup
    payment method; if the 9200 card ever fails the account suspends again.
 
+## Account health monitor (added 2026-09-13)
+
+`checkTwilioAccountHealthScheduled` in
+`functions-messaging-twilio/src/twilioAccountHealth.ts` runs every six hours.
+It fetches the account status and balance from Twilio, writes them to
+`platform/twilioAccountHealth`, and emails the super admins (the list in
+`functions-shared/src/auth/superAdmin.ts`) when the status is not `active`,
+the API cannot be reached (bad or rotated auth token), or the balance is
+below `TWILIO_LOW_BALANCE_ALERT_USD` (default 10). Unchanged alerts repeat
+once a day; a recovery email goes out when the account is healthy again.
+Twilio's own low-balance email is also on (threshold $5, account owners);
+this exists because that one was missed.
+
+To run it by hand after a deploy:
+
+```
+gcloud scheduler jobs run firebase-schedule-checkTwilioAccountHealthScheduled-us-central1 --location us-central1 --project storage-facility-creator
+```
+
 ## What is left to do
 
 1. Send one real text from a facility to a known phone to prove the path end
