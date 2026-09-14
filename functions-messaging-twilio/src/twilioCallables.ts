@@ -727,10 +727,17 @@ export const sendSMS = functions.runWith({
       facilityId,
     });
 
-    // Prepare status message based on Twilio response status
+    // Prepare status message based on Twilio response status.
+    // "queued" is Twilio's normal first status; only warn about A2P when the
+    // message went out on a facility's own number whose campaign is not yet
+    // approved. Sends from the shared, carrier-verified toll-free number
+    // deliver normally, so do not scare the operator with a campaign notice.
+    const sentFromPlatformNumber = resolvedFromNumber === twilioPhoneNumber;
     let statusMessage: string | undefined;
     if (messageStatus === 'queued') {
-      statusMessage = 'Message accepted and queued. It will be delivered once your A2P 10DLC campaign is approved (typically 1-7 business days). Check Twilio Console for campaign status.';
+      statusMessage = sentFromPlatformNumber
+        ? 'Message accepted and queued for delivery.'
+        : 'Message accepted and queued. It will be delivered once this facility\'s A2P 10DLC campaign is approved (typically 1-7 business days). Check Twilio Console for campaign status.';
     } else if (messageStatus === 'sent') {
       statusMessage = 'Message sent to carrier. Delivery confirmation pending.';
     } else if (messageStatus === 'delivered') {
