@@ -64,6 +64,19 @@ export {
 } from './stripe/client';
 export { subPeriodEnd, subPeriodStart, invoiceSubscriptionId } from './stripe/invoiceHelpers';
 export { parseWebhookSecrets, verifyWithAnySecret } from './stripe/webhookSecrets';
+export {
+  OFFBOARDING_GRACE_DAYS,
+  REDACTED_TENANT_NAME,
+  buildFacilityDisconnectUpdate,
+  buildTenantPiiRedaction,
+  deauthorizeConnectedAccount,
+  isNotConnectedStripeError,
+  isOffboardingDue,
+  isOrphanedConnectedAccount,
+  offboardingDueAt,
+  selectFacilitiesForOffboarding,
+} from './stripe/connectOffboarding';
+export type { FacilityDisconnectReason, OffboardingCandidate, OffboardingSelection } from './stripe/connectOffboarding';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 

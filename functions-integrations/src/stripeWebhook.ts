@@ -8,6 +8,7 @@ import {
   STRIPE_WEBHOOK_SECRETS,
 } from './secrets';
 import { isStripeEventProcessed, markStripeEventProcessed } from './stripeWebhookIdempotency';
+import { handleConnectAccountDeauthorized } from './stripeFacilityConnectOffboarding';
 import {
   handleChargeRefunded,
   handleDisputeCreated,
@@ -55,6 +56,12 @@ async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
       await handleConnectAccountUpdated(account);
+      break;
+    }
+    case 'account.application.deauthorized': {
+      // The facility owner revoked the platform from their own Stripe
+      // dashboard; the account id rides on event.account, not on the object.
+      await handleConnectAccountDeauthorized(event);
       break;
     }
     case 'payment_intent.succeeded': {

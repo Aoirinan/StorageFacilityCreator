@@ -39,3 +39,4 @@ export { autoProtectMoveIn, autoProtectAudit, checkInsuranceCompliance } from '.
 export { processPaymentReminders } from './paymentRemindersScheduled';
 
 export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';
+export { processFacilityOffboarding } from './facilityOffboardingScheduled';

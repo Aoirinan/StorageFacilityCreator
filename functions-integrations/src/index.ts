@@ -61,3 +61,4 @@ export {
 export * from './stripeFacilityCallables';
 
 export { autoSyncInvoiceToQuickBooks, autoSyncPaymentToQuickBooks } from './quickbooksFirestoreTriggers';
+export { onFacilityDeletedDisconnectStripe } from './stripeFacilityConnectOffboarding';

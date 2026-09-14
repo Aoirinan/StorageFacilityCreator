@@ -48,6 +48,8 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
   if (facilityId && !tenantId) {
     await admin.firestore().collection('facilities').doc(facilityId).update({
       platformSubscriptionStatus: 'cancelled',
+      // Starts the offboarding grace period (see processFacilityOffboarding).
+      platformSubscriptionCancelledAt: admin.firestore.FieldValue.serverTimestamp(),
       stripePlatformSubscriptionId: admin.firestore.FieldValue.delete(),
       platformSubscriptionCurrentPeriodEnd: admin.firestore.FieldValue.delete(),
       platformSubscriptionCancelAtPeriodEnd: false,
