@@ -63,8 +63,10 @@ export {
 } from './email/customerOutboundGate';
 export type { OutboundGateConfig } from './email/customerOutboundGate';
 export {
+  buildPortalAccessCodeReminderEmail,
   buildTenantPortalInviteEmail,
   generatePortalAccessCode,
+  maskEmail,
   PORTAL_ACCESS_CODE_ALPHABET,
   PORTAL_ACCESS_CODE_LENGTH,
 } from './portal/portalInviteEmail';

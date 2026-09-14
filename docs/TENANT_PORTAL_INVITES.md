@@ -29,3 +29,18 @@ appears only when the facility's Stripe account can take cards.
 ## Authorization
 Caller must be the facility owner or a manager (`getFacilityDataForUserOrThrow`),
 with App Check enforced.
+
+## "Forgot your access code?"
+
+On the portal login (which every public facility site links to) a tenant can
+enter the email or phone number on file. `requestPortalAccessCodeReminder`
+(functions-tenant-lifecycle) is unauthenticated and behaves like a password
+reset: same reply whether or not anything matched, rate-limited per identifier
+and IP with the portal login limiter (misses count as failed logins), and the
+code goes only to the email already on the tenant record, never to the address
+typed in. A code is minted if the record has none. Public sites also carry a
+footer link "Forgot your portal access code?" that opens the dialog directly
+(`?forgot=1` before the hash route).
+
+Delivery is email only until Twilio texting is live; the phone lookup is in
+place so adding an SMS there is one call.

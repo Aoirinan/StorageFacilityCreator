@@ -728,6 +728,17 @@ function toHtml(payload: {
       ? `<a class="footer-link" href="${escapeHtml(reviewHref)}" rel="noopener noreferrer">Leave us a review</a>`
       : '';
 
+  // Tenants who lost their portal code land straight in the recovery dialog
+  // (?forgot=1 goes before the hash route so the app can read it).
+  const portalHref = safeHttpUrl(payload.tenantPortalUrl);
+  const forgotCodeHref = portalHref.includes('/#/')
+    ? portalHref.replace('/#/', '/?forgot=1#/')
+    : portalHref;
+  const forgotCodeFooter =
+    forgotCodeHref.length > 0
+      ? `<a class="footer-link" href="${escapeHtml(forgotCodeHref)}" rel="noopener noreferrer">Forgot your portal access code?</a>`
+      : '';
+
   const socialLinks = payload.socialLinks || {};
   const socialLinkItems = [
     { key: 'facebook', href: safeHttpUrl(String(socialLinks.facebook || '')), icon: 'facebook' },
@@ -1192,6 +1203,7 @@ function toHtml(payload: {
       <div class="fine" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         ${socialLinksHtml}
         ${reviewFooter}
+        ${forgotCodeFooter}
       </div>
     </div>
   </footer>

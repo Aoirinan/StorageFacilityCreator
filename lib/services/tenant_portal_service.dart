@@ -9,6 +9,27 @@ class TenantPortalService {
 
   static final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
+  /// "Forgot your access code?" on the portal login. Takes an email or phone;
+  /// the code goes to the email already on file. Returns the message to show
+  /// (deliberately the same whether or not anything matched).
+  static Future<String> requestAccessCodeReminder(String identifier) async {
+    final callable = _functions.httpsCallable('requestPortalAccessCodeReminder');
+    try {
+      final result = await callable.call(<String, dynamic>{'identifier': identifier.trim()});
+      final data = Map<String, dynamic>.from(result.data as Map);
+      final delivered = (data['deliveredTo'] as String?)?.trim();
+      final message = (data['message'] as String?) ?? 'If we found a match, we sent your code to the email on file.';
+      return delivered != null && delivered.isNotEmpty ? '$message Sent to $delivered.' : message;
+    } on FirebaseFunctionsException catch (error) {
+      throw TenantPortalException(
+        message: error.message ?? 'Unable to send your access code right now.',
+        code: error.code,
+      );
+    } catch (error) {
+      throw TenantPortalException(message: error.toString(), code: 'unknown');
+    }
+  }
+
   /// Operator side: email tenants their portal link and access code. Enables
   /// the portal and mints a code where one is missing. Pass [tenantIds] for a
   /// selection, or [allActive] for every active tenant of the facility.

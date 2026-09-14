@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -33,6 +34,7 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       HomeButtonService.instance.hide();
       _resumeAfterStripeRedirect();
+      if (_forgotRequestedByUrl()) _showForgotCodeDialog();
     });
   }
 
@@ -135,6 +137,70 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
     }
   }
 
+  /// Public facility sites link here with ?forgot=1 so the tenant lands
+  /// straight in the recovery dialog instead of hunting for the link.
+  bool _forgotRequestedByUrl() {
+    if (!kIsWeb) return false;
+    return Uri.base.queryParameters['forgot'] == '1';
+  }
+
+  Future<void> _showForgotCodeDialog() async {
+    final controller = TextEditingController(text: _emailController.text.trim());
+    final identifier = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Forgot your access code?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter the email or phone number your facility has on file. '
+              'We will send your access code to the email on your account.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(labelText: 'Email or phone number'),
+              onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Send my code'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (identifier == null || identifier.isEmpty || !mounted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final message = await TenantPortalService.requestAccessCodeReminder(identifier);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 8),
+      ));
+    } on TenantPortalException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(error.message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   static String? _validateAccessCode(String? value) {
     if (value == null || value.trim().isEmpty) {
       return 'Enter the access code from your facility';
@@ -154,6 +220,13 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
         spacing: 8,
         runSpacing: 4,
         children: [
+          AuthSecondaryLink(
+            icon: Icons.help_outline_rounded,
+            label: 'Forgot your access code?',
+            onPressed: () {
+              if (!_isLoading) _showForgotCodeDialog();
+            },
+          ),
           AuthSecondaryLink(
             icon: Icons.login_rounded,
             label: 'Facility manager sign in',

@@ -45,6 +45,57 @@ function firstName(name: string): string {
   return trimmed ? trimmed.split(/\s+/)[0] : '';
 }
 
+/**
+ * Sent when a tenant asks for their code from the portal login page. Same
+ * facts as the invite, framed as "here is what you asked for" and with a
+ * line for the case where they did not ask.
+ */
+export function buildPortalAccessCodeReminderEmail(input: PortalInviteEmailInput): EmailContent {
+  const facility = input.facilityName || 'your storage facility';
+  const hi = firstName(input.tenantName) ? `Hi ${firstName(input.tenantName)},` : 'Hi,';
+  const unit = input.unitNumber ? ` (unit ${input.unitNumber})` : '';
+  const subject = `Your ${facility} portal access code`;
+  const phoneText = input.facilityPhone ? ` or call ${input.facilityPhone}` : '';
+
+  const text = [
+    hi,
+    '',
+    `Here is how to sign in to the ${facility} tenant portal${unit}:`,
+    '',
+    `Portal: ${input.portalUrl}`,
+    `Email: ${input.email}`,
+    `Access code: ${input.accessCode}`,
+    '',
+    'If you did not ask for this, you can ignore it. Your code has not changed.',
+    '',
+    `Questions? Reply to this email${phoneText}.`,
+    '',
+    facility,
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color:#222;">
+      <p>${escapeHtml(hi)}</p>
+      <p>Here is how to sign in to the <strong>${escapeHtml(facility)}</strong> tenant portal${escapeHtml(unit)}:</p>
+      <div style="background:#f5f7fb; border-radius:8px; padding:16px 20px; margin:16px 0;">
+        <p style="margin:0 0 8px;"><strong>Portal:</strong> <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>
+        <p style="margin:0 0 8px;"><strong>Email:</strong> ${escapeHtml(input.email)}</p>
+        <p style="margin:0;"><strong>Access code:</strong> <span style="font-family:monospace; font-size:18px; letter-spacing:2px;">${escapeHtml(input.accessCode)}</span></p>
+      </div>
+      <p>If you did not ask for this, you can ignore it. Your code has not changed.</p>
+      <p>Questions? Reply to this email${escapeHtml(phoneText)}.</p>
+      <p>${escapeHtml(facility)}</p>
+    </div>`;
+  return { subject, html, text };
+}
+
+/** Show enough of an address to recognise it, not enough to harvest it: r***@outlook.com */
+export function maskEmail(email: string): string {
+  const [user, domain] = email.trim().split('@');
+  if (!user || !domain) return '';
+  return `${user[0]}***@${domain}`;
+}
+
 export function buildTenantPortalInviteEmail(input: PortalInviteEmailInput): EmailContent {
   const facility = input.facilityName || 'your storage facility';
   const hi = firstName(input.tenantName) ? `Hi ${firstName(input.tenantName)},` : 'Hi,';
