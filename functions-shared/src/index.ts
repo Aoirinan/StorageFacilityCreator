@@ -71,7 +71,7 @@ export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';
 export type { HostingConfig } from './hosting/hostingConfigRegistry';
 export { getTwilioClient, isTwilioDryRunEnabled } from './twilio/client';
-export { verifyTwilioWebhookSignature } from './twilio/webhooks';
+export { verifyTwilioWebhookSignature, twilioWebhookUrl } from './twilio/webhooks';
 export type { A2PStatus } from './twilio/textingOnboardingHelpers';
 export {
   buildA2PRejectionReason,
