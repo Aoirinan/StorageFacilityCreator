@@ -190,6 +190,7 @@ the corrected name. The other nine codebases still hold the old value until thei
 - **What runs:** `processFacilityOffboarding` (automation codebase), daily 06:00 UTC. Details in `docs/FACILITY_OFFBOARDING.md`.
 - **What you see:** one email to the super-admin addresses on any night it did something (owner notices sent, facilities offboarded, orphaned Stripe accounts detached, errors). No email means nothing happened; that is normal.
 - **What to do:** nothing, unless the email lists an error. The common one is `STRIPE_CONNECT_CLIENT_ID not configured`, which means the secret is missing from the automation deploy; the job leaves that facility untouched and retries the next night.
+- **Owner emails are OFF until launch:** set `appConfig/offboarding.ownerEmailsEnabled: true` in Firestore when the build is done. Until then the job starts clocks and detaches orphans but sends no owner mail and removes no tenant data; the admin summary lists facilities waiting on the switch.
 - **Run it now:** `gcloud scheduler jobs run firebase-schedule-processFacilityOffboarding-us-central1 --location us-central1`, then read `gcloud functions logs read processFacilityOffboarding --region us-central1 --limit 40`.
 - **Owner asks to come back inside the 30 days:** they re-subscribe in the app; the facility drops out of the candidate set on its own. After the 30 days the tenant details are gone and a new subscription starts fresh.
 

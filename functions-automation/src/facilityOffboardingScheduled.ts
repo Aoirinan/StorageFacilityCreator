@@ -32,6 +32,25 @@ import {
 const TENANT_SUBCOLLECTIONS = ['tenants', 'oldTenants'] as const;
 const MAX_CONNECTED_ACCOUNTS_PER_SWEEP = 1000;
 
+/**
+ * Pre-launch rule: no email or text reaches a customer until the build is
+ * done. Owner-facing offboarding mail is therefore off unless
+ * appConfig/offboarding.ownerEmailsEnabled is true. While it is off, the
+ * removal step is paused too: a facility must never lose its tenant data
+ * without having been told first. The super-admin summary is unaffected.
+ */
+async function ownerEmailsEnabled(): Promise<boolean> {
+  try {
+    const doc = await admin.firestore().collection('appConfig').doc('offboarding').get();
+    return doc.exists && doc.get('ownerEmailsEnabled') === true;
+  } catch (error) {
+    functions.logger.warn('Could not read appConfig/offboarding; treating owner emails as off', {
+      error: errorMessage(error),
+    });
+    return false;
+  }
+}
+
 function toDate(value: unknown): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -305,21 +324,32 @@ export const processFacilityOffboarding = functions
       });
     }
 
-    for (const facilityId of [...selection.needsClockStart, ...selection.waiting]) {
-      try {
-        await sendOffboardingNoticeIfNeeded(facilityId, now, summary);
-      } catch (error) {
-        summary.errors.push({ where: `notice ${facilityId}`, message: errorMessage(error) });
-        functions.logger.error('Offboarding notice failed', { facilityId, error: errorMessage(error) });
-      }
+    const customerMailAllowed = await ownerEmailsEnabled();
+    if (!customerMailAllowed) {
+      functions.logger.info('Owner emails are off (appConfig/offboarding.ownerEmailsEnabled); notices and removals paused', {
+        waiting: selection.waiting.length + selection.needsClockStart.length,
+        due: selection.due.length,
+      });
+      summary.pausedDue = [...selection.due];
     }
 
-    for (const facilityId of selection.due) {
-      try {
-        await offboardCancelledFacility(facilityId, summary);
-      } catch (error) {
-        summary.errors.push({ where: `offboard ${facilityId}`, message: errorMessage(error) });
-        functions.logger.error('Facility offboarding failed', { facilityId, error: errorMessage(error) });
+    if (customerMailAllowed) {
+      for (const facilityId of [...selection.needsClockStart, ...selection.waiting]) {
+        try {
+          await sendOffboardingNoticeIfNeeded(facilityId, now, summary);
+        } catch (error) {
+          summary.errors.push({ where: `notice ${facilityId}`, message: errorMessage(error) });
+          functions.logger.error('Offboarding notice failed', { facilityId, error: errorMessage(error) });
+        }
+      }
+
+      for (const facilityId of selection.due) {
+        try {
+          await offboardCancelledFacility(facilityId, summary);
+        } catch (error) {
+          summary.errors.push({ where: `offboard ${facilityId}`, message: errorMessage(error) });
+          functions.logger.error('Facility offboarding failed', { facilityId, error: errorMessage(error) });
+        }
       }
     }
 

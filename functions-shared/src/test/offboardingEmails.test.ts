@@ -36,6 +36,23 @@ test('offboarded email states the removal is done and irreversible', () => {
   assert.match(m.text, /cannot be restored/);
 });
 
+test('a paused facility counts as activity and is named in the summary', () => {
+  const s = {
+    runAt: new Date('2026-09-15T06:00:00Z'),
+    noticesSent: [],
+    offboarded: [],
+    orphansDetached: [],
+    waiting: 0,
+    errors: [],
+    pausedDue: ['f9'],
+  };
+  assert.equal(sweepSummaryHasActivity(s), true);
+  const m = buildOffboardingAdminSummaryEmail(s);
+  assert.equal(m.subject, '[SFC] Facility offboarding: 1 paused (owner emails off)');
+  assert.match(m.text, /NOT offboarded, because owner emails are switched off/);
+  assert.match(m.text, /f9/);
+});
+
 test('admin summary is only sent when something happened, and lists it', () => {
   const quiet = {
     runAt: new Date('2026-09-15T06:00:00Z'),

@@ -117,11 +117,23 @@ export interface OffboardingSweepSummary {
   orphansDetached: Array<{ accountId: string; facilityId: string }>;
   waiting: number;
   errors: Array<{ where: string; message: string }>;
+  /**
+   * Facilities past their grace period that were NOT offboarded because owner
+   * emails are switched off (pre-launch). Nothing customer-facing happens
+   * silently: no notice means no removal either.
+   */
+  pausedDue?: string[];
 }
 
 /** Whether the nightly summary is worth sending at all. */
 export function sweepSummaryHasActivity(s: OffboardingSweepSummary): boolean {
-  return s.noticesSent.length > 0 || s.offboarded.length > 0 || s.orphansDetached.length > 0 || s.errors.length > 0;
+  return (
+    s.noticesSent.length > 0 ||
+    s.offboarded.length > 0 ||
+    s.orphansDetached.length > 0 ||
+    s.errors.length > 0 ||
+    (s.pausedDue?.length ?? 0) > 0
+  );
 }
 
 function plural(n: number, word: string): string {
@@ -135,6 +147,7 @@ export function buildOffboardingAdminSummaryEmail(s: OffboardingSweepSummary): E
   if (s.noticesSent.length) parts.push(`${plural(s.noticesSent.length, 'notice')} sent`);
   if (s.orphansDetached.length) parts.push(`${plural(s.orphansDetached.length, 'orphan')} detached`);
   if (s.errors.length) parts.push(plural(s.errors.length, 'error'));
+  if (s.pausedDue?.length) parts.push(`${s.pausedDue.length} paused (owner emails off)`);
   const subject = `[SFC] Facility offboarding: ${parts.join(', ') || 'no activity'}`;
 
   const lines: string[] = [`Facility offboarding sweep, ${formatDate(s.runAt)} (UTC)`, ''];
@@ -178,6 +191,15 @@ export function buildOffboardingAdminSummaryEmail(s: OffboardingSweepSummary): E
       `<h3 style="color:#b00020;">Errors</h3><ul>${s.errors
         .map((e) => `<li>${escapeHtml(e.where)}: ${escapeHtml(e.message)}</li>`)
         .join('')}</ul>`,
+    );
+  }
+  if (s.pausedDue?.length) {
+    lines.push(
+      `Past grace period but NOT offboarded, because owner emails are switched off (appConfig/offboarding.ownerEmailsEnabled): ${s.pausedDue.join(', ')}`,
+      '',
+    );
+    htmlSections.push(
+      `<h3>Paused</h3><p>Past grace period but not offboarded, because owner emails are switched off (<code>appConfig/offboarding.ownerEmailsEnabled</code>): ${escapeHtml(s.pausedDue.join(', '))}</p>`,
     );
   }
   lines.push(`Still in grace period: ${s.waiting}`);
