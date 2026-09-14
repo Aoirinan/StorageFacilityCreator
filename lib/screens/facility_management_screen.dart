@@ -9,6 +9,8 @@ import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/email_usage_card.dart';
 import '../services/facility_creator_account_service.dart';
+import '../services/facility_creation_policy.dart';
+import '../services/facility_service.dart';
 import '../services/facility_stats_service.dart';
 import '../services/superadmin_service.dart';
 import '../providers/dashboard_provider.dart';
@@ -705,16 +707,25 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
       final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
       final currentFacilityCount = account.facilityIds.length;
 
-      // Check if trial user trying to create 2nd facility
-      if (currentFacilityCount >= 1 && account.hasTrial) {
-        _showTrialLimitDialog(context);
-        return;
-      }
+      // Per-facility billing: each facility subscribes itself after creation,
+      // so the account-level trial/status must not block adding another.
+      // Same rule as FacilityService.createFacility.
+      final existing = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
+      final perFacilityBilling =
+          usesPerFacilityBilling(existing.map((f) => f.stripePlatformSubscriptionId));
 
-      // Check if non-trial user without subscription trying to add facilities
-      if (currentFacilityCount >= 1 && !account.hasActiveSubscription) {
-        _showSubscriptionRequiredDialog(context, currentFacilityCount);
-        return;
+      if (!perFacilityBilling) {
+        // Check if trial user trying to create 2nd facility
+        if (currentFacilityCount >= 1 && account.hasTrial) {
+          _showTrialLimitDialog(context);
+          return;
+        }
+
+        // Check if non-trial user without subscription trying to add facilities
+        if (currentFacilityCount >= 1 && !account.hasActiveSubscription) {
+          _showSubscriptionRequiredDialog(context, currentFacilityCount);
+          return;
+        }
       }
 
       // Allow navigation to facility creation
