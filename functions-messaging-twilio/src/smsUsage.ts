@@ -94,15 +94,20 @@ export async function checkAndIncrementSMSUsage(
     };
 
     let accountUsage = { count: 0, limit: SMS_LIMIT_PER_ACCOUNT };
+    // Held so the write phase can reuse the read below. Firestore forbids any
+    // read after the first write in a transaction, so the account doc must be
+    // read here, before the set() calls further down, not re-read there.
+    let accountUsageRef: FirebaseFirestore.DocumentReference | null = null;
+    let accountData: FirebaseFirestore.DocumentData = {};
     if (accountId) {
-      const accountUsageRef = admin.firestore()
+      accountUsageRef = admin.firestore()
         .collection('facilityCreatorAccounts')
         .doc(accountId)
         .collection('smsUsage')
         .doc(monthKey);
 
       const accountUsageDoc = await transaction.get(accountUsageRef);
-      const accountData = accountUsageDoc.exists ? accountUsageDoc.data() : {
+      accountData = accountUsageDoc.exists ? (accountUsageDoc.data() || {}) : {
         smsMonthlyCount: 0,
         smsMonthlyLimit: SMS_LIMIT_PER_ACCOUNT,
         smsMonth: monthKey,
@@ -165,20 +170,11 @@ export async function checkAndIncrementSMSUsage(
         }, { merge: true });
       }
 
-      if (accountId && !accountExceeded) {
-        const accountUsageRef = admin.firestore()
-          .collection('facilityCreatorAccounts')
-          .doc(accountId)
-          .collection('smsUsage')
-          .doc(monthKey);
-        const existingAccountDoc = await transaction.get(accountUsageRef);
-        const existingAccountData = existingAccountDoc.exists ? existingAccountDoc.data() : {
-          smsMonthlyLimit: SMS_LIMIT_PER_ACCOUNT,
-          smsMonth: monthKey,
-          lastReset: admin.firestore.FieldValue.serverTimestamp(),
-        };
+      if (accountId && accountUsageRef && !accountExceeded) {
+        // Reuse accountData read above; a read here would come after the
+        // tenant/facility writes and Firestore rejects that.
         transaction.set(accountUsageRef, {
-          ...existingAccountData,
+          ...accountData,
           smsMonthlyCount: accountUsage.count,
           smsMonth: monthKey,
           lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
