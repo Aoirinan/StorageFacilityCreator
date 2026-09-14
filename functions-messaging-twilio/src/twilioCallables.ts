@@ -129,11 +129,15 @@ export const sendSMS = functions.runWith({
     const textingOnboardingEnabled = textingOnboardingFlag && facilityData.textingOnboardingEnabled === true;
     const facilityA2PStatus = ((facilityData.a2pStatus as string) || 'draft').toLowerCase();
     const textingPlatformApproved = facilityData.textingPlatformApproved === true;
-    if (textingOnboardingEnabled && facilityA2PStatus !== 'approved' && !forceSend) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'Texting setup is not approved yet. SMS sending is blocked until A2P 10DLC campaign approval.',
-      );
+    // A facility whose own 10DLC campaign is not approved yet does not lose
+    // texting: it sends from the platform's verified toll-free number until
+    // its number clears (see resolvedFromNumber below). Blocking here left
+    // Keepsake unable to text for months while its campaign sat in draft.
+    if (textingOnboardingEnabled && facilityA2PStatus !== 'approved') {
+      functions.logger.info('[sendSMS] facility number not approved; sending from platform number', {
+        facilityId,
+        a2pStatus: facilityA2PStatus,
+      });
     }
     if (textingOnboardingEnabled && facilityA2PStatus === 'approved' && !textingPlatformApproved && !forceSend) {
       throw new functions.https.HttpsError(
