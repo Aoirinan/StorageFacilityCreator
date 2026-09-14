@@ -175,3 +175,7 @@ Inbound STOP/START updates these fields automatically.
 - Script: `scripts/texting_onboarding_smoke.ps1`
 - Runs save business info -> provision number -> submit onboarding -> refresh status via callable endpoints using test credentials.
 
+
+## See also
+
+- `docs/TWILIO_SENDER_REGISTRATION.md` — live registration state of every number on the account, why the shared toll-free sender needs Toll-Free Verification (not 10DLC), and prepared form answers.
