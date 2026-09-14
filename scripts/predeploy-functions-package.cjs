@@ -170,6 +170,7 @@ function ensureMessagingTwilioDotenv(root) {
       `TWILIO_ACCOUNT_SID=${twilioSid}`,
       `TWILIO_PHONE_NUMBER=${twilioPhone}`,
       `TWILIO_DRY_RUN=false`,
+      `TWILIO_LOW_BALANCE_ALERT_USD=10`,
       `PUBLIC_APP_URL=${publicAppUrl}`,
       `SFC_LEAD_LINE_NUMBER=${sfcLeadLine}`,
       `SFC_LEAD_SMS_AUTO_REPLY=${sfcLeadReply}`,
