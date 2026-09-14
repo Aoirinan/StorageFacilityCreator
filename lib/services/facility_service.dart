@@ -8,11 +8,14 @@ import 'permission_service.dart';
 import 'facility_creator_account_service.dart';
 import 'superadmin_service.dart';
 import 'debug_logger.dart';
+import 'facility_creation_policy.dart';
 import '../constants/facility_capacity.dart';
 
 void _facilityServiceDebugLog(String message) {
   if (kDebugMode) {
-    _facilityServiceDebugLog(message);
+    // Used to call itself, which overflowed the stack on the first debug
+    // log in any debug build. Release builds never reached it.
+    debugPrint(message);
   }
 }
 
@@ -225,24 +228,38 @@ class FacilityService {
             final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
             final currentFacilityCount = account.facilityIds.length;
 
-            // Check if subscription allows facility creation
-            final canCreate = _canCreateFacility(account, currentFacilityCount);
-            
-            if (!canCreate.allowed) {
-              throw Exception(canCreate.reason ?? 'Subscription required to create facilities');
+            // Per-facility billing: each facility gets its own subscription
+            // right after creation, so the account-level trial and status are
+            // legacy leftovers and must not gate a second facility.
+            List<FacilityModel> existing = const [];
+            try {
+              existing = await getUserFacilities(includeArchived: false, forceRefresh: false);
+            } catch (e) {
+              _facilityServiceDebugLog('⚠️ Could not load facilities for billing-model check: $e');
             }
+            final perFacilityBilling =
+                usesPerFacilityBilling(existing.map((f) => f.stripePlatformSubscriptionId));
 
-            // Check facility count limits
-            if (currentFacilityCount >= 1 && account.hasTrial) {
-              throw Exception(
-                'Trial users can only create 1 facility. Please subscribe to create additional facilities.'
-              );
-            }
+            if (!perFacilityBilling) {
+              // Legacy account-level rules.
+              final canCreate = _canCreateFacility(account, currentFacilityCount);
 
-            if (currentFacilityCount >= 1 && !account.hasActiveSubscription) {
-              throw Exception(
-                'Active subscription required to create additional facilities. Please subscribe to continue.'
-              );
+              if (!canCreate.allowed) {
+                throw Exception(canCreate.reason ?? 'Subscription required to create facilities');
+              }
+
+              // Check facility count limits
+              if (currentFacilityCount >= 1 && account.hasTrial) {
+                throw Exception(
+                  'Trial users can only create 1 facility. Please subscribe to create additional facilities.'
+                );
+              }
+
+              if (currentFacilityCount >= 1 && !account.hasActiveSubscription) {
+                throw Exception(
+                  'Active subscription required to create additional facilities. Please subscribe to continue.'
+                );
+              }
             }
           }
 
