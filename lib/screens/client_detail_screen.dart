@@ -16,6 +16,8 @@ import '../providers/contract_provider.dart' as contractProv;
 import '../services/dnr_service.dart';
 import '../services/audit_service.dart';
 import '../services/tenant_service.dart';
+import '../services/tenant_portal_service.dart';
+import '../utils/error_message_helper.dart';
 import '../services/reminder_service.dart';
 import '../services/gate_access_service.dart';
 import '../models/reminder_model.dart';
@@ -429,6 +431,51 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: AppTheme.error));
     }
     for (final c in controllers) c.dispose();
+  }
+
+  /// Emails this tenant their portal link and access code (minting one if
+  /// missing). Before launch the pre-launch gate holds the email and the
+  /// result says so, which is expected, not a failure.
+  Future<void> _sendPortalInvite(TenantModel tenant) async {
+    final email = tenant.email.trim();
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This tenant has no email on file. Add one first.')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Email portal invite?'),
+        content: Text(
+          '${tenant.name} will get an email at $email with the portal link and their access code'
+          '${tenant.portalAccessCode == null || tenant.portalAccessCode!.trim().isEmpty ? ' (a new code will be created)' : ''}.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      final summary = await TenantPortalService.sendPortalInvites(
+        facilityId: tenant.facilityId,
+        tenantIds: [tenant.id],
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(summary.describe()),
+        backgroundColor: summary.anythingWentWrong ? AppTheme.error : null,
+      ));
+      ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)), backgroundColor: AppTheme.error),
+      );
+    }
   }
 
   Future<void> _editPortal(TenantModel tenant) async {
@@ -1287,6 +1334,15 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.history, label: 'Last Accessed', value: tenant.portalEnabled ? _formatDateTime(tenant.portalLastAccessAt) : 'Not applicable'),
                       if (tenant.portalEnabled)
                         _buildInfoItem(context, icon: Icons.bar_chart_outlined, label: 'Portal Visits', value: tenant.portalVisitCount.toString()),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => _sendPortalInvite(tenant),
+                          icon: const Icon(Icons.forward_to_inbox_outlined, size: 18),
+                          label: Text(tenant.portalEnabled ? 'Email portal invite' : 'Enable portal & email invite'),
+                        ),
+                      ),
                     ],
                   ),
                 ),

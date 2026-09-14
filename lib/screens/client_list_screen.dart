@@ -15,6 +15,7 @@ import '../models/tenant_model.dart';
 import '../models/facility_model.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/tenant_service.dart';
+import '../services/tenant_portal_service.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../constants/app_constants.dart';
@@ -459,6 +460,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               },
                             ),
                             const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: _selectedTenantIds.isEmpty ? null : () => _inviteSelectedTenants(),
+                              icon: const Icon(Icons.forward_to_inbox_outlined),
+                              label: Text('Email invites (${_selectedTenantIds.length})'),
+                            ),
+                            const SizedBox(width: 8),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -900,6 +907,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                     case 'archive':
                       await _archiveTenant(tenant);
                       break;
+                    case 'invite':
+                      await _inviteTenants([tenant]);
+                      break;
                     case 'select':
                       setState(() {
                         _isSelectionMode = true;
@@ -943,6 +953,16 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       ],
                     ),
                   ),
+                  const PopupMenuItem(
+                    value: 'invite',
+                    child: Row(
+                      children: [
+                        Icon(Icons.forward_to_inbox_outlined),
+                        SizedBox(width: 8),
+                        Text('Email portal invite'),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'select',
                     child: Row(
@@ -979,6 +999,73 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
             : () => context.push(AppRoute.tenantDetail, extra: tenant),
       ),
     );
+  }
+
+  /// Bulk form of the portal invite: everyone currently selected.
+  Future<void> _inviteSelectedTenants() async {
+    final tenants = ref.read(filteredTenantsProvider(_selectedFacilityId)).value ?? const <TenantModel>[];
+    final selected = tenants.where((t) => t.id != null && _selectedTenantIds.contains(t.id)).toList();
+    if (selected.isEmpty) return;
+    await _inviteTenants(selected);
+  }
+
+  /// Emails tenants their portal link and access code, minting codes where
+  /// missing. One call per facility. Before launch the pre-launch gate holds
+  /// the emails and the result says so; that is expected, not a failure.
+  Future<void> _inviteTenants(List<TenantModel> tenants) async {
+    final withEmail = tenants.where((t) => t.email.trim().isNotEmpty).toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(tenants.length == 1 ? 'Email portal invite?' : 'Email ${tenants.length} portal invites?'),
+        content: Text(
+          tenants.length == 1
+              ? '${tenants.first.name} will get an email with the portal link and their access code. '
+                  'A code is created if they do not have one.'
+              : '${withEmail.length} of ${tenants.length} selected tenants have an email on file and will get the '
+                  'portal link and their access code. Codes are created where missing.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final byFacility = <String, List<String>>{};
+    for (final t in tenants) {
+      if (t.id == null) continue;
+      byFacility.putIfAbsent(t.facilityId, () => []).add(t.id!);
+    }
+    final lines = <String>[];
+    var anyFailed = false;
+    try {
+      for (final entry in byFacility.entries) {
+        final summary = await TenantPortalService.sendPortalInvites(
+          facilityId: entry.key,
+          tenantIds: entry.value,
+        );
+        lines.add(summary.describe());
+        anyFailed = anyFailed || summary.anythingWentWrong;
+        ref.invalidate(facilityTenantsProvider(entry.key));
+      }
+      if (!mounted) return;
+      setState(() {
+        _isSelectionMode = false;
+        _selectedTenantIds.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(lines.join(' ')),
+        backgroundColor: anyFailed ? AppTheme.error : null,
+        duration: const Duration(seconds: 8),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)), backgroundColor: AppTheme.error),
+      );
+    }
   }
 
   Future<void> _archiveTenant(TenantModel tenant) async {

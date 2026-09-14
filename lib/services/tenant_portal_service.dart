@@ -2,11 +2,39 @@ import 'package:cloud_functions/cloud_functions.dart';
 import '../models/reservation_model.dart';
 import '../models/tenant_model.dart';
 import '../models/tenant_portal_models.dart';
+import 'portal_invite_summary.dart';
 
 class TenantPortalService {
   TenantPortalService._();
 
   static final FirebaseFunctions _functions = FirebaseFunctions.instance;
+
+  /// Operator side: email tenants their portal link and access code. Enables
+  /// the portal and mints a code where one is missing. Pass [tenantIds] for a
+  /// selection, or [allActive] for every active tenant of the facility.
+  /// Before launch the pre-launch gate holds the emails; the summary says so.
+  static Future<PortalInviteSummary> sendPortalInvites({
+    required String facilityId,
+    List<String>? tenantIds,
+    bool allActive = false,
+  }) async {
+    final callable = _functions.httpsCallable('sendTenantPortalInvites');
+    try {
+      final result = await callable.call(<String, dynamic>{
+        'facilityId': facilityId.trim(),
+        if (tenantIds != null && tenantIds.isNotEmpty) 'tenantIds': tenantIds,
+        if (allActive) 'allActive': true,
+      });
+      return PortalInviteSummary.fromMap(Map<String, dynamic>.from(result.data as Map));
+    } on FirebaseFunctionsException catch (error) {
+      throw TenantPortalException(
+        message: error.message ?? 'Unable to send portal invites.',
+        code: error.code,
+      );
+    } catch (error) {
+      throw TenantPortalException(message: error.toString(), code: 'unknown');
+    }
+  }
 
   /// Available units for "Rent another unit" (server-side; portal users cannot read `units` in Firestore).
   static Future<List<TenantPortalAvailableUnit>> listAvailableUnitsForAdditionalRental({

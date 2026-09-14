@@ -46,3 +46,5 @@ export {
 export { computeDocumentHash, mergeSignatureIntoPdf } from './documentSigningCallables';
 
 export { backfillContractComplianceFields } from './backfillContractComplianceCallable';
+
+export { sendTenantPortalInvites } from './portalInvites';

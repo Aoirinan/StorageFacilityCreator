@@ -62,6 +62,13 @@ export {
   DEFAULT_OUTBOUND_GATE,
 } from './email/customerOutboundGate';
 export type { OutboundGateConfig } from './email/customerOutboundGate';
+export {
+  buildTenantPortalInviteEmail,
+  generatePortalAccessCode,
+  PORTAL_ACCESS_CODE_ALPHABET,
+  PORTAL_ACCESS_CODE_LENGTH,
+} from './portal/portalInviteEmail';
+export type { PortalInviteEmailInput } from './portal/portalInviteEmail';
 
 export { registerStripeKeysProvider } from './stripe/keysRegistry';
 export {
