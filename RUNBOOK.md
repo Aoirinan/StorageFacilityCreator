@@ -78,6 +78,9 @@ inside its 2.5s safety-net timeout. Do not set these to 0 to save money.
   A function only moves onto a newer version when it is redeployed, which is why rotation is
   `functions:secrets:set` *followed by a redeploy*, not the set alone.
 
+### Update 2026-09-14
+Every function had moved onto the newest version of every secret, so the 43 older versions were destroyed (script checked bindings first and refused anything bound). Now 17 billed versions, one per secret, ~$1.02/mo. The six secrets read by nothing (see below) were left in place; they cost six cents each and their values are all visible in the provider dashboards.
+
 ### Actual version inventory (2026-09-02)
 17 secrets, **60 billed versions** (36 enabled + 24 disabled — disabled still bills; only
 `DESTROYED` stops the charge) at $0.06/version/month ≈ **$3.60/mo**. Of those, **11 are pinned by
