@@ -165,7 +165,18 @@ export const sendSMS = functions.runWith({
           'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
         );
       }
-      if (textingOnboardingEnabled && tenantData?.smsConsentStatus !== 'opted_in' && !forceSend) {
+      // Consent is recorded two ways: the public move-in form and the inbound
+      // START handler write smsConsentStatus 'opted_in', while the operator
+      // screens (tenant create/edit, contact quick-edit) record the same
+      // consent as an smsOptInDate with smsOptOut false. Both are the tenant
+      // ticking the consent box; honour both, or every tenant a facility
+      // signed up in the office is untextable.
+      const consentRecorded =
+        tenantData?.smsConsentStatus === 'opted_in' ||
+        (tenantData?.smsConsentStatus !== 'opted_out' &&
+          tenantData?.smsOptOut !== true &&
+          Boolean(tenantData?.smsOptInDate));
+      if (textingOnboardingEnabled && !consentRecorded && !forceSend) {
         throw new functions.https.HttpsError(
           'failed-precondition',
           'Tenant SMS consent is required before sending messages.',
