@@ -5,6 +5,7 @@ import {
   formatPhoneNumber,
   processSfcLeadInboundSMSWebhook,
   upsertSfcLeadFromInboundContact,
+  twilioWebhookUrl,
   verifyTwilioWebhookSignature,
 } from '@sfc/functions-shared';
 
@@ -80,6 +81,20 @@ export const handleSfcLeadCall = functions
       if (!verifyTwilioWebhookSignature(req, res, TWILIO_AUTH_TOKEN.value())) {
         return;
       }
+
+      // Whisper leg: Twilio fetches this for the forwarded-to phone after it
+      // answers and before bridging, so the person picking up knows the call
+      // came through the SFC line rather than being a direct call. The caller
+      // hears ringing meanwhile. No lead is logged for this leg.
+      if (String(req.query.whisper || '') === '1') {
+        res.status(200).contentType('text/xml').send(
+          '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">' +
+          'Call forwarded from the Storage Facility Creator eight five five line. Connecting you now.' +
+          '</Say></Response>',
+        );
+        return;
+      }
+
       const from = String(req.body.From || '').trim();
       const to = String(req.body.To || '').trim();
       const callSid = String(req.body.CallSid || '').trim();
@@ -103,8 +118,12 @@ export const handleSfcLeadCall = functions
         hasForwardTarget: Boolean(forwardTo),
       });
 
+      // The whisper URL is this same function with ?whisper=1; Twilio signs
+      // that request with the query string included, which the shared URL
+      // rebuild preserves.
+      const whisperUrl = `${twilioWebhookUrl(req).split('?')[0]}?whisper=1`;
       const xml = forwardTo
-        ? `<?xml version="1.0" encoding="UTF-8"?><Response><Dial answerOnBridge="true"><Number>${escapeXml(forwardTo)}</Number></Dial></Response>`
+        ? `<?xml version="1.0" encoding="UTF-8"?><Response><Dial answerOnBridge="true"><Number url="${escapeXml(whisperUrl)}">${escapeXml(forwardTo)}</Number></Dial></Response>`
         : '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">Thanks for calling Storage Facility Creator. Please text this number and we will follow up shortly.</Say></Response>';
 
       res.status(200).contentType('text/xml').send(xml);
