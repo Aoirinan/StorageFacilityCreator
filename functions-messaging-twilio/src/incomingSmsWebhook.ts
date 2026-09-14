@@ -47,17 +47,14 @@ export const handleIncomingSMS = functions.runWith({
     const messageSid = req.body.MessageSid as string;
     const requestId = crypto.randomUUID();
 
-    if (to && isSfcLeadLineMatch(to)) {
-      await processSfcLeadInboundSMSWebhook({
-        res,
-        from,
-        to,
-        body,
-        messageSid,
-        requestId,
-      });
-      return;
-    }
+    // The shared toll-free number is also the marketing lead line, so a tenant
+    // whose text went out from it will reply to it. Compliance keywords
+    // (STOP/START/HELP) and known-tenant replies must be handled as such
+    // FIRST; only genuinely unknown, non-keyword inbound to the lead line is
+    // treated as a new sales lead further down. Handling the lead line before
+    // the keyword checks (as this used to) meant a customer's STOP was filed
+    // as a lead and never opted them out.
+    const isLeadLine = Boolean(to && isSfcLeadLineMatch(to));
 
     const inboundFacilityId = await findFacilityIdByInboundNumber(to);
     functions.logger.info('Incoming SMS webhook', {
@@ -146,6 +143,13 @@ export const handleIncomingSMS = functions.runWith({
     const tenant = await findTenantByPhoneNumber(normalizedFrom, inboundFacilityId);
 
     if (!tenant) {
+      // Not a compliance keyword and not a known tenant. If it arrived on the
+      // lead line it is a genuine new inbound lead; log it and auto-reply.
+      // Otherwise there is nowhere to file it.
+      if (isLeadLine) {
+        await processSfcLeadInboundSMSWebhook({ res, from, to, body, messageSid, requestId });
+        return;
+      }
       functions.logger.warn(`Incoming SMS from unknown number: ${from}`);
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
