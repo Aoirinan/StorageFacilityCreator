@@ -78,10 +78,10 @@ pressing it.
    sender the body is prefixed with the facility name, e.g. "Keepsake Self
    Storage: Hi Jane, ...". A facility's own registered number gets no prefix
    because the number already identifies it.
-4. **Auto-recharge.** Threshold $10, top-up to $20, primary card ending 9200
-   (added 2026-09-13). The old card ending 3935 is still on file as a second
-   method; it is the one that stopped charging. Consider removing it or
-   making it the backup.
+4. **Auto-recharge.** Threshold $10, top-up to $20, single card ending 9200
+   (added 2026-09-13). The old card ending 3935, which had stopped charging
+   and caused the suspension, was deleted the same day. There is no backup
+   payment method; if the 9200 card ever fails the account suspends again.
 
 ## What is left to do
 
