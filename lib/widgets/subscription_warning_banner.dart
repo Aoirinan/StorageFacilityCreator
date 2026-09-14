@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
+import 'package:sfcapp/services/subscription_banner_logic.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
@@ -56,41 +58,44 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
 
     try {
       final account = await SubscriptionGuardService.getCurrentAccount();
-      
-      // Check if we should show warning based on account status
-      bool shouldShow = false;
-      String? message;
-      bool isCritical = false;
 
+      // Once an account has per-facility subscriptions, the account-level
+      // trial and status are legacy leftovers. Judging by them showed "Your
+      // trial has expired" to an owner whose facility was mid-trial.
+      List<FacilityModel> facilities = const [];
       if (account != null) {
-        // Trial expired - always show
-        if (account.hasTrial && account.isTrialExpired) {
-          shouldShow = true;
-          message = 'Your trial has expired. Please subscribe to continue using the app.';
-          isCritical = true;
-        }
-        // Past due - show if in grace period or expired
-        else if (account.subscriptionStatus == SubscriptionStatus.pastDue) {
-          shouldShow = true;
-          message = 'Your subscription payment is past due. Please renew your subscription to continue.';
-          isCritical = true;
-        }
-        // Cancelled but still in grace period
-        else if (account.subscriptionStatus == SubscriptionStatus.cancelled &&
-                 account.subscriptionCurrentPeriodEnd != null &&
-                 DateTime.now().isBefore(account.subscriptionCurrentPeriodEnd!)) {
-          final endDate = account.subscriptionCurrentPeriodEnd!.toString().split(' ')[0];
-          shouldShow = true;
-          message = 'Your subscription has been cancelled. You have access until $endDate.';
-          isCritical = false;
-        }
-        // No active subscription (unpaid)
-        else if (!account.isSubscriptionActive && !account.hasTrial) {
-          shouldShow = true;
-          message = 'Please subscribe to continue using the app.';
-          isCritical = true;
+        try {
+          final all = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
+          facilities = all
+              .where((f) =>
+                  f.facilityCreatorAccountId == account.accountId || account.facilityIds.contains(f.id))
+              .toList();
+        } catch (e) {
+          if (kDebugMode) print('⚠️ [SubscriptionBanner] Could not load facilities: $e');
         }
       }
+
+      final decision = decideSubscriptionBanner(
+        account: account == null
+            ? null
+            : AccountSubscriptionState(
+                status: account.subscriptionStatus.name,
+                trialEnd: account.subscriptionTrialEnd,
+                currentPeriodEnd: account.subscriptionCurrentPeriodEnd,
+              ),
+        facilities: facilities
+            .map((f) => FacilitySubscriptionState(
+                  name: f.name,
+                  perFacility: (f.stripePlatformSubscriptionId ?? '').isNotEmpty,
+                  status: f.platformSubscriptionStatus,
+                  trialEnd: f.platformSubscriptionTrialEnd,
+                ))
+            .toList(),
+        now: DateTime.now(),
+      );
+      final shouldShow = decision.show;
+      final message = decision.message;
+      final isCritical = decision.critical;
 
       if (kDebugMode) {
         print('🔔 [SubscriptionBanner] shouldShow=$shouldShow, message=$message, account=${account?.accountId}');

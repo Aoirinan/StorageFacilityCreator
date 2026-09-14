@@ -28,15 +28,25 @@ export async function setTenantAutopayArming(
   tenantId: string,
   enable: boolean,
 ): Promise<void> {
-  const methods = await admin
+  const tenantRef = admin
     .firestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('tenants')
-    .doc(tenantId)
+    .doc(tenantId);
+  const methods = await tenantRef
     .collection('paymentMethods')
     .where('isActive', '==', true)
     .get();
+
+  // The staff billing panel's AutoPay switch reads billing/default, a fourth
+  // copy of the same intent. Keep it in step here so the tenant screen's
+  // "Autopay: ON" chip and the panel's switch can never disagree again.
+  const mirrorBillingFlag = () =>
+    tenantRef.collection('billing').doc('default').set(
+      { autopayEnabled: enable, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true },
+    );
 
   if (!enable) {
     for (const doc of methods.docs) {
@@ -47,6 +57,7 @@ export async function setTenantAutopayArming(
         });
       }
     }
+    await mirrorBillingFlag();
     return;
   }
 
@@ -87,4 +98,5 @@ export async function setTenantAutopayArming(
       await doc.ref.update({ autopayEnabled: false });
     }
   }
+  await mirrorBillingFlag();
 }
