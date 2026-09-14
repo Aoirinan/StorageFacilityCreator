@@ -15,6 +15,7 @@ import 'package:sfcapp/providers/tenant_portal_provider.dart';
 import 'package:sfcapp/services/autopay_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/services/tenant_portal_session_store.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/ui/payments/stripe_embedded_payment_dialog.dart';
 import 'package:go_router/go_router.dart';
@@ -1740,6 +1741,13 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
       if (clientSecret == null) throw Exception('No client secret');
       if (!mounted) return;
       final baseUrl = Uri.base.origin;
+      // If the bank forces a 3DS redirect, the app reloads and this session is
+      // gone. Park it so the access screen can resume and record the card.
+      TenantPortalSessionStore.park(
+        lookup: widget.lookup,
+        tenantId: resolvedTenantId,
+        setupIntentId: result['setupIntentId'] as String?,
+      );
       final dialogResult = await showStripeEmbeddedDialog(
         context: context,
         clientSecret: clientSecret,
@@ -1752,6 +1760,8 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
         stripeAccount: connectedAccountId,
       );
       if (!mounted) return;
+      // Confirmed inline, so no redirect happened; the parked copy is not needed.
+      TenantPortalSessionStore.clear();
       if (dialogResult != null && dialogResult.succeeded) {
         // Record the card server-side rather than trusting the
         // setup_intent.succeeded webhook. That webhook fires on the facility's

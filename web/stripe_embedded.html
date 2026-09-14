@@ -119,6 +119,11 @@
           var result = await stripe.confirmSetup({
             elements: elements,
             confirmParams: { return_url: returnUrl },
+            // Cards and Link confirm inline. Without this Stripe always does a
+            // full-page redirect to return_url, which reloads the Flutter app and
+            // drops the tenant's portal session, so a successful save looked like
+            // being logged out. Only methods that truly need it (3DS) redirect now.
+            redirect: 'if_required',
           });
           var error = result && result.error;
           if (error) {
@@ -134,6 +139,11 @@
           var result = await stripe.confirmPayment({
             elements: elements,
             confirmParams: { return_url: returnUrl },
+            // Cards and Link confirm inline. Without this Stripe always does a
+            // full-page redirect to return_url, which reloads the Flutter app and
+            // drops the tenant's portal session, so a successful save looked like
+            // being logged out. Only methods that truly need it (3DS) redirect now.
+            redirect: 'if_required',
           });
           var error = result && result.error;
           if (error) {

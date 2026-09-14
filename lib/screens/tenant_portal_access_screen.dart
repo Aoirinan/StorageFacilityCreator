@@ -7,7 +7,9 @@ import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/auth/widgets/auth_shell.dart';
 import 'package:sfcapp/screens/tenant_portal_screen.dart';
 import 'package:sfcapp/services/home_button_service.dart';
+import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/services/tenant_portal_session_store.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 /// Public tenant entry — uses the same [AuthShell] as facility owner login so the
@@ -30,7 +32,58 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       HomeButtonService.instance.hide();
+      _resumeAfterStripeRedirect();
     });
+  }
+
+  /// Stripe sends the tenant back here after a 3DS redirect with
+  /// `?redirect_status=...&setup_intent=...` on the URL. The portal session
+  /// that was parked before the redirect lets us pick up where they left off
+  /// instead of showing the login form seconds after they typed a card.
+  Future<void> _resumeAfterStripeRedirect() async {
+    final redirect = TenantPortalSessionStore.stripeRedirectParams();
+    if (redirect.isEmpty) return;
+    final parked = TenantPortalSessionStore.takeParked();
+    TenantPortalSessionStore.clearStripeRedirectParams();
+    if (parked == null) return;
+
+    setState(() => _isLoading = true);
+    final succeeded = redirect['redirect_status'] == 'succeeded';
+    final setupIntentId = redirect['setup_intent'] ?? parked.setupIntentId;
+    try {
+      if (succeeded && setupIntentId != null && setupIntentId.isNotEmpty) {
+        try {
+          await StripeService.attachTenantPaymentMethodFromPortal(
+            email: parked.lookup.email,
+            accessCode: parked.lookup.accessCode,
+            tenantId: parked.tenantId,
+            setupIntentId: setupIntentId,
+          );
+        } catch (_) {
+          // The setup_intent.succeeded webhook records it too; both are idempotent.
+        }
+      }
+      final data = await TenantPortalService.fetchPortalData(
+        email: parked.lookup.email,
+        accessCode: parked.lookup.accessCode,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(succeeded ? 'Card saved.' : 'Card was not saved. You can try again below.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: succeeded ? AppTheme.success : AppTheme.error,
+        ),
+      );
+      await context.push(
+        AppRoute.legacyScreen,
+        extra: TenantPortalScreen(lookup: parked.lookup, initialData: data),
+      );
+    } catch (_) {
+      // Fall through to the normal login form; the card may still have saved.
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
