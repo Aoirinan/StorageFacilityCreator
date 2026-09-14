@@ -102,6 +102,26 @@ To run it by hand after a deploy:
 gcloud scheduler jobs run firebase-schedule-checkTwilioAccountHealthScheduled-us-central1 --location us-central1 --project storage-facility-creator
 ```
 
+## Calls to the toll-free line (added 2026-09-14)
+
+The number's voice webhook points at `handleSfcLeadCall`
+(`functions-marketing/src/sfcLeadWebhooks.ts`); it used to point at Twilio's
+demo greeting. The handler logs the caller as a marketing lead, plays a
+greeting and a one-digit menu, and forwards to `SFC_LEAD_FORWARD_TO_NUMBER`:
+
+| Key | What happens |
+|---|---|
+| 1 | Demo: forwards to the cell with the whisper "Demo request from the Storage Facility Creator eight five five line". Lead gets `lastCallMenuChoice: demo`. |
+| 2 | Support: same forward, whisper says "Support call". |
+| 3 | Reads out storagefacilitycreator.com, then repeats the menu. |
+| nothing / other | Repeats the menu once, then forwards with a generic whisper. |
+
+The whisper is a `<Number url="...?whisper=...">` leg back into the same
+function; menu presses come back as `?step=choice&lead=<id>`. Both carry a
+query string, which the shared `twilioWebhookUrl` keeps when rebuilding the
+signed URL. If the forward number is empty the caller is asked to text
+instead.
+
 ## What is left to do
 
 1. Send one real text from a facility to a known phone to prove the path end
