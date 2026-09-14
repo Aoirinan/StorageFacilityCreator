@@ -3221,13 +3221,22 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // A fixed 700px dialog on a short viewport left the tenant list (the only
+    // flexible child) a few pixels tall, so nobody could pick a tenant. Cap
+    // the dialog to the screen, give the list a real height, and let the
+    // rest scroll when space is tight.
+    final screen = MediaQuery.of(context).size;
     return Dialog(
-      child: Container(
-        width: 600,
-        height: 700,
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 600,
+          maxHeight: screen.height * 0.92,
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
@@ -3269,7 +3278,8 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
             const SizedBox(height: 16),
             
             // Tenant list
-            Expanded(
+            SizedBox(
+              height: 220,
               child: _filteredTenants.isEmpty
                   ? Center(
                       child: Text(
@@ -3447,6 +3457,7 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
               ),
             ),
           ],
+          ),
         ),
       ),
     );
