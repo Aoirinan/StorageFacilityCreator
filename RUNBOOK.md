@@ -194,6 +194,14 @@ the corrected name. The other nine codebases still hold the old value until thei
 - **Run it now:** `gcloud scheduler jobs run firebase-schedule-processFacilityOffboarding-us-central1 --location us-central1`, then read `gcloud functions logs read processFacilityOffboarding --region us-central1 --limit 40`.
 - **Owner asks to come back inside the 30 days:** they re-subscribe in the app; the facility drops out of the candidate set on its own. After the 30 days the tenant details are gone and a new subscription starts fresh.
 
+## Pre-launch customer contact gate (OFF until launch)
+Rule: no email or text reaches a customer (owner or tenant) until the build is finished.
+- **Where it lives:** `sendFacilityEmailWithCompliance` in functions-shared asks `appConfig/outbound` before every tenant-facing send (payment reminders, delinquency, insurance, receipts, contract mail, SMS-as-email fallback). Missing doc or `customerEmailsEnabled: false` means blocked; the function logs `Blocked customer email (pre-launch gate)` and returns `{ sent: false, blocked: 'prelaunch' }`.
+- **Who still gets mail:** super-admin addresses (`SUPER_ADMIN_EMAILS`) always pass, so testing against your own inbox keeps working. Add other test addresses or E.164 phones to `appConfig/outbound.allowedTestRecipients`.
+- **Owner offboarding notices** have their own switch, `appConfig/offboarding.ownerEmailsEnabled` (see above).
+- **Launch:** set `appConfig/outbound.customerEmailsEnabled: true` (and the offboarding flag) in Firestore. No deploy needed; instances pick it up within a minute.
+- **Twilio SMS:** no code path calls Twilio `messages.create` yet (A2P not registered); texting goes out only through the SMS-as-email fallback, which the gate covers. When real Twilio sends are added, route them through the same gate.
+
 ## Checking whether a leaked key is still live
 Before rotating anything, ask the provider. For Stripe:
 ```

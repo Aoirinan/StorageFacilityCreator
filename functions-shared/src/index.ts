@@ -54,6 +54,14 @@ export {
 export { registerSendgridMailConfigProvider } from './email/sendgridRegistry';
 export { getSgMail, getSendgridAsmGroupId, initializeSendGrid } from './email/sendgridLazy';
 export { sendFacilityEmailWithCompliance, isFacilityEmailSuppressed } from './email/complianceSend';
+export {
+  isCustomerRecipientAllowed,
+  isCustomerEmailAllowed,
+  getOutboundGateConfig,
+  resetOutboundGateCache,
+  DEFAULT_OUTBOUND_GATE,
+} from './email/customerOutboundGate';
+export type { OutboundGateConfig } from './email/customerOutboundGate';
 
 export { registerStripeKeysProvider } from './stripe/keysRegistry';
 export {

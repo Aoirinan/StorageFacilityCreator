@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import * as functions from 'firebase-functions/v1';
 
+import { isCustomerEmailAllowed } from './customerOutboundGate';
 import { buildFacilityFooter } from './footers';
 import { getPublicAppUrl } from './urls';
 import { buildEmailUnsubscribeToken } from './unsubscribe';
@@ -83,7 +84,17 @@ export async function sendFacilityEmailWithCompliance(
     facilityAddress?: string | null;
     facilityPhone?: string | null;
   },
-): Promise<{ sent: boolean; messageId?: string }> {
+): Promise<{ sent: boolean; messageId?: string; blocked?: 'prelaunch' }> {
+  // Pre-launch: no customer gets email until appConfig/outbound says so.
+  // Super admins and allowlisted test addresses still do. See customerOutboundGate.ts.
+  if (!(await isCustomerEmailAllowed(msg.to))) {
+    functions.logger.info('Blocked customer email (pre-launch gate; appConfig/outbound.customerEmailsEnabled is off)', {
+      facilityId: ctx.facilityId,
+      tenantId: ctx.tenantId ?? null,
+      subject: msg.subject,
+    });
+    return { sent: false, blocked: 'prelaunch' };
+  }
   if (await isFacilityEmailSuppressed(ctx.facilityId, msg.to)) {
     functions.logger.info('Skipping facility email (recipient unsubscribed)', {
       facilityId: ctx.facilityId,
