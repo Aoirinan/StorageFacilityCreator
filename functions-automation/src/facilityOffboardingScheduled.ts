@@ -2,15 +2,32 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
   buildFacilityDisconnectUpdate,
+  buildOffboardedEmail,
+  buildOffboardingAdminSummaryEmail,
+  buildOffboardingNoticeEmail,
   buildTenantPiiRedaction,
   deauthorizeConnectedAccount,
+  getPublicAppUrl,
+  getSgMail,
   getStripeClient,
+  getSuperAdminEmails,
+  initializeSendGrid,
   isOrphanedConnectedAccount,
+  offboardingDueAt,
   selectFacilitiesForOffboarding,
+  sweepSummaryHasActivity,
+  type EmailContent,
   type FacilityDisconnectReason,
   type OffboardingCandidate,
+  type OffboardingSweepSummary,
 } from '@sfc/functions-shared';
-import { STRIPE_CONNECT_CLIENT_ID, STRIPE_SECRETS_WITH_CONNECT } from './secrets';
+import {
+  SENDGRID_FROM_EMAIL,
+  SENDGRID_FROM_NAME,
+  SENDGRID_SECRETS,
+  STRIPE_CONNECT_CLIENT_ID,
+  STRIPE_SECRETS_WITH_CONNECT,
+} from './secrets';
 
 const TENANT_SUBCOLLECTIONS = ['tenants', 'oldTenants'] as const;
 const MAX_CONNECTED_ACCOUNTS_PER_SWEEP = 1000;
@@ -24,6 +41,10 @@ function toDate(value: unknown): Date | null {
   return null;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function deauthorizeIfConfigured(accountId: string, logContext: Record<string, unknown>) {
   const clientId = STRIPE_CONNECT_CLIENT_ID.value().trim();
   if (!clientId) {
@@ -31,6 +52,53 @@ async function deauthorizeIfConfigured(accountId: string, logContext: Record<str
     return 'skipped' as const;
   }
   return deauthorizeConnectedAccount(getStripeClient(), clientId, accountId);
+}
+
+/**
+ * The owner is a platform user, not a tenant, so their address comes from
+ * Firebase Auth. Facility-level contact fields are the fallback for older
+ * records whose owner user has been removed.
+ */
+async function resolveOwnerContact(
+  facility: Record<string, unknown>,
+): Promise<{ email: string | null; name: string | null }> {
+  const ownerUid = ((facility.ownerUid as string | undefined) || '').trim();
+  if (ownerUid) {
+    try {
+      const user = await admin.auth().getUser(ownerUid);
+      if (user.email) return { email: user.email, name: user.displayName || null };
+    } catch (error) {
+      functions.logger.warn('Owner lookup failed for offboarding email', { ownerUid, error: errorMessage(error) });
+    }
+  }
+  const fallback =
+    (facility.ownerEmail as string | undefined) ||
+    (facility.contactEmail as string | undefined) ||
+    (facility.email as string | undefined) ||
+    null;
+  return { email: fallback, name: null };
+}
+
+/** Transactional platform mail (no unsubscribe group): the owner must get these. */
+async function sendPlatformEmail(to: string, content: EmailContent): Promise<void> {
+  initializeSendGrid();
+  await (getSgMail() as { send: (msg: unknown) => Promise<unknown> }).send({
+    to,
+    from: { email: SENDGRID_FROM_EMAIL.value(), name: SENDGRID_FROM_NAME.value() },
+    subject: content.subject,
+    html: content.html,
+    text: content.text,
+  });
+}
+
+function emailInput(facility: Record<string, unknown>, ownerName: string | null, offboardingDate: Date) {
+  return {
+    facilityName: (facility.name as string | undefined) || 'your facility',
+    ownerName,
+    offboardingDate,
+    appUrl: getPublicAppUrl(),
+    supportEmail: SENDGRID_FROM_EMAIL.value(),
+  };
 }
 
 /**
@@ -68,7 +136,39 @@ async function redactFacilityTenants(facilityId: string, reason: FacilityDisconn
   return redacted;
 }
 
-async function offboardCancelledFacility(facilityId: string): Promise<void> {
+/**
+ * Tell the owner once, at the start of the grace period, what will happen and
+ * when. Idempotent through offboardingNoticeSentAt.
+ */
+async function sendOffboardingNoticeIfNeeded(
+  facilityId: string,
+  cancelledAtFallback: Date,
+  summary: OffboardingSweepSummary,
+): Promise<void> {
+  const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
+  const snap = await facilityRef.get();
+  if (!snap.exists) return;
+  const data = snap.data() || {};
+  if (data.offboardingNoticeSentAt) return;
+
+  const cancelledAt = toDate(data.platformSubscriptionCancelledAt) || cancelledAtFallback;
+  const offboardingDate = offboardingDueAt(cancelledAt);
+  const owner = await resolveOwnerContact(data);
+  if (!owner.email) {
+    summary.errors.push({ where: `notice ${facilityId}`, message: 'no owner email on file' });
+    return;
+  }
+  await sendPlatformEmail(owner.email, buildOffboardingNoticeEmail(emailInput(data, owner.name, offboardingDate)));
+  await facilityRef.update({ offboardingNoticeSentAt: admin.firestore.FieldValue.serverTimestamp() });
+  summary.noticesSent.push({
+    facilityId,
+    facilityName: (data.name as string | undefined) || facilityId,
+    offboardingDate,
+  });
+  functions.logger.info('Offboarding notice sent', { facilityId, offboardingDate: offboardingDate.toISOString() });
+}
+
+async function offboardCancelledFacility(facilityId: string, summary: OffboardingSweepSummary): Promise<void> {
   const db = admin.firestore();
   const facilityRef = db.collection('facilities').doc(facilityId);
   const snap = await facilityRef.get();
@@ -83,6 +183,7 @@ async function offboardCancelledFacility(facilityId: string): Promise<void> {
     if (stripeResult === 'skipped') {
       // Do not redact or mark offboarded while the platform still holds access;
       // the next sweep retries once the secret is configured.
+      summary.errors.push({ where: `offboard ${facilityId}`, message: 'STRIPE_CONNECT_CLIENT_ID not configured' });
       return;
     }
   }
@@ -97,7 +198,17 @@ async function offboardCancelledFacility(facilityId: string): Promise<void> {
     offboardingReason: reason,
   });
   const redacted = await redactFacilityTenants(facilityId, reason);
+  const facilityName = (data.name as string | undefined) || facilityId;
+  summary.offboarded.push({ facilityId, facilityName, tenantsRedacted: redacted, stripe: stripeResult });
   functions.logger.info('Facility offboarded', { facilityId, accountId, stripe: stripeResult, tenantsRedacted: redacted });
+
+  const owner = await resolveOwnerContact(data);
+  if (!owner.email) {
+    summary.errors.push({ where: `offboarded email ${facilityId}`, message: 'no owner email on file' });
+    return;
+  }
+  await sendPlatformEmail(owner.email, buildOffboardedEmail(emailInput(data, owner.name, summary.runAt)));
+  await facilityRef.update({ offboardedNoticeSentAt: admin.firestore.FieldValue.serverTimestamp() });
 }
 
 /**
@@ -105,11 +216,10 @@ async function offboardCancelledFacility(facilityId: string): Promise<void> {
  * whose facility document is gone (client-side deletes bypass every function)
  * get detached so the platform key can no longer act on them.
  */
-async function sweepOrphanedConnectedAccounts(): Promise<{ scanned: number; detached: number }> {
+async function sweepOrphanedConnectedAccounts(summary: OffboardingSweepSummary): Promise<number> {
   const stripe = getStripeClient();
   const db = admin.firestore();
   let scanned = 0;
-  let detached = 0;
   for await (const account of stripe.accounts.list({ limit: 100 })) {
     scanned += 1;
     if (scanned > MAX_CONNECTED_ACCOUNTS_PER_SWEEP) {
@@ -122,31 +232,53 @@ async function sweepOrphanedConnectedAccounts(): Promise<{ scanned: number; deta
     if (!isOrphanedConnectedAccount(account, facilitySnap.exists)) continue;
     try {
       const result = await deauthorizeIfConfigured(account.id, { facilityId, orphan: true });
-      if (result !== 'skipped') detached += 1;
+      if (result !== 'skipped') summary.orphansDetached.push({ accountId: account.id, facilityId });
       functions.logger.info('Orphaned connected account detached', { accountId: account.id, facilityId, result });
     } catch (error) {
+      summary.errors.push({ where: `orphan ${account.id}`, message: errorMessage(error) });
       functions.logger.error('Failed to detach orphaned connected account', {
         accountId: account.id,
         facilityId,
-        error: (error as Error).message,
+        error: errorMessage(error),
       });
     }
   }
-  return { scanned, detached };
+  return scanned;
+}
+
+async function emailSuperAdmins(summary: OffboardingSweepSummary): Promise<void> {
+  if (!sweepSummaryHasActivity(summary)) return;
+  const content = buildOffboardingAdminSummaryEmail(summary);
+  for (const to of getSuperAdminEmails()) {
+    try {
+      await sendPlatformEmail(to, content);
+    } catch (error) {
+      functions.logger.error('Failed to send offboarding summary', { to, error: errorMessage(error) });
+    }
+  }
 }
 
 /**
  * Daily: offboard facilities whose platform subscription has been cancelled
  * for the grace period (detach Stripe, blank tenant PII, drop saved cards),
- * and detach Connect accounts whose facility no longer exists.
+ * detach Connect accounts whose facility no longer exists, tell the owners
+ * at each step, and tell the super admins on nights something happened.
  */
 export const processFacilityOffboarding = functions
-  .runWith({ secrets: STRIPE_SECRETS_WITH_CONNECT, timeoutSeconds: 540, memory: '512MB' })
+  .runWith({ secrets: [...STRIPE_SECRETS_WITH_CONNECT, ...SENDGRID_SECRETS], timeoutSeconds: 540, memory: '512MB' })
   .pubsub.schedule('0 6 * * *') // Daily at 6:00 AM UTC
   .timeZone('UTC')
   .onRun(async () => {
     const db = admin.firestore();
     const now = new Date();
+    const summary: OffboardingSweepSummary = {
+      runAt: now,
+      noticesSent: [],
+      offboarded: [],
+      orphansDetached: [],
+      waiting: 0,
+      errors: [],
+    };
 
     const cancelled = await db
       .collection('facilities')
@@ -163,6 +295,7 @@ export const processFacilityOffboarding = functions
       };
     });
     const selection = selectFacilitiesForOffboarding(candidates, now);
+    summary.waiting = selection.waiting.length + selection.needsClockStart.length;
 
     // Facilities cancelled before this job existed have no timestamp; start
     // their grace period today rather than offboarding them without warning.
@@ -172,31 +305,44 @@ export const processFacilityOffboarding = functions
       });
     }
 
-    let offboarded = 0;
-    for (const facilityId of selection.due) {
+    for (const facilityId of [...selection.needsClockStart, ...selection.waiting]) {
       try {
-        await offboardCancelledFacility(facilityId);
-        offboarded += 1;
+        await sendOffboardingNoticeIfNeeded(facilityId, now, summary);
       } catch (error) {
-        functions.logger.error('Facility offboarding failed', { facilityId, error: (error as Error).message });
+        summary.errors.push({ where: `notice ${facilityId}`, message: errorMessage(error) });
+        functions.logger.error('Offboarding notice failed', { facilityId, error: errorMessage(error) });
       }
     }
 
-    let orphans = { scanned: 0, detached: 0 };
-    try {
-      orphans = await sweepOrphanedConnectedAccounts();
-    } catch (error) {
-      functions.logger.error('Orphaned connected account sweep failed', { error: (error as Error).message });
+    for (const facilityId of selection.due) {
+      try {
+        await offboardCancelledFacility(facilityId, summary);
+      } catch (error) {
+        summary.errors.push({ where: `offboard ${facilityId}`, message: errorMessage(error) });
+        functions.logger.error('Facility offboarding failed', { facilityId, error: errorMessage(error) });
+      }
     }
+
+    let orphanAccountsScanned = 0;
+    try {
+      orphanAccountsScanned = await sweepOrphanedConnectedAccounts(summary);
+    } catch (error) {
+      summary.errors.push({ where: 'orphan sweep', message: errorMessage(error) });
+      functions.logger.error('Orphaned connected account sweep failed', { error: errorMessage(error) });
+    }
+
+    await emailSuperAdmins(summary);
 
     functions.logger.info('Facility offboarding sweep complete', {
       cancelledFacilities: cancelled.size,
       clockStarted: selection.needsClockStart.length,
-      waiting: selection.waiting.length,
+      noticesSent: summary.noticesSent.length,
+      waiting: summary.waiting,
       due: selection.due.length,
-      offboarded,
-      orphanAccountsScanned: orphans.scanned,
-      orphanAccountsDetached: orphans.detached,
+      offboarded: summary.offboarded.length,
+      orphanAccountsScanned,
+      orphanAccountsDetached: summary.orphansDetached.length,
+      errors: summary.errors.length,
     });
     return null;
   });

@@ -67,3 +67,19 @@ their Stripe dashboard.
 All decisions live in `functions-shared/src/stripe/connectOffboarding.ts` and are
 covered by `functions-shared/src/test/connectOffboarding.test.ts`. The two
 packages only wire Firestore and Stripe around them.
+
+## Emails (nobody has to remember to write these)
+
+The daily job sends three kinds of mail, all built by pure functions in
+`functions-shared/src/stripe/offboardingEmails.ts`:
+
+| Who | When | Says |
+| --- | --- | --- |
+| Facility owner | First sweep after the platform subscription ends (once, `offboardingNoticeSentAt`) | Subscription ended, nothing removed yet, the exact date tenant data is removed and Stripe is detached, what stays theirs, export before then, reactivate to keep everything. |
+| Facility owner | The sweep that offboards them (once, `offboardedNoticeSentAt`) | Removal is done, Stripe access ended, their Stripe account still works, welcome back any time, removed details cannot be restored. |
+| Super admins | Only on nights with activity | What was offboarded, which notices went out, which orphaned accounts were detached, any errors. Quiet nights send nothing. |
+
+Owner addresses come from Firebase Auth via the facility's `ownerUid`, with
+facility-level contact fields as fallback. These are transactional platform
+mails sent through SendGrid without an unsubscribe group; the sender address
+doubles as the support contact in the copy.

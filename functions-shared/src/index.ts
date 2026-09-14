@@ -77,6 +77,13 @@ export {
   selectFacilitiesForOffboarding,
 } from './stripe/connectOffboarding';
 export type { FacilityDisconnectReason, OffboardingCandidate, OffboardingSelection } from './stripe/connectOffboarding';
+export {
+  buildOffboardingNoticeEmail,
+  buildOffboardedEmail,
+  buildOffboardingAdminSummaryEmail,
+  sweepSummaryHasActivity,
+} from './stripe/offboardingEmails';
+export type { OffboardingEmailInput, OffboardingSweepSummary, EmailContent } from './stripe/offboardingEmails';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 
