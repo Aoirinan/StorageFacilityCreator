@@ -194,6 +194,30 @@ the corrected name. The other nine codebases still hold the old value until thei
 - **Run it now:** `gcloud scheduler jobs run firebase-schedule-processFacilityOffboarding-us-central1 --location us-central1`, then read `gcloud functions logs read processFacilityOffboarding --region us-central1 --limit 40`.
 - **Owner asks to come back inside the 30 days:** they re-subscribe in the app; the facility drops out of the candidate set on its own. After the 30 days the tenant details are gone and a new subscription starts fresh.
 
+## Launch checklist (customer contact goes live)
+
+Everything below is a field flip or a click; no deploy is needed on launch day.
+Do it in this order and stop at the first surprise.
+
+### Before launch day
+- [ ] **A2P brand and campaign filed with Twilio** (Russell). Texting stays email-fallback until approved.
+- [ ] **Keepsake platform trial** converts to paid on **2026-09-17**. Decide whether the owner's own facility should be billed; if not, cancel the platform subscription in the app before then.
+- [ ] **Preview the customer emails to your own inbox** (super-admin addresses always pass the gate):
+  - portal invite: Tenants → your own tenant record → "Email portal invite"
+  - owner offboarding notice / offboarded: run the sweep with `appConfig/offboarding.ownerEmailsEnabled: true` against a test facility you cancelled, or read the copy in `functions-shared/src/stripe/offboardingEmails.ts`
+- [ ] **Tenant records have real emails.** Invites skip `@example.com` and blank addresses; fix those first (Keepsake has placeholder emails on several tenants).
+
+### Launch day
+1. [ ] Firestore → `appConfig/outbound` → `customerEmailsEnabled: true`. Every tenant-facing email path opens (reminders, delinquency, insurance, receipts, contract mail, portal invites, SMS-as-email fallback).
+2. [ ] Firestore → `appConfig/offboarding` → `ownerEmailsEnabled: true`. Owner notices send and the removal step resumes for cancelled facilities.
+3. [ ] Send **one** portal invite to a real tenant and confirm delivery in SendGrid before the bulk send.
+4. [ ] Tenants → Select Multiple → Select All → "Email invites (N)". Read the summary line: sent / no email / unsubscribed / failed.
+5. [ ] Next morning: read the super-admin offboarding summary if one arrives; check SendGrid activity for bounces.
+
+### If something is wrong
+- Flip `customerEmailsEnabled` back to `false`. Sends stop within a minute (config is cached 60 s per instance). Nothing else to undo.
+- Payment reminders and the other automations log `Blocked customer email (pre-launch gate)` while off, so a quiet log is expected, not broken.
+
 ## Pre-launch customer contact gate (OFF until launch)
 Rule: no email or text reaches a customer (owner or tenant) until the build is finished.
 - **Where it lives:** `sendFacilityEmailWithCompliance` in functions-shared asks `appConfig/outbound` before every tenant-facing send (payment reminders, delinquency, insurance, receipts, contract mail, SMS-as-email fallback). Missing doc or `customerEmailsEnabled: false` means blocked; the function logs `Blocked customer email (pre-launch gate)` and returns `{ sent: false, blocked: 'prelaunch' }`.
@@ -215,4 +239,4 @@ curl -s -u "sk_live_...:" https://api.stripe.com/v1/balance
 - Network Intelligence Center cannot be disabled via gcloud; requires support ticket when credit expires
 
 ## Last Updated
-September 14, 2026 — facility offboarding automation + leaked-key liveness check
+September 14, 2026 — launch checklist, customer contact gate, facility offboarding, portal invites
