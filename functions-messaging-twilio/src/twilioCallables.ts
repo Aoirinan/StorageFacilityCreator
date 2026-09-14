@@ -203,11 +203,8 @@ export const sendSMS = functions.runWith({
       }
     }
 
-    // Add opt-out footer to message (if compliance enabled)
-    let finalMessage = message;
-    if (complianceEnabled) {
-      finalMessage = await addOptOutFooter(facilityId, message);
-    }
+    // Every outbound text carries the STOP/HELP footer (see addOptOutFooter).
+    let finalMessage = await addOptOutFooter(facilityId, message);
 
     // Get user email for message logging
     const userRecord = await admin.auth().getUser(context.auth.uid);
@@ -382,6 +379,17 @@ export const sendSMS = functions.runWith({
     const resolvedFromNumber = (textingOnboardingEnabled && facilityA2PStatus === 'approved' && facilityDedicatedFromNumber)
       ? facilityDedicatedFromNumber
       : twilioPhoneNumber;
+
+    // The shared platform number sends on behalf of many facilities, so the
+    // recipient cannot tell who is texting from the number alone. Prefix the
+    // facility name, as the samples registered with carriers do. A facility's
+    // own registered number already identifies it, so no prefix there.
+    if (resolvedFromNumber === twilioPhoneNumber) {
+      const senderLabel = ((facilityData.name as string | undefined) || '').trim();
+      if (senderLabel && !finalMessage.toLowerCase().startsWith(senderLabel.toLowerCase())) {
+        finalMessage = `${senderLabel}: ${finalMessage}`;
+      }
+    }
 
     // Safe debug logging (masked for security)
     // #region agent log

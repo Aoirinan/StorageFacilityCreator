@@ -161,13 +161,15 @@ export async function checkPerTenantRateLimit(
   }
 }
 
+/**
+ * Appends the STOP/HELP footer to every outbound body. This is not gated on
+ * the per-facility `enhancedOptOut` flag: carriers expect opt-out language on
+ * registered A2P traffic regardless of facility settings, and the samples
+ * filed with Twilio carry it. A facility can still override the wording via
+ * `smsSettings.optOutFooter`.
+ */
 export async function addOptOutFooter(facilityId: string, body: string): Promise<string> {
   try {
-    const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', facilityId);
-    if (!complianceEnabled) {
-      return body;
-    }
-
     const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
     const facilityData = facilityDoc.data() as Record<string, unknown> | undefined;
     const smsSettings = facilityData?.smsSettings as Record<string, unknown> | undefined;
