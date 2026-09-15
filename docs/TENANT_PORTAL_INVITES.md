@@ -44,3 +44,15 @@ footer link "Forgot your portal access code?" that opens the dialog directly
 
 Delivery is email only until Twilio texting is live; the phone lookup is in
 place so adding an SMS there is one call.
+
+## Coming back from Stripe (card save and Pay now)
+
+The app routes by hash, so any Stripe return URL must put its query before the
+hash route: `https://app…/?portal_payment=success&session_id=…#/tenant-portal`.
+A path-style URL such as `/portal/payment/success` has no route and lands the
+tenant on the facility-manager login. Before Stripe opens (same tab), the portal
+parks the tenant's lookup in sessionStorage (`TenantPortalSessionStore`, 15 min,
+used once); the access screen reads `redirect_status` (Payment Element) or
+`portal_payment` (Checkout), resumes the session, and shows "Card saved" or
+"Payment received". The webhook, not the return, is what records the payment
+and posts the ledger entry.
