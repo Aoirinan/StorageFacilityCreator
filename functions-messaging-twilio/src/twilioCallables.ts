@@ -1,7 +1,7 @@
 ﻿import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
-import { formatPhoneNumber, isSuperAdmin } from '@sfc/functions-shared';
+import { formatPhoneNumber, isSuperAdmin, isCustomerRecipientAllowed, getOutboundGateConfig } from '@sfc/functions-shared';
 import {
   buildA2PRejectionReason,
   computeA2PStatus,
@@ -224,6 +224,27 @@ export const sendSMS = functions.runWith({
     // Get user email for message logging
     const userRecord = await admin.auth().getUser(context.auth.uid);
     const userEmail = userRecord.email;
+
+    // Pre-launch customer contact gate: no text reaches a real customer until
+    // launch. The same appConfig/outbound switch that governs tenant email
+    // governs this. Numbers in allowedTestRecipients (Russell's own number is
+    // already there) still go through so the team can test end to end; at
+    // launch, flipping customerEmailsEnabled opens it for everyone. Checked
+    // before the message log and platform-quota reservation so a blocked send
+    // is a clean no-op. See functions-shared/src/email/customerOutboundGate.ts.
+    const outboundGate = await getOutboundGateConfig();
+    if (!isCustomerRecipientAllowed(phoneNumber, outboundGate)) {
+      functions.logger.info('[sendSMS] blocked by pre-launch customer contact gate', {
+        facilityId,
+        toMasked: `${phoneNumber.substring(0, 5)}***${phoneNumber.slice(-2)}`,
+      });
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Customer texting is turned off until launch. This number is not on the test allow-list. ' +
+        'A super admin can allow it by setting customerEmailsEnabled or adding the number to ' +
+        'allowedTestRecipients in appConfig/outbound.',
+      );
+    }
 
     // Create message log with status "queued"
     const previewText = finalMessage.substring(0, 200);
