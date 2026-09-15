@@ -210,9 +210,10 @@ Do it in this order and stop at the first surprise.
 ### Launch day
 1. [ ] Firestore → `appConfig/outbound` → `customerEmailsEnabled: true`. Every tenant-facing email path opens (reminders, delinquency, insurance, receipts, contract mail, portal invites, SMS-as-email fallback).
 2. [ ] Firestore → `appConfig/offboarding` → `ownerEmailsEnabled: true`. Owner notices send and the removal step resumes for cancelled facilities.
-3. [ ] Send **one** portal invite to a real tenant and confirm delivery in SendGrid before the bulk send.
-4. [ ] Tenants → Select Multiple → Select All → "Email invites (N)". Read the summary line: sent / no email / unsubscribed / failed.
-5. [ ] Next morning: read the super-admin offboarding summary if one arrives; check SendGrid activity for bounces.
+3. [ ] Open a public payment link and the portal login from a phone: both must show their own page, never the manager sign-in (the app routes by hash; see docs/TENANT_PORTAL_INVITES.md).
+4. [ ] Send **one** portal invite to a real tenant and confirm delivery in SendGrid before the bulk send.
+5. [ ] Tenants → Select Multiple → Select All → "Email invites (N)". Read the summary line: sent / no email / unsubscribed / failed.
+6. [ ] Next morning: read the super-admin offboarding summary if one arrives; check SendGrid activity for bounces.
 
 ### If something is wrong
 - Flip `customerEmailsEnabled` back to `false`. Sends stop within a minute (config is cached 60 s per instance). Nothing else to undo.

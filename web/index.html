@@ -44,7 +44,9 @@
         '/pay': '/pay',
         '/tenant-portal': '/tenant-portal',
         '/portal/payment/success': '/tenant-portal',
-        '/portal/payment/cancel': '/tenant-portal'
+        '/portal/payment/cancel': '/tenant-portal',
+        '/subscription/success': '/subscription',
+        '/subscription/cancel': '/subscription'
       };
       var mapped = pathToHash[location.pathname];
       if (isOperatorHost && mapped && !location.hash) {
