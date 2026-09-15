@@ -86,9 +86,15 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   }
 
   String? _getTokenFromUrl() {
-    // Try to get token from query parameters
+    // The token rides on the hash route (#/pay?token=…); older links put it
+    // before the hash. Accept both.
     final uri = Uri.base;
-    return uri.queryParameters['token'];
+    final fromQuery = uri.queryParameters['token'];
+    if (fromQuery != null && fromQuery.isNotEmpty) return fromQuery;
+    final fragment = uri.fragment;
+    final q = fragment.indexOf('?');
+    if (q < 0) return null;
+    return Uri.splitQueryString(fragment.substring(q + 1))['token'];
   }
 
   Future<void> _loadTenantInfo() async {

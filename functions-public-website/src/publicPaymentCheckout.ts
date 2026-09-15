@@ -5,6 +5,7 @@ import {
   enforceAppCheckOrThrow,
   enforceUserRateLimit,
   extractCallableClientIp,
+  getPublicAppUrl,
   getStripeClient,
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
@@ -285,8 +286,10 @@ export const createPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_S
         },
       ],
       customer_email: tenantEmail,
-      success_url: 'https://app.storagefacilitycreator.com/pay?token=' + token + '&status=success&session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://app.storagefacilitycreator.com/pay?token=' + token + '&status=cancel',
+      // Hash route, query before the hash: a path-style /pay?token=… has no
+      // route and lands the tenant on the facility-manager login after paying.
+      success_url: getPublicAppUrl() + '/?status=success&session_id={CHECKOUT_SESSION_ID}#/pay?token=' + token,
+      cancel_url: getPublicAppUrl() + '/?status=cancel#/pay?token=' + token,
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,

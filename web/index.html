@@ -34,6 +34,24 @@
       }
 
       var isOperatorHost = h === 'app.storagefacilitycreator.com' || h === 'localhost' || h === '127.0.0.1';
+
+      // The app routes by hash. Links and Stripe return URLs written as plain
+      // paths (older payment links, /pay?token=…, /portal/payment/success)
+      // would otherwise load the app at its root and show the manager login.
+      // Rewrite the known public entry points to their hash routes, keeping the
+      // query on the route so the screen can still read it.
+      var pathToHash = {
+        '/pay': '/pay',
+        '/tenant-portal': '/tenant-portal',
+        '/portal/payment/success': '/tenant-portal',
+        '/portal/payment/cancel': '/tenant-portal'
+      };
+      var mapped = pathToHash[location.pathname];
+      if (isOperatorHost && mapped && !location.hash) {
+        location.replace('/#' + mapped + location.search);
+        return;
+      }
+
       if (isOperatorHost || location.pathname !== '/') {
         loadFlutter();
         return;

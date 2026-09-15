@@ -126,7 +126,9 @@ class PublicPaymentLinkService {
   /// Build public payment URL
   static String buildPaymentUrl(String token, {String? baseUrl}) {
     final base = baseUrl ?? 'https://app.storagefacilitycreator.com';
-    return '$base/pay?token=$token';
+    // Hash route: the app routes by hash, and a path-style /pay?token=… lands
+    // the tenant on the facility-manager login instead of the payment page.
+    return '$base/#/pay?token=$token';
   }
 }
 
