@@ -27,12 +27,17 @@ function phoneVariants(raw: string): string[] {
 }
 
 async function findTenantsByEmail(emailLower: string): Promise<admin.firestore.QueryDocumentSnapshot[]> {
-  // Prefix of the (emailLower, portalEnabled, portalAccessCode) collection-group index.
+  // The only collection-group index on tenants that covers emailLower is the
+  // portal login's (emailLower, portalEnabled, portalAccessCode). Firestore
+  // will not serve a two-field prefix of it, but ordering by the third field
+  // makes the query match the index exactly, so this works without adding
+  // another index. Verified against the live database on 2026-09-15.
   const snap = await admin
     .firestore()
     .collectionGroup('tenants')
     .where('emailLower', '==', emailLower)
     .where('portalEnabled', '==', true)
+    .orderBy('portalAccessCode')
     .limit(MAX_RECORDS_PER_REQUEST)
     .get();
   return snap.docs;
