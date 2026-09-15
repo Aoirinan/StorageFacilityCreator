@@ -46,15 +46,19 @@ async function findTenantsByEmail(emailLower: string): Promise<admin.firestore.Q
 async function findTenantsByPhone(raw: string): Promise<admin.firestore.QueryDocumentSnapshot[]> {
   const found = new Map<string, admin.firestore.QueryDocumentSnapshot>();
   const db = admin.firestore();
-  // (isActive, phone) is an existing collection-group index.
+  // (isActive, phone) is the only collection-group index covering phone, so
+  // the query has to pin isActive. The portal itself lets a moved-out tenant
+  // sign in (to see history and pay a balance), so look on both sides.
   for (const variant of phoneVariants(raw)) {
-    const snap = await db
-      .collectionGroup('tenants')
-      .where('isActive', '==', true)
-      .where('phone', '==', variant)
-      .limit(MAX_RECORDS_PER_REQUEST)
-      .get();
-    for (const d of snap.docs) found.set(d.ref.path, d);
+    for (const isActive of [true, false]) {
+      const snap = await db
+        .collectionGroup('tenants')
+        .where('isActive', '==', isActive)
+        .where('phone', '==', variant)
+        .limit(MAX_RECORDS_PER_REQUEST)
+        .get();
+      for (const d of snap.docs) found.set(d.ref.path, d);
+    }
     if (found.size >= MAX_RECORDS_PER_REQUEST) break;
   }
   return [...found.values()].filter((d) => d.get('portalEnabled') === true);
