@@ -103,6 +103,18 @@ export interface TrustBundleInput {
   representativeFirstName: string;
   representativeLastName: string;
   representativeBusinessTitle?: string;
+  /**
+   * Sole proprietors have no EIN. Twilio verifies them instead by texting a
+   * one-time code to this mobile, so it is required for a 'Sole Prop' bundle
+   * and ignored for the others. It must be a real US/Canada mobile the owner
+   * controls and cannot be a Twilio (CPaaS) number.
+   */
+  mobilePhone?: string;
+}
+
+/** True when this business registers on Twilio's sole-proprietor path. */
+export function isSoleProprietorBusinessType(value: unknown): boolean {
+  return mapBusinessType(value)?.soleProprietor === true;
 }
 
 /** Digits-only EIN, e.g. "12-3456789" -> "123456789". */
@@ -133,17 +145,23 @@ export function buildBusinessInformationAttributes(
   if (!mapping) {
     throw new Error(`Unsupported business type: ${String(input.businessType)}`);
   }
-  return {
+  const attrs: Record<string, string> = {
     business_name: input.legalBusinessName.trim(),
     business_type: mapping.businessType,
-    business_registration_identifier: A2P_REGISTRATION_IDENTIFIER,
-    business_registration_number: normalizeEin(input.ein),
     business_identity: A2P_BUSINESS_IDENTITY,
     business_industry: A2P_BUSINESS_INDUSTRY,
     business_regions_of_operation: A2P_REGIONS_OF_OPERATION,
     website_url: normalizeWebsiteUrl(input.website),
     social_media_profile_urls: '',
   };
+  // Sole proprietors have no tax ID; Twilio forbids an EIN on that path and
+  // verifies the owner by mobile OTP instead. Only send the registration
+  // number for entities that actually have one.
+  if (!mapping.soleProprietor) {
+    attrs.business_registration_identifier = A2P_REGISTRATION_IDENTIFIER;
+    attrs.business_registration_number = normalizeEin(input.ein);
+  }
+  return attrs;
 }
 
 export function buildAuthorizedRepresentativeAttributes(
@@ -168,10 +186,17 @@ export function buildA2pMessagingProfileAttributes(
   if (!mapping) {
     throw new Error(`Unsupported business type: ${String(input.businessType)}`);
   }
-  return {
+  const attrs: Record<string, string> = {
     company_type: mapping.companyType,
     brand_contact_email: input.supportEmail.trim(),
   };
+  // The sole-proprietor messaging profile carries the mobile number Twilio
+  // texts the verification code to. E.164, and never a Twilio number.
+  if (mapping.soleProprietor) {
+    const mobile = toE164UsPhone(input.mobilePhone);
+    if (mobile) attrs.mobile_phone_number = mobile;
+  }
+  return attrs;
 }
 
 export function buildAddressPayload(input: TrustBundleInput): {

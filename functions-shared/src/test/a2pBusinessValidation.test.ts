@@ -171,3 +171,45 @@ test('formatA2PValidationIssues produces a readable single-line summary', () => 
   assert.match(out, /postalCode/);
   assert.match(out, /supportPhone/);
 });
+
+// --- sole proprietor -------------------------------------------------------
+
+const SOLE_PROP_VALID = {
+  legalBusinessName: 'Keepsake Self Storage',
+  businessType: 'Sole Prop',
+  // no EIN
+  addressLine1: '4180 US HWY 82 East',
+  city: 'Paris',
+  state: 'TX',
+  postalCode: '75460',
+  country: 'US',
+  supportEmail: 'russell@keepsakeselfstorage.com',
+  supportPhone: '903-715-7504',
+  website: 'https://keepsakeselfstorage.com',
+  representativeFirstName: 'Russell',
+  representativeLastName: 'Forsyth',
+  mobilePhone: '903-555-0175',
+};
+
+test('sole proprietor: valid with a mobile and no EIN', () => {
+  assert.deepEqual(validateA2PBusinessData(SOLE_PROP_VALID), []);
+});
+
+test('sole proprietor: EIN is not required', () => {
+  const issues = validateA2PBusinessData({ ...SOLE_PROP_VALID });
+  assert.equal(issues.some((i) => i.field === 'ein'), false);
+});
+
+test('sole proprietor: a missing/invalid mobile is rejected', () => {
+  const issues = validateA2PBusinessData({ ...SOLE_PROP_VALID, mobilePhone: '' });
+  assert.equal(issues.some((i) => i.field === 'mobilePhone'), true);
+  const bad = validateA2PBusinessData({ ...SOLE_PROP_VALID, mobilePhone: '5555555555' });
+  assert.equal(bad.some((i) => i.field === 'mobilePhone'), true);
+});
+
+test('non-sole-prop still requires an EIN and ignores mobile', () => {
+  const noEin = { ...VALID };
+  delete (noEin as { ein?: unknown }).ein;
+  const issues = validateA2PBusinessData(noEin);
+  assert.equal(issues.some((i) => i.field === 'ein'), true);
+});

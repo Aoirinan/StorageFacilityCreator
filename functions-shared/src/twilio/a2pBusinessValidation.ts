@@ -24,6 +24,8 @@ export interface A2PBusinessData {
   einLast4?: unknown;
   representativeFirstName?: unknown;
   representativeLastName?: unknown;
+  /** Sole-proprietor OTP mobile; required only when businessType is sole prop. */
+  mobilePhone?: unknown;
   addressLine1?: unknown;
   city?: unknown;
   state?: unknown;
@@ -111,19 +113,30 @@ export function validateA2PBusinessData(data: A2PBusinessData): A2PValidationIss
     add('legalBusinessName', 'Enter the full legal business name as registered with the IRS.');
   }
 
-  if (!str(data.businessType)) {
+  const businessType = str(data.businessType);
+  if (!businessType) {
     add('businessType', 'Select a business type.');
   }
+  // "Sole Prop" is Twilio's tax-ID-less path: no EIN, verified by a mobile OTP.
+  const isSoleProp = businessType.toLowerCase().startsWith('sole');
 
-  // The submission form sends the full EIN; a facility that has already been
-  // saved carries only the last four. Accept whichever is present, because
-  // requiring `einLast4` alone rejected every submission the form could make.
-  if (data.ein !== undefined && data.ein !== null && str(data.ein) !== '') {
-    if (!isValidFullEin(data.ein)) {
+  if (isSoleProp) {
+    // Twilio forbids an EIN on the sole-proprietor path and texts a one-time
+    // code to this mobile to verify the owner, so require the mobile instead.
+    if (!isValidUsPhone(data.mobilePhone)) {
+      add('mobilePhone', "Enter the owner's mobile number — Twilio texts a verification code to it. A 10-digit US number, not a landline or a Twilio number.");
+    }
+  } else {
+    // The submission form sends the full EIN; a facility that has already been
+    // saved carries only the last four. Accept whichever is present, because
+    // requiring `einLast4` alone rejected every submission the form could make.
+    if (data.ein !== undefined && data.ein !== null && str(data.ein) !== '') {
+      if (!isValidFullEin(data.ein)) {
+        add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
+      }
+    } else if (!isValidEinLast4(data.einLast4)) {
       add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
     }
-  } else if (!isValidEinLast4(data.einLast4)) {
-    add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
   }
 
   if (str(data.representativeFirstName).length < 2) {

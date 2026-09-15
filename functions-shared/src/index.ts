@@ -137,6 +137,7 @@ export {
   buildAuthorizedRepresentativeAttributes,
   buildBusinessInformationAttributes,
   formatEvaluationFailures,
+  isSoleProprietorBusinessType,
   mapBusinessType,
   normalizeEin,
   normalizeWebsiteUrl,

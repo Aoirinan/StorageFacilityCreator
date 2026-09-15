@@ -9,6 +9,7 @@ import {
   formatA2PValidationIssues,
   formatEvaluationFailures,
   validateA2PBusinessData,
+  isSoleProprietorBusinessType,
 } from '@sfc/functions-shared';
 import { buildAndEvaluateTrustBundle } from './a2pTrustBundle';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
@@ -1100,6 +1101,12 @@ interface TextingBusinessData {
   businessType: 'LLC' | 'Corp' | 'Nonprofit' | 'Sole Prop';
   ein?: string;
   soleProprietorTaxIdLast4?: string;
+  /**
+   * Owner's mobile for sole-proprietor registration. Twilio texts a one-time
+   * code to it to verify the owner in place of an EIN. Required only when
+   * businessType is 'Sole Prop'.
+   */
+  mobilePhone?: string;
   addressLine1: string;
   city: string;
   state: string;
@@ -1345,6 +1352,7 @@ async function createOrUpdateA2PProfileInternal(
         legalBusinessName: businessData.legalBusinessName,
         businessType: businessData.businessType,
         ein: businessData.ein,
+        mobilePhone: businessData.mobilePhone,
         addressLine1: businessData.addressLine1,
         city: businessData.city,
         state: businessData.state,
@@ -1388,6 +1396,10 @@ async function createOrUpdateA2PProfileInternal(
       // Never store full tax IDs in Firestore
       einLast4: businessData.ein ? businessData.ein.slice(-4) : null,
       soleProprietorTaxIdLast4: businessData.soleProprietorTaxIdLast4 || null,
+      // A contact mobile, not a tax ID, so it is safe to persist; needed to
+      // resend the sole-proprietor OTP and to show the owner which number
+      // Twilio will text.
+      mobilePhone: businessData.mobilePhone || null,
       addressLine1: businessData.addressLine1,
       city: businessData.city,
       state: businessData.state,
@@ -1492,10 +1504,16 @@ async function submitBrandRegistrationInternal(
       facilityData.twilioTrustProductSid as string | undefined,
     );
 
+    // Sole proprietors (no EIN) register on Twilio's separate SOLE_PROPRIETOR
+    // brand path; everyone else is STANDARD. The business type was validated
+    // and stored when the bundle was built.
+    const brandBusinessType = (facilityData.textingBusinessData?.businessType) as string | undefined;
+    const brandType = isSoleProprietorBusinessType(brandBusinessType) ? 'SOLE_PROPRIETOR' : 'STANDARD';
+
     const brand = await twilio.messaging.v1.brandRegistrations.create({
       customerProfileBundleSid: facilityData.twilioTrustProfileSid,
       a2pProfileBundleSid: facilityData.twilioTrustProductSid,
-      brandType: 'STANDARD',
+      brandType,
     });
     sid = brand.sid;
   }
@@ -1544,9 +1562,13 @@ async function submitCampaignInternal(
     sid = buildTwilioDryRunSid('CP', facilityRef.id);
   } else {
     const twilio = getTwilioClient() as any;
+    // A sole-proprietor brand only accepts the SOLE_PROPRIETOR use case, one
+    // campaign per brand. Everyone else uses ACCOUNT_NOTIFICATION.
+    const campaignBusinessType = (facilityData.textingBusinessData?.businessType) as string | undefined;
+    const usecase = isSoleProprietorBusinessType(campaignBusinessType) ? 'SOLE_PROPRIETOR' : 'ACCOUNT_NOTIFICATION';
     const campaign = await twilio.messaging.v1.campaigns.create({
       brandRegistrationSid: facilityData.twilioBrandSid,
-      usecase: 'ACCOUNT_NOTIFICATION',
+      usecase,
       description: A2P_CAMPAIGN_DESCRIPTION,
       messageFlow: A2P_CAMPAIGN_MESSAGE_FLOW,
       sampleMessages: campaignData.sampleMessages,
@@ -1872,6 +1894,63 @@ export const submitBrandRegistration = functions.runWith({ secrets: TWILIO_SECRE
       return { success: true, brandSid: sid };
     } catch (error: unknown) {
       throw mapTextingOnboardingError('submitBrandRegistration', error);
+    }
+  },
+);
+
+/**
+ * Re-send the sole-proprietor verification code.
+ *
+ * When a SOLE_PROPRIETOR brand is created, Twilio texts a one-time code to the
+ * owner's mobile; the owner verifies by replying to that text. If it never
+ * arrives, this asks Twilio to send it again via the brand's SmsOtp
+ * subresource (POST /v1/a2p/BrandRegistrations/{Sid}/SmsOtp). It does not
+ * submit anything for review or incur a fee. A mobile can be used for OTP at
+ * most three times in its lifetime across all TCR registrations, so this is
+ * deliberately a manual, owner-triggered action, not an automatic retry.
+ */
+export const resendSoleProprietorOtp = functions.runWith({ secrets: TWILIO_SECRETS }).https.onCall(
+  async (data: { facilityId: string }, context) => {
+    try {
+      if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+      const { facilityId } = data || {};
+      if (!facilityId) throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
+      await assertTextingOnboardingEnabled(facilityId);
+      const { data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
+
+      const brandSid = facilityData.twilioBrandSid as string | undefined;
+      if (!brandSid) {
+        throw new functions.https.HttpsError('failed-precondition', 'Register the brand before requesting a verification code.');
+      }
+      if (!isSoleProprietorBusinessType(facilityData.textingBusinessData?.businessType)) {
+        throw new functions.https.HttpsError('failed-precondition', 'Verification codes only apply to sole-proprietor registrations.');
+      }
+
+      if (isTwilioDryRunEnabled()) {
+        return { success: true, dryRun: true };
+      }
+
+      const accountSid = TWILIO_ACCOUNT_SID.value().trim();
+      const authToken = TWILIO_AUTH_TOKEN.value().trim();
+      const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+      const url = `https://messaging.twilio.com/v1/a2p/BrandRegistrations/${brandSid}/SmsOtp`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      if (!resp.ok) {
+        const bodyText = await resp.text().catch(() => '');
+        functions.logger.error('[resendSoleProprietorOtp] Twilio rejected the OTP resend', {
+          facilityId,
+          status: resp.status,
+          body: bodyText.slice(0, 300),
+        });
+        throw new functions.https.HttpsError('internal', 'Could not resend the verification code. Try again shortly.');
+      }
+      functions.logger.info('[resendSoleProprietorOtp] verification code resent', { facilityId });
+      return { success: true };
+    } catch (error: unknown) {
+      throw mapTextingOnboardingError('resendSoleProprietorOtp', error);
     }
   },
 );

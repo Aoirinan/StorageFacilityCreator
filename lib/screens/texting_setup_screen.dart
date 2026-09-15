@@ -62,8 +62,13 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   final _repFirstName = TextEditingController();
   final _repLastName = TextEditingController();
   final _repTitle = TextEditingController();
+  // Sole proprietors have no EIN; Twilio texts a verification code to this
+  // mobile instead. Only used when the business type is 'Sole Prop'.
+  final _mobilePhone = TextEditingController();
   String _businessType = 'LLC';
   bool _consent = false;
+
+  bool get _isSoleProp => _businessType == 'Sole Prop';
 
   final Map<String, bool> _useCases = {
     'Payment reminders': true,
@@ -101,6 +106,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _repFirstName,
       _repLastName,
       _repTitle,
+      _mobilePhone,
     ]) {
       textController.dispose();
     }
@@ -139,7 +145,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _legalName.text = details.legalBusinessName;
       _dba.text = details.dba ?? '';
       _businessType =
-          const {'LLC', 'Corp', 'Nonprofit'}.contains(details.businessType)
+          const {'LLC', 'Corp', 'Nonprofit', 'Sole Prop'}.contains(details.businessType)
               ? details.businessType
               : 'LLC';
       _address1.text = details.addressLine1;
@@ -418,42 +424,80 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                 value: 'Nonprofit',
                 child: Text('Nonprofit'),
               ),
+              DropdownMenuItem(
+                value: 'Sole Prop',
+                child: Text('Sole proprietor (no EIN)'),
+              ),
             ],
             onChanged: locked
                 ? null
                 : (value) => setState(() => _businessType = value ?? 'LLC'),
           ),
           const SizedBox(height: 12),
-          _field(
-            key: const Key('ein'),
-            controller: _ein,
-            label: locked
-                ? 'EIN ending in ${_controller.snapshot?.businessDetails?.einLast4 ?? '••••'}'
-                : 'Federal EIN',
-            hint: locked ? null : '12-3456789',
-            enabled: !locked,
-            keyboardType: TextInputType.number,
-            validator: locked
-                ? null
-                : (value) {
-                    final digits = _digits(value);
-                    return digits.length == 9
-                        ? null
-                        : 'Enter a valid 9-digit EIN.';
-                  },
-          ),
-          const SizedBox(height: 12),
-          const _InfoCallout(
-            icon: Icons.info_outline_rounded,
-            title: 'Sole proprietor or no EIN?',
-            message:
-                'This form needs a registered business with a federal EIN. Sole '
-                'proprietors can still send texts, but carriers handle them as a '
-                'separate registration type: it is set up manually, usually takes '
-                'longer than the 1–2 weeks above, and carriers cap sole-proprietor '
-                'senders at a much lower daily message volume. Contact SFC support '
-                'to start that instead of continuing here.',
-          ),
+          // EIN for registered entities; sole proprietors have none and verify
+          // by mobile OTP instead, so the two fields swap on the business type.
+          if (!_isSoleProp)
+            _field(
+              key: const Key('ein'),
+              controller: _ein,
+              label: locked
+                  ? 'EIN ending in ${_controller.snapshot?.businessDetails?.einLast4 ?? '••••'}'
+                  : 'Federal EIN',
+              hint: locked ? null : '12-3456789',
+              enabled: !locked,
+              keyboardType: TextInputType.number,
+              validator: locked || _isSoleProp
+                  ? null
+                  : (value) {
+                      final digits = _digits(value);
+                      return digits.length == 9
+                          ? null
+                          : 'Enter a valid 9-digit EIN.';
+                    },
+            ),
+          if (_isSoleProp) ...[
+            _field(
+              key: const Key('mobilePhone'),
+              controller: _mobilePhone,
+              label: "Owner's mobile number",
+              hint: '(903) 555-0175',
+              enabled: !locked,
+              keyboardType: TextInputType.phone,
+              validator: locked
+                  ? null
+                  : (value) {
+                      final digits = _digits(value);
+                      final local = digits.length == 11 && digits.startsWith('1')
+                          ? digits.substring(1)
+                          : digits;
+                      return local.length == 10
+                          ? null
+                          : 'Enter the 10-digit mobile that will receive the verification code.';
+                    },
+            ),
+            const SizedBox(height: 12),
+            const _InfoCallout(
+              icon: Icons.info_outline_rounded,
+              title: 'How sole-proprietor verification works',
+              message:
+                  'No EIN is needed. After you submit, the carrier texts a '
+                  'one-time code to the mobile above; reply to that text to '
+                  'verify. Sole-proprietor senders are capped at a lower daily '
+                  'message volume (about a thousand a day) and one campaign, '
+                  'which is plenty for a single facility. Use a real mobile you '
+                  'control, not a landline or an app number.',
+            ),
+          ],
+          if (!_isSoleProp)
+            const _InfoCallout(
+              icon: Icons.info_outline_rounded,
+              title: 'Sole proprietor or no EIN?',
+              message:
+                  'If the business has no federal EIN, choose "Sole proprietor '
+                  '(no EIN)" as the business type above. Verification is by a '
+                  'code texted to your mobile instead of an EIN. It caps daily '
+                  'volume lower, which is fine for a single facility.',
+            ),
           const SizedBox(height: 24),
           _SectionLabel('Registered address'),
           const SizedBox(height: 12),
@@ -892,7 +936,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       'legalBusinessName': _legalName.text.trim(),
       'dba': _emptyToNull(_dba.text),
       'businessType': _businessType,
-      'ein': _digits(_ein.text),
+      // A sole proprietor sends no EIN and instead a mobile for OTP; a
+      // registered entity sends its EIN and no mobile.
+      'ein': _isSoleProp ? '' : _digits(_ein.text),
+      'mobilePhone': _isSoleProp ? _digits(_mobilePhone.text) : '',
       'addressLine1': _address1.text.trim(),
       'city': _city.text.trim(),
       'state': _state.text.trim().toUpperCase(),

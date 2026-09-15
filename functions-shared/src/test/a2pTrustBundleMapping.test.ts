@@ -217,3 +217,40 @@ test('summarizeEvaluation tolerates a missing or malformed payload', () => {
   });
   assert.equal(summarizeEvaluation({ status: 'compliant', results: null }).compliant, true);
 });
+
+// --- sole proprietor -------------------------------------------------------
+
+test('isSoleProprietorBusinessType only for Sole Prop', () => {
+  const { isSoleProprietorBusinessType } = require('../twilio/a2pTrustBundleMapping');
+  assert.equal(isSoleProprietorBusinessType('Sole Prop'), true);
+  assert.equal(isSoleProprietorBusinessType('LLC'), false);
+  assert.equal(isSoleProprietorBusinessType('Corp'), false);
+  assert.equal(isSoleProprietorBusinessType(undefined), false);
+});
+
+test('sole prop business info omits the EIN registration fields', () => {
+  const attrs = buildBusinessInformationAttributes(
+    input({ businessType: 'Sole Prop', ein: undefined, legalBusinessName: 'Keepsake Self Storage' }),
+  );
+  assert.equal(attrs.business_type, 'Sole Proprietorship');
+  assert.equal('business_registration_identifier' in attrs, false);
+  assert.equal('business_registration_number' in attrs, false);
+});
+
+test('non-sole-prop business info keeps the EIN', () => {
+  const attrs = buildBusinessInformationAttributes(input({ businessType: 'LLC', ein: '12-3456789' }));
+  assert.equal(attrs.business_registration_identifier, 'EIN');
+  assert.equal(attrs.business_registration_number, '123456789');
+});
+
+test('sole prop messaging profile carries the mobile OTP number in E.164', () => {
+  const attrs = buildA2pMessagingProfileAttributes(
+    input({ businessType: 'Sole Prop', mobilePhone: '(903) 555-0175' }),
+  );
+  assert.equal(attrs.mobile_phone_number, '+19035550175');
+});
+
+test('non-sole-prop messaging profile has no mobile number field', () => {
+  const attrs = buildA2pMessagingProfileAttributes(input({ businessType: 'LLC' }));
+  assert.equal('mobile_phone_number' in attrs, false);
+});

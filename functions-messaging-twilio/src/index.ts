@@ -33,6 +33,7 @@ export {
   provisionPhoneNumber,
   submitTextingOnboarding,
   submitBrandRegistration,
+  resendSoleProprietorOtp,
   submitCampaign,
   refreshTextingOnboardingStatus,
   resubmitTextingOnboarding,
