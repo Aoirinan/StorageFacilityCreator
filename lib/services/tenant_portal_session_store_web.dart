@@ -48,7 +48,8 @@ void clearParkedSession() {
 void clearStripeRedirectParams() {
   try {
     final uri = Uri.base;
-    if (!uri.queryParameters.containsKey('redirect_status')) return;
+    final q = uri.queryParameters;
+    if (!q.containsKey('redirect_status') && !q.containsKey('portal_payment')) return;
     final cleaned = uri.replace(queryParameters: const {}).toString().replaceFirst('?', '');
     html.window.history.replaceState(null, html.document.title, cleaned);
   } catch (_) {}

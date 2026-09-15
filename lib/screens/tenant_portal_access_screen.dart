@@ -50,8 +50,19 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
     if (parked == null) return;
 
     setState(() => _isLoading = true);
-    final succeeded = redirect['redirect_status'] == 'succeeded';
-    final setupIntentId = redirect['setup_intent'] ?? parked.setupIntentId;
+    // Two ways back: a Payment Element redirect (card save, redirect_status)
+    // or Stripe Checkout (Pay now, portal_payment from our own return URLs).
+    final fromCheckout = redirect.containsKey('portal_payment');
+    final succeeded = fromCheckout
+        ? redirect['portal_payment'] == 'success'
+        : redirect['redirect_status'] == 'succeeded';
+    final setupIntentId = fromCheckout ? null : (redirect['setup_intent'] ?? parked.setupIntentId);
+    final String successText = fromCheckout
+        ? 'Payment received. It can take a minute to show in your payment history.'
+        : 'Card saved.';
+    final String failureText = fromCheckout
+        ? 'Payment cancelled. Nothing was charged.'
+        : 'Card was not saved. You can try again below.';
     try {
       if (succeeded && setupIntentId != null && setupIntentId.isNotEmpty) {
         try {
@@ -72,7 +83,7 @@ class _TenantPortalAccessScreenState extends State<TenantPortalAccessScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(succeeded ? 'Card saved.' : 'Card was not saved. You can try again below.'),
+          content: Text(succeeded ? successText : failureText),
           behavior: SnackBarBehavior.floating,
           backgroundColor: succeeded ? AppTheme.success : AppTheme.error,
         ),

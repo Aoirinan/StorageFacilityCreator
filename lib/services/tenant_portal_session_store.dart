@@ -65,16 +65,22 @@ class TenantPortalSessionStore {
     platform.clearParkedSession();
   }
 
-  /// Query parameters Stripe appends to `return_url` after a redirect, or an
-  /// empty map when the app was not reached that way.
+  /// Query parameters Stripe appends when it sends the tenant back: after a
+  /// Payment Element redirect (`redirect_status`), or after Checkout
+  /// (`portal_payment`, which our own success/cancel URLs carry). Empty when
+  /// the app was not reached that way.
   static Map<String, String> stripeRedirectParams() {
     if (!kIsWeb) return const {};
     final params = Uri.base.queryParameters;
-    if (!params.containsKey('redirect_status')) return const {};
+    final hasElementReturn = params.containsKey('redirect_status');
+    final hasCheckoutReturn = params.containsKey('portal_payment');
+    if (!hasElementReturn && !hasCheckoutReturn) return const {};
     return {
-      'redirect_status': params['redirect_status'] ?? '',
+      if (hasElementReturn) 'redirect_status': params['redirect_status'] ?? '',
+      if (hasCheckoutReturn) 'portal_payment': params['portal_payment'] ?? '',
       if (params['setup_intent'] != null) 'setup_intent': params['setup_intent']!,
       if (params['payment_intent'] != null) 'payment_intent': params['payment_intent']!,
+      if (params['session_id'] != null) 'session_id': params['session_id']!,
     };
   }
 

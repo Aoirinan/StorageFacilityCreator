@@ -14,6 +14,7 @@ import {
   validateSigningTokenForContract,
   checkSigningTokenRateLimit,
   isSigningTokenExpired,
+  getPublicAppUrl,
 } from '@sfc/functions-shared';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_SECRETS, STRIPE_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, writeAuditLog } from './guardrails';
@@ -964,8 +965,11 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
         },
       ],
       customer_email: tenantEmail,
-      success_url: 'https://app.storagefacilitycreator.com/portal/payment/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://app.storagefacilitycreator.com/portal/payment/cancel',
+      // The app routes by hash, so the query goes before it. '/portal/payment/…'
+      // was not a route: after paying, the tenant landed on the manager login.
+      // The access screen reads portal_payment and resumes the parked session.
+      success_url: `${getPublicAppUrl()}/?portal_payment=success&session_id={CHECKOUT_SESSION_ID}#/tenant-portal`,
+      cancel_url: `${getPublicAppUrl()}/?portal_payment=cancel#/tenant-portal`,
       metadata: {
         facilityId: facilityId,
         tenantId: tenantId,

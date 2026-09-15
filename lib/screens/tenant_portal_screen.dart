@@ -275,13 +275,19 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
 
       // Open checkout
       if (kIsWeb) {
-        // On web, open in new tab
+        // Same tab, not a new one: Stripe sends the tenant back to the portal
+        // login when they finish, and the session parked here (sessionStorage,
+        // per tab) is what lets the access screen resume them instead of
+        // showing the login form the moment they have paid.
+        TenantPortalSessionStore.park(
+          lookup: widget.lookup,
+          tenantId: tenantId ?? data.tenant.id,
+        );
         final uri = Uri.parse(checkoutUrl);
-        final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        final opened = await launchUrl(uri, webOnlyWindowName: '_self');
         if (!opened) {
+          TenantPortalSessionStore.clear();
           _showSnack('Could not open checkout. Please try again.');
-        } else {
-          _showSnack('Opening payment checkout in new tab...');
         }
       } else {
         // On mobile, show in WebView dialog
