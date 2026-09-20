@@ -4,7 +4,7 @@ import { SUPPORT_EMAIL } from '@/config/site';
 const SENDGRID_API_URL = 'https://api.sendgrid.com/v3/mail/send';
 
 type ContactLeadPayload = {
-  to: string;
+  to: string[];
   from: string;
   replyTo: string;
   subject: string;
@@ -19,7 +19,7 @@ async function sendContactLeadEmail(payload: ContactLeadPayload, apiKey: string)
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      personalizations: [{ to: [{ email: payload.to }], subject: payload.subject }],
+      personalizations: [{ to: payload.to.map((email) => ({ email })), subject: payload.subject }],
       from: { email: payload.from },
       reply_to: { email: payload.replyTo },
       content: [{ type: 'text/plain', value: payload.body }],
@@ -86,12 +86,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const notifyEmail = process.env.CONTACT_NOTIFY_EMAIL || SUPPORT_EMAIL;
+    // Comma-separated list so more than one inbox sees a lead the moment it lands.
+    const notifyEmails = (process.env.CONTACT_NOTIFY_EMAIL || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (notifyEmails.length === 0) notifyEmails.push(SUPPORT_EMAIL);
     const sendgridApiKey = process.env.SENDGRID_API_KEY;
     const fromEmail = process.env.CONTACT_FROM_EMAIL || SUPPORT_EMAIL;
     const leadType = intent === 'trial' ? 'Trial request' : 'Demo request';
     const payload = {
-      to: notifyEmail,
+      to: notifyEmails,
       from: fromEmail,
       replyTo: email,
       subject: `${leadType}: ${facilityName}`,
