@@ -28,6 +28,8 @@ export default function ContactPage() {
     landingPath: '',
     referrer: '',
   });
+  // Spam guard: the server rejects submissions that arrive implausibly fast after render.
+  const [formOpenedAt, setFormOpenedAt] = useState('');
   const heading = intent === 'trial' ? 'Start your free trial' : 'Book a demo';
   const submitLabel = intent === 'trial' ? 'Start Free Trial' : 'Book a Demo';
 
@@ -35,6 +37,7 @@ export default function ContactPage() {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     setIntent(params.get('intent') === 'trial' ? 'trial' : 'demo');
+    setFormOpenedAt(String(Date.now()));
     setTrackingFields({
       utmSource: params.get('utm_source') ?? '',
       utmMedium: params.get('utm_medium') ?? '',
@@ -117,6 +120,12 @@ export default function ContactPage() {
             <input type="hidden" name="utmContent" value={trackingFields.utmContent} />
             <input type="hidden" name="landingPath" value={trackingFields.landingPath} />
             <input type="hidden" name="referrer" value={trackingFields.referrer} />
+            <input type="hidden" name="formOpenedAt" value={formOpenedAt} />
+            {/* Honeypot: hidden from people, filled by bots. Any value here is silently dropped server-side. */}
+            <div className="absolute -left-[9999px] top-auto h-px w-px overflow-hidden" aria-hidden="true">
+              <label htmlFor="companyWebsite">Company website</label>
+              <input id="companyWebsite" name="companyWebsite" type="text" tabIndex={-1} autoComplete="off" />
+            </div>
             <div>
               <label htmlFor="name" className="block text-sm font-medium text-slate-700">
                 Name <span className="text-red-600">*</span>

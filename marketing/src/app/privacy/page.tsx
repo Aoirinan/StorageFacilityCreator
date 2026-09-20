@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
-import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
+import { LEGAL_ENTITY_DESCRIPTION, LEGAL_ENTITY_NAME, SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Privacy Policy',
@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/privacy' },
 };
 
-const LAST_UPDATED = 'July 18, 2026';
+const LAST_UPDATED = 'September 20, 2026';
 
 export default function PrivacyPage() {
   return (
@@ -33,7 +33,7 @@ export default function PrivacyPage() {
 
           <h2 className="text-xl font-bold text-slate-900">1. Overview</h2>
           <p className="text-slate-600 mt-2">
-            {SITE_NAME} ("we," "us," or "our") is a B2B SaaS platform for storage facility operators ("Customers"). This Privacy Policy explains how we collect, use, share, and protect information when Customers use our Service, and when Customers use the Service to manage their tenants ("End Users" or "Tenants"). By using our website and Service, you agree to this policy.
+            {SITE_NAME} is operated by {LEGAL_ENTITY_NAME}, {LEGAL_ENTITY_DESCRIPTION} ("we," "us," or "our"). It is a B2B SaaS platform for storage facility operators ("Customers"). This Privacy Policy explains how we collect, use, share, and protect information when Customers use our Service, and when Customers use the Service to manage their tenants ("End Users" or "Tenants"). By using our website and Service, you agree to this policy.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">2. Information We Collect</h2>
@@ -89,7 +89,10 @@ export default function PrivacyPage() {
             We share data with third-party vendors and processors that help us operate the Service. We require them to protect your data and use it only for the purposes we specify. We do not sell your personal information or Customer Data to third parties.
           </p>
           <p className="text-slate-600 mt-2">
-            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), Twilio/SendGrid (messaging), OpenAI (optional in-app AI assistant), and Intuit/QuickBooks (optional accounting sync). See our full <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
+            Our current subprocessors include Google Cloud/Firebase (infrastructure), Stripe (payments), Twilio/SendGrid (messaging), OpenAI (optional in-app AI assistant), Intuit/QuickBooks (optional accounting sync), and Vercel (hosting and privacy-preserving analytics for this marketing website, including delivery of contact form submissions). See our full <Link href="/subprocessors" className="text-primary hover:underline">Subprocessor List</Link> for details.
+          </p>
+          <p className="text-slate-600 mt-2">
+            <strong>Where data is processed:</strong> we and our subprocessors store and process data in the United States. If you access the Service from outside the United States, you consent to your data being transferred to and processed in the United States.
           </p>
           <p className="text-slate-600 mt-2">
             We may also disclose information if required by law, court order, or to protect the rights, property, or safety of {SITE_NAME}, our Customers, or others.
@@ -114,6 +117,10 @@ export default function PrivacyPage() {
           <p className="text-slate-600 mt-2">
             Submit requests to:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
+            We verify requests before acting on them and respond within the time required by applicable law. We will not discriminate against you for exercising these rights.
+          </p>
+          <p className="text-slate-600 mt-2">
+            <strong>California residents (CCPA/CPRA):</strong> you have the right to know what personal information we collect, use, and disclose; to request deletion or correction; and to opt out of the sale or sharing of personal information. We do not sell personal information and do not share it for cross-context behavioral advertising, so there is nothing to opt out of. You may use an authorized agent to submit a request on your behalf. Where we process Tenant data on behalf of a Customer, we act as a service provider and will refer requests about that data to the Customer.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">8. Children</h2>

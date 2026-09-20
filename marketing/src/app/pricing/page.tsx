@@ -138,8 +138,8 @@ export default function PricingPage() {
           ))}
         </div>
         <p className="mt-6 text-sm text-slate-600">
-          For security details, see <Link href="/security" className="text-primary hover:underline">Security</Link>. For full feature
-          coverage, see <Link href="/features" className="text-primary hover:underline">Features</Link>.
+          For security details, see <Link href="/security" className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary">Security</Link>. For full feature
+          coverage, see <Link href="/features" className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary">Features</Link>.
         </p>
       </Section>
 

@@ -60,7 +60,7 @@ export default function EsignDisclosurePage() {
               Act (UETA).
             </li>
             <li>
-              Your electronic signature being legally binding on any document you sign through the
+              Your electronic signature being legally binding on any document you sign through the{' '}
               platform.
             </li>
           </ul>
@@ -90,7 +90,7 @@ export default function EsignDisclosurePage() {
             3. Scope of Consent
           </h2>
           <p className="text-slate-600 mt-2">
-            Your consent applies to all documents presented to you electronically through the
+            Your consent applies to all documents presented to you electronically through the{' '}
             {SITE_NAME} platform in connection with your storage unit rental, including but not
             limited to:
           </p>
@@ -135,7 +135,7 @@ export default function EsignDisclosurePage() {
             phone number. A nominal per-page fee may apply for paper copies.
           </p>
           <p className="text-slate-600 mt-2">
-            You may also download and print any document immediately after signing through the
+            You may also download and print any document immediately after signing through the{' '}
             platform.
           </p>
 

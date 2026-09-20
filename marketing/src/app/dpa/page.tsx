@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
-import { SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
+import { LEGAL_ENTITY_DESCRIPTION, LEGAL_ENTITY_NAME, SITE_NAME, SUPPORT_EMAIL } from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Data Processing Agreement',
@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/dpa' },
 };
 
-const LAST_UPDATED = 'February 26, 2026';
+const LAST_UPDATED = 'September 20, 2026';
 
 export default function DpaPage() {
   return (
@@ -25,7 +25,7 @@ export default function DpaPage() {
 
           <h2 className="text-xl font-bold text-slate-900">DPA Available Upon Request</h2>
           <p className="text-slate-600 mt-2">
-            {SITE_NAME} acts as a data processor on behalf of Customers (storage facility operators) with respect to the personal data of their tenants and other End Users that Customers input into the Service.
+            {SITE_NAME} (operated by {LEGAL_ENTITY_NAME}, {LEGAL_ENTITY_DESCRIPTION}) acts as a data processor on behalf of Customers (storage facility operators) with respect to the personal data of their tenants and other End Users that Customers input into the Service.
           </p>
           <p className="text-slate-600 mt-2">
             A Data Processing Agreement (DPA) is available upon request for Customers who require one for compliance purposes (e.g., GDPR, CCPA, or contractual requirements). The DPA sets out the terms under which {SITE_NAME} processes personal data on your behalf, including:

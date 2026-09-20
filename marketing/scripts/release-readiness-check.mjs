@@ -22,7 +22,8 @@ function runChecks() {
   const failures = [];
 
   const siteConfig = read('src/config/site.ts');
-  assertIncludes(siteConfig, "PRIMARY_CTA_HREF = '/contact?intent=trial'", 'Primary CTA href mismatch.', failures);
+  assertIncludes(siteConfig, "APP_SIGNUP_URL = 'https://app.storagefacilitycreator.com/#/signup'", 'App signup URL mismatch.', failures);
+  assertIncludes(siteConfig, 'PRIMARY_CTA_HREF = APP_SIGNUP_URL', 'Primary CTA must send trials to self-serve app signup.', failures);
   assertIncludes(siteConfig, "SECONDARY_CTA_HREF = '/contact?intent=demo'", 'Secondary CTA href mismatch.', failures);
   assertIncludes(siteConfig, "TERTIARY_CTA_HREF = '/product-tour'", 'Tertiary CTA href mismatch.', failures);
   assertIncludes(siteConfig, "SITE_DOMAIN = 'https://www.storagefacilitycreator.com'", 'Canonical domain mismatch.', failures);

@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import {
   getStripeClient,
   getOrCreateBasePriceId,
+  getOrCreateFirstMonthFreeCouponId,
   getRefereePlatformTrialDays,
 } from '@sfc/functions-shared';
 
@@ -66,10 +67,13 @@ export async function executeCreateFacilitySubscriptionCheckout(
     }
 
     const basePriceId = process.env.STRIPE_BASE_PRICE_ID || (await getOrCreateBasePriceId(stripe));
+    // Public offer: 30-day trial, then the first paid month is free.
+    const firstMonthFreeCouponId = await getOrCreateFirstMonthFreeCouponId(stripe);
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: basePriceId, quantity: 1 }],
+      discounts: [{ coupon: firstMonthFreeCouponId }],
       success_url:
         successUrl || `https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}&facility_id=${facilityId}`,
       cancel_url: cancelUrl || `https://app.storagefacilitycreator.com/subscription/cancel?facility_id=${facilityId}`,

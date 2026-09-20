@@ -36,6 +36,7 @@ export const captureMarketingLead = functions
       const name = String(payload.name || '').trim();
       const email = String(payload.email || '').trim();
       const facilityName = String(payload.facilityName || '').trim();
+      const facilityAddress = String(payload.facilityAddress || '').trim();
       const phone = String(payload.phone || '').trim();
       const unitCount = String(payload.unitCount || '').trim();
       const message = String(payload.message || '').trim();
@@ -67,6 +68,7 @@ export const captureMarketingLead = functions
         name,
         email,
         facilityName,
+        facilityAddress: facilityAddress || null,
         phone: phone || null,
         unitCount: unitCount || null,
         message: message || null,

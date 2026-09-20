@@ -103,6 +103,7 @@ export {
 export type { OffboardingEmailInput, OffboardingSweepSummary, EmailContent } from './stripe/offboardingEmails';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
+export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
 
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';

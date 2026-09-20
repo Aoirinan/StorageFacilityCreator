@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/subprocessors' },
 };
 
-const LAST_UPDATED = 'July 13, 2026';
+const LAST_UPDATED = 'September 20, 2026';
 
 const SUBPROCESSORS = [
   {
@@ -53,6 +53,13 @@ const SUBPROCESSORS = [
     website: 'https://quickbooks.intuit.com',
     purpose: 'Optional accounting sync for Customers who connect their own QuickBooks account',
     dataCategories: 'Tenant name, email, phone, and invoice/payment records synced at the Customer\u2019s direction',
+    location: 'United States',
+  },
+  {
+    vendor: 'Vercel',
+    website: 'https://vercel.com',
+    purpose: 'Hosting for this marketing website, delivery of contact form submissions, and cookieless aggregate web analytics',
+    dataCategories: 'Contact form fields (name, email, phone, facility name and address, message), request logs, anonymized page view data',
     location: 'United States',
   },
 ];

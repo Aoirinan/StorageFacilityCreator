@@ -57,8 +57,9 @@ export default function SecurityPage() {
       <Section>
         <h2 className="text-xl font-bold text-slate-900">Data protection</h2>
         <p className="mt-3 text-slate-600">
-          Data is protected in transit with TLS. We use established service providers and avoid unverified certification claims.
-          Security posture is communicated through practical controls and transparent legal documents.
+          Data is protected in transit with TLS and at rest by Google Cloud's default encryption. We do not currently hold
+          SOC 2 or similar third-party certifications and do not claim them; our security posture is described through the
+          practical controls on this page and our published legal documents.
         </p>
       </Section>
 
@@ -66,7 +67,7 @@ export default function SecurityPage() {
         <h2 className="text-xl font-bold text-slate-900">Access controls</h2>
         <p className="mt-3 text-slate-600">
           Role-based access allows facility operators to manage permissions per user and workflow. Authentication is handled
-          through secure identity services and supports modern login protections.
+          through Firebase Authentication and supports two-factor authentication for operator accounts.
         </p>
       </Section>
 
@@ -96,7 +97,8 @@ export default function SecurityPage() {
       <Section>
         <h2 className="text-xl font-bold text-slate-900">Responsible messaging practices</h2>
         <p className="mt-3 text-slate-600">
-          For SMS and email, we require opt-in and support clear opt-out (STOP) and help (HELP) flows. We do not claim carrier approval; we describe our process clearly so you and your tenants know what to expect. See our{' '}
+          For SMS and email, we require opt-in and support clear opt-out (STOP) and help (HELP) flows. Tenant SMS is sent from a
+          toll-free number that has completed carrier verification for business (A2P) messaging. See our{' '}
           <Link href="/sms-terms" className="text-primary hover:underline">SMS Terms</Link>{' '}
           for full details.
         </p>

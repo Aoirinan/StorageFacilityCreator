@@ -19,6 +19,7 @@ import {
   PRICE_MONTHLY,
   TRIAL_LINE,
   ONLINE_RENTALS_ADDON_MONTHLY,
+  LEGAL_ENTITY_NAME,
 } from '@/config/site';
 import { Section } from '@/components/Section';
 import { CtaButton } from '@/components/CtaButton';
@@ -216,6 +217,7 @@ export default function HomePage() {
     '@context': 'https://schema.org',
     '@type': 'Organization',
     name: SITE_NAME,
+    legalName: LEGAL_ENTITY_NAME,
     url: SITE_DOMAIN,
     email: SUPPORT_EMAIL,
     telephone: SUPPORT_PHONE,
@@ -296,9 +298,9 @@ export default function HomePage() {
                 <dd className="font-display text-2xl font-extrabold text-slate-900">Unlimited</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase tracking-wider text-sky-700/90">Setup time</dt>
+                <dt className="text-xs uppercase tracking-wider text-sky-700/90">Contract</dt>
                 <dd className="font-display text-2xl font-extrabold text-slate-900">
-                  &lt;1<span className="text-slate-500 text-base font-semibold"> hour</span>
+                  Month<span className="text-slate-500 text-base font-semibold">-to-month</span>
                 </dd>
               </div>
             </dl>
@@ -341,7 +343,7 @@ export default function HomePage() {
               </svg>
             </div>
             <div className="min-w-0 flex-1">
-              <p className="inline-block rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-white">
+              <p className="inline-block rounded-full bg-emerald-700 px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-white">
                 Add-on · ${ONLINE_RENTALS_ADDON_MONTHLY}/mo
               </p>
               <h2 className="mt-3 font-display text-2xl sm:text-3xl font-extrabold text-emerald-950 text-balance">

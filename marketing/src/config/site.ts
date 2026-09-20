@@ -1,6 +1,9 @@
-export const SITE_VERSION = '1.3.4';
+export const SITE_VERSION = '1.3.5';
 
 export const SITE_NAME = 'Storage Facility Creator';
+/** Registered legal entity behind the Service (Terms, Privacy, DPA, footer). */
+export const LEGAL_ENTITY_NAME = 'Storage Facility Creator LLC';
+export const LEGAL_ENTITY_DESCRIPTION = 'a Texas limited liability company';
 /** Canonical public marketing origin (www). Apex host should 308 to this URL. */
 export const SITE_DOMAIN = 'https://www.storagefacilitycreator.com';
 export const SUPPORT_EMAIL = 'support@storagefacilitycreator.com';
@@ -10,10 +13,12 @@ export const SUPPORT_PHONE = '855-526-4544';
 export const APP_LOGIN_URL = '/login';
 /** Final app destination for login redirect page. */
 export const APP_LOGIN_REDIRECT_URL = 'https://app.storagefacilitycreator.com/#/login';
+/** Self-serve operator signup in the app (the trial starts here, no sales call). */
+export const APP_SIGNUP_URL = 'https://app.storagefacilitycreator.com/#/signup';
 
 /** CTA hierarchy */
 export const PRIMARY_CTA_LABEL = 'Start Free Trial';
-export const PRIMARY_CTA_HREF = '/contact?intent=trial';
+export const PRIMARY_CTA_HREF = APP_SIGNUP_URL;
 export const SECONDARY_CTA_LABEL = 'Book a Demo';
 export const SECONDARY_CTA_HREF = '/contact?intent=demo';
 export const TERTIARY_CTA_LABEL = 'View Product Tour';

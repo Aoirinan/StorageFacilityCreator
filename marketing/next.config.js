@@ -20,8 +20,18 @@ const LEGAL_ROUTES = [
   'acceptable-use',
   'billing',
   'esign-disclosure',
+  'dnr-policy',
   'subprocessors',
   'dpa',
+  'sms-consent-demo',
+];
+
+/** Baseline browser hardening for every response (HSTS is added by Vercel). */
+const SECURITY_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
 ];
 
 const nextConfig = {
@@ -29,10 +39,13 @@ const nextConfig = {
     formats: ['image/avif', 'image/webp'],
   },
   async headers() {
-    return LEGAL_ROUTES.map((route) => ({
-      source: `/${route}`,
-      headers: LEGAL_PAGE_HEADERS,
-    }));
+    return [
+      { source: '/(.*)', headers: SECURITY_HEADERS },
+      ...LEGAL_ROUTES.map((route) => ({
+        source: `/${route}`,
+        headers: LEGAL_PAGE_HEADERS,
+      })),
+    ];
   },
 };
 

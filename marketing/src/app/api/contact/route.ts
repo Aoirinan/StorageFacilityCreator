@@ -52,12 +52,53 @@ async function captureLeadForSuperAdmin(payload: Record<string, unknown>): Promi
   }
 }
 
+/** Submissions faster than this after the form rendered are treated as automated. */
+const MIN_FILL_TIME_MS = 3000;
+/** Best-effort per-IP throttle; state lives only for the life of a warm instance. */
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMIT_MAX = 5;
+const recentSubmissions = new Map<string, number[]>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const stamps = (recentSubmissions.get(ip) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (stamps.length >= RATE_LIMIT_MAX) {
+    recentSubmissions.set(ip, stamps);
+    return true;
+  }
+  stamps.push(now);
+  recentSubmissions.set(ip, stamps);
+  if (recentSubmissions.size > 5000) recentSubmissions.clear();
+  return false;
+}
+
+function looksAutomated(body: Record<string, unknown>): boolean {
+  const honeypot = String(body.companyWebsite ?? '').trim();
+  if (honeypot) return true;
+  const openedAt = Number(String(body.formOpenedAt ?? '').trim());
+  if (Number.isFinite(openedAt) && openedAt > 0 && Date.now() - openedAt < MIN_FILL_TIME_MS) return true;
+  return false;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = (await request.json()) as Record<string, unknown>;
+    const ip = (request.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+    if (isRateLimited(ip)) {
+      return NextResponse.json(
+        { message: 'Too many requests. Please wait a few minutes and try again, or email us.' },
+        { status: 429 }
+      );
+    }
+    if (looksAutomated(body)) {
+      // Pretend success so bots do not learn what tripped them; nothing is sent.
+      return NextResponse.json({ success: true });
+    }
+
     const name = String(body.name ?? '').trim();
     const email = String(body.email ?? '').trim();
     const facilityName = String(body.facilityName ?? '').trim();
+    const facilityAddress = String(body.facilityAddress ?? '').trim();
     const phone = String(body.phone ?? '').trim();
     const unitCount = String(body.unitCount ?? '').trim();
     const message = String(body.message ?? '').trim();
@@ -105,6 +146,7 @@ export async function POST(request: NextRequest) {
         `Name: ${name}`,
         `Email: ${email}`,
         `Facility: ${facilityName}`,
+        facilityAddress ? `Facility address: ${facilityAddress}` : null,
         phone ? `Phone: ${phone}` : null,
         unitCount ? `Units: ${unitCount}` : null,
         phone ? `SMS consent checkbox: ${smsConsent ? 'checked' : 'not checked'}` : null,
@@ -134,6 +176,7 @@ export async function POST(request: NextRequest) {
         name,
         email,
         facilityName,
+        facilityAddress,
         phone,
         unitCount,
         message,

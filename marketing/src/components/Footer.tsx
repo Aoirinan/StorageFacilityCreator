@@ -6,6 +6,7 @@ import {
   PRIMARY_CTA_LABEL,
   SECONDARY_CTA_HREF,
   SECONDARY_CTA_LABEL,
+  LEGAL_ENTITY_NAME,
   SITE_NAME,
   SITE_VERSION,
   SUPPORT_EMAIL,
@@ -56,7 +57,8 @@ export function Footer() {
             <Link href="/" className="flex items-center gap-2 w-fit">
               <Image
                 src={LOGO_PATH}
-                alt={SITE_NAME}
+                alt=""
+                aria-hidden
                 width={36}
                 height={36}
                 className="h-9 w-auto object-contain opacity-90"
@@ -98,7 +100,7 @@ export function Footer() {
 
           {/* Product */}
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-4">Product</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">Product</p>
             <nav className="flex flex-col gap-2.5" aria-label="Product links">
               {PRODUCT_LINKS.map(({ href, label }) => (
                 <Link
@@ -114,7 +116,7 @@ export function Footer() {
 
           {/* Legal */}
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-4">Legal</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">Legal</p>
             <nav className="flex flex-col gap-2.5" aria-label="Legal links">
               {LEGAL_LINKS.map(({ href, label }) => (
                 <Link
@@ -130,7 +132,7 @@ export function Footer() {
 
           {/* Trust & Security */}
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-4">Trust</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">Trust</p>
             <nav className="flex flex-col gap-2.5" aria-label="Trust links">
               {TRUST_LINKS.map(({ href, label }) => (
                 <Link
@@ -146,8 +148,8 @@ export function Footer() {
         </div>
 
         {/* Bottom bar */}
-        <div className="pt-8 border-t border-slate-700/60 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
-          <p>© {CURRENT_YEAR} {SITE_NAME}. All rights reserved.</p>
+        <div className="pt-8 border-t border-slate-700/60 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+          <p>© {CURRENT_YEAR} {LEGAL_ENTITY_NAME}. All rights reserved.</p>
           <p aria-label="Site version">v{SITE_VERSION}</p>
         </div>
 

@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/cookies' },
 };
 
-const LAST_UPDATED = 'February 26, 2026';
+const LAST_UPDATED = 'September 20, 2026';
 
 export default function CookiesPage() {
   return (
@@ -68,7 +68,7 @@ export default function CookiesPage() {
 
           <h3 className="text-lg font-semibold text-slate-800 mt-6">Analytics Cookies</h3>
           <p className="text-slate-600 mt-2">
-            We may use aggregate, anonymized analytics to understand how the marketing site is used (e.g., page views, referral sources). If we add third-party analytics tools in the future, we will update this policy and provide opt-out guidance. Currently, we do not deploy third-party analytics trackers on this site.
+            This marketing website uses Vercel Web Analytics to understand aggregate usage (page views, referral sources, country, device type). It does not set cookies, does not use browser fingerprinting, and does not track you across other websites; visitor identifiers are anonymized and discarded within 24 hours. No advertising or cross-site tracking tools are deployed on this site. If we add other analytics tools in the future, we will update this policy and describe how to opt out.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">How to Control Cookies</h2>

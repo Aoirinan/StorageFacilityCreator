@@ -86,7 +86,7 @@ const COMPARE_ROWS: Row[] = [
   },
   {
     area: 'Gate / kiosk ecosystem',
-    sfc: 'Core integrations shipping; partner ecosystem expanding',
+    sfc: 'Built-in gate access code management; third-party gate and kiosk hardware integrations not yet available',
     typical: 'Often broader partner libraries on established platforms',
   },
   {
@@ -146,7 +146,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'Can I migrate data from my current software?',
-    a: 'Yes. Migration support is available for tenants, units, balances, and payment methods based on the export formats your current platform provides. Complexity varies by platform and by how custom your setup is. See the Migration page for scope and timelines.',
+    a: 'Yes. Migration support is available for tenants, units, and balances based on the export formats your current platform provides. Saved cards generally cannot be moved between payment processors, so tenants re-enter payment details once through the tenant portal. Complexity varies by platform and by how custom your setup is. See the Migration page for scope and timelines.',
   },
   {
     q: 'Does SFC have feature parity with legacy storage management software?',

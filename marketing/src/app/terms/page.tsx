@@ -3,7 +3,14 @@ import Link from 'next/link';
 import { Section } from '@/components/Section';
 import { A2pSnippet } from '@/components/A2pSnippet';
 import { LegalLinksPanel } from '@/components/LegalLinksPanel';
-import { SITE_NAME, SUPPORT_EMAIL, PRICE_MONTHLY, TRIAL_LINE } from '@/config/site';
+import {
+  LEGAL_ENTITY_DESCRIPTION,
+  LEGAL_ENTITY_NAME,
+  SITE_NAME,
+  SUPPORT_EMAIL,
+  PRICE_MONTHLY,
+  TRIAL_LINE,
+} from '@/config/site';
 
 export const metadata: Metadata = {
   title: 'Terms of Service',
@@ -11,7 +18,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/terms' },
 };
 
-const LAST_UPDATED = 'July 13, 2026';
+const LAST_UPDATED = 'September 20, 2026';
 
 export default function TermsPage() {
   return (
@@ -41,7 +48,7 @@ export default function TermsPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">2. Agreement</h2>
           <p className="text-slate-600 mt-2">
-            By accessing or using the Service, you (the Customer) agree to these Terms of Service ("Terms"). If you are using the Service on behalf of an organization, you represent that you have authority to bind that organization to these Terms.
+            These Terms are a binding agreement between you (the Customer) and {LEGAL_ENTITY_NAME}, {LEGAL_ENTITY_DESCRIPTION} ("{SITE_NAME}," "we," "us," or "our"). By accessing or using the Service, you agree to these Terms of Service ("Terms"). If you are using the Service on behalf of an organization, you represent that you have authority to bind that organization to these Terms.
           </p>
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">3. License Grant and Restrictions</h2>
@@ -62,8 +69,8 @@ export default function TermsPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">4. Subscription and Billing</h2>
           <ul className="list-disc pl-6 text-slate-600 space-y-1 mt-2">
-            <li><strong>Pricing:</strong> Subscription is billed at ${PRICE_MONTHLY}/month per account, as described on our Pricing page. There is no onboarding fee.</li>
-            <li><strong>Trial:</strong> We may offer a trial period (e.g. {TRIAL_LINE}). Trial terms will be stated at signup.</li>
+            <li><strong>Pricing:</strong> Subscription is billed at ${PRICE_MONTHLY}/month per facility, as described on our Pricing page. An account with several facilities is billed ${PRICE_MONTHLY} per facility, per month. There is no onboarding fee.</li>
+            <li><strong>Trial:</strong> New subscriptions start with a {TRIAL_LINE}: no charge for the first 30 days, and the first monthly invoice after the trial is discounted to $0. A payment method is collected at signup and is first charged at the start of your second paid month. Cancel before then and you owe nothing. Trial terms are confirmed at signup and may change for future signups.</li>
             <li><strong>Payment:</strong> You agree to pay fees when due. Failure to pay may result in suspension or termination of access.</li>
             <li><strong>Renewal:</strong> Subscriptions renew automatically on a monthly basis unless cancelled before the renewal date.</li>
             <li><strong>Cancellation and Refunds:</strong> You may cancel at any time. Cancellation takes effect at the end of the current billing period. We do not provide refunds for partial periods unless required by applicable law or agreed to in writing. See our <Link href="/billing" className="text-primary hover:underline">Billing &amp; Refund Policy</Link> for details.</li>
@@ -172,7 +179,7 @@ export default function TermsPage() {
 
           <h2 className="text-xl font-bold text-slate-900 mt-8">17. Contact</h2>
           <p className="text-slate-600 mt-2">
-            Questions about these Terms:{' '}
+            The Service is operated by {LEGAL_ENTITY_NAME}, {LEGAL_ENTITY_DESCRIPTION}. Questions about these Terms:{' '}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>.
           </p>
           <LegalLinksPanel />
