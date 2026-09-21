@@ -223,31 +223,22 @@ class FacilityCreatorAccountService {
         return;
       }
 
-      final updatedFacilityIds = [...account.facilityIds, facilityId];
-
-      await _firestore
-          .collection('facilityCreatorAccounts')
-          .doc(accountId)
-          .update({
-        'facilityIds': updatedFacilityIds,
-        'updatedAt': Timestamp.fromDate(DateTime.now()),
-      });
-
+      // Both sides of the link are written by a callable, not from here.
+      // `facilities/{id}.facilityCreatorAccountId` is backend-only: entitlement
+      // is resolved by reading it and checking the named account's
+      // subscription, without checking who owns that account, so a
+      // client-writable link would be a free premium subscription. The
+      // callable does the same ownership check this method used to rely on the
+      // rules for, and then writes both documents.
       final referralBy = account.referredByAccountId?.trim();
-      final facilityUpdate = <String, dynamic>{
-        'facilityCreatorAccountId': accountId,
-        'updatedAt': Timestamp.fromDate(DateTime.now()),
-      };
-      final facSnap = await _firestore.collection('facilities').doc(facilityId).get();
-      final existingPlatformRef = (facSnap.data()?['platformReferralReferredByAccountId'] as String?)?.trim();
-      if ((existingPlatformRef == null || existingPlatformRef.isEmpty) &&
-          referralBy != null &&
-          referralBy.isNotEmpty) {
-        facilityUpdate['platformReferralReferredByAccountId'] = referralBy;
-      }
-
-      // Also update the facility to link to account
-      await _firestore.collection('facilities').doc(facilityId).update(facilityUpdate);
+      await FirebaseFunctions.instance
+          .httpsCallable('linkFacilityToAccount')
+          .call<Map<String, dynamic>>({
+        'accountId': accountId,
+        'facilityId': facilityId,
+        if (referralBy != null && referralBy.isNotEmpty)
+          'platformReferralReferredByAccountId': referralBy,
+      });
 
       // Update Stripe subscription quantity if subscription exists
       await _syncSubscriptionQuantity(accountId);

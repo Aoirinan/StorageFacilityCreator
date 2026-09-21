@@ -62,3 +62,6 @@ export * from './stripeFacilityCallables';
 
 export { autoSyncInvoiceToQuickBooks, autoSyncPaymentToQuickBooks } from './quickbooksFirestoreTriggers';
 export { onFacilityDeletedDisconnectStripe } from './stripeFacilityConnectOffboarding';
+// The signup path's link step. facilityCreatorAccountId is backend-only
+// because entitlement is resolved through it; see linkFacilityToAccount.ts.
+export { linkFacilityToAccount } from './linkFacilityToAccount';

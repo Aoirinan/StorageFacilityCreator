@@ -202,6 +202,14 @@ export {
   ensureIdempotentResource,
 } from './twilio/textingOnboardingHelpers';
 
+export { decideFacilityAccountLink } from './platform/facilityAccountLink';
+export type {
+  FacilityAccountLinkDecision,
+  LinkableAccount,
+  LinkableFacility,
+  LinkRefusalCode,
+} from './platform/facilityAccountLink';
+
 export {
   buildFacilityForOwner,
   buildOwnerRoleRow,
