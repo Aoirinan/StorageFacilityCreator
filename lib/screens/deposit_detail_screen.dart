@@ -3,13 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../models/deposit_model.dart';
+import '../models/deposit_status_actions.dart';
 import '../services/deposit_service.dart';
 import '../services/payment_service.dart';
 import '../models/payment_model.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 
 class DepositDetailScreen extends ConsumerStatefulWidget {
@@ -31,8 +29,6 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final dateFormat = DateFormat('MMM d, yyyy');
-    
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -40,6 +36,13 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
           children: [
             _buildStatusCard(),
             const SizedBox(height: 16),
+            // This screen had no Scaffold, no AppBar and no menu, so
+            // _handleMenuAction was unreachable and with it every status
+            // change. Marking a batch deposited, reconciling it against the
+            // bank statement and cancelling it were all impossible anywhere in
+            // the app: DepositService.updateDepositStatus and reconcileDeposit
+            // had no other caller.
+            _buildStatusActions(),
             _buildDepositInfo(),
             const SizedBox(height: 16),
             _buildAmountBreakdown(),
@@ -379,18 +382,86 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
     return payments;
   }
 
-  void _handleMenuAction(String action) {
-    switch (action) {
-      case 'mark_deposited':
-        _updateStatus(DepositStatus.deposited);
-        break;
-      case 'reconcile':
-        _showReconcileDialog();
-        break;
-      case 'cancel':
-        _updateStatus(DepositStatus.cancelled);
-        break;
+  Widget _buildStatusActions() {
+    final actions = availableDepositActions(widget.deposit.status);
+    if (actions.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Next steps',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final action in actions)
+                  action == DepositAction.cancel
+                      ? OutlinedButton(
+                          onPressed:
+                              _isUpdating ? null : () => _runStatusAction(action),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.error,
+                          ),
+                          child: Text(action.label),
+                        )
+                      : ElevatedButton(
+                          onPressed:
+                              _isUpdating ? null : () => _runStatusAction(action),
+                          child: Text(action.label),
+                        ),
+              ],
+            ),
+            if (_isUpdating) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runStatusAction(DepositAction action) async {
+    if (action == DepositAction.reconcile) {
+      _showReconcileDialog();
+      return;
     }
+
+    final target = statusAfter(action);
+    if (target == null) return;
+
+    if (action == DepositAction.cancel) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Cancel deposit'),
+          content: const Text(
+            'This cancels the deposit batch. It cannot be reopened from this '
+            'screen.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Back'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Cancel deposit'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    await _updateStatus(target);
   }
 
   void _showReconcileDialog() {

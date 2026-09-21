@@ -1,13 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../models/lien_model.dart';
+import '../models/lien_stage_actions.dart';
 import '../services/lien_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 
 class LienDetailScreen extends ConsumerStatefulWidget {
   final LienModel lien;
@@ -58,6 +55,11 @@ class _LienDetailScreenState extends ConsumerState<LienDetailScreen> {
           children: [
             _buildStatusCard(lien),
             const SizedBox(height: 16),
+            // This screen had no Scaffold, no AppBar and no menu, so
+            // _handleMenuAction was never reachable and with it every stage
+            // transition: notice, filing, auction, resolve, cancel. An
+            // operator could look at a lien and do nothing to it.
+            _buildStageActions(lien),
             _buildLienInfo(lien, dateFormat),
             const SizedBox(height: 16),
             _buildAmountBreakdown(lien),
@@ -387,26 +389,112 @@ class _LienDetailScreenState extends ConsumerState<LienDetailScreen> {
     }
   }
 
-  void _handleMenuAction(String action) {
+  Widget _buildStageActions(LienModel lien) {
+    final actions = availableLienActions(lien.currentStage);
+    if (actions.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Next steps',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'A lien moves one step at a time. Only the steps available from '
+              'its current stage are shown.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final action in actions)
+                  action == LienAction.cancel
+                      ? OutlinedButton(
+                          onPressed:
+                              _isUpdating ? null : () => _runStageAction(action),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.error,
+                          ),
+                          child: Text(action.label),
+                        )
+                      : ElevatedButton(
+                          onPressed:
+                              _isUpdating ? null : () => _runStageAction(action),
+                          child: Text(action.label),
+                        ),
+              ],
+            ),
+            if (_isUpdating) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runStageAction(LienAction action) async {
+    if (action == LienAction.fileLien) {
+      _showFileLienDialog();
+      return;
+    }
+    if (action == LienAction.scheduleAuction) {
+      _showScheduleAuctionDialog();
+      return;
+    }
+
+    final target = stageAfter(action);
+    if (target == null) return;
+
+    if (action.needsConfirmation) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(action.label),
+          content: Text(_confirmationBody(action)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Back'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    await _updateStage(target);
+  }
+
+  String _confirmationBody(LienAction action) {
     switch (action) {
-      case 'send_notice':
-        _updateStage(LienStage.noticeSent);
-        break;
-      case 'file_lien':
-        _showFileLienDialog();
-        break;
-      case 'schedule_auction':
-        _showScheduleAuctionDialog();
-        break;
-      case 'complete_auction':
-        _updateStage(LienStage.auctionComplete);
-        break;
-      case 'resolve':
-        _updateStage(LienStage.resolved);
-        break;
-      case 'cancel':
-        _updateStage(LienStage.cancelled);
-        break;
+      case LienAction.sendNotice:
+        return 'This records the pre-lien notice as sent and generates the '
+            'notice document. The statutory clock runs from this date.';
+      case LienAction.completeAuction:
+        return 'This records the auction as complete.';
+      case LienAction.resolve:
+        return 'This closes the lien as resolved. It cannot be reopened from '
+            'this screen.';
+      case LienAction.cancel:
+        return 'This cancels the lien. It cannot be reopened from this screen.';
+      case LienAction.fileLien:
+      case LienAction.scheduleAuction:
+        return '';
     }
   }
 

@@ -9,11 +9,7 @@ import '../providers/auth_provider.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/lien_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
-import 'lien_detail_screen.dart';
 
 /// Provider for liens stream (by facility)
 final liensForFacilityProvider = StreamProvider.family<List<LienModel>, String>((ref, facilityId) {
@@ -130,26 +126,46 @@ class _LienListScreenState extends ConsumerState<LienListScreen> {
           final facilities = snapshot.data ?? [];
           if (facilities.isEmpty) return const SizedBox.shrink();
           
-          return DropdownButtonFormField<String>(
-            value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
-            decoration: InputDecoration(
-              labelText: 'Facility',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-            items: facilities.map((facility) {
-              return DropdownMenuItem(
-                value: facility.id,
-                child: Text(facility.name),
-              );
-            }).toList(),
-            onChanged: (value) {
-              if (value != null) {
-                setState(() {
-                  _selectedFacilityId = value;
-                });
-              }
-            },
+          final hasFilters = _stageFilter != null || _statusFilter != null;
+          return Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
+                  decoration: InputDecoration(
+                    labelText: 'Facility',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                  items: facilities.map((facility) {
+                    return DropdownMenuItem(
+                      value: facility.id,
+                      child: Text(facility.name),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _selectedFacilityId = value;
+                      });
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              // _stageFilter and _statusFilter are read when the list is built
+              // and the empty state already says "no liens match your filters",
+              // but nothing could ever set them: the only code that assigned
+              // them was a dialog no control opened.
+              IconButton(
+                onPressed: () => _showFiltersDialog(context),
+                icon: Badge(
+                  isLabelVisible: hasFilters,
+                  child: const Icon(Icons.filter_alt_outlined),
+                ),
+                tooltip: hasFilters ? 'Filters applied' : 'Filter liens',
+              ),
+            ],
           );
         },
       ),

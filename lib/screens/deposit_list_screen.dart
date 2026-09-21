@@ -154,26 +154,54 @@ class _DepositListScreenState extends ConsumerState<DepositListScreen> {
           final facilities = snapshot.data ?? [];
           if (facilities.isEmpty) return const SizedBox.shrink();
           
-          return DropdownButtonFormField<String>(
-            value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
-            decoration: InputDecoration(
-              labelText: 'Facility',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-            items: facilities.map((facility) {
-              return DropdownMenuItem(
-                value: facility.id,
-                child: Text(facility.name),
-              );
-            }).toList(),
-            onChanged: (value) {
-              if (value != null) {
-                setState(() {
-                  _selectedFacilityId = value;
-                });
-              }
-            },
+          final hasFilters = _statusFilter != null ||
+              _startDate != null ||
+              _endDate != null;
+          return Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _selectedFacilityId.isEmpty ? null : _selectedFacilityId,
+                  decoration: InputDecoration(
+                    labelText: 'Facility',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                  items: facilities.map((facility) {
+                    return DropdownMenuItem(
+                      value: facility.id,
+                      child: Text(facility.name),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _selectedFacilityId = value;
+                      });
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              // The list filters on _statusFilter, _startDate and _endDate, but
+              // the only code that set them was a dialog nothing opened.
+              IconButton(
+                onPressed: () => _showFiltersDialog(context),
+                icon: Badge(
+                  isLabelVisible: hasFilters,
+                  child: const Icon(Icons.filter_alt_outlined),
+                ),
+                tooltip: hasFilters ? 'Filters applied' : 'Filter deposits',
+              ),
+              // Deposit batches could not be created from anywhere in the app:
+              // the route exists and _navigateToCreateDeposit was written, but
+              // no control called it.
+              FilledButton.icon(
+                onPressed: _navigateToCreateDeposit,
+                icon: const Icon(Icons.add),
+                label: const Text('New deposit'),
+              ),
+            ],
           );
         },
       ),
