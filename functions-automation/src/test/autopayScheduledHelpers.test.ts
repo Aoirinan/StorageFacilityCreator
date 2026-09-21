@@ -202,3 +202,40 @@ test('a missing payment method still blocks the charge', () => {
   assert.equal(shouldAttemptCharge(65, ''), false);
   assert.equal(shouldAttemptCharge(65, undefined), false);
 });
+
+test('a tenant billed on the 31st is charged every month, not every other', () => {
+  // new Date(y, m, 31) rolls forward when the month is shorter, so 31 Jan used
+  // to become 3 Mar, then 1 May, then 1 Jul: six charges a year, with the
+  // tenant accruing delinquency for the months autopay never ran.
+  const schedule = { frequency: 'monthly', dayOfMonth: 31 };
+
+  const afterJan = calculateNextAutopayRun(schedule, new Date(2026, 0, 31));
+  assert.equal(afterJan.getMonth(), 1, 'next run should be in February');
+  assert.equal(afterJan.getDate(), 28, 'clamped to the last day of February');
+
+  const afterFeb = calculateNextAutopayRun(schedule, afterJan);
+  assert.equal(afterFeb.getMonth(), 2, 'then March');
+  assert.equal(afterFeb.getDate(), 31);
+
+  const afterMar = calculateNextAutopayRun(schedule, afterFeb);
+  assert.equal(afterMar.getMonth(), 3, 'then April');
+  assert.equal(afterMar.getDate(), 30, 'clamped to the last day of April');
+});
+
+test('a leap February takes the 29th', () => {
+  const next = calculateNextAutopayRun(
+    { frequency: 'monthly', dayOfMonth: 31 },
+    new Date(2028, 0, 31),
+  );
+  assert.equal(next.getMonth(), 1);
+  assert.equal(next.getDate(), 29);
+});
+
+test('an ordinary day of month is untouched', () => {
+  const next = calculateNextAutopayRun(
+    { frequency: 'monthly', dayOfMonth: 5 },
+    new Date(2026, 0, 5),
+  );
+  assert.equal(next.getMonth(), 1);
+  assert.equal(next.getDate(), 5);
+});

@@ -164,5 +164,14 @@ export function calculateNextAutopayRun(
   }
 
   const dayOfMonth = schedule?.dayOfMonth ?? 1;
-  return new Date(now.getFullYear(), now.getMonth() + 1, dayOfMonth);
+  // Clamp to the length of the target month.
+  //
+  // `new Date(y, m, 31)` rolls forward when the month is shorter, so a tenant
+  // on the 31st skipped every short month: 31 Jan became 3 Mar, then 1 May,
+  // then 1 Jul. Six charges a year instead of twelve, with the tenant accruing
+  // delinquency and late fees for months autopay never ran.
+  const targetYear = now.getFullYear();
+  const targetMonth = now.getMonth() + 1;
+  const daysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(targetYear, targetMonth, Math.min(dayOfMonth, daysInTargetMonth));
 }

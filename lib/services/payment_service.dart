@@ -642,9 +642,36 @@ class PaymentService {
       final tenantName = tenantData['name'] ?? 'Unknown';
       final unitNumber = tenantData['unitNumber'] ?? '';
 
-      // Calculate new paidThrough date (end of current month)
+      // Advance paidThrough by the whole months this payment actually covers.
+      //
+      // It used to jump to the end of the current month regardless of amount,
+      // so a tenant three months behind who paid $25 was marked paid through
+      // today: isTenantLate went false, the delinquency job skipped them, and
+      // collection stopped on the rest of the debt. Paying six months forward
+      // had the mirror problem, advancing only to this month's end.
       final now = DateTime.now();
       final endOfCurrentMonth = DateTime(now.year, now.month + 1, 0);
+      final monthlyRate = (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0;
+      final existingPaidThrough = (tenantData['paidThrough'] as Timestamp?)?.toDate();
+
+      DateTime? newPaidThrough;
+      if (monthlyRate <= 0) {
+        // No rate to reason about; keep the previous behaviour.
+        newPaidThrough = endOfCurrentMonth;
+      } else {
+        final monthsCovered = (amount / monthlyRate).floor();
+        if (monthsCovered >= 1) {
+          // Advance from where they already stood, so catching up on arrears
+          // moves them forward one month per month paid rather than clearing
+          // the whole backlog.
+          final base = (existingPaidThrough != null &&
+                  existingPaidThrough.isAfter(DateTime(now.year, now.month, 0)))
+              ? existingPaidThrough
+              : DateTime(now.year, now.month, 0);
+          newPaidThrough = DateTime(base.year, base.month + monthsCovered + 1, 0);
+        }
+        // A part-month payment leaves paidThrough alone: it does not buy a month.
+      }
 
       // Create payment record
       final paymentRef = await _firestore
@@ -671,14 +698,14 @@ class PaymentService {
         'isActive': true,
       });
 
-      // Update tenant's paidThrough date
+      // Update tenant's paidThrough date, only when a whole month was covered.
       await _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('tenants')
           .doc(tenantId)
           .update({
-        'paidThrough': Timestamp.fromDate(endOfCurrentMonth),
+        if (newPaidThrough != null) 'paidThrough': Timestamp.fromDate(newPaidThrough),
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
@@ -734,7 +761,9 @@ class PaymentService {
       if (kDebugMode) {
         print('✅ Tenant marked as paid successfully: $tenantId');
         print('✅ Payment record created: ${paymentRef.id}');
-        print('✅ Tenant paidThrough updated to: $endOfCurrentMonth');
+        print(newPaidThrough != null
+            ? '✅ Tenant paidThrough updated to: $newPaidThrough'
+            : '✅ Payment recorded; paidThrough unchanged (less than one month)');
       }
 
       return paymentRef.id;
