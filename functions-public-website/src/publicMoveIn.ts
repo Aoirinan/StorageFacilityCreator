@@ -225,6 +225,19 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
 });
 
 /**
+ * Stable, short, non-identifying label for the caller, used to partition rate
+ * limit counters. Hashed so no raw IP is written to Firestore.
+ */
+function callerFingerprint(context: functions.https.CallableContext): string {
+  if (context.auth?.uid) return `u_${context.auth.uid.slice(0, 16)}`;
+  const req = context.rawRequest as { ip?: string; headers?: Record<string, unknown> } | undefined;
+  const forwarded = String(req?.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
+  const ip = forwarded || String(req?.ip ?? '');
+  if (!ip) return 'anon';
+  return `ip_${crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16)}`;
+}
+
+/**
  * Creates a short-lived public reservation hold for a unit.
  * This reduces obvious double-booking races before move-in completion.
  */
@@ -254,6 +267,21 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     userId: context.auth?.uid || null,
   });
 
+  // Second, tighter budget partitioned by caller.
+  //
+  // The facility-wide limit above bounds total load but does nothing about one
+  // actor taking the whole allowance: holds mark units unavailable, so a single
+  // caller could hold every unit in a facility and exhaust the budget real
+  // renters need, emptying the storefront. Partitioning the key gives each
+  // caller its own counter without changing the shared helper.
+  await enforceRateLimit({
+    facilityId: String(facilityId),
+    key: `createPublicReservationHold_caller_${callerFingerprint(context)}`,
+    limit: 5,
+    windowSeconds: 60,
+    userId: context.auth?.uid || null,
+  });
+
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name ? String(name).trim() : '',
     email: String(email).trim().toLowerCase(),
@@ -261,7 +289,10 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
   });
 
   const now = new Date();
-  const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 60));
+  // Capped at 15 minutes, not 60. A hold makes the unit unavailable to everyone
+  // else, so a long window is a cheap way to keep inventory off the market.
+  // Fifteen minutes is ample for a checkout that is already in progress.
+  const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 15));
   const expiresAt = new Date(now.getTime() + boundedMinutes * 60 * 1000);
   const moveInToken = crypto.randomBytes(24).toString('hex');
 

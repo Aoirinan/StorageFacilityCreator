@@ -662,3 +662,37 @@ test('an operator cannot seize another operator’s public storefront slug', asy
       .update({ publicSettings: { enabled: false } }),
   );
 });
+
+test('audit logs are immutable once written', async () => {
+  // Two rule blocks used to match this path: a broad `allow write` for
+  // owners/managers, and the intended immutable block. Rules OR together, so the
+  // broad one won and an owner could rewrite or delete their own audit trail —
+  // the one record that exists to survive them.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('auditLogs')
+      .doc('log-1')
+      .set({
+        facilityId: FACILITY_ID,
+        action: 'tenant_deleted',
+        entityType: 'tenant',
+        entityId: TENANT_ID,
+        userId: OWNER_UID,
+        userEmail: 'owner@example.com',
+        timestamp: new Date(),
+        changes: {},
+        metadata: {},
+      });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const logRef = owner.firestore().collection('facilities').doc(FACILITY_ID).collection('auditLogs').doc('log-1');
+
+  await assertSucceeds(logRef.get());
+  await assertFails(logRef.update({ action: 'nothing_happened' }));
+  await assertFails(logRef.delete());
+});

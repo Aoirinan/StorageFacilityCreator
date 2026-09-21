@@ -139,7 +139,10 @@
       'referredByAccountId',
       'referralRewardPreferredFacilityId',
       'approvedAt',
-      'rejectedAt'
+      'rejectedAt',
+      // Exempts the account from billing entirely. Super-admin only, for the
+      // operator's own account; self-granting it would be a free subscription.
+      'billingExempt'
     ];
   }
 
@@ -177,6 +180,9 @@
       'websiteAdminTrialRevokedAt',
       'websiteAdminTrialRevokedByUid',
       'websiteAdminTrialRevokedByEmail',
+      // Exempts the facility from billing entirely. Super-admin only, for the
+      // operator's own sites; self-granting it would be a free subscription.
+      'billingExempt',
 
       // A2P 10DLC / Twilio registration state. Backend-only, and a genuine
       // privilege escalation if it is not: the SMS send path reads

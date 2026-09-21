@@ -22,7 +22,6 @@
     "facilities/12-leases.rules",
     "facilities/13-mapShapes.rules",
     "facilities/14-mapEngine.rules",
-    "facilities/15-auditLogs.rules",
     "facilities/16-reminders.rules",
     "facilities/17-reminderSchedules.rules",
     "facilities/18-gateAccess.rules",
