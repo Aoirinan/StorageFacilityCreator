@@ -9,6 +9,7 @@ import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'app_route.dart';
 import '../widgets/subscription_warning_banner.dart';
+import '../widgets/support_session_banner.dart';
 import '../widgets/subscription_lock_overlay.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/subscription_guard_service.dart';
@@ -316,6 +317,10 @@ class AppShell extends ConsumerWidget {
                       children: [
                         // Top bar
                         _buildTopBar(context, isMobile, currentRoute),
+
+                        // Visible on every screen while a super admin is
+                        // working inside someone else's facility.
+                        const SupportSessionBanner(),
 
                         // Page content
                         Expanded(child: KeyboardScrollable(child: child)),

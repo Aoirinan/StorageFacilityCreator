@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/providers/support_access_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
+import 'package:sfcapp/services/support_access_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class FacilitiesTab extends ConsumerStatefulWidget {
@@ -197,6 +202,57 @@ class _FacilityRow extends ConsumerWidget {
     }
   }
 
+  /// Grants the signed-in super admin a manager role on this facility and
+  /// opens it, so an owner's units and tenants can be built out for them
+  /// without signing in as the owner.
+  Future<void> _onStartSupportSession(BuildContext context, WidgetRef ref) async {
+    final f = row.facility;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Set up ${f.name} for the owner?'),
+        content: Text(
+          'You will be added to this facility as a manager and it becomes your '
+          'active facility, so every normal screen works on it. You stay signed '
+          'in as yourself, so anything you change is recorded under your name, '
+          'not the owner\'s. The owner sees you on their team and in their audit '
+          'log. End the session from the banner when you are done.',
+          style: Theme.of(ctx).textTheme.bodySmall,
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Start session')),
+        ],
+      ),
+    );
+    if (proceed != true || !context.mounted) return;
+
+    try {
+      await SupportAccessService.start(facilityId: f.id, facilityName: f.name);
+      ref.invalidate(activeFacilityIdProvider);
+      ref.invalidate(supportSessionFacilityProvider);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Now managing ${f.name}. Opening the dashboard.'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+      context.go(AppRoute.dashboard);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Could not start support session: $e'),
+            backgroundColor: AppTheme.error),
+      );
+    }
+  }
+
   Future<void> _onRepairPermissionOrphans(BuildContext context) async {
     final f = row.facility;
     final proceed = await showDialog<bool>(
@@ -365,6 +421,11 @@ class _FacilityRow extends ConsumerWidget {
                         duration: Duration(seconds: 1)),
                   );
                 },
+              ),
+              FilledButton.icon(
+                icon: const Icon(Icons.support_agent, size: 16),
+                label: const Text('Set up for owner'),
+                onPressed: () => _onStartSupportSession(context, ref),
               ),
               TextButton.icon(
                 icon: const Icon(Icons.badge_outlined, size: 16),
