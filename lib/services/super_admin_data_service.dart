@@ -1260,6 +1260,43 @@ class SuperAdminDataService {
     return n is int ? n : int.tryParse('$n') ?? 0;
   }
 
+  /// Super admin only: create a facility that belongs to [ownerUid].
+  ///
+  /// This cannot be done from the client. The Firestore create rule pins a new
+  /// facility's owner to whoever is creating it, so that nobody can plant a
+  /// facility under someone else's name; the callable does the privileged
+  /// write instead. Returns the new facility id.
+  static Future<String> createFacilityForOwner({
+    required String ownerUid,
+    required String name,
+    String? address,
+    String? phone,
+    String? email,
+    String? timeZone,
+    int? totalUnits,
+    int? gracePeriodDays,
+    num? lateFeeAmount,
+  }) async {
+    final callable = _functions.httpsCallable('superAdminCreateFacilityForOwner');
+    final result = await callable.call<Map<String, dynamic>>({
+      'ownerUid': ownerUid.trim(),
+      'name': name.trim(),
+      if (address != null && address.trim().isNotEmpty) 'address': address.trim(),
+      if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
+      if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
+      if (timeZone != null && timeZone.trim().isNotEmpty) 'timeZone': timeZone.trim(),
+      if (totalUnits != null) 'totalUnits': totalUnits,
+      if (gracePeriodDays != null) 'gracePeriodDays': gracePeriodDays,
+      if (lateFeeAmount != null) 'lateFeeAmount': lateFeeAmount,
+    });
+    final data = Map<String, dynamic>.from(result.data);
+    final facilityId = (data['facilityId'] ?? '').toString();
+    if (facilityId.isEmpty) {
+      throw Exception('Facility was not created.');
+    }
+    return facilityId;
+  }
+
   /// Super admin only: irreversibly wipe all customer/platform data except super-admin logins.
   static Future<Map<String, dynamic>> purgePlatformData({
     required String confirmationPhrase,

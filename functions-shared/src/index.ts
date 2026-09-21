@@ -188,6 +188,16 @@ export {
 } from './twilio/textingOnboardingHelpers';
 
 export {
+  buildFacilityForOwner,
+  buildOwnerRoleRow,
+  FacilityForOwnerError,
+  DEFAULT_GRACE_PERIOD_DAYS,
+  DEFAULT_LATE_FEE_AMOUNT,
+  DEFAULT_TIME_ZONE,
+} from './platform/facilityForOwner';
+export type { FacilityForOwnerInput, FacilityForOwnerDoc } from './platform/facilityForOwner';
+
+export {
   readMessagingGuardConfig,
   reservePlatformOutgoing,
   releasePlatformOutgoing,

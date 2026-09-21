@@ -2,10 +2,16 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/providers/support_access_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/screens/super_admin/widgets/create_facility_for_owner_dialog.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/services/super_admin_user_service.dart';
+import 'package:sfcapp/services/support_access_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
 class AccountsTab extends ConsumerStatefulWidget {
@@ -381,6 +387,45 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     }
   }
 
+  Future<void> _createFacilityForOwner() async {
+    final created = await showDialog<({String id, String name})>(
+      context: context,
+      builder: (ctx) => CreateFacilityForOwnerDialog(
+        ownerUid: widget.account.ownerUid,
+        ownerEmail: widget.account.ownerEmail,
+      ),
+    );
+    if (created == null || !mounted) return;
+
+    final openNow = await _confirm(
+      title: 'Facility created',
+      message:
+          '${created.name} now belongs to ${widget.account.ownerEmail}. '
+          'Open it as support so you can add their units and tenants?',
+      confirmLabel: 'Set it up now',
+      confirmColor: AppTheme.info,
+    );
+    if (!openNow || !mounted) return;
+
+    try {
+      await SupportAccessService.start(
+        facilityId: created.id,
+        facilityName: created.name,
+      );
+      ref.invalidate(activeFacilityIdProvider);
+      ref.invalidate(supportSessionFacilityProvider);
+      if (!mounted) return;
+      context.go(AppRoute.dashboard);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Facility created, but support access failed: $e'),
+            backgroundColor: AppTheme.error),
+      );
+    }
+  }
+
   Future<void> _resendOnboardingEmail(String type) async {
     final label = type == 'account_approved'
         ? 'approval email'
@@ -735,6 +780,15 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     onPressed: _rejectAccount,
                   ),
                 ],
+
+                // Stand a facility up for an owner who has not made one yet,
+                // then step straight into it to add their units and tenants.
+                TextButton.icon(
+                  icon: Icon(Icons.add_business, size: 14, color: AppTheme.info),
+                  label: Text('Create facility',
+                      style: TextStyle(fontSize: 12, color: AppTheme.info)),
+                  onPressed: _createFacilityForOwner,
+                ),
 
                 // Resend onboarding mail. Needed because the trigger only fires
                 // on the approval itself: an account approved before these

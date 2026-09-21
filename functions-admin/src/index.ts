@@ -44,6 +44,8 @@ export {
   superAdminRemoveHostingCustomDomain,
 } from '@sfc/functions-shared/hosting/hostingCustomDomains';
 
+export { superAdminCreateFacilityForOwner } from './superAdminCreateFacilityForOwner';
+
 export { enableStripeConnectAdmin } from './enableStripeConnectAdmin';
 
 export { getStripePublishableKey } from './getStripePublishableKey';
