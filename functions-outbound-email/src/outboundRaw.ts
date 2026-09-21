@@ -11,6 +11,7 @@ import {
   getSendgridAsmGroupId,
   getSgMail,
   initializeSendGrid,
+  isCustomerEmailAllowed,
   isSuperAdmin,
   releasePlatformOutgoing,
   reservePlatformOutgoing,
@@ -183,6 +184,64 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       createdByUid: context.auth.uid,
       createdByEmail: userEmail || null,
     });
+
+    // Pre-launch gate: no real customer receives mail until appConfig/outbound
+    // says so. This callable is the generic send path the app uses for
+    // statements, receipts, invoices, contract sends, delinquency notices and
+    // bulk messaging, and it went straight to SendGrid without ever asking.
+    // sendFacilityEmailWithCompliance has enforced this for its own callers
+    // and the Twilio callable enforces the SMS half, so this was the one hole
+    // left in the switch. Super admins and allowlisted test addresses pass.
+    if (!(await isCustomerEmailAllowed(to))) {
+      functions.logger.info('Blocked customer email (pre-launch gate; appConfig/outbound.customerEmailsEnabled is off)', {
+        facilityId,
+        tenantId: tenantInfo.tenantId,
+        subject,
+        templateId: templateId || null,
+        source: source || 'manual',
+      });
+      await createOrUpdateMessageLog(facilityId, messageLogId, {
+        tenantId: tenantInfo.tenantId,
+        tenantName: tenantInfo.tenantName,
+        tenantEmail: tenantInfo.tenantEmail || to,
+        tenantPhone: tenantInfo.tenantPhone,
+        channel: 'email',
+        direction: 'outbound',
+        source: source || 'manual',
+        templateId: templateId || null,
+        subject: subject,
+        previewText: previewText,
+        bodyHtmlStored: false,
+        bodyTextStored: false,
+        // 'failed' rather than a new 'blocked' status: nothing was sent, and
+        // every existing reader of this field already handles 'failed'.
+        // errorCode is what distinguishes the gate from a delivery failure.
+        status: 'failed',
+        provider: 'sendgrid',
+        providerMessageId: null,
+        errorCode: 'prelaunch_gate',
+        errorMessage:
+          'Blocked before launch. A super admin can allow it by setting ' +
+          'customerEmailsEnabled on appConfig/outbound, or by adding the address to the allowlist.',
+        sentAt: null,
+        createdByUid: context.auth.uid,
+        createdByEmail: userEmail || null,
+      });
+      // Reported, not thrown: the caller has to be able to tell "we did not
+      // send this" apart from "sending failed", and must never show success.
+      return {
+        success: false,
+        blocked: 'prelaunch' as const,
+        messageLogId,
+        status: 'blocked',
+        provider: 'sendgrid' as const,
+        messageId: null,
+        providerMessageId: null,
+        error:
+          'Customer email is switched off before launch. Ask a super admin to enable ' +
+          'customerEmailsEnabled on appConfig/outbound, or add this address to the allowlist.',
+      };
+    }
 
     // Check and increment email usage
     const canSend = await checkAndIncrementEmailUsage(facilityId);

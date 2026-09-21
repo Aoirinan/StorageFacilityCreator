@@ -17,6 +17,7 @@ import {
   getSuperAdminEmails,
   initializeSendGrid,
   isOrphanedConnectedAccount,
+  isOwnerOnboardingEmailAllowed,
   offboardingDueAt,
   selectFacilitiesForOffboarding,
   sweepSummaryHasActivity,
@@ -102,8 +103,23 @@ async function resolveOwnerContact(
   return { email: fallback, name: null };
 }
 
-/** Transactional platform mail (no unsubscribe group): the owner must get these. */
+/**
+ * Transactional platform mail (no unsubscribe group): the owner must get these.
+ *
+ * Still behind the pre-launch owner gate, which is the same switch the
+ * onboarding mail uses. Before launch the only owners are test accounts and
+ * they are allowlisted, so nothing real is withheld; after launch
+ * ownerEmailsEnabled opens it for everyone. Without this an offboarding notice
+ * was the one platform-to-owner mail that could go out while the rule said no
+ * customer hears from us yet.
+ */
 async function sendPlatformEmail(to: string, content: EmailContent): Promise<void> {
+  if (!(await isOwnerOnboardingEmailAllowed(to))) {
+    functions.logger.info('Skipped offboarding email (pre-launch owner gate)', {
+      subject: content.subject,
+    });
+    return;
+  }
   initializeSendGrid();
   await (getSgMail() as { send: (msg: unknown) => Promise<unknown> }).send({
     to,

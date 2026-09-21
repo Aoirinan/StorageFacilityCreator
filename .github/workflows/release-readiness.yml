@@ -31,6 +31,8 @@ jobs:
           node-version: 22
       - name: Check email monthly limits (Dart vs Functions)
         run: node scripts/check_email_monthly_limits_parity.js
+      - name: Check every outbound send path is gated
+        run: node scripts/check_outbound_gate_coverage.js
 
   marketing:
     runs-on: ubuntu-latest

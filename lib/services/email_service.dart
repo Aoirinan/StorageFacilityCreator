@@ -68,7 +68,27 @@ class EmailService {
       print('📧 [EmailService] Function call completed, processing result...');
 
       final data = result.data as Map<String, dynamic>;
-      
+
+      // The callable can return without throwing and still not have sent
+      // anything: before launch it refuses customer addresses. This used to
+      // fall straight through to EmailResult(success: true), so the UI showed
+      // a sent toast and a contact log was written saying the tenant had been
+      // emailed, for mail that never left the building.
+      if (data['success'] == false || data['blocked'] != null) {
+        final reason = data['error'] as String?;
+        if (kDebugMode) {
+          print('🚫 [EmailService] Not sent: ${reason ?? 'blocked by the server'}');
+        }
+        return EmailResult(
+          success: false,
+          error: reason ??
+              'This email was not sent. Customer email is switched off before launch.',
+          errorCode: (data['blocked'] as String?) == 'prelaunch'
+              ? 'prelaunch_gate'
+              : (data['status'] as String?) ?? 'not-sent',
+        );
+      }
+
       if (kDebugMode) {
         print('✅ [EmailService] Email sent successfully');
         print('📧 [EmailService] Message ID: ${data['messageId']}');
