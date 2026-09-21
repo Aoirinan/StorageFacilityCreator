@@ -448,7 +448,14 @@ export const transitionPublicReservationStatus = functions.https.onCall(async (d
   return { success: true, status: 'cancelled' };
 });
 
-export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const createPublicMoveInCheckout = functions
+  .runWith({ secrets: STRIPE_SECRETS })
+  .https.onCall(async (data: any, context) => {
+  // Every sibling public callable enforces App Check; this one took no `context`
+  // at all, so it could not. It creates Stripe Checkout Sessions on the
+  // operator's connected account, making it an unauthenticated, unmetered way to
+  // spend their Stripe quota.
+  enforceAppCheckOrThrow(context);
   const {
     reservationId,
     token,
@@ -489,6 +496,15 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
   }
+
+  // Keyed on the facility from the stored reservation, never the request.
+  await enforceRateLimit({
+    facilityId: String(facilityId),
+    key: 'createPublicMoveInCheckout',
+    limit: 30,
+    windowSeconds: 60,
+    userId: context.auth?.uid || null,
+  });
 
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
@@ -620,15 +636,23 @@ export const createPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SE
       stripeCode: e.code,
       message: rawMessage,
     });
-    const capped = rawMessage.length > 240 ? `${rawMessage.slice(0, 237)}...` : rawMessage;
-    throw new functions.https.HttpsError('failed-precondition', capped);
+    // Logged in full above, but not returned: this caller is an anonymous member
+    // of the public, and Stripe's message describes the operator's connected
+    // account configuration.
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Payment could not be started. Please contact the facility directly.',
+    );
   }
 });
 
 /**
  * Confirm Stripe Checkout payment result for public move-in.
  */
-export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any) => {
+export const confirmPublicMoveInCheckout = functions
+  .runWith({ secrets: STRIPE_SECRETS })
+  .https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
   const {
     reservationId,
     token,
@@ -656,6 +680,13 @@ export const confirmPublicMoveInCheckout = functions.runWith({ secrets: STRIPE_S
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
   }
+  await enforceRateLimit({
+    facilityId: String(facilityId),
+    key: 'confirmPublicMoveInCheckout',
+    limit: 30,
+    windowSeconds: 60,
+    userId: context.auth?.uid || null,
+  });
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Facility not found');
