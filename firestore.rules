@@ -148,6 +148,13 @@ service cloud.firestore {
 
   function facilityEntitlementWriteForbiddenKeys() {
     return [
+      // Which account pays for this facility. Backend-only: several rules
+      // resolve entitlement by reading this id and checking that the account's
+      // subscription is 'active', without checking who owns that account. A
+      // client that can rewrite this can point its facility at any paying
+      // operator's account id and inherit premium entitlements (DNR access,
+      // permanent tenant deletion) without paying.
+      'facilityCreatorAccountId',
       // Payment-processor connection state. Backend-only: the scheduled autopay
       // job gates real charges on stripeStatus.chargesEnabled, so an owner must
       // not be able to set it from the client.
@@ -1612,11 +1619,18 @@ service cloud.firestore {
       allow create: if request.auth != null &&
         request.resource.data.facilityId is string &&
         isFacilityOwnerOrManager(request.resource.data.facilityId);
+      // Authorize on the EXISTING doc only, and pin the owning facility.
+      //
+      // This previously also accepted `request.resource.data.facilityId`, i.e.
+      // the incoming payload. Slugs are public (they are the storefront URL), so
+      // any operator could PUT their own facilityId into an update and seize
+      // another operator's slug: disable their storefront, or repoint its rent
+      // and pay links at their own facility, custom domains included.
       allow update: if request.auth != null &&
-        (
-          (resource != null && resource.data.facilityId is string && isFacilityOwnerOrManager(resource.data.facilityId)) ||
-          (request.resource.data.facilityId is string && isFacilityOwnerOrManager(request.resource.data.facilityId))
-        );
+        resource != null &&
+        resource.data.facilityId is string &&
+        isFacilityOwnerOrManager(resource.data.facilityId) &&
+        request.resource.data.facilityId == resource.data.facilityId;
       allow delete: if request.auth != null &&
         resource.data.facilityId is string &&
         isFacilityOwnerOrManager(resource.data.facilityId);

@@ -3,11 +3,18 @@
       allow create: if request.auth != null &&
         request.resource.data.facilityId is string &&
         isFacilityOwnerOrManager(request.resource.data.facilityId);
+      // Authorize on the EXISTING doc only, and pin the owning facility.
+      //
+      // This previously also accepted `request.resource.data.facilityId`, i.e.
+      // the incoming payload. Slugs are public (they are the storefront URL), so
+      // any operator could PUT their own facilityId into an update and seize
+      // another operator's slug: disable their storefront, or repoint its rent
+      // and pay links at their own facility, custom domains included.
       allow update: if request.auth != null &&
-        (
-          (resource != null && resource.data.facilityId is string && isFacilityOwnerOrManager(resource.data.facilityId)) ||
-          (request.resource.data.facilityId is string && isFacilityOwnerOrManager(request.resource.data.facilityId))
-        );
+        resource != null &&
+        resource.data.facilityId is string &&
+        isFacilityOwnerOrManager(resource.data.facilityId) &&
+        request.resource.data.facilityId == resource.data.facilityId;
       allow delete: if request.auth != null &&
         resource.data.facilityId is string &&
         isFacilityOwnerOrManager(resource.data.facilityId);

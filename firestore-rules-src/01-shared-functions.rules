@@ -145,6 +145,13 @@
 
   function facilityEntitlementWriteForbiddenKeys() {
     return [
+      // Which account pays for this facility. Backend-only: several rules
+      // resolve entitlement by reading this id and checking that the account's
+      // subscription is 'active', without checking who owns that account. A
+      // client that can rewrite this can point its facility at any paying
+      // operator's account id and inherit premium entitlements (DNR access,
+      // permanent tenant deletion) without paying.
+      'facilityCreatorAccountId',
       // Payment-processor connection state. Backend-only: the scheduled autopay
       // job gates real charges on stripeStatus.chargesEnabled, so an owner must
       // not be able to set it from the client.

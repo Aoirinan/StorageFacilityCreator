@@ -1,6 +1,17 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 
+/**
+ * `user_roles.roleType` values that may act on a facility.
+ *
+ * Mirrors the in-facility `roles` map check below (owner/manager/employee) and
+ * the stricter send-side check in functions-outbound-email. `viewer` is
+ * deliberately absent: a viewer is read-only and must not reach the callables
+ * that charge cards.  `admin` is a legacy alias for manager still present in
+ * older documents.
+ */
+const FACILITY_ACTING_ROLE_TYPES = new Set(['owner', 'manager', 'admin', 'employee', 'staff']);
+
 export async function getFacilityDataForUserOrThrow(
   uid: string,
   facilityId: string,
@@ -31,7 +42,13 @@ export async function getFacilityDataForUserOrThrow(
       .where('isActive', '==', true)
       .limit(1)
       .get();
-    hasAccess = !userRolesQuery.empty;
+    // The row's roleType must be checked, not merely its existence. An invited
+    // `viewer` gets an active row here, and callers of this helper move real
+    // money (POS and off-session charges, retail sales, connected-account
+    // payments), so "has some role" is not the same as "may act".
+    hasAccess = userRolesQuery.docs.some((doc) =>
+      FACILITY_ACTING_ROLE_TYPES.has(String(doc.get('roleType') ?? '').toLowerCase()),
+    );
   }
 
   if (!hasAccess) {

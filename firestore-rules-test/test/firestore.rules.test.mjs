@@ -271,7 +271,11 @@ test('facility owners cannot write platform or website subscription entitlements
   await assertFails(
     facilityRef.update({ websiteAdminTrialGrantedByEmail: 'owner@example.com' }),
   );
-  await assertSucceeds(facilityRef.update({ facilityCreatorAccountId: 'account-1' }));
+  // Entitlement is resolved by reading this id and checking that the named
+  // account's subscription is 'active', with no check that the caller owns that
+  // account. A writable link therefore lets a non-paying operator inherit a
+  // paying one's premium entitlements, so it is backend-only.
+  await assertFails(facilityRef.update({ facilityCreatorAccountId: 'account-1' }));
 });
 
 test('facility owners cannot forge A2P texting approval state', async () => {
@@ -615,5 +619,46 @@ test('DNR evidence storage reads require current premium entitlement', async () 
   );
   await assertFails(
     getBytes(storageRef(testEnv.authenticatedContext(lapsedUid).storage(), 'dnrEvidence/entry-1/evidence.txt')),
+  );
+});
+
+test('an operator cannot seize another operator’s public storefront slug', async () => {
+  // Slugs are the public storefront URL, so they are discoverable by design.
+  // The update rule used to accept the INCOMING payload's facilityId, which let
+  // any operator PUT their own facilityId over someone else's slug and either
+  // disable that storefront or repoint its rent/pay links at their own site.
+  const RIVAL_FACILITY = 'fac-rival-1';
+  const SLUG = 'keepsake-self-storage';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    // A rival facility that OUTSIDER_UID legitimately owns.
+    await db.collection('facilities').doc(RIVAL_FACILITY).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+    // The victim's slug, owned by FACILITY_ID.
+    await db.collection('publicFacilityMaps').doc(SLUG).set({
+      facilityId: FACILITY_ID,
+      publicSettings: { enabled: true },
+    });
+  });
+
+  const rival = testEnv.authenticatedContext(OUTSIDER_UID);
+  const slugRef = rival.firestore().collection('publicFacilityMaps').doc(SLUG);
+
+  // Repointing the slug at the rival's own facility must fail.
+  await assertFails(slugRef.update({ facilityId: RIVAL_FACILITY }));
+  // So must simply switching the victim's storefront off.
+  await assertFails(slugRef.update({ publicSettings: { enabled: false } }));
+
+  // The real owner can still edit their own slug, without changing the link.
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  await assertSucceeds(
+    owner
+      .firestore()
+      .collection('publicFacilityMaps')
+      .doc(SLUG)
+      .update({ publicSettings: { enabled: false } }),
   );
 });
