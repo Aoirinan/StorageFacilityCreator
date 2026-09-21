@@ -65,17 +65,6 @@ const ALLOWLIST = new Map([
 const BACKSLASH = String.fromCharCode(92);
 const BACKTICK = String.fromCharCode(96);
 
-// Body of a quoted string: any run of non-quote, non-backslash characters, or
-// an escaped character. Built from char codes because the delimiters and the
-// escape character are exactly what a source literal cannot carry cleanly.
-function stringLiteralPattern(quote) {
-  const q = quote === BACKTICK ? BACKTICK : quote;
-  return new RegExp(
-    q + '(?:[^' + q + BACKSLASH + BACKSLASH + ']|' + BACKSLASH + BACKSLASH + '.)*' + q,
-    'g',
-  );
-}
-
 /**
  * Comments are not enforcement. The first draft matched the gate names anywhere
  * in the file, and a doc comment that merely mentioned
@@ -83,12 +72,98 @@ function stringLiteralPattern(quote) {
  * deleted. Strip comments and string bodies before looking for a real call.
  */
 function stripCommentsAndStrings(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\r\n]*/g, ' ')
-    .replace(stringLiteralPattern("'"), "''")
-    .replace(stringLiteralPattern('"'), '""')
-    .replace(stringLiteralPattern(BACKTICK), BACKTICK + BACKTICK);
+  // Scan left to right rather than running one regex per quote type.
+  //
+  // Doing it in passes is not sound, and it silently broke this check. Single
+  // quotes were stripped before backticks, so an apostrophe inside a template
+  // literal — "doesn't", "owner's" — opened a string that ran on to the next
+  // quote character anywhere in the file, swallowing the code between. On
+  // outboundRaw.ts that pass cut the source from 36,063 characters to 13,530
+  // and took the sgMail.send call with it, so the file stopped looking like a
+  // send path at all and was skipped. The ungated callable this whole check
+  // exists to catch passed it cleanly.
+  //
+  // One pass cannot get the nesting order wrong: whichever delimiter opens
+  // first wins, which is what the language does too.
+  let out = '';
+  let i = 0;
+  let lastSignificant = '';
+  while (i < source.length) {
+    const char = source[i];
+    const pair = char + source[i + 1];
+
+    if (pair === '/*') {
+      const end = source.indexOf('*/', i + 2);
+      i = end === -1 ? source.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    if (pair === '//') {
+      while (i < source.length && source[i] !== '\n') i++;
+      out += ' ';
+      continue;
+    }
+    // A regex literal is not a string, but it can contain quote characters,
+    // and then everything after it reads as string content. outboundRaw.ts
+    // matches an invite URL with /https?:\/\/[^\s"']+/ — that double quote
+    // opened a literal that ran 5,797 characters and swallowed the sgMail.send
+    // call below it, which is why the file did not register as a send path.
+    //
+    // Telling a regex from division needs to know whether a value or an
+    // operator is expected. The last significant character is enough here: a
+    // slash following one of these, or opening a line, starts a pattern.
+    if (char === '/' && isRegexPosition(lastSignificant)) {
+      i++;
+      let inClass = false;
+      while (i < source.length) {
+        const c = source[i];
+        if (c === BACKSLASH) {
+          i += 2;
+          continue;
+        }
+        if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) {
+          i++;
+          break;
+        } else if (c === '\n') break;
+        i++;
+      }
+      while (i < source.length && /[a-z]/.test(source[i])) i++;
+      out += ' ';
+      lastSignificant = ')';
+      continue;
+    }
+
+    if (char === "'" || char === '"' || char === BACKTICK) {
+      const quote = char;
+      i++;
+      while (i < source.length) {
+        if (source[i] === BACKSLASH) {
+          i += 2;
+          continue;
+        }
+        if (source[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      out += quote + quote;
+      lastSignificant = quote;
+      continue;
+    }
+
+    out += char;
+    if (!/\s/.test(char)) lastSignificant = char;
+    i++;
+  }
+  return out;
+}
+
+/** Whether a slash after [previous] opens a pattern rather than divides. */
+function isRegexPosition(previous) {
+  return previous === '' || '(,=:[!&|?{};+-*%~^<>'.includes(previous);
 }
 
 function listSourceFiles(dir) {
@@ -124,6 +199,42 @@ const packages = fs
   .map((e) => path.join(repoRoot, e.name, 'src'))
   .filter((p) => fs.existsSync(p));
 
+/**
+ * Split a file into the module scope and one region per exported symbol.
+ *
+ * Checking a whole file at once is not enough, and this is not hypothetical:
+ * run the original check against the commit that introduced it and it passes.
+ * outboundRaw.ts exports sendEmail, sendDigest and sendDailyDigests. The two
+ * digests call sendFacilityEmailWithCompliance, which is a gate name, so the
+ * file matched a gate pattern while sendEmail — the ungated path that motivated
+ * the whole check — sat beside them unexamined. A gate anywhere in a file
+ * vouched for every send in it.
+ *
+ * A region runs from its export keyword to the next one. Sends in private
+ * helpers land in the module scope region and are checked there, which is where
+ * their gate belongs too.
+ */
+function regionsOf(text) {
+  const exportPattern = /^export\s+(?:const|async\s+function|function)\s+([A-Za-z0-9_]+)/gm;
+  const marks = [];
+  let match;
+  while ((match = exportPattern.exec(text))) {
+    marks.push({ name: match[1], start: match.index });
+  }
+
+  const regions = [
+    { name: '<module scope>', start: 0, end: marks.length ? marks[0].start : text.length },
+  ];
+  for (let i = 0; i < marks.length; i++) {
+    regions.push({
+      name: marks[i].name,
+      start: marks[i].start,
+      end: i + 1 < marks.length ? marks[i + 1].start : text.length,
+    });
+  }
+  return regions;
+}
+
 const ungated = [];
 const staleAllowlist = new Set(ALLOWLIST.keys());
 
@@ -134,8 +245,13 @@ for (const src of packages) {
     if (!SEND_PATTERNS.some((re) => re.test(text))) continue;
     staleAllowlist.delete(rel);
     if (ALLOWLIST.has(rel)) continue;
-    if (GATE_PATTERNS.some((re) => re.test(text))) continue;
-    ungated.push(rel);
+
+    for (const region of regionsOf(text)) {
+      const body = text.slice(region.start, region.end);
+      if (!SEND_PATTERNS.some((re) => re.test(body))) continue;
+      if (GATE_PATTERNS.some((re) => re.test(body))) continue;
+      ungated.push(rel + '  (' + region.name + ')');
+    }
   }
 }
 
