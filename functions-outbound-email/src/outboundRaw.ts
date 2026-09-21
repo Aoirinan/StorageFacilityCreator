@@ -1051,27 +1051,32 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
     .collection('emailUsage')
     .doc(monthKey);
 
-  // Default cap when usage doc has no limit yet (see `./constants/emailMonthlyLimits.ts`).
-  let defaultLimit = emailMonthlyLimitForAccount(false);
-  const usageDoc = await usageRef.get();
+  // The cap is derived from the account's plan every time, and the value stored
+  // on the usage document is never trusted.
+  //
+  // `emailMonthlyLimit` is writable by the facility (the creation wizard sets
+  // it), and this function used to read it back as the ceiling — so an operator
+  // could raise their own sending cap from 500 to anything they liked and push
+  // that volume through the platform's SendGrid account. Deriving it here also
+  // fixes a staleness bug: a facility created during a trial had 500 written
+  // into its signup-month document, and kept that cap for the month even after
+  // the account converted to paid.
+  let derivedLimit = emailMonthlyLimitForAccount(false);
+  const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
+  if (facilityDoc.exists) {
+    const ownerUid = facilityDoc.data()?.ownerUid;
+    if (ownerUid) {
+      const accountSnapshot = await admin.firestore()
+        .collection('facilityCreatorAccounts')
+        .where('ownerUid', '==', ownerUid)
+        .limit(1)
+        .get();
 
-  if (!usageDoc.exists || !usageDoc.data()?.emailMonthlyLimit) {
-    const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
-    if (facilityDoc.exists) {
-      const ownerUid = facilityDoc.data()?.ownerUid;
-      if (ownerUid) {
-        const accountSnapshot = await admin.firestore()
-          .collection('facilityCreatorAccounts')
-          .where('ownerUid', '==', ownerUid)
-          .limit(1)
-          .get();
-
-        if (!accountSnapshot.empty) {
-          const accountData = accountSnapshot.docs[0].data();
-          defaultLimit = emailMonthlyLimitForAccount(
-            accountData.subscriptionStatus === 'trialing',
-          );
-        }
+      if (!accountSnapshot.empty) {
+        const accountData = accountSnapshot.docs[0].data();
+        derivedLimit = emailMonthlyLimitForAccount(
+          accountData.subscriptionStatus === 'trialing',
+        );
       }
     }
   }
@@ -1080,13 +1085,14 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
     const usageDocSnapshot = await transaction.get(usageRef);
     const currentUsage = usageDocSnapshot.exists ? usageDocSnapshot.data() : {
       emailMonthlyCount: 0,
-      emailMonthlyLimit: defaultLimit,
+      emailMonthlyLimit: derivedLimit,
       emailMonth: monthKey,
       lastReset: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     const newCount = ((currentUsage?.emailMonthlyCount) || 0) + 1;
-    const limit = (currentUsage?.emailMonthlyLimit) || defaultLimit;
+    // Derived, not read back from the document the facility can write.
+    const limit = derivedLimit;
 
     // Check if limit exceeded
     if (newCount > limit) {
