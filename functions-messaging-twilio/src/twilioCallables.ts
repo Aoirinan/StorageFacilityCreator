@@ -1541,6 +1541,43 @@ async function submitBrandRegistrationInternal(
 const A2P_CAMPAIGN_DESCRIPTION =
   'Per-facility account notifications sent by self-storage operators to their own tenants: payment and past-due reminders, gate/access code information, move-in and move-out confirmations, and other operational account notices. Recipients are existing tenants who provided their mobile number and expressly opted in to text messages.';
 
+/**
+ * The campaign description, named to the facility under review.
+ *
+ * Evidence from the two campaigns in the SFC Twilio account: the Hochatown
+ * Saloon campaign (CMa93db02b..., approved the same day it was filed) opens by
+ * naming the registered business and what it is. The Storage Facility Creator
+ * campaign (CM762f51..., rejected 30909) described a *class* of businesses
+ * texting on other companies' behalf and never named the brand under review,
+ * so there was nothing about the registrant for a reviewer to verify. A
+ * facility's brand is its own legal entity, so the description must read as
+ * that facility describing itself, not as the platform describing its
+ * customers. Falls back to the generic copy when business details are absent.
+ */
+function buildCampaignDescription(facilityData: Record<string, any>): string {
+  const business = (facilityData.textingBusinessData || {}) as Record<string, any>;
+  const legalName = String(business.legalBusinessName || '').trim();
+  if (!legalName) return A2P_CAMPAIGN_DESCRIPTION;
+
+  const dba = String(business.dba || '').trim();
+  const city = String(business.city || '').trim();
+  const state = String(business.state || '').trim();
+  const website = String(business.website || '').trim();
+
+  const named = dba && dba !== legalName ? `${legalName}, doing business as ${dba},` : legalName;
+  const place = [city, state].filter(Boolean).join(', ');
+
+  return (
+    `${named} is a self-storage facility${place ? ` in ${place}` : ''}` +
+    `${website ? ` (${website})` : ''}. This campaign sends account notifications ` +
+    'from the facility to its own tenants: payment and past-due reminders, gate/access code ' +
+    'information, move-in and move-out confirmations, and other operational account notices. ' +
+    'Recipients are existing tenants of this facility who provided their mobile number and ' +
+    'expressly opted in to text messages. No marketing or promotional messages are sent, and ' +
+    'no numbers are purchased, rented or imported.'
+  );
+}
+
 const A2P_CAMPAIGN_MESSAGE_FLOW =
   'Tenants opt in to SMS by checking an unchecked (opt-in) consent checkbox presented during tenant onboarding/move-in — in the operator\u2019s tenant management portal at https://app.storagefacilitycreator.com and on the public move-in/rental form the operator sends to the tenant. The consent checkbox reads: "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help." The box is unchecked by default and consent is not a condition of renting a unit or of any purchase. Because the live form is behind a login, a publicly accessible reproduction of the exact opt-in screen is hosted at https://www.storagefacilitycreator.com/sms-consent-demo for reviewer verification. The opt-in language and full program terms are publicly published at https://www.storagefacilitycreator.com/sms-terms . Messages are account notifications only (payment reminders, past-due notices, access codes, move-in/move-out confirmations). Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.';
 
@@ -1563,13 +1600,22 @@ async function submitCampaignInternal(
   } else {
     const twilio = getTwilioClient() as any;
     // A sole-proprietor brand only accepts the SOLE_PROPRIETOR use case, one
-    // campaign per brand. Everyone else uses ACCOUNT_NOTIFICATION.
+    // campaign per brand. Everyone else uses LOW_VOLUME (Low Volume Mixed).
+    //
+    // This was ACCOUNT_NOTIFICATION until 2026-09-21. Both describe what a
+    // facility sends, but ACCOUNT_NOTIFICATION draws the manual call-to-action
+    // review that rejected SFC's own campaign on 30909, and costs ~$10/mo
+    // against Low Volume Mixed's ~$1.50. LOW_VOLUME is the tier that was
+    // approved same-day in this account (the Hochatown Saloon campaign). Its
+    // ceiling is roughly 2,000 message segments/day to T-Mobile, far above
+    // what one self-storage facility sends to its own tenants. A facility that
+    // ever outgrows it moves to ACCOUNT_NOTIFICATION as a deliberate upgrade.
     const campaignBusinessType = (facilityData.textingBusinessData?.businessType) as string | undefined;
-    const usecase = isSoleProprietorBusinessType(campaignBusinessType) ? 'SOLE_PROPRIETOR' : 'ACCOUNT_NOTIFICATION';
+    const usecase = isSoleProprietorBusinessType(campaignBusinessType) ? 'SOLE_PROPRIETOR' : 'LOW_VOLUME';
     const campaign = await twilio.messaging.v1.campaigns.create({
       brandRegistrationSid: facilityData.twilioBrandSid,
       usecase,
-      description: A2P_CAMPAIGN_DESCRIPTION,
+      description: buildCampaignDescription(facilityData),
       messageFlow: A2P_CAMPAIGN_MESSAGE_FLOW,
       sampleMessages: campaignData.sampleMessages,
       hasEmbeddedLinks: false,

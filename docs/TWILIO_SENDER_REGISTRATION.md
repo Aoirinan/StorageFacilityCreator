@@ -2,7 +2,7 @@
 
 Current state of SFC's carrier registration, what actually broke, and the
 prepared answers for any future registration form. Findings dated
-2026-09-13. See `docs/TEXTING_ONBOARDING_README.md` for the per-facility (ISV)
+2026-09-13, with the saloon-vs-SFC comparison added 2026-09-21. See `docs/TEXTING_ONBOARDING_README.md` for the per-facility (ISV)
 texting flow in code.
 
 ## Short version
@@ -33,10 +33,10 @@ line 381).
 
 | Number | Type | Role | Registration state (console, 2026-09-13, after unsuspension) |
 |---|---|---|---|
-| +1 855 526 4544 | Toll-free | `TWILIO_PHONE_NUMBER` and `SFC_LEAD_LINE_NUMBER` in every `functions-*/.env`. Global fallback sender for every facility whose own number is not A2P-approved, i.e. all traffic today. Webhook: `handleIncomingSMS`. | **Messaging enabled.** Toll-free verification approved 2026-03-24. Not in any messaging service (not needed). |
+| +1 855 526 4544 | Toll-free | `TWILIO_PHONE_NUMBER` and `SFC_LEAD_LINE_NUMBER` in every `functions-*/.env`. Global fallback sender for every facility whose own number is not A2P-approved, i.e. all traffic today. Webhook: `handleIncomingSMS`. | **Messaging enabled.** Toll-free verification approved 2026-03-24. Verified 2026-09-21: it *is* in messaging service `Storage Facility Creator` MGdd467da0e9859b606b2b768f5d5b2b84. The service is unused at send time (sends post a raw `From`), but **do not delete it**. |
 | +1 903 500 9941 | Local (Longview TX) | Keepsake Self Storage (`facilities/eXnWPuwuqzBVFcZWv1ZL`), `twilioMessagingServiceSid` MG2e4413797b3da7e5bd014abf9c027d99, `a2pStatus: draft`, `textingPlatformApproved: false`. Never used as `From` because not approved. | Messaging disabled, "Complete A2P registration". |
-| +1 903 300 2119 | Local (Cooper TX) | Not referenced by any facility document or env file. Has the SFC `handleIncomingSMS` webhook. Not in any messaging service. | Messaging disabled, "Complete A2P registration". Costs ~$1.15/month. Candidate for release. |
-| +1 580 407 4317 | Local (Idabel OK) | Hochatown Saloon. Separate service MG9ddcb24e0946df41ba42ea88f57f29ab. **Do not touch from this repo.** | Campaign CMf0d82519b5f45690c695db70775e4efb submitted and **rejected** 2026-09-13 (see below). |
+| ~~+1 903 300 2119~~ | Local (Cooper TX) | **RELEASED 2026-09-21.** Was unused: no facility document, env file or code referenced it. Twilio allows repurchase within 10 days of release, i.e. until 2026-10-01; after that the number is gone for good. | Gone from inventory. Its messaging service MGadd2cfcf38986cd041a759d449b6349f was deleted the same day. |
+| +1 580 407 4317 | Local (Idabel OK) | Hochatown Saloon. Separate service MG9ddcb24e0946df41ba42ea88f57f29ab. **Do not touch from this repo.** | Campaign CMf0d82519b5f45690c695db70775e4efb rejected 2026-09-13; replaced by CMa93db02b94977b90572ccf880f2abeae under the saloon's **own** brand BNabb4e1bbc9cde29508c021c16fe82137, **Approved 2026-09-20** (see "Why the saloon passed" below). |
 
 Traffic volume: zero `sendSMS` executions in Cloud Functions logs since
 2026-06-01. Monthly Twilio bills Feb-Aug 2026 were $3.51-$4.53, i.e. number
@@ -52,8 +52,8 @@ pressing it.
 
 | Campaign | Owner | Rejection |
 |---|---|---|
-| CM762f51debc93cd324bd4b37fd3976ad4 (created 2026-01-10, service MGadd2cfcf38986cd041a759d449b6349f, no numbers) | SFC | **30909**: "rejected due to issues verifying the Call to Action (CTA) provided for the campaign." The reviewer could not verify where and how the tenant opts in. The fix is a consent description that names the exact form, quotes the checkbox text, and links a live page showing it (https://www.storagefacilitycreator.com/sms-consent-demo now exists for this). Not worth resubmitting: SFC does not send from a local number. |
-| CMf0d82519b5f45690c695db70775e4efb (created 2026-09-13, service MG9ddcb24e0946df41ba42ea88f57f29ab) | Hochatown Saloon | **30907**: "the provided website URL does not match the Brand and Campaign registered." **30886**: "invalid campaign description." The brand is Storage Facility Creator LLC; the campaign's website and description are the saloon's, a different business. Carriers match campaign website against brand. The saloon needs its own brand (its own legal entity and EIN) or, if it is legally the same LLC, a campaign whose website URL and description say Storage Facility Creator LLC / storagefacilitycreator.com. This is brand-level: any non-SFC business filed under this brand will bounce the same way. |
+| CM762f51debc93cd324bd4b37fd3976ad4 — **DELETED 2026-09-21** (created 2026-01-10, service MGadd2cfcf38986cd041a759d449b6349f, no numbers) | SFC | **30909**: "rejected due to issues verifying the Call to Action (CTA) provided for the campaign." The reviewer could not verify where and how the tenant opts in. The fix is a consent description that names the exact form, quotes the checkbox text, and links a live page showing it (https://www.storagefacilitycreator.com/sms-consent-demo now exists for this). Not worth resubmitting: SFC does not send from a local number. |
+| CMf0d82519b5f45690c695db70775e4efb (created 2026-09-13, service MG9ddcb24e0946df41ba42ea88f57f29ab) | Hochatown Saloon | **30907**: "the provided website URL does not match the Brand and Campaign registered." **30886**: "invalid campaign description." The brand is Storage Facility Creator LLC; the campaign's website and description are the saloon's, a different business. Carriers match campaign website against brand. The saloon needs its own brand (its own legal entity and EIN) or, if it is legally the same LLC, a campaign whose website URL and description say Storage Facility Creator LLC / storagefacilitycreator.com. This is brand-level: any non-SFC business filed under this brand will bounce the same way. **Resolved 2026-09-20** by giving the saloon its own brand and a fresh campaign; see below. |
 
 ## Other findings, 2026-09-13
 
@@ -122,6 +122,138 @@ query string, which the shared `twilioWebhookUrl` keeps when rebuilding the
 signed URL. If the forward number is empty the caller is asked to text
 instead.
 
+## Why the saloon passed and SFC did not (read 2026-09-21)
+
+The saloon's second attempt, campaign CMa93db02b94977b90572ccf880f2abeae, was
+created and **approved on the same day, 2026-09-20**. SFC's CM762f51... is
+still Rejected on 30909 from 2026-01-10. Both sit in the same Twilio account,
+so the difference is entirely in how each was filed.
+
+| | Saloon (approved) | SFC (rejected) |
+|---|---|---|
+| Brand | **Hochatown Saloon LLC** BNabb4e1bbc9cde29508c021c16fe82137, its own legal entity | STORAGE FACILITY CREATOR LLC BN689de2fc..., Low volume standard, approved |
+| Use case | **LOW_VOLUME** (Low Volume Mixed) | **ACCOUNT_NOTIFICATION** |
+| Who the messages go to | the saloon's own staff and its own guests | **another company's tenants, on that company's behalf** |
+| Consent story | "Both kinds of recipient opt in verbally, in person at the venue, and no one is added any other way." First-party, self-contained, nothing for a reviewer to go and check. | a checkbox on a facility's move-in form the reviewer cannot reach, described in prose and linked to `/sms-terms` (a terms page, not the form) |
+| Sample messages | lead with the literal brand: "Hochatown Saloon: your [Sat 19 Sep] off is approved..." | lead with "**[Facility Name]**: ..." — no sample names the registered brand |
+| Terms / privacy | `tickets.hochatownsaloon.com`, same domain as the brand website | `www.storagefacilitycreator.com/...` while the brand website is recorded as the apex `https://storagefacilitycreator.com` |
+
+What that adds up to, in order of how much it matters:
+
+1. **The campaign describes a third-party sending pattern under a direct
+   brand.** SFC's filed description says the platform "sends transactional SMS
+   notifications to a facility's tenants **on the facility's behalf**." A
+   direct Standard / Low-Volume-Standard brand campaign is meant to cover the
+   brand's own messages to the brand's own customers. As filed, the call to
+   action belongs to each facility, not to SFC, so there is nothing about SFC
+   that a reviewer can verify — which is exactly what 30909 says. This is the
+   root cause, and it is why a cosmetic rewrite alone may bounce again.
+2. **No sample message identifies the registered brand.** Every sample starts
+   with the placeholder `[Facility Name]`. Reviewers look for the brand name
+   in the sample text; the saloon's samples all start "Hochatown Saloon:".
+3. **The opt-in field pointed at the wrong page.** It links `/sms-terms`.
+   `/sms-consent-demo` — a public, login-free reproduction of the actual
+   checkbox, built for precisely this review — did not exist on 2026-01-10 and
+   is still not referenced by the campaign. It is live now and `/sms-terms`
+   links to it.
+4. **Use case tier.** ACCOUNT_NOTIFICATION draws the manual CTA review that
+   rejected this. LOW_VOLUME is the lightest tier and is what sailed through
+   for the saloon. SFC's real volume is nil, so nothing is given up by filing
+   Low Volume Mixed.
+5. **Apex vs www.** Brand website is `https://storagefacilitycreator.com`;
+   the campaign's terms and privacy URLs are `https://www.` The apex 308s to
+   www, so it resolves, but this is the exact class of mismatch that produced
+   30907 for the saloon. Align them.
+
+### The part worth saying out loud
+
+**SFC does not currently need an approved 10DLC campaign.** Its only live
+sender is the toll-free +1 855 526 4544, confirmed **Approved** again on
+2026-09-21 (HH8589d700c3a7c4c995bedbf410351655, Storage Facility Creator LLC,
+last updated Mar 24 2026). Toll-free verification is a separate regime from
+10DLC; the toll-free number is fully registered and sending. CM762f51... has
+no phone numbers assigned and has never carried traffic. Fixing it buys the
+ability to send from **local** numbers, nothing else.
+
+### If the campaign is resubmitted anyway
+
+Two routes, and they are not the same product:
+
+- **Route A — refile SFC's own campaign (Edit & resubmit on CM762f51...).**
+  Switch the use case to Low Volume Mixed, reframe the description so the
+  sender is SFC to *its own* users rather than SFC on behalf of facilities,
+  name the brand in the samples, and point the opt-in field at
+  `/sms-consent-demo`. Text below. A resubmission is likely to be charged the
+  vetting fee (~$15) again — confirm the price shown in the flow before
+  submitting. Risk: the "on behalf of" objection is structural, so this can
+  bounce a second time.
+- **Route B — do what the saloon did, per facility.** Each facility registers
+  its own brand and its own campaign against its own number, which is the ISV
+  shape the app already models (`a2pStatus`, `a2pBusinessInfo`, the
+  sole-proprietor path in `functions-shared`, and the in-app texting setup in
+  `docs/TEXTING_ONBOARDING_README.md`). This is the route that actually
+  matches how the product sends, and it is the one that just demonstrably
+  worked in this account in under a day. It needs each owner's own legal
+  details, so it cannot be done for them.
+
+**Decided 2026-09-21: neither, for now.** Stay on the approved toll-free for
+every facility. SFC's own campaign is not being refiled — it buys a local
+number nobody is asking for, at a vetting fee and a fair chance of a second
+30909. Route B stays built and flagged off (`TEXTING_ONBOARDING_V1`), to be run
+for a single facility on the day a paying customer actually asks for their own
+local number. The two code changes made that day-one ready are in
+`docs/TEXTING_ONBOARDING_README.md`: a per-facility campaign description, and
+`LOW_VOLUME` instead of `ACCOUNT_NOTIFICATION` as the filed use case.
+
+### Route A field text, ready to paste
+
+- **Use case:** Low Volume Mixed.
+- **Campaign description:** "Storage Facility Creator LLC operates
+  storagefacilitycreator.com, self-storage management software. This campaign
+  covers text messages Storage Facility Creator sends to people who have given
+  the company their mobile number and asked to be texted: account and billing
+  notifications for its own software subscribers, replies in conversations the
+  recipient started, and responses to enquiries made through the company's
+  website or its published phone line 855-526-4544. Consent is collected on a
+  separate, un-prechecked checkbox at the point the number is given, and is
+  never a condition of purchase. The consent step is reproduced publicly at
+  https://storagefacilitycreator.com/sms-consent-demo and the full programme
+  terms at https://storagefacilitycreator.com/sms-terms. No marketing lists,
+  no purchased or rented numbers, no affiliate traffic."
+- **Sample messages** (each names the brand; no unresolved placeholder in the
+  sender position):
+  1. "Storage Facility Creator: you're set up for account notification texts.
+     Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out,
+     HELP for help."
+  2. "Storage Facility Creator: your subscription payment of $99.00 was
+     received. Thanks. Reply STOP to opt out, HELP for help."
+  3. "Storage Facility Creator: we got your demo request and will call you
+     today. Reply to this text any time. Reply STOP to opt out, HELP for
+     help."
+  4. "Storage Facility Creator: your card on file was declined, so your
+     account is past due. Update it at storagefacilitycreator.com/billing.
+     Reply STOP to opt out, HELP for help."
+- **How do end-users opt in:** "The person enters their own mobile number and
+  ticks a separate checkbox that is unchecked by default and is not a
+  condition of purchase. The checkbox reads: 'I consent to receive SMS
+  notifications regarding my storage account. Message frequency varies.
+  Message & data rates may apply. Reply STOP to opt out, HELP for help.' The
+  phone number, timestamp, consent text version and source are recorded. A
+  publicly accessible copy of this exact step, with no login required, is at
+  https://storagefacilitycreator.com/sms-consent-demo. Numbers reached by
+  someone who called or texted 855-526-4544 first are treated as consent given
+  by that person starting the conversation. No numbers are purchased, rented
+  or imported."
+- **Opt-in message:** "Storage Facility Creator: you're now opted in to
+  account notification texts. Msg frequency varies. Msg & data rates may
+  apply. Reply STOP to opt out, HELP for help."
+- **Terms / privacy URLs:** use the **apex** to match the brand website:
+  `https://storagefacilitycreator.com/terms` and
+  `https://storagefacilitycreator.com/privacy`.
+- **Embedded links:** yes. **Phone numbers:** yes. **Lending:** no.
+  **Age-gated:** no.
+- Leave the opt-out and help keywords/messages as they already are.
+
 ## What is left to do
 
 1. Send one real text from a facility to a known phone to prove the path end
@@ -131,10 +263,11 @@ instead.
    the facility's secondary profile). Consent text for that form is below.
    Details still needed from Russell: legal name as on the EIN letter, full
    EIN, postal code, authorized representative.
-3. Saloon: register its own brand or align website/description with the SFC
-   brand, then resubmit CMf0d8... (their project, not this repo).
-4. Decide whether to release +1 903 300 2119 and whether to delete the unused
-   CM762f... campaign and its empty service MGadd2....
+3. ~~Saloon: register its own brand~~ — done 2026-09-20, approved same day.
+4. ~~Decide whether to release +1 903 300 2119 and whether to delete the unused
+   CM762f... campaign and its service.~~ All done 2026-09-21: campaign deleted,
+   number released, messaging service MGadd2cfcf... deleted. Brand
+   BN689de2fc... (STORAGE FACILITY CREATOR LLC) deliberately kept.
 
 ## Prepared answers for a 10DLC campaign (facility local numbers)
 
