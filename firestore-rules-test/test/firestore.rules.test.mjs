@@ -720,3 +720,35 @@ test('email usage counters cannot be reset or deleted by the facility', async ()
   const staff = testEnv.authenticatedContext(STAFF_UID);
   await assertFails(usagePath(staff).update({ emailMonthlyLimit: 900 }));
 });
+
+test('the facility creation wizard can still set an email limit on a fresh facility', async () => {
+  // EmailUsageService.setEmailLimit does a merge set on a month document that
+  // usually does not exist yet, so it takes the create path. The counter rules
+  // must not break new facility setup.
+  await seedFacility();
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const fresh = owner
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('emailUsage')
+    .doc('2026-10');
+
+  await assertSucceeds(
+    fresh.set(
+      { emailMonthlyLimit: 500, emailMonth: '2026-10', lastUpdated: serverTimestamp() },
+      { merge: true },
+    ),
+  );
+
+  // But it may not seed a counter on the way in.
+  const sneaky = owner
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('emailUsage')
+    .doc('2026-11');
+  await assertFails(
+    sneaky.set({ emailMonthlyLimit: 500, emailMonthlyCount: 0 }, { merge: true }),
+  );
+});
