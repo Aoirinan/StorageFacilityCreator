@@ -780,6 +780,14 @@ class PaymentService {
   ///   paidThrough and the end of last month means a tenant paid up to
   ///   December who pays again in June stays at December plus what they bought,
   ///   instead of being knocked back to June and falling late in July.
+  ///
+  /// The payment's `dueDate` is deliberately not an input. `_updateTenantPaidThrough`
+  /// used to take it whenever it was further out than the end of the month, and
+  /// an operator picks that date freely on the payment creation screen. A
+  /// tenant paid through June, given a one-month invoice dated October, was
+  /// advanced to October — booking July, August and September as paid when
+  /// nothing had been paid for them. Months are bought with money, so only the
+  /// amount moves the date.
   static DateTime? advancePaidThrough({
     required double amountPaid,
     required double monthlyRate,
