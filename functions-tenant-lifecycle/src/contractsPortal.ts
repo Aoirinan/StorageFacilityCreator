@@ -30,6 +30,15 @@ function requireExpress(): any {
 // Signing token TTL in days (configurable for hardening)
 const SIGNING_TOKEN_TTL_DAYS = 14;
 
+/**
+ * Ceiling on a single tenant-portal payment, in dollars.
+ *
+ * The portal authenticates with an email and access code rather than Firebase
+ * Auth, and the amount is caller-supplied, so an unbounded value is both a
+ * fat-finger hazard for a real tenant and an abuse vector.
+ */
+const MAX_PORTAL_PAYMENT_AMOUNT = 50000;
+
 async function enforceSigningTokenRateLimit(context: functions.https.CallableContext): Promise<void> {
   const ip = (context.rawRequest?.ip || context.rawRequest?.connection?.remoteAddress || 'unknown');
   const forwarded = context.rawRequest?.headers?.['x-forwarded-for'];
@@ -897,6 +906,15 @@ export const createTenantPortalPaymentCheckout = functions.runWith({ secrets: ST
 
   if (!amount || amount <= 0) {
     throw new functions.https.HttpsError('invalid-argument', 'email, accessCode, and amount are required');
+  }
+  // Bound the amount. It is multiplied by 100 and sent to Stripe further down,
+  // and nothing else constrains it: a typo or a hostile caller could otherwise
+  // start a checkout for an arbitrary sum against the facility's account.
+  if (!Number.isFinite(amount) || amount > MAX_PORTAL_PAYMENT_AMOUNT) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `Payment amount must be between $0.01 and $${MAX_PORTAL_PAYMENT_AMOUNT.toLocaleString('en-US')}.`,
+    );
   }
 
   try {

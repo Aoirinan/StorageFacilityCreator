@@ -169,5 +169,13 @@ export const requestPortalAccessCodeReminder = functions
       }
     }
 
-    return { ok: true, message: GENERIC_MESSAGE, ...(deliveredTo ? { deliveredTo } : {}) };
+    // Identical response whether or not anything matched.
+    //
+    // `deliveredTo` was returned only on a hit, which turned this endpoint into
+    // a membership oracle: submit an address, and its presence told you whether
+    // that person is a tenant here, with a masked address thrown in. The
+    // lockout is keyed on identifier plus IP, so a fresh identifier always
+    // starts from zero and one caller could test addresses indefinitely.
+    // Anyone who genuinely owns the inbox learns the outcome from the email.
+    return { ok: true, message: GENERIC_MESSAGE };
   });
