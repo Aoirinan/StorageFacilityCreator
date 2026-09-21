@@ -77,3 +77,15 @@ test('fees are rounded to cents and never negative', () => {
   });
   assert.equal(floored, 0);
 });
+
+test('a zero balance yields no fee rather than an unbounded one', () => {
+  // The cap is the balance when no maxLateFee is set, and it used to be applied
+  // only when positive, so owing nothing removed the cap entirely.
+  const fee = resolveLateFee({ rules: legacy, daysLate: 90, balance: 0 });
+  assert.equal(fee, 0);
+});
+
+test('a credit balance does not produce a negative fee', () => {
+  const fee = resolveLateFee({ rules: legacy, daysLate: 90, balance: -50 });
+  assert.equal(fee, 0);
+});
