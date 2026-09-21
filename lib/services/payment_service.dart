@@ -654,24 +654,12 @@ class PaymentService {
       final monthlyRate = (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0;
       final existingPaidThrough = (tenantData['paidThrough'] as Timestamp?)?.toDate();
 
-      DateTime? newPaidThrough;
-      if (monthlyRate <= 0) {
-        // No rate to reason about; keep the previous behaviour.
-        newPaidThrough = endOfCurrentMonth;
-      } else {
-        final monthsCovered = (amount / monthlyRate).floor();
-        if (monthsCovered >= 1) {
-          // Advance from where they already stood, so catching up on arrears
-          // moves them forward one month per month paid rather than clearing
-          // the whole backlog.
-          final base = (existingPaidThrough != null &&
-                  existingPaidThrough.isAfter(DateTime(now.year, now.month, 0)))
-              ? existingPaidThrough
-              : DateTime(now.year, now.month, 0);
-          newPaidThrough = DateTime(base.year, base.month + monthsCovered + 1, 0);
-        }
-        // A part-month payment leaves paidThrough alone: it does not buy a month.
-      }
+      final newPaidThrough = advancePaidThrough(
+        amountPaid: amount,
+        monthlyRate: monthlyRate,
+        existingPaidThrough: existingPaidThrough,
+        now: now,
+      );
 
       // Create payment record
       final paymentRef = await _firestore
@@ -776,6 +764,54 @@ class PaymentService {
   }
 
   // Helper method to update tenant's paidThrough date
+  /// Where `paidThrough` should stand after a payment of [amountPaid].
+  ///
+  /// Returns null when the payment does not buy a whole month, meaning
+  /// `paidThrough` must be left exactly as it was.
+  ///
+  /// Two rules, both learned the hard way:
+  ///
+  /// * Advance by the whole months the payment actually covers. Jumping to the
+  ///   end of the current month regardless of amount meant a tenant three
+  ///   months behind who paid $25 was marked paid through today: isTenantLate
+  ///   went false, the delinquency job skipped them, and collection stopped on
+  ///   the rest of the debt. Paying six months forward had the mirror problem.
+  /// * Never move backwards. Advancing from the later of the existing
+  ///   paidThrough and the end of last month means a tenant paid up to
+  ///   December who pays again in June stays at December plus what they bought,
+  ///   instead of being knocked back to June and falling late in July.
+  static DateTime? advancePaidThrough({
+    required double amountPaid,
+    required double monthlyRate,
+    required DateTime? existingPaidThrough,
+    required DateTime now,
+  }) {
+    final endOfCurrentMonth = DateTime(now.year, now.month + 1, 0);
+
+    if (monthlyRate <= 0) {
+      // No rate to reason about; keep the previous behaviour, but still refuse
+      // to walk a prepaid tenant backwards.
+      if (existingPaidThrough != null &&
+          existingPaidThrough.isAfter(endOfCurrentMonth)) {
+        return null;
+      }
+      return endOfCurrentMonth;
+    }
+
+    final monthsCovered = (amountPaid / monthlyRate).floor();
+    if (monthsCovered < 1) return null;
+
+    // Advance from where the tenant actually stood. Flooring the base at the
+    // end of last month looked like it only handled the never-paid case, but
+    // it also applied to anyone in arrears: a tenant paid through March who
+    // paid one month in June was advanced to the end of June, clearing two
+    // months of debt they had not paid. That is the same write-off the amount
+    // check was added to prevent, one step further in. Only a tenant with no
+    // paidThrough at all starts from last month end.
+    final base = existingPaidThrough ?? DateTime(now.year, now.month, 0);
+    return DateTime(base.year, base.month + monthsCovered + 1, 0);
+  }
+
   static Future<void> _updateTenantPaidThrough(String facilityId, String paymentId) async {
     try {
       // Get the payment to find the tenant
@@ -790,21 +826,34 @@ class PaymentService {
 
       final paymentData = paymentDoc.data()!;
       final tenantId = paymentData['tenantId'] as String;
-      final dueDate = (paymentData['dueDate'] as Timestamp).toDate();
+      final amountPaid = (paymentData['amount'] as num?)?.toDouble() ?? 0.0;
 
-      // Calculate paidThrough (end of current month)
-      final now = DateTime.now();
-      final endOfMonth = DateTime(now.year, now.month + 1, 0); // Last day of current month
-      final paidThrough = dueDate.isAfter(endOfMonth) ? dueDate : endOfMonth;
-
-      // Update tenant's paidThrough
-      await _firestore
+      // This path used to set paidThrough to the end of the current month for
+      // any payment at all, ignoring both the amount and where the tenant
+      // already stood — the same two faults markTenantAsPaid was fixed for.
+      // Both now go through advancePaidThrough.
+      final tenantRef = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('tenants')
-          .doc(tenantId)
-          .update({
-        'paidThrough': Timestamp.fromDate(paidThrough),
+          .doc(tenantId);
+      final tenantDoc = await tenantRef.get();
+      if (!tenantDoc.exists) return;
+      final tenantData = tenantDoc.data()!;
+
+      final newPaidThrough = advancePaidThrough(
+        amountPaid: amountPaid,
+        monthlyRate: (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0,
+        existingPaidThrough:
+            (tenantData['paidThrough'] as Timestamp?)?.toDate(),
+        now: DateTime.now(),
+      );
+
+      // A part-month payment buys no month, so paidThrough is left alone.
+      if (newPaidThrough == null) return;
+
+      await tenantRef.update({
+        'paidThrough': Timestamp.fromDate(newPaidThrough),
         'updatedAt': Timestamp.fromDate(DateTime.now()),
       });
 
