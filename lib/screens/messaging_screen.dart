@@ -29,6 +29,7 @@ import '../utils/renter_account_message.dart';
 import 'bulk_messaging_screen.dart';
 import '../widgets/email_composition_widget.dart';
 import '../widgets/team_notes_panel.dart';
+import '../utils/keyed_memo.dart';
 
 // Provider for SMS conversations
 final smsConversationsProvider = FutureProvider.family<List<SMSConversationModel>, String>((ref, facilityId) async {
@@ -57,6 +58,8 @@ class MessagingScreen extends ConsumerStatefulWidget {
 }
 
 class _MessagingScreenState extends ConsumerState<MessagingScreen> {
+  /// Keeps the tenant-name lookup off the rebuild path; see its use below.
+  final KeyedMemo<Future<String?>> _tenantNameMemo = KeyedMemo<Future<String?>>();
   String? _selectedConversationId;
   final TextEditingController _messageController = TextEditingController();
   final FocusNode _messageInputFocusNode = FocusNode();
@@ -1881,7 +1884,13 @@ class _MessagingScreenState extends ConsumerState<MessagingScreen> {
             );
             
             return FutureBuilder<String?>(
-              future: _getTenantName(conversation.tenantId),
+              // Keyed on the tenant, not rebuilt with the widget. Built inline
+              // it re-read the tenant document on every rebuild, and the name
+              // blinked back to empty each time while it reloaded.
+              future: _tenantNameMemo(
+                conversation.tenantId,
+                () => _getTenantName(conversation.tenantId),
+              ),
               builder: (context, snapshot) {
                 return SMSConversationWidget(
                   facilityId: widget.facilityId,

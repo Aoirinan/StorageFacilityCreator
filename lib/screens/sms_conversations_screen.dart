@@ -8,6 +8,7 @@ import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 import 'package:sfcapp/widgets/sms_conversation_widget.dart';
+import 'package:sfcapp/utils/keyed_memo.dart';
 
 /// Provider for SMS conversations
 final smsConversationsProvider = FutureProvider.family<List<SMSConversationModel>, String>((ref, facilityId) async {
@@ -28,6 +29,8 @@ class SMSConversationsScreen extends ConsumerStatefulWidget {
 }
 
 class _SMSConversationsScreenState extends ConsumerState<SMSConversationsScreen> {
+  /// Keeps the tenant-name lookup off the rebuild path; see its use below.
+  final KeyedMemo<Future<String?>> _tenantNameMemo = KeyedMemo<Future<String?>>();
   String? _selectedConversationId;
   SMSConversationModel? _selectedConversation;
 
@@ -238,7 +241,12 @@ class _SMSConversationsScreenState extends ConsumerState<SMSConversationsScreen>
     if (_selectedConversation == null) return _buildNoConversationSelected();
 
     return FutureBuilder<String?>(
-      future: _getTenantName(_selectedConversation!.tenantId),
+      // Keyed on the tenant so the lookup does not re-run, and the name does
+      // not blink back to empty, on every rebuild of this screen.
+      future: _tenantNameMemo(
+        _selectedConversation!.tenantId,
+        () => _getTenantName(_selectedConversation!.tenantId),
+      ),
       builder: (context, snapshot) {
         return SMSConversationWidget(
           facilityId: widget.facilityId,

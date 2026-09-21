@@ -14,6 +14,7 @@ import '../services/facility_stats_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import '../utils/keyed_memo.dart';
 import '../widgets/modern_page_wrapper.dart';
 /// Unit List Screen - Table/List view of all units for selected facility
 class UnitListScreen extends ConsumerStatefulWidget {
@@ -28,6 +29,10 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   String _searchQuery = '';
   Set<UnitStatus> _statusFilters = UnitStatus.values.toSet();
   final Set<String> _selectedUnitIds = {};
+
+  /// Keeps the occupancy count query off the rebuild path; see its use below.
+  final KeyedMemo<Future<({int totalCapacity, int occupied})>> _unitCountsMemo =
+      KeyedMemo<Future<({int totalCapacity, int occupied})>>();
 
   @override
   void initState() {
@@ -471,8 +476,15 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                   _selectedUnitIds.length, filteredUnits, tenantMap),
             ),
             FutureBuilder<({int totalCapacity, int occupied})>(
-              future: _getUnitCountsForFacility(_selectedFacilityId!,
-                  unitsWithoutGhosts.length, occupiedCount),
+              // Keyed so the two collection reads behind this run when the
+              // facility or its counts change, not on every rebuild. Built
+              // inline, it re-read every unit and every tenant on each
+              // keystroke in the search box above.
+              future: _unitCountsMemo(
+                '$_selectedFacilityId|${unitsWithoutGhosts.length}|$occupiedCount',
+                () => _getUnitCountsForFacility(_selectedFacilityId!,
+                    unitsWithoutGhosts.length, occupiedCount),
+              ),
               builder: (context, snap) {
                 final total =
                     snap.data?.totalCapacity ?? unitsWithoutGhosts.length;
