@@ -10,41 +10,61 @@ function isDnrEntryExpired(expiresAt: admin.firestore.Timestamp | undefined): bo
   return expiresAt.toDate().getTime() < Date.now();
 }
 
-/** Same fuzzy name/email/phone rules as `GlobalDNRService.globalEntryMatchesTenantSearch` (Dart). */
-function globalEntryMatchesTenantSearch(
+function normalizedName(value: string): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Last ten digits, so +1 and formatting differences still compare equal. */
+function comparablePhone(value: string): string {
+  const digits = digitsOnly(value);
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * Strict match for the UNAUTHENTICATED screening path.
+ *
+ * The operator-facing Dart rules (`GlobalDNRService.globalEntryMatchesTenantSearch`)
+ * match on two-way substrings, which is reasonable when a signed-in manager is
+ * searching their own screen. Exposed to the public move-in endpoint it became
+ * an extraction oracle over a platform-wide list of named people: because the
+ * probe could be SHORTER than the entry, a caller could submit "a", then "ab",
+ * then "abc", and read names and phone numbers out of the Do Not Rent list one
+ * character at a time. Single-digit phone probes behaved the same way via the
+ * two-way `endsWith`.
+ *
+ * Here the probe must be at least as specific as the entry: full email, full
+ * ten-digit phone, or the complete name. That still blocks the person the list
+ * is meant to block, while reducing the endpoint to confirming an identity the
+ * caller already knows in full — which is what the per-facility path, with its
+ * exact-equality queries, has always done.
+ */
+export function globalEntryMatchesStrict(
   entry: { fullName: string; email: string; phone: string },
   name: string,
   email: string,
   phone: string,
 ): boolean {
-  let isMatch = false;
-  const n = name.trim();
-  const e = email.trim();
-  const p = phone.trim();
-  if (n.length > 0) {
-    const nameLower = n.toLowerCase();
-    const entryNameLower = String(entry.fullName || '').toLowerCase();
-    if (entryNameLower.includes(nameLower) || nameLower.includes(entryNameLower)) {
-      isMatch = true;
-    }
+  const probeEmail = String(email || '').trim().toLowerCase();
+  const entryEmail = String(entry.email || '').trim().toLowerCase();
+  if (probeEmail.length > 0 && entryEmail.length > 0 && probeEmail === entryEmail) {
+    return true;
   }
-  if (e.length > 0) {
-    const emailLower = e.toLowerCase();
-    const entryEmail = String(entry.email || '').toLowerCase();
-    if (entryEmail.includes(emailLower) || emailLower.includes(entryEmail)) {
-      isMatch = true;
-    }
+
+  const probePhone = comparablePhone(phone);
+  const entryPhone = comparablePhone(entry.phone);
+  if (probePhone.length === 10 && entryPhone.length === 10 && probePhone === entryPhone) {
+    return true;
   }
-  if (p.length > 0) {
-    const phoneDigits = digitsOnly(p);
-    if (phoneDigits.length > 0) {
-      const entryDigits = digitsOnly(entry.phone);
-      if (entryDigits.endsWith(phoneDigits) || phoneDigits.endsWith(entryDigits)) {
-        isMatch = true;
-      }
-    }
+
+  const probeName = normalizedName(name);
+  const entryName = normalizedName(entry.fullName);
+  // A bare given name is not specific enough to act on, and matching one would
+  // reopen the oracle for common names.
+  if (probeName.length >= 5 && probeName.includes(' ') && probeName === entryName) {
+    return true;
   }
-  return isMatch;
+
+  return false;
 }
 
 /**
@@ -102,7 +122,7 @@ export async function assertOnlineRentalNotOnDnrList(
       email: String(d.email || ''),
       phone: String(d.phone || ''),
     };
-    if (globalEntryMatchesTenantSearch(entry, params.name, params.email, params.phone)) {
+    if (globalEntryMatchesStrict(entry, params.name, params.email, params.phone)) {
       throw new functions.https.HttpsError(
         'failed-precondition',
         'Online move-in is not available. Please contact the facility directly.',
