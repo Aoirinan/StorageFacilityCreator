@@ -37,6 +37,9 @@ export { processAutopayPayments, processFacilityAutopayJob } from './autopaySche
 export { resetMonthlySMSUsage } from './smsUsageReset';
 export { autoProtectMoveIn, autoProtectAudit, checkInsuranceCompliance } from './insuranceAutomation';
 export { processPaymentReminders } from './paymentRemindersScheduled';
+// Locally granted trials have no Stripe object, so nothing can expire them by
+// webhook; this sweep keeps account status honest. See accountTrialExpirySweep.ts.
+export { sweepAccountTrialExpiry } from './accountTrialExpirySweep';
 
 export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';
 export { processFacilityOffboarding } from './facilityOffboardingScheduled';

@@ -15,6 +15,21 @@ import '../utils/browser_location_stub.dart'
     if (dart.library.html) '../utils/browser_location_web.dart' as browser_location;
 import 'app_route.dart';
 
+/// Upper bound on the Firebase Auth token refresh performed during a redirect.
+/// On timeout the guard falls back to the cached auth snapshot, which still
+/// routes unverified users to verify-email.
+const Duration _authRefreshTimeout = Duration(seconds: 6);
+
+/// Upper bound on the two-factor lookup performed during a redirect. On timeout
+/// the guard fails closed and routes to login rather than treating an
+/// unreachable backend as "no second factor required".
+const Duration _twoFactorLookupTimeout = Duration(seconds: 6);
+
+/// Upper bound on a subscription/access lookup performed during a redirect.
+/// On timeout the guard sends the user to /subscription, the same fail-closed
+/// destination it already uses when the lookup throws.
+const Duration _accessCheckTimeout = Duration(seconds: 8);
+
 /// Cache for subscription check results to avoid repeated calls
 class _SubscriptionCheckCache {
   SubscriptionAccessResult? result;
@@ -171,10 +186,15 @@ Future<String?> routeGuard(
       return AppRoute.login;
     }
     try {
-      await verifiedUser.reload();
+      // Bounded: this runs on every guarded navigation. Without a timeout a slow
+      // or stalled network freezes the router mid-redirect, leaving the previous
+      // screen painted with no spinner and no error.
+      await verifiedUser.reload().timeout(_authRefreshTimeout);
       effectiveUser = FirebaseAuth.instance.currentUser;
     } catch (_) {
-      // If refresh fails, fall back to the current auth snapshot.
+      // If refresh fails or times out, fall back to the current auth snapshot.
+      // An unverified snapshot still routes to verify-email below, so this
+      // degrades closed rather than letting an unverified user through.
       effectiveUser = verifiedUser;
     }
 
@@ -193,7 +213,8 @@ Future<String?> routeGuard(
 
     if (!is2FAVerified) {
       try {
-        final is2FAEnabled = await TwoFactorService.is2FAEnabled();
+        final is2FAEnabled = await TwoFactorService.is2FAEnabledStrict()
+            .timeout(_twoFactorLookupTimeout);
 
         if (is2FAEnabled) {
           if (loggingIn) {
@@ -233,11 +254,16 @@ Future<String?> routeGuard(
           return null;
         }
       } catch (e) {
+        // Fail closed. We could not determine whether this account requires a
+        // second factor, so do not mark it satisfied: that would let anyone
+        // holding just the password through whenever this lookup fails.
         if (kDebugMode) {
-          print('⚠️ Error checking 2FA status: $e');
+          print('⚠️ Error checking 2FA status, failing closed: $e');
         }
-        ref.read(twoFactorVerifiedProvider.notifier).state = true;
-        return null;
+        // Already on login: stay put so the screen can retry and show its own
+        // error. Redirecting to login from login would be a redirect loop.
+        if (loggingIn) return null;
+        return AppRoute.login;
       }
     }
   }
@@ -260,9 +286,11 @@ Future<String?> routeGuard(
   Future<String> redirectToDashboardOrLoginIf2FA() async {
     if (!ref.read(twoFactorVerifiedProvider)) {
       try {
-        final en = await TwoFactorService.is2FAEnabled();
+        final en = await TwoFactorService.is2FAEnabledStrict()
+            .timeout(_twoFactorLookupTimeout);
         if (en) return AppRoute.login;
       } catch (_) {
+        // Fail closed: an undetermined second factor must not land on dashboard.
         return AppRoute.login;
       }
     }
@@ -345,7 +373,7 @@ Future<String?> routeGuard(
         final maintenanceGate = await SubscriptionGuardService.checkAccess(
           currentRoute: path,
           allowSubscriptionRoutes: true,
-        );
+        ).timeout(_accessCheckTimeout);
         if (!maintenanceGate.canAccess) {
           return '/subscription?maintenance=1';
         }
@@ -379,7 +407,7 @@ Future<String?> routeGuard(
         subscriptionCheck = await SubscriptionGuardService.checkAccess(
           currentRoute: path,
           allowSubscriptionRoutes: true,
-        );
+        ).timeout(_accessCheckTimeout);
         // Don't cache trialing/pending results: status can change quickly.
         final status = subscriptionCheck.subscriptionStatus;
         final shouldBypassCache = status == SubscriptionStatus.trialing ||

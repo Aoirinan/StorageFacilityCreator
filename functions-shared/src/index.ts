@@ -122,6 +122,13 @@ export type { OffboardingEmailInput, OffboardingSweepSummary, EmailContent } fro
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
+export type {
+  AccountSubscriptionStatus,
+  AccountRollupInput,
+  AccountRollupResult,
+  FacilitySubscriptionSnapshot,
+} from './subscription/accountRollup';
 
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';

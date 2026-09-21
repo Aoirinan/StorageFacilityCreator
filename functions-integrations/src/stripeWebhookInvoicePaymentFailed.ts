@@ -7,6 +7,7 @@ import {
   isWebsiteAddonSubscription,
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
+import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 export async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
   const subscriptionId = invoiceSubscriptionId(invoice);
@@ -31,15 +32,21 @@ export async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
 
   if (facilityId && !tenantId) {
     await admin.firestore().collection('facilities').doc(facilityId).update({
-      platformSubscriptionStatus: 'past_due',
+      // camelCase: the Flutter SubscriptionStatus enum matches on `e.name`, so a
+      // snake_case value here does not parse and silently falls back.
+      platformSubscriptionStatus: 'pastDue',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     functions.logger.info(`Facility ${facilityId} platform payment failed`);
+    await reconcileAccountSubscription(accountId ?? '');
     return;
   }
   if (accountId) {
     await admin.firestore().collection('facilityCreatorAccounts').doc(accountId).update({
-      subscriptionStatus: 'past_due',
+      // Was 'past_due'. The Flutter enum has no such name, so the model fell
+      // back to pendingApproval and locked the operator out of the whole app
+      // instead of giving them the intended 7-day past-due grace period.
+      subscriptionStatus: 'pastDue',
       subscriptionLastPaymentFailed: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });

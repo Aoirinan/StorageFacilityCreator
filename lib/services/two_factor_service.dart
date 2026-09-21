@@ -190,6 +190,27 @@ class TwoFactorService {
     }
   }
 
+  /// Same lookup as [is2FAEnabled], but it does NOT swallow failures.
+  ///
+  /// [is2FAEnabled] returns false when the lookup itself fails, which is safe
+  /// for UI (a toggle renders off) but unsafe for an access gate: an
+  /// unreachable backend would read as "no second factor required" and let the
+  /// request through. Security gates must be able to tell "2FA is off" apart
+  /// from "we could not find out", so this variant lets the error propagate and
+  /// leaves the fail-closed decision to the caller.
+  ///
+  /// A missing user document is still a definitive answer: that account has no
+  /// second factor configured, so it returns false rather than throwing.
+  static Future<bool> is2FAEnabledStrict() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+
+    final userDoc = await _firestore.collection('users').doc(user.uid).get();
+    if (!userDoc.exists) return false;
+
+    return userDoc.data()?['twoFactorEnabled'] == true;
+  }
+
   /// Enable 2FA for the current user
   static Future<bool> enable2FA() async {
     try {

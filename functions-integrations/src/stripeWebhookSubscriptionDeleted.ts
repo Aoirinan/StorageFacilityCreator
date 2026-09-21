@@ -5,6 +5,7 @@ import {
   hasActiveWebsiteAdminTrial,
   isWebsiteAddonSubscription,
 } from './stripeWebhookSubscriptionInternal';
+import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
@@ -56,6 +57,8 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     functions.logger.info(`Facility ${facilityId} platform subscription cancelled`);
+    // A cancelled site must not leave the account still claiming a live plan.
+    await reconcileAccountSubscription(accountId ?? '');
     return;
   }
 
@@ -66,6 +69,10 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     functions.logger.info(`Subscription cancelled for account: ${accountId}`);
+    // A cancellation is exactly when `stripeSubscriptionId` becomes a dead
+    // pointer, so verify and clear it here rather than leaving the account
+    // advertising a subscription that no longer exists.
+    await reconcileAccountSubscription(accountId, { verifyStripeSubscription: true });
   }
 
   if (facilityId && tenantId) {

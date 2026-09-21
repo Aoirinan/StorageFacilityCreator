@@ -42,7 +42,18 @@ class AccountSubscriptionState {
   const AccountSubscriptionState({this.status, this.trialEnd, this.currentPeriodEnd});
 
   bool get hasTrial => status == 'trialing';
-  bool trialExpiredAt(DateTime now) => hasTrial && trialEnd != null && now.isAfter(trialEnd!);
+
+  /// True once a granted trial has run out and nothing has replaced it.
+  ///
+  /// Deliberately not tied to `status == 'trialing'`. A locally granted trial
+  /// has no Stripe subscription behind it, so the nightly sweep moves the
+  /// account to `cancelled` when the date passes. Keying off the status alone
+  /// meant the "your trial has expired" banner vanished at exactly the moment
+  /// the operator lost access and most needed to be told why.
+  bool trialExpiredAt(DateTime now) =>
+      trialEnd != null &&
+      now.isAfter(trialEnd!) &&
+      (status == 'trialing' || status == 'cancelled');
   bool get isActive => status == 'active' || status == 'trialing';
 }
 
@@ -102,15 +113,18 @@ SubscriptionBannerDecision _decideFromFacilities(List<FacilitySubscriptionState>
 }
 
 SubscriptionBannerDecision _decideFromAccount(AccountSubscriptionState account, DateTime now) {
-  if (account.trialExpiredAt(now)) {
-    return const SubscriptionBannerDecision.warn(
-      'Your trial has expired. Please subscribe to continue using the app.',
-      critical: true,
-    );
-  }
+  // Past due first: an operator who trialled, subscribed, then missed a payment
+  // still has a trial end date in the past, and the billing problem is the more
+  // useful thing to tell them about.
   if (account.status == 'pastDue') {
     return const SubscriptionBannerDecision.warn(
       'Your subscription payment is past due. Please renew your subscription to continue.',
+      critical: true,
+    );
+  }
+  if (account.trialExpiredAt(now)) {
+    return const SubscriptionBannerDecision.warn(
+      'Your trial has expired. Please subscribe to continue using the app.',
       critical: true,
     );
   }

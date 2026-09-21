@@ -7,6 +7,7 @@ import {
   updateFacilityFromPlatformSubscription,
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
+import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const accountId = session.metadata?.accountId;
@@ -40,6 +41,9 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) 
         });
       }
     }
+    // Roll the new facility subscription up to the account, which this branch
+    // previously skipped entirely.
+    await reconcileAccountSubscription(accountId);
     return;
   }
 

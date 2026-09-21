@@ -7,6 +7,7 @@ import {
   updateFacilityFromPlatformSubscription,
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
+import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 export async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   const accountId = subscription.metadata?.accountId;
@@ -20,6 +21,9 @@ export async function handleSubscriptionUpdate(subscription: Stripe.Subscription
 
   if (facilityId && !tenantId) {
     await updateFacilityFromPlatformSubscription(facilityId, subscription.id);
+    // The facility is now current; roll that up so the account stops reporting
+    // whatever it last said before per-facility billing took over.
+    await reconcileAccountSubscription(accountId ?? '');
     return;
   }
 

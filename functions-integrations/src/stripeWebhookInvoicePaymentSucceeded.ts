@@ -10,6 +10,7 @@ import {
   updateFacilityFromPlatformSubscription,
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
+import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 
 export async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
   const subscriptionId = invoiceSubscriptionId(invoice);
@@ -37,6 +38,7 @@ export async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
     } catch (referralErr: any) {
       functions.logger.error('Referral reward processing failed', referralErr);
     }
+    await reconcileAccountSubscription(accountId ?? '');
     return;
   }
   if (accountId) {

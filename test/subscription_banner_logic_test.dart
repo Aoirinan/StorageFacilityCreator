@@ -82,4 +82,30 @@ void main() {
   test('no account means no banner', () {
     expect(decideSubscriptionBanner(account: null, facilities: const [], now: now).show, isFalse);
   });
+
+  test('an expired trial still explains itself after the sweep cancels it', () {
+    // The nightly sweep moves a lapsed local trial from 'trialing' to
+    // 'cancelled'. The banner must keep naming the trial as the reason,
+    // otherwise the operator loses access with no explanation.
+    final decision = decideSubscriptionBanner(
+      account: AccountSubscriptionState(status: 'cancelled', trialEnd: DateTime(2026, 8, 18)),
+      facilities: const [],
+      now: now,
+    );
+    expect(decision.show, isTrue);
+    expect(decision.critical, isTrue);
+    expect(decision.message, 'Your trial has expired. Please subscribe to continue using the app.');
+  });
+
+  test('a past-due subscription outranks a long-finished trial', () {
+    final decision = decideSubscriptionBanner(
+      account: AccountSubscriptionState(status: 'pastDue', trialEnd: DateTime(2026, 1, 1)),
+      facilities: const [],
+      now: now,
+    );
+    expect(
+      decision.message,
+      'Your subscription payment is past due. Please renew your subscription to continue.',
+    );
+  });
 }

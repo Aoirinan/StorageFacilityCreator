@@ -46,6 +46,16 @@ export const startTrial = functions.https.onCall(async (data: any, context) => {
       throw new functions.https.HttpsError('failed-precondition', 'Account already has an active subscription or trial');
     }
 
+    // One trial per account, ever. Expired trials are now moved out of
+    // `trialing` by the nightly sweep, so the status check above no longer
+    // blocks a second grant on its own.
+    if (accountData.subscriptionTrialEnd) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'This account has already used its free trial. Choose a plan to continue.',
+      );
+    }
+
     const now = new Date();
     const trialEnd = new Date(now);
     trialEnd.setDate(trialEnd.getDate() + 30);
