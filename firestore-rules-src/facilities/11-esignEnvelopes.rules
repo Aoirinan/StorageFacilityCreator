@@ -22,8 +22,14 @@
         allow update: if isFacilityStaff(facilityId) &&
           (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
           (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid);
-        // Allow Cloud Functions to update (via service account)
-        allow update: if request.auth != null && request.auth.token.firebase.sign_in_provider == 'custom';
+        // Removed: `allow update: if request.auth.token.firebase.sign_in_provider == 'custom'`.
+        //
+        // Its stated purpose was to let Cloud Functions write, but the Admin SDK
+        // bypasses rules entirely, so it never served that. What it actually
+        // granted was an unvalidated cross-facility update to any identity
+        // holding a custom token. Nothing in this repo mints one today, so it is
+        // dead as well as dangerous — and it would come alive silently the first
+        // time someone adds custom tokens, for the tenant portal say.
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
 

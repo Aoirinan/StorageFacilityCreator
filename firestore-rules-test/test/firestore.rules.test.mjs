@@ -696,3 +696,27 @@ test('audit logs are immutable once written', async () => {
   await assertFails(logRef.update({ action: 'nothing_happened' }));
   await assertFails(logRef.delete());
 });
+
+test('email usage counters cannot be reset or deleted by the facility', async () => {
+  // The outbound path increments emailMonthlyCount in a transaction and refuses
+  // to send past the limit. A client able to rewrite or delete the month
+  // document could zero its own counter and keep sending.
+  await seedFacility();
+  const usagePath = (ctx) =>
+    ctx.firestore().collection('facilities').doc(FACILITY_ID).collection('emailUsage').doc('2026-09');
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await usagePath(context).set({ emailMonth: '2026-09', emailMonthlyCount: 480, emailMonthlyLimit: 500 });
+  });
+
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  await assertSucceeds(usagePath(owner).get());
+  await assertFails(usagePath(owner).update({ emailMonthlyCount: 0 }));
+  await assertFails(usagePath(owner).delete());
+  // A non-counter field is still editable, which is what the creation wizard needs.
+  await assertSucceeds(usagePath(owner).update({ emailMonthlyLimit: 400 }));
+
+  // Staff below manager cannot write at all.
+  const staff = testEnv.authenticatedContext(STAFF_UID);
+  await assertFails(usagePath(staff).update({ emailMonthlyLimit: 900 }));
+});

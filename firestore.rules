@@ -825,8 +825,14 @@ service cloud.firestore {
         allow update: if isFacilityStaff(facilityId) &&
           (!('facilityId' in request.resource.data) || request.resource.data.facilityId == facilityId) &&
           (!('facilityOwnerUid' in request.resource.data) || request.resource.data.facilityOwnerUid == resource.data.facilityOwnerUid);
-        // Allow Cloud Functions to update (via service account)
-        allow update: if request.auth != null && request.auth.token.firebase.sign_in_provider == 'custom';
+        // Removed: `allow update: if request.auth.token.firebase.sign_in_provider == 'custom'`.
+        //
+        // Its stated purpose was to let Cloud Functions write, but the Admin SDK
+        // bypasses rules entirely, so it never served that. What it actually
+        // granted was an unvalidated cross-facility update to any identity
+        // holding a custom token. Nothing in this repo mints one today, so it is
+        // dead as well as dangerous — and it would come alive silently the first
+        // time someone adds custom tokens, for the tenant portal say.
         allow delete: if isFacilityOwnerOrManager(facilityId);
       }
 
@@ -984,10 +990,20 @@ service cloud.firestore {
 
       match /emailUsage/{usageId} {
         allow read: if isFacilityStaff(facilityId);
-        allow create, update: if isFacilityStaff(facilityId);
-        allow delete: if isFacilityStaff(facilityId);
+        // The monthly send counter is server-only. The outbound-email path
+        // increments emailMonthlyCount inside a transaction and refuses to send
+        // once it passes the limit, so a client able to write or delete it could
+        // reset its own counter and keep sending.
+        //
+        // A create must not carry a counter at all; an update must leave it
+        // untouched. Deleting the month document zeroes the counter just as
+        // effectively, so deletes are refused outright.
+        allow create: if isFacilityOwnerOrManager(facilityId) &&
+          !('emailMonthlyCount' in request.resource.data);
+        allow update: if isFacilityOwnerOrManager(facilityId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['emailMonthlyCount']);
+        allow delete: if false;
       }
-
       match /exportJobs/{jobId} {
         allow read: if isFacilityOwnerOrManager(facilityId);
         allow create: if isFacilityOwnerOrManager(facilityId) &&
