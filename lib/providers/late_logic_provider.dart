@@ -59,15 +59,10 @@ final lateLogicOperationsProvider = StateNotifierProvider<LateLogicOperationsNot
 class LateLogicOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   LateLogicOperationsNotifier() : super(const AsyncValue.data(null));
 
-  Future<void> applyLateFees(String facilityId) async {
-    state = const AsyncValue.loading();
-    try {
-      await LateLogicService.applyLateFees(facilityId);
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
-  }
+  // applyLateFees removed with the service method behind it. Late fees are
+  // applied by the scheduled processDelinquencyAutomation job, which checks for
+  // an existing fee before writing one. See LateLogicService for why the
+  // client-side version was unsafe.
 
   Future<void> refreshLateData(String facilityId) async {
     state = const AsyncValue.loading();

@@ -1,5 +1,4 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
@@ -59,7 +58,6 @@ class TenantOverdueInfo {
 
 class LateLogicService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Defaults when facility has no billing settings
   static const double _baseLateFee = 25.00;
@@ -461,55 +459,25 @@ class LateLogicService {
 
   // --- Late Fee Application ---
 
-  static Future<void> applyLateFees(String facilityId) async {
-    try {
-      if (kDebugMode) {
-        print('🔄 Applying late fees for facility: $facilityId');
-      }
-
-      final graceDays = await getFacilityGracePeriodDays(facilityId);
-      final overduePayments = await getOverduePayments(facilityId);
-      
-      for (final payment in overduePayments) {
-        final lateFee = calculateLateFee(payment, gracePeriodDays: graceDays);
-        if (lateFee > 0) {
-          // Create a late fee payment record
-          await _firestore.collection('facilities').doc(facilityId).collection('payments').add({
-            'tenantId': payment.tenantId,
-            'facilityId': payment.facilityId,
-            'contractId': payment.contractId,
-            if (payment.snapshotTenantName != null &&
-                payment.snapshotTenantName!.trim().isNotEmpty)
-              'tenantName': payment.snapshotTenantName!.trim(),
-            if (payment.snapshotUnitNumber != null &&
-                payment.snapshotUnitNumber!.trim().isNotEmpty)
-              'unitNumber': payment.snapshotUnitNumber!.trim(),
-            'amount': lateFee,
-            'status': PaymentStatus.pending.toString().split('.').last,
-            'method': PaymentMethod.cash.toString().split('.').last,
-            'dueDate': FieldValue.serverTimestamp(),
-            'notes': 'Late fee for payment due ${payment.dueDate}',
-            'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-            'createdBy': _auth.currentUser?.uid ?? '',
-          });
-
-          if (kDebugMode) {
-            print('✅ Applied late fee of \$${lateFee.toStringAsFixed(2)} for payment ${payment.id}');
-          }
-        }
-      }
-
-      if (kDebugMode) {
-        print('✅ Late fee application complete for facility: $facilityId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error applying late fees: $e');
-      }
-      rethrow;
-    }
-  }
+  /// Removed. Late fees are applied by the scheduled `processDelinquencyAutomation`
+  /// job, which is the single engine for them.
+  ///
+  /// This client-side version was a second, conflicting engine and every part of
+  /// it was unsafe:
+  ///
+  /// * No idempotency. It created a new `payments` row on every call with no
+  ///   check for an existing fee, so two clicks meant two fees. The scheduled
+  ///   job looks for an existing `lateFee` ledger entry in the month first.
+  /// * It compounded on itself. The fee was written `status: pending` with
+  ///   `dueDate: now`, so `getOverduePayments` picked it up days later and
+  ///   charged a late fee on the late fee.
+  /// * Uncapped and hardcoded at $25 plus $5 a day, ignoring the facility's own
+  ///   `lateFeeAmount` and `lateFeeType`. Sixty days overdue produced a $310 fee
+  ///   on a $150 unit, above what lien statutes generally allow.
+  /// * Wrong collection. It wrote to `payments` while the scheduled job writes
+  ///   to `ledgers`, so the two engines could not see each other's work.
+  ///
+  /// Nothing in the app called it. [calculateLateFee] is kept for display.
 
   // --- Statistics ---
 

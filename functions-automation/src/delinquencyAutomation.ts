@@ -14,6 +14,50 @@ import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './sec
  * Scheduled function to process delinquency automation daily
  * Runs at 3:00 AM UTC every day
  */
+/**
+ * The late fee for one overdue tenant, in dollars.
+ *
+ * Prefers what the operator configured in the facility settings screen
+ * (`lateFeeType` flat or percentage, with `lateFeeAmount`). That screen has
+ * always written those fields and nothing read them, so every facility got the
+ * hardcoded $25 + $5/day default regardless of what they set.
+ *
+ * The legacy daily accrual is kept for facilities that never configured a fee,
+ * but is now bounded. Uncapped, it reached $310 on a $150 unit after two months,
+ * which is above what lien statutes generally permit. The cap is the operator's
+ * `maxLateFee` where set, otherwise the outstanding balance: a late fee that
+ * exceeds the debt it is charged on is not defensible.
+ */
+export function resolveLateFee(params: {
+  rules: {
+    gracePeriodDays: number;
+    baseLateFee: number;
+    dailyLateFee: number;
+    lateFeeType: string | null;
+    lateFeeAmount: number | null;
+    maxLateFee: number | null;
+  };
+  daysLate: number;
+  balance: number;
+}): number {
+  const { rules, daysLate, balance } = params;
+
+  let fee: number;
+  if (rules.lateFeeAmount !== null && rules.lateFeeAmount > 0) {
+    fee =
+      rules.lateFeeType === 'percentage'
+        ? (balance * rules.lateFeeAmount) / 100
+        : rules.lateFeeAmount;
+  } else {
+    fee = rules.baseLateFee + (daysLate - rules.gracePeriodDays) * rules.dailyLateFee;
+  }
+
+  const cap = rules.maxLateFee !== null && rules.maxLateFee > 0 ? rules.maxLateFee : balance;
+  if (cap > 0 && fee > cap) fee = cap;
+  if (fee < 0) fee = 0;
+  return Math.round(fee * 100) / 100;
+}
+
 export const processDelinquencyAutomation = functions.runWith({ secrets: SENDGRID_SECRETS }).pubsub
   .schedule('0 3 * * *')
   .timeZone('UTC')
@@ -133,6 +177,15 @@ async function processDelinquencyForFacility(
       gracePeriodDays: billingSettings.gracePeriodDays || 3,
       baseLateFee: billingSettings.baseLateFee || 25.0,
       dailyLateFee: billingSettings.dailyLateFee || 5.0,
+      // What the operator actually configures in the facility settings screen.
+      // The screen writes lateFeeType/lateFeeAmount, which nothing here read,
+      // so every facility silently got the $25 + $5/day default instead of the
+      // fee they set.
+      lateFeeType: (billingSettings.lateFeeType as string) || null,
+      lateFeeAmount:
+        typeof billingSettings.lateFeeAmount === 'number' ? billingSettings.lateFeeAmount : null,
+      maxLateFee:
+        typeof billingSettings.maxLateFee === 'number' ? billingSettings.maxLateFee : null,
       noticeDays: billingSettings.noticeDays || 7,
       finalNoticeDays: billingSettings.finalNoticeDays || 14,
       lienDays: billingSettings.lienDays || 30,
@@ -221,7 +274,11 @@ async function processDelinquencyForFacility(
 
         // Apply late fee if needed
         if (rules.enableAutoLateFees && daysLate > rules.gracePeriodDays) {
-          const lateFee = rules.baseLateFee + ((daysLate - rules.gracePeriodDays) * rules.dailyLateFee);
+          const lateFee = resolveLateFee({
+            rules,
+            daysLate,
+            balance,
+          });
           
           // Check if late fee already applied this month
           const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
