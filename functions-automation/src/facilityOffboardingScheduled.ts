@@ -10,6 +10,10 @@ import {
   getPublicAppUrl,
   getSgMail,
   getStripeClient,
+  anyCancelFailed,
+  cancelSubscriptions,
+  collectSubscriptionsToCancel,
+  summarizeCancelOutcomes,
   getSuperAdminEmails,
   initializeSendGrid,
   isOrphanedConnectedAccount,
@@ -203,6 +207,26 @@ async function offboardCancelledFacility(facilityId: string, summary: Offboardin
       // Do not redact or mark offboarded while the platform still holds access;
       // the next sweep retries once the secret is configured.
       summary.errors.push({ where: `offboard ${facilityId}`, message: 'STRIPE_CONNECT_CLIENT_ID not configured' });
+      return;
+    }
+  }
+
+  // Stop billing the owner for a facility whose data we are about to strip.
+  // Nothing else in this sweep did, so a customer who left kept paying.
+  const subscriptions = collectSubscriptionsToCancel(data, null);
+  if (subscriptions.length > 0) {
+    const outcomes = await cancelSubscriptions(getStripeClient(), subscriptions);
+    functions.logger.info('Cancelled subscriptions during offboarding', {
+      facilityId,
+      outcomes: summarizeCancelOutcomes(outcomes),
+    });
+    if (anyCancelFailed(outcomes)) {
+      // Leave the facility intact and retry next run. Redacting tenant data
+      // while the card is still being charged is the worst of both.
+      summary.errors.push({
+        where: `offboard ${facilityId}`,
+        message: `subscription cancel failed: ${summarizeCancelOutcomes(outcomes)}`,
+      });
       return;
     }
   }

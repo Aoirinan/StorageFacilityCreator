@@ -8,6 +8,12 @@ import { releasePlatformOutgoing, reservePlatformOutgoing } from '@sfc/functions
 import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/referral/referralRewards';
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
 import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
+import {
+  anyCancelFailed,
+  cancelSubscriptions,
+  collectSubscriptionsToCancel,
+  summarizeCancelOutcomes,
+} from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
@@ -160,6 +166,7 @@ interface SuperAdminDeleteFacilityCreatorAccountData {
  * Caller must type the account owner's email exactly (case-insensitive) as confirmation.
  */
 export const superAdminDeleteFacilityCreatorAccount = functions
+  .runWith({ secrets: STRIPE_SECRETS })
   .https.onCall(async (data: SuperAdminDeleteFacilityCreatorAccountData, context) => {
     if (!context.auth) {
       throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
@@ -216,6 +223,33 @@ export const superAdminDeleteFacilityCreatorAccount = functions
       .collection('facilities')
       .where('ownerUid', '==', ownerUid)
       .get();
+
+    // Every subscription this owner has, across every facility plus the legacy
+    // account plan, cancelled before any of it is deleted. Collected in one
+    // pass so a subscription shared by two facilities is cancelled once.
+    const allSubscriptions = [
+      ...facilitiesSnap.docs.flatMap((f) =>
+        collectSubscriptionsToCancel(f.data() as Record<string, unknown>, null),
+      ),
+      ...collectSubscriptionsToCancel(null, accountData),
+    ].filter(
+      (sub, i, list) => list.findIndex((other) => other.id === sub.id) === i,
+    );
+    const accountCancelOutcomes = await cancelSubscriptions(getStripeClient(), allSubscriptions);
+    if (anyCancelFailed(accountCancelOutcomes)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Could not cancel this account's Stripe subscriptions, so nothing was deleted: ` +
+          `${summarizeCancelOutcomes(accountCancelOutcomes)}. Resolve it in Stripe and try again.`,
+      );
+    }
+    if (accountCancelOutcomes.length > 0) {
+      functions.logger.info('Cancelled account subscriptions before delete', {
+        accountId,
+        ownerUid,
+        outcomes: summarizeCancelOutcomes(accountCancelOutcomes),
+      });
+    }
 
     for (const f of facilitiesSnap.docs) {
       await adminDeleteDocumentTree(f.ref);
@@ -316,6 +350,26 @@ export const superAdminDeleteFacility = functions
         'invalid-argument',
         'Confirmation must match the facility name exactly, or the facility ID if it has no name.',
       );
+    }
+
+    // Stop the billing before removing the thing being billed for. Done first
+    // on purpose: if the delete succeeded and this failed, the customer would
+    // keep paying for a facility that no longer exists, and nothing would be
+    // left to point at the charge.
+    const facilitySubscriptions = collectSubscriptionsToCancel(facilityData, null);
+    const cancelOutcomes = await cancelSubscriptions(getStripeClient(), facilitySubscriptions);
+    if (anyCancelFailed(cancelOutcomes)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Could not cancel this facility's Stripe subscriptions, so nothing was deleted: ` +
+          `${summarizeCancelOutcomes(cancelOutcomes)}. Resolve it in Stripe and try again.`,
+      );
+    }
+    if (cancelOutcomes.length > 0) {
+      functions.logger.info('Cancelled facility subscriptions before delete', {
+        facilityId,
+        outcomes: summarizeCancelOutcomes(cancelOutcomes),
+      });
     }
 
     const metaSnap = await facilityRef.collection('mapEngine').doc('meta').get();

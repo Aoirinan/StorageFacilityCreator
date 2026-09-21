@@ -44,3 +44,6 @@ export { sweepAccountTrialExpiry } from './accountTrialExpirySweep';
 export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';
 export { processFacilityOffboarding } from './facilityOffboardingScheduled';
 export { onFacilityCreatorAccountWrite } from './ownerOnboardingEmails';
+// Backstop for the delete/offboard paths: nothing should still be billing for
+// a facility or account that no longer exists.
+export { sweepOrphanedSubscriptions } from './orphanedSubscriptionSweep';

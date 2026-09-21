@@ -119,6 +119,21 @@ export {
   sweepSummaryHasActivity,
 } from './stripe/offboardingEmails';
 export type { OffboardingEmailInput, OffboardingSweepSummary, EmailContent } from './stripe/offboardingEmails';
+export {
+  collectSubscriptionsToCancel,
+  cancelSubscriptions,
+  isAlreadyEndedError,
+  isOrphanedSubscription,
+  summarizeCancelOutcomes,
+  anyCancelFailed,
+} from './stripe/subscriptionCleanup';
+export type {
+  CancellableSubscription,
+  CancelOutcome,
+  CancelStatus,
+  SubscriptionLabel,
+  SubscriptionCanceller,
+} from './stripe/subscriptionCleanup';
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
