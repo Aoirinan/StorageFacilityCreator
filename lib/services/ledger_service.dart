@@ -10,6 +10,10 @@ class LedgerService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  /// Rows returned for a statement view, newest first. Balances do not use
+  /// this: they are summed on the server so they cannot be truncated.
+  static const int _entriesDisplayLimit = 1000;
+
   /// Create a new ledger entry
   static Future<LedgerEntry> createLedgerEntry({
     required String tenantId,
@@ -164,8 +168,11 @@ class LedgerService {
         }
       }
       
-      // Add limit after orderBy (if present) or directly
-      query = query.limit(1000); // Limit to 1000 ledger entries per tenant (safety limit)
+      // Display cap. Newest first, so what is dropped past the cap is the
+      // oldest history. That is acceptable for a statement view but never for
+      // arithmetic: getLedgerBalance used to sum this list and silently
+      // returned a partial balance. It now sums on the server instead.
+      query = query.limit(_entriesDisplayLimit);
 
       final snapshot = await query.get();
 
@@ -227,15 +234,24 @@ class LedgerService {
     required String facilityId,
   }) async {
     try {
-      final entries = await getLedgerEntries(
-        tenantId: tenantId,
-        facilityId: facilityId,
-      );
+      // Summed on the server over every posted entry.
+      //
+      // This used to reuse getLedgerEntries, which caps at 1000 rows ordered
+      // newest first for display. Past that the OLDEST entries were dropped
+      // silently, so a long-tenured tenant's balance was simply wrong with no
+      // error and no warning — and it disagreed with getBalancesForFacility,
+      // which has no cap. A balance must never be a partial sum.
+      final query = _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('ledgers')
+          .where('tenantId', isEqualTo: tenantId)
+          .where('status', isEqualTo: 'posted');
 
-      // Sum only posted entries
-      final balance = entries
-          .where((e) => e.status == LedgerEntryStatus.posted)
-          .fold(0.0, (sum, entry) => sum + entry.amount);
+      final aggregate = await query.aggregate(sum('amount')).get();
+      // Guard against float drift accumulated across many entries.
+      final balance =
+          double.parse((aggregate.getSum('amount') ?? 0).toStringAsFixed(2));
 
       if (kDebugMode) {
         print('💰 [Ledger] Balance for tenant $tenantId: \$${balance.toStringAsFixed(2)}');
@@ -271,6 +287,32 @@ class LedgerService {
         tenantId: tenantId,
         facilityId: facilityId,
       );
+
+      // Already allocated? Report what was done rather than doing it again.
+      //
+      // Each charge records the payments applied to it, and nothing checked
+      // that list before allocating. Calling this twice for one payment — a
+      // retry, a double-tap, a webhook arriving beside the client write —
+      // applied it twice, inflating allocatedAmount and making charges look
+      // settled that were not.
+      final existing = <Map<String, dynamic>>[];
+      for (final e in entries) {
+        final applied = (e.metadata?['allocations'] as List<dynamic>?) ?? const [];
+        for (final a in applied) {
+          if (a is Map && a['paymentId'] == paymentId) {
+            existing.add({
+              'chargeId': e.id,
+              'amount': (a['amount'] as num?)?.toDouble() ?? 0.0,
+            });
+          }
+        }
+      }
+      if (existing.isNotEmpty) {
+        if (kDebugMode) {
+          print('⚠️ [Ledger] Payment $paymentId is already allocated; not reapplying');
+        }
+        return existing;
+      }
 
       final unpaidCharges = entries
           .where((e) =>
