@@ -11,17 +11,38 @@ import '../providers/facility_provider.dart';
 import '../models/provider_params.dart';
 import '../theme/app_theme.dart';
 import 'tenant_creation_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
+
+/// The range `showDatePicker` may open on for a due date.
+///
+/// The picker asserts that `initialDate` falls inside `[firstDate, lastDate]`
+/// and throws otherwise, so the bounds have to stretch to wherever the form
+/// currently sits rather than being fixed at today..today+365. The date can
+/// start outside that window: the calendar's "add a payment due on this date"
+/// hands in whichever day the operator tapped, which is often in the past.
+({DateTime first, DateTime last}) dueDatePickerBounds({
+  required DateTime selected,
+  required DateTime now,
+}) {
+  final defaultLast = now.add(const Duration(days: 365));
+  return (
+    first: selected.isBefore(now) ? selected : now,
+    last: selected.isAfter(defaultLast) ? selected : defaultLast,
+  );
+}
 
 class PaymentCreationScreen extends ConsumerStatefulWidget {
   final String facilityId;
-  
+
+  /// Due date to open on. The calendar's "Add a payment due on this date"
+  /// action passes the day the operator tapped; it used to be dropped on the
+  /// floor and the form always opened thirty days out.
+  final DateTime? initialDueDate;
+
   const PaymentCreationScreen({
     super.key,
     required this.facilityId,
+    this.initialDueDate,
   });
 
   @override
@@ -36,8 +57,16 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
   String _selectedTenantId = '';
   String _selectedContractId = '';
   PaymentMethod _selectedMethod = PaymentMethod.square;
-  DateTime _selectedDueDate = DateTime.now().add(const Duration(days: 30));
-  
+  late DateTime _selectedDueDate;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDueDate =
+        widget.initialDueDate ?? DateTime.now().add(const Duration(days: 30));
+  }
+
   @override
   void dispose() {
     _amountController.dispose();
@@ -276,34 +305,25 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                 maxLines: 3,
               ),
               const SizedBox(height: 24),
-              
-              // Generate monthly payments option
-              if (_selectedTenantId.isNotEmpty && _selectedContractId.isNotEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Bulk Actions',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Generate monthly rent payments for this contract',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                        const SizedBox(height: 16),
-                        ElevatedButton.icon(
-                          onPressed: _generateMonthlyPayments,
-                          icon: const Icon(Icons.calendar_month),
-                          label: const Text('Generate Monthly Payments'),
-                        ),
-                      ],
-                    ),
-                  ),
+
+              // The form had no submit control at all: _submitForm was written
+              // but never wired, so an operator could fill this in from the
+              // payments list or the calendar and had no way to save it.
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _submitting ? null : _submitForm,
+                  icon: _submitting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save),
+                  label: Text(_submitting ? 'Saving...' : 'Create Payment'),
                 ),
+              ),
+              const SizedBox(height: 16),
             ],
           ),
         ),
@@ -312,11 +332,15 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
   }
 
   void _selectDueDate() async {
+    final bounds = dueDatePickerBounds(
+      selected: _selectedDueDate,
+      now: DateTime.now(),
+    );
     final date = await showDatePicker(
       context: context,
       initialDate: _selectedDueDate,
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      firstDate: bounds.first,
+      lastDate: bounds.last,
     );
     
     if (date != null) {
@@ -331,10 +355,18 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
   }
 
   void _submitForm() async {
+    if (_submitting) return;
     if (!_formKey.currentState!.validate()) return;
-    
+    if (_selectedTenantId.isEmpty || _selectedContractId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a tenant and contract first')),
+      );
+      return;
+    }
+
     final amount = double.parse(_amountController.text);
-    
+
+    setState(() => _submitting = true);
     try {
       await ref.read(paymentOperationsProvider.notifier).createPayment(
         tenantId: _selectedTenantId,
@@ -347,13 +379,20 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
       );
       
       if (mounted) {
-        Navigator.of(context).pop();
         // Invalidate providers to refresh payment lists
         ref.invalidate(paymentListProvider(widget.facilityId));
         ref.invalidate(paymentStatsProvider(widget.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Payment created successfully')),
         );
+        // The calendar reaches this screen with context.go, which leaves
+        // nothing on the stack to pop, so fall back to the payments list
+        // rather than popping out of the shell.
+        if (context.canPop()) {
+          context.pop();
+        } else {
+          context.go(AppRoute.payments);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -361,75 +400,10 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
           SnackBar(content: Text('Error creating payment: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
         );
       }
-    }
-  }
-
-  void _generateMonthlyPayments() async {
-    if (_selectedTenantId.isEmpty || _selectedContractId.isEmpty) return;
-    
-    final amount = double.tryParse(_amountController.text);
-    if (amount == null || amount <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid amount first')),
-      );
-      return;
-    }
-    
-    // Show confirmation dialog
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Generate Monthly Payments'),
-        content: Text(
-          'This will create monthly rent payments of \$${amount.toStringAsFixed(2)} '
-          'for the next 12 months. Continue?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Generate'),
-          ),
-        ],
-      ),
-    );
-    
-    if (confirmed == true) {
-      try {
-        final startDate = _selectedDueDate;
-        final endDate = DateTime(
-          startDate.year + 1,
-          startDate.month,
-          startDate.day,
-        );
-        
-        await ref.read(paymentOperationsProvider.notifier).generateMonthlyRentPayments(
-          facilityId: widget.facilityId,
-          tenantId: _selectedTenantId,
-          amount: amount,
-          startDate: startDate,
-          months: 12,
-        );
-        
-        if (mounted) {
-          Navigator.of(context).pop();
-          // Invalidate providers to refresh payment lists
-          ref.invalidate(paymentListProvider(widget.facilityId));
-          ref.invalidate(paymentStatsProvider(widget.facilityId));
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Monthly payments generated successfully')),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error generating payments: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
-          );
-        }
-      }
+    } finally {
+      // Without this the button stayed disabled after any failure and the
+      // operator had to leave the screen to try again.
+      if (mounted) setState(() => _submitting = false);
     }
   }
 }

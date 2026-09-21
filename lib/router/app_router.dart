@@ -596,7 +596,16 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'payment-create',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
-              return PaymentCreationScreen(facilityId: facilityId);
+              // The calendar links here with ?date=<iso day>; it used to be
+              // read by nobody, so "add a payment due on this date" always
+              // opened thirty days out instead.
+              final rawDate = state.uri.queryParameters['date'];
+              final dueDate =
+                  rawDate == null ? null : DateTime.tryParse(rawDate);
+              return PaymentCreationScreen(
+                facilityId: facilityId,
+                initialDueDate: dueDate,
+              );
             },
           ),
           GoRoute(

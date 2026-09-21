@@ -306,21 +306,4 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       rethrow;
     }
   }
-
-  Future<void> generateMonthlyRentPayments({
-    required String facilityId,
-    required String tenantId,
-    required double amount,
-    required DateTime startDate,
-    required int months,
-  }) async {
-    state = const AsyncValue.loading();
-    try {
-      // Generate monthly payments logic here - would need to implement in service
-      state = const AsyncValue.data(null);
-    } catch (e, stackTrace) {
-      state = AsyncValue.error(e, stackTrace);
-      rethrow;
-    }
-  }
 }
