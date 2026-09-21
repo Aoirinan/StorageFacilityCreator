@@ -200,8 +200,14 @@ class RecurringChargesService {
       if (kDebugMode) {
         print('⚠️ [RecurringCharges] Error checking existing charge: $e');
       }
-      // If we can't check, assume it doesn't exist to avoid duplicates
-      return false;
+      // Fail closed. This returned false, which the caller reads as "no charge
+      // yet" and acts on by posting one — so a Firestore read failure raised a
+      // second month of rent against every tenant in the facility, which is
+      // the outcome the comment here said it was avoiding. Reporting the
+      // charge as already present instead means a failed read skips the tenant:
+      // a missing charge an operator can re-run, rather than a duplicate that
+      // lands on a real balance and can be collected by autopay.
+      return true;
     }
   }
 

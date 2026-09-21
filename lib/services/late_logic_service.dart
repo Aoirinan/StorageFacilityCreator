@@ -128,8 +128,6 @@ class LateLogicService {
   static const double defaultBaseLateFee = 25.00;
   static const double defaultDailyLateFee = 5.00;
   static const int defaultGracePeriodDays = 3;
-  static const double _baseLateFee = defaultBaseLateFee;
-  static const double _dailyLateFee = defaultDailyLateFee;
   static const int _defaultGracePeriodDays = defaultGracePeriodDays;
   static const int _severeOverdueDays = 30;
 
