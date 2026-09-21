@@ -40,3 +40,4 @@ export { processPaymentReminders } from './paymentRemindersScheduled';
 
 export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';
 export { processFacilityOffboarding } from './facilityOffboardingScheduled';
+export { onFacilityCreatorAccountWrite } from './ownerOnboardingEmails';

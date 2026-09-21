@@ -90,6 +90,22 @@ test('cancellationEvents denies client write and non-superadmin read', async () 
   await assertFails(ref.set({ outcome: 'cancelled' }));
 });
 
+test('platformEmailLogs: superadmin reads, everyone else is shut out', async () => {
+  // Automated owner onboarding mail. Written only by the trigger via the Admin
+  // SDK, so no client may write, and only a super admin may look.
+  const owner = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const ownerRef = owner.collection('platformEmailLogs').doc('log1');
+  await assertFails(ownerRef.get());
+  await assertFails(ownerRef.set({ type: 'account_approved', to: 'a@b.com' }));
+
+  const admin = testEnv.authenticatedContext('admin-user', { superadmin: true }).firestore();
+  await assertSucceeds(admin.collection('platformEmailLogs').doc('log1').get());
+  await assertSucceeds(admin.collection('platformEmailLogs').limit(5).get());
+  // Even a super admin must not forge a send record; the audit trail is
+  // only worth reading if nothing but the trigger can write it.
+  await assertFails(admin.collection('platformEmailLogs').doc('log2').set({ status: 'sent' }));
+});
+
 test('user-scoped rateLimits denies client read and write', async () => {
   const authed = testEnv.authenticatedContext(OWNER_UID);
   const ref = authed.firestore().collection('users').doc(OWNER_UID).collection('rateLimits').doc('otp');

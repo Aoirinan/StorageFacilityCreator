@@ -63,6 +63,24 @@ export {
 } from './email/customerOutboundGate';
 export type { OutboundGateConfig } from './email/customerOutboundGate';
 export {
+  isOwnerOnboardingRecipientAllowed,
+  isOwnerOnboardingEmailAllowed,
+  getOwnerOnboardingGateConfig,
+  resetOwnerOnboardingGateCache,
+  DEFAULT_OWNER_ONBOARDING_GATE,
+} from './email/ownerOnboardingGate';
+export type { OwnerOnboardingGateConfig } from './email/ownerOnboardingGate';
+export {
+  buildAccountUnderReviewEmail,
+  buildAccountApprovedEmail,
+  buildNewAccountAdminAlertEmail,
+} from './email/ownerOnboardingEmails';
+export type {
+  OwnerOnboardingEmailInput,
+  AccountApprovedEmailInput,
+  NewAccountAdminAlertInput,
+} from './email/ownerOnboardingEmails';
+export {
   buildPortalAccessCodeReminderEmail,
   buildTenantPortalInviteEmail,
   generatePortalAccessCode,

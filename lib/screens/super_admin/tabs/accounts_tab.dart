@@ -381,6 +381,43 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
     }
   }
 
+  Future<void> _resendOnboardingEmail(String type) async {
+    final label = type == 'account_approved'
+        ? 'approval email'
+        : 'signup received email';
+    final confirmed = await _confirm(
+      title: 'Resend $label',
+      message:
+          'Send the $label to ${widget.account.ownerEmail} again? While the '
+          'pre-launch gate is on, only super admins and allowlisted test '
+          'addresses actually receive it. Either way the attempt is recorded '
+          'under Auto emails.',
+      confirmLabel: 'Send',
+      confirmColor: AppTheme.info,
+    );
+    if (!confirmed || !mounted) return;
+
+    try {
+      await SuperAdminDataService.requestOnboardingEmailResend(
+        accountId: widget.account.accountId,
+        type: type,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Queued. Check Auto emails for the result.'),
+              backgroundColor: AppTheme.success),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    }
+  }
+
   Future<void> _rejectAccount() async {
     final confirmed = await _confirm(
       title: 'Reject Account',
@@ -698,6 +735,30 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     onPressed: _rejectAccount,
                   ),
                 ],
+
+                // Resend onboarding mail. Needed because the trigger only fires
+                // on the approval itself: an account approved before these
+                // emails existed, or one whose send the pre-launch gate held
+                // back, has no other way to receive it.
+                PopupMenuButton<String>(
+                  tooltip: 'Resend onboarding email',
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                        value: 'account_approved',
+                        child: Text('Resend approval email')),
+                    PopupMenuItem(
+                        value: 'account_under_review',
+                        child: Text('Resend signup received email')),
+                  ],
+                  onSelected: _resendOnboardingEmail,
+                  child: TextButton.icon(
+                    icon: Icon(Icons.forward_to_inbox,
+                        size: 14, color: AppTheme.info),
+                    label: Text('Resend email',
+                        style: TextStyle(fontSize: 12, color: AppTheme.info)),
+                    onPressed: null,
+                  ),
+                ),
 
                 // Grant Trial — shown when NOT currently trialing and NOT pending
                 if (!isTrialing && !isPending)

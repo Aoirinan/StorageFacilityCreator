@@ -76,6 +76,7 @@
     "20-user_roles.rules",
     "21-bug_reports.rules",
     "23-customDomainClaims.rules",
+    "24-platformEmailLogs.rules",
     "22-footer.rules"
   ]
 }

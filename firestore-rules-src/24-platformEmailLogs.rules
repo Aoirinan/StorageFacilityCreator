@@ -1,0 +1,10 @@
+    // Automated platform-to-owner onboarding mail. A new owner has no facility
+    // yet, so these cannot live under facilities/{id}/messageLogs. Written only
+    // by the onboarding trigger via the Admin SDK; Platform Control reads them
+    // so a super admin can see what went out, including what the pre-launch
+    // gate suppressed.
+    match /platformEmailLogs/{logId} {
+      allow read: if isSuperAdmin();
+      allow write: if false; // All writes go through Cloud Functions.
+    }
+

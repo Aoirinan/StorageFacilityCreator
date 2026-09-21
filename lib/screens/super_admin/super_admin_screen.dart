@@ -20,6 +20,7 @@ import 'package:sfcapp/screens/super_admin/tabs/custom_domain_guide_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/dnr_moderation_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/ai_logs_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/platform_reset_tab.dart';
+import 'package:sfcapp/screens/super_admin/tabs/auto_emails_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/message_logs_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/websites_tab.dart';
 import 'package:sfcapp/screens/super_admin/tabs/retention_tab.dart';
@@ -45,6 +46,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
     _TabDef(icon: Icons.person_off, label: 'DNR'),
     _TabDef(icon: Icons.psychology_outlined, label: 'AI logs'),
     _TabDef(icon: Icons.outgoing_mail, label: 'Message logs'),
+    _TabDef(icon: Icons.mark_email_read, label: 'Auto emails'),
     _TabDef(icon: Icons.support_agent, label: 'Leads'),
     _TabDef(icon: Icons.request_quote, label: 'Commission'),
     // Prefer older filled Material icons on web — some *outlined* glyphs are absent
@@ -253,6 +255,7 @@ class _SuperAdminScreenState extends ConsumerState<SuperAdminScreen>
             DnrModerationTab(),
             AiLogsTab(),
             MessageLogsTab(),
+            AutoEmailsTab(),
             LeadsTab(),
             CommissionTab(),
             MessagingGuardTab(),

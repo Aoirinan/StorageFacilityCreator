@@ -1345,6 +1345,21 @@ class SuperAdminDataService {
 
   /// Approve a pending account: starts a 30-day trial immediately.
   /// This is the admin "accept" action for the two-stage activation flow.
+  /// Asks the onboarding trigger to send one of the automated owner emails
+  /// again. Writing the marker rather than calling a function keeps a single
+  /// code path for composing, gating and logging these messages; the trigger
+  /// clears the marker once it has acted.
+  static Future<void> requestOnboardingEmailResend({
+    required String accountId,
+    required String type,
+  }) async {
+    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
+      'onboardingEmailResendType': type,
+      'onboardingEmailResendRequestedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   static Future<void> approveTrial(String accountId, {int days = 30}) async {
     final now = DateTime.now();
     final trialEnd = now.add(Duration(days: days));
