@@ -40,14 +40,16 @@ export function calculateProratedRent(monthlyRate: number, moveInDate: Date): nu
 }
 
 function resolveMonthlyRent(
-  reservation: Record<string, unknown>,
+  _reservation: Record<string, unknown>,
   unitData: Record<string, unknown> | undefined,
 ): number {
-  const metadata = (reservation.metadata as Record<string, unknown> | undefined) || {};
-  const reservationRate = Number(metadata.monthlyRate);
-  if (Number.isFinite(reservationRate) && reservationRate > 0) {
-    return reservationRate;
-  }
+  // The rent comes from the unit document and nowhere else.
+  //
+  // This used to prefer `reservation.metadata.monthlyRate`, and the public hold
+  // endpoint copies the caller's metadata object verbatim into the reservation.
+  // An unauthenticated caller could therefore name their own rent, pay a quote
+  // computed from it, and carry that rate into the tenancy as the ongoing
+  // monthly charge. No trusted caller writes that key.
   const unitRate = Number(unitData?.monthlyRate);
   if (Number.isFinite(unitRate) && unitRate > 0) {
     return unitRate;

@@ -57,3 +57,25 @@ test('amountsMatchCents compares dollar input to cent quote', () => {
   assert.equal(amountsMatchCents(12345, 123.45), true);
   assert.equal(amountsMatchCents(12345, 123.44), false);
 });
+
+test('a rate injected into reservation metadata is ignored in favour of the unit', () => {
+  // The public hold endpoint used to copy the caller's metadata object verbatim
+  // into the reservation, and the quote preferred metadata.monthlyRate over the
+  // unit. An unauthenticated caller could name their own rent, pay a quote
+  // computed from it, and keep that rate as the ongoing monthly charge.
+  const moveInDate = new Date(2026, 5, 10);
+  const injected = computePublicMoveInCharges({
+    reservation: { metadata: { monthlyRate: 0.6 } },
+    unitData: { monthlyRate: 100 },
+    moveInDate,
+  });
+  const honest = computePublicMoveInCharges({
+    reservation: {},
+    unitData: { monthlyRate: 100 },
+    moveInDate,
+  });
+
+  assert.equal(injected.totalCents, honest.totalCents);
+  // Prorated from $100/month, not from the 60-cent rate the caller asked for.
+  assert.ok(injected.totalAmount > 50, `expected real rent, got ${injected.totalAmount}`);
+});

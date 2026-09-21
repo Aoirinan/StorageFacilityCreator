@@ -313,11 +313,19 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
       expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
       moveInDate: moveInDate ? admin.firestore.Timestamp.fromDate(new Date(moveInDate)) : null,
       moveInToken,
+      // Allowlisted, never spread. This is an unauthenticated endpoint, and the
+      // reservation's metadata is read back later when charges are computed, so
+      // copying the caller's object wholesale let them inject pricing fields.
       metadata: {
-        ...(metadata || {}),
         holdType: 'checkout',
         holdMinutes: boundedMinutes,
-        source: (metadata && metadata.source) || 'publicMap',
+        source: (metadata && typeof metadata.source === 'string')
+          ? String(metadata.source).slice(0, 64)
+          : 'publicMap',
+        smsConsent: metadata?.smsConsent === true,
+        smsConsentSource: (metadata && typeof metadata.smsConsentSource === 'string')
+          ? String(metadata.smsConsentSource).slice(0, 64)
+          : null,
       },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1071,14 +1079,14 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     ? { ...templateBinding, pdfBytes: templatePdfBytes }
     : null;
 
-  // Helper to derive monthly rate from reservation metadata or line items
+  // The tenant's ongoing rent comes from the unit document only.
+  //
+  // Reading it from reservation metadata or from the caller's line items let an
+  // unauthenticated mover set their own recurring rent for the life of the
+  // tenancy, not just the move-in payment.
   const deriveMonthlyRate = (): number => {
-    if (reservationMetadata.monthlyRate) return Number(reservationMetadata.monthlyRate);
-    const rentItem = (lineItems as any[]).find(
-      (item) => item?.type === 'rent' || item?.type === 'proratedRent',
-    );
-    if (rentItem?.amount) return Number(rentItem.amount);
-    return 0;
+    const unitRate = Number(preloadedUnitData?.monthlyRate);
+    return Number.isFinite(unitRate) && unitRate > 0 ? unitRate : 0;
   };
 
   // Perform transactional writes for tenant/contract/unit/reservation/charges
@@ -1269,8 +1277,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     };
     tx.set(contractRef, contractPayload);
 
-    // Ledger entries for charges
-    (lineItems as any[]).forEach((item) => {
+    // Ledger entries for charges.
+    //
+    // Posted from the server-computed quote, not from the caller's `lineItems`.
+    // The client payload could previously be emptied (creating a tenancy with no
+    // debits while the payment still posted a credit) or filled with arbitrary
+    // amounts and ledger types.
+    chargeQuote.lineItems.forEach((item) => {
       const ledgerRef = admin.firestore()
         .collection('facilities')
         .doc(facilityId)
@@ -1280,18 +1293,18 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       tx.set(ledgerRef, {
         tenantId: tenantRef.id,
         facilityId,
-        type: item?.type || 'moveInCharge',
-        amount: Number(item?.amount || 0),
-        description: item?.description || 'Move-in charge',
+        type: item.type || 'moveInCharge',
+        amount: Number(item.amount || 0),
+        description: item.description || 'Move-in charge',
         referenceId: contractRef.id,
         entryDate: moveInDate,
-        dueDate: item?.dueDate ? new Date(item.dueDate) : null,
+        dueDate: null,
         status: 'posted',
         createdAt: nowTs,
         createdBy: 'publicMoveIn',
         metadata: {
-          lineItemId: item?.id || null,
-          isProrated: item?.isProrated ?? false,
+          lineItemId: null,
+          isProrated: item.type === 'proratedRent',
         },
       });
     });
