@@ -28,6 +28,27 @@ flow. The `messageFlow` and `description` submitted with every campaign are defi
      opt-in checkbox screen (source: `marketing/src/app/sms-consent-demo/page.tsx`).
    - `https://www.storagefacilitycreator.com/sms-terms` — full SMS program terms.
 
+As of 2026-09-21 the campaign description is built per facility by
+`buildCampaignDescription` rather than sent as one static constant: it opens by
+naming the facility's legal name (and DBA, city/state, website) so the
+description reads as that facility describing itself. Evidence for why this
+matters is in `docs/TWILIO_SENDER_REGISTRATION.md` — the campaign that was
+approved in a single day named its business in the first clause; the one
+rejected on 30909 described a class of businesses and never named the
+registrant. The static `A2P_CAMPAIGN_DESCRIPTION` remains the fallback when a
+facility has no stored business details.
+
+Also as of 2026-09-21, `submitCampaignInternal` files non-sole-proprietor
+facilities under `LOW_VOLUME` (Low Volume Mixed) rather than
+`ACCOUNT_NOTIFICATION`. Account Notification draws the manual call-to-action
+review that rejected SFC's own campaign on 30909 and costs ~$10/mo; Low Volume
+Mixed is ~$1.50/mo and is the tier that was approved same-day in this account.
+The ceiling is roughly 2,000 message segments/day to T-Mobile, far above what
+one facility sends its own tenants. A facility that outgrows it moves to
+`ACCOUNT_NOTIFICATION` as a deliberate upgrade. Note this is the Twilio A2P use
+case; the `textingUseCases` the owner ticks in the wizard are the facility's own
+message categories and are unrelated.
+
 Before resubmitting:
 
 - Deploy the marketing site so both URLs above resolve publicly.
