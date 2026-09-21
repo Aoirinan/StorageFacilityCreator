@@ -7,6 +7,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
 import { writeAuditLog } from './guardrails';
+import { sumLedgerBalance } from './autopayScheduledHelpers';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 
 /**
@@ -197,17 +198,22 @@ async function processDelinquencyForFacility(
           .where('tenantId', '==', tenantId)
           .get();
 
-        let balance = 0;
-        for (const entry of ledgerSnapshot.docs) {
-          const entryData = entry.data();
-          if (entryData.status === 'posted' || entryData.status === 'pending') {
-            if (entryData.type === 'payment' || entryData.type === 'credit') {
-              balance -= entryData.amount || 0;
-            } else {
-              balance += entryData.amount || 0;
-            }
-          }
-        }
+        // Ledger entries are signed: charges positive, payments and credits
+        // negative. This loop used to SUBTRACT the amount for payments and
+        // credits, which are already negative, so every payment increased the
+        // balance it was meant to reduce. A tenant who owed $150 and paid $150
+        // computed as 150 - (-150) = $300, the `balance <= 0` guard below never
+        // fired, and a fully paid-up tenant was given a late fee, sent
+        // delinquency notices, moved to lien status, and had their gate access
+        // disabled where auto-lockout is on. This job runs daily.
+        //
+        // Only `posted` entries count, matching sumLedgerBalance and the Dart
+        // ledger service; `pending` rows are not yet real money.
+        const balance = sumLedgerBalance(
+          ledgerSnapshot.docs
+            .map((entry) => entry.data())
+            .filter((entryData) => entryData.status === 'posted'),
+        );
 
         if (balance <= 0) {
           continue; // Balance is paid
