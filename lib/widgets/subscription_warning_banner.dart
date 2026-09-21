@@ -6,7 +6,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/services/active_facility_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/subscription_banner_logic.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
@@ -75,6 +77,11 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
         }
       }
 
+      // A super admin standing inside someone else's facility is not being
+      // asked to pay for anything here, and the banner would put an unrelated
+      // business name and payment status on what may be a shared screen.
+      final supportSession = await _isSupportSession();
+
       final decision = decideSubscriptionBanner(
         account: account == null
             ? null
@@ -82,6 +89,7 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
                 status: account.subscriptionStatus.name,
                 trialEnd: account.subscriptionTrialEnd,
                 currentPeriodEnd: account.subscriptionCurrentPeriodEnd,
+                billingExempt: account.billingExempt,
               ),
         facilities: facilities
             .map((f) => FacilitySubscriptionState(
@@ -89,9 +97,11 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
                   perFacility: (f.stripePlatformSubscriptionId ?? '').isNotEmpty,
                   status: f.platformSubscriptionStatus,
                   trialEnd: f.platformSubscriptionTrialEnd,
+                  billingExempt: f.billingExempt,
                 ))
             .toList(),
         now: DateTime.now(),
+        supportSession: supportSession,
       );
       final shouldShow = decision.show;
       final message = decision.message;
@@ -120,6 +130,21 @@ class _SubscriptionWarningBannerState extends State<SubscriptionWarningBanner> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  /// True when the signed-in super admin's active facility belongs to someone
+  /// else, which is what a support session looks like from here.
+  Future<bool> _isSupportSession() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null || !SuperAdminService.isSuperAdmin(user)) return false;
+      final activeId = await ActiveFacilityService.getActiveFacilityId();
+      if (activeId == null || activeId.isEmpty) return false;
+      final facility = await FacilityService.getFacility(activeId);
+      return facility != null && facility.ownerUid != user.uid;
+    } catch (_) {
+      return false;
     }
   }
 

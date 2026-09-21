@@ -108,4 +108,65 @@ void main() {
       'Your subscription payment is past due. Please renew your subscription to continue.',
     );
   });
+test("a billing-exempt facility never nags, whatever Stripe says", () {
+    // The operator does not bill their own facility. A past-due Stripe record
+    // on it is not a thing anyone needs to act on.
+    final decision = decideSubscriptionBanner(
+      account: const AccountSubscriptionState(status: "pastDue"),
+      facilities: const [
+        FacilitySubscriptionState(
+          name: "Keepsake Self Storage",
+          perFacility: true,
+          status: "pastDue",
+          billingExempt: true,
+        ),
+      ],
+      now: now,
+    );
+    expect(decision.show, isFalse);
+  });
+
+  test("one exempt facility does not silence a real problem on another", () {
+    final decision = decideSubscriptionBanner(
+      account: const AccountSubscriptionState(status: "active"),
+      facilities: const [
+        FacilitySubscriptionState(
+          name: "Keepsake Self Storage",
+          perFacility: true,
+          status: "pastDue",
+          billingExempt: true,
+        ),
+        FacilitySubscriptionState(
+          name: "Paying Facility",
+          perFacility: true,
+          status: "pastDue",
+        ),
+      ],
+      now: now,
+    );
+    expect(decision.show, isTrue);
+    expect(decision.message, contains("Paying Facility"));
+    expect(decision.message, isNot(contains("Keepsake")));
+  });
+
+  test("an exempt account is never asked to subscribe", () {
+    final decision = decideSubscriptionBanner(
+      account: const AccountSubscriptionState(status: "cancelled", billingExempt: true),
+      facilities: const [],
+      now: now,
+    );
+    expect(decision.show, isFalse);
+  });
+
+  test("a support session hides the supporter own billing banner", () {
+    // Standing inside someone else facility, this banner would name an
+    // unrelated business and its payment status on a possibly shared screen.
+    final decision = decideSubscriptionBanner(
+      account: const AccountSubscriptionState(status: "pastDue"),
+      facilities: const [],
+      now: now,
+      supportSession: true,
+    );
+    expect(decision.show, isFalse);
+  });
 }

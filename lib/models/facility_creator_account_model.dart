@@ -23,6 +23,10 @@ class FacilityCreatorAccountModel {
   final String ownerName;
 
   // Subscription fields
+  /// Set by a super admin on accounts the platform does not bill, such as the
+  /// operator's own. Suppresses subscription warnings and access locks; it
+  /// does not cancel anything in Stripe.
+  final bool billingExempt;
   final SubscriptionStatus subscriptionStatus;
   final String? stripeSubscriptionId; // Stripe subscription ID (sub_...)
   final String? stripeCustomerId; // Stripe customer ID (cus_...)
@@ -57,6 +61,7 @@ class FacilityCreatorAccountModel {
     required this.ownerEmail,
     required this.ownerName,
     required this.subscriptionStatus,
+    this.billingExempt = false,
     this.stripeSubscriptionId,
     this.stripeCustomerId,
     this.subscriptionCurrentPeriodStart,
@@ -97,6 +102,7 @@ class FacilityCreatorAccountModel {
       ownerEmail: data?['ownerEmail'] ?? '',
       ownerName: data?['ownerName'] ?? '',
       subscriptionStatus: status,
+      billingExempt: data?['billingExempt'] == true,
       stripeSubscriptionId: data?['stripeSubscriptionId'],
       stripeCustomerId: data?['stripeCustomerId'],
       subscriptionCurrentPeriodStart:

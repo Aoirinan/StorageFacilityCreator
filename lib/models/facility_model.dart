@@ -66,6 +66,11 @@ class FacilityModel {
   final DateTime? platformSubscriptionTrialEnd;
   final bool platformSubscriptionCancelAtPeriodEnd;
 
+  /// Set by a super admin on facilities the platform does not bill, such as
+  /// the operator's own. Suppresses subscription warnings and access locks;
+  /// it does not cancel anything in Stripe.
+  final bool billingExempt;
+
   // Optional public website add-on ($25/mo), controlled by Stripe webhooks.
   final String? stripeWebsiteSubscriptionId;
   final String? websiteSubscriptionStatus;
@@ -133,6 +138,7 @@ class FacilityModel {
     this.platformSubscriptionCurrentPeriodEnd,
     this.platformSubscriptionTrialEnd,
     this.platformSubscriptionCancelAtPeriodEnd = false,
+    this.billingExempt = false,
     this.stripeWebsiteSubscriptionId,
     this.websiteSubscriptionStatus,
     this.websiteSubscriptionCurrentPeriodEnd,
@@ -210,6 +216,7 @@ class FacilityModel {
           data?['stripePlatformSubscriptionId'] as String?,
       platformSubscriptionStatus:
           data?['platformSubscriptionStatus'] as String?,
+      billingExempt: data?['billingExempt'] == true,
       platformSubscriptionCurrentPeriodEnd:
           (data?['platformSubscriptionCurrentPeriodEnd'] as Timestamp?)
               ?.toDate(),

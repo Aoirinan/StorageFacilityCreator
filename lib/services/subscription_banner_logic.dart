@@ -19,18 +19,26 @@ class FacilitySubscriptionState {
   final String? status;
   final DateTime? trialEnd;
 
+  /// Set by a super admin on facilities the platform does not bill, such as
+  /// the operator's own. An exempt facility is healthy whatever Stripe says,
+  /// because there is nothing to collect and nothing to warn about.
+  final bool billingExempt;
+
   const FacilitySubscriptionState({
     required this.name,
     required this.perFacility,
     this.status,
     this.trialEnd,
+    this.billingExempt = false,
   });
 
   bool trialEndedBy(DateTime now) =>
       status == 'trialing' && trialEnd != null && !trialEnd!.isAfter(now);
 
   bool healthyAt(DateTime now) =>
-      status == 'active' || (status == 'trialing' && !trialEndedBy(now));
+      billingExempt ||
+      status == 'active' ||
+      (status == 'trialing' && !trialEndedBy(now));
 }
 
 class AccountSubscriptionState {
@@ -39,7 +47,15 @@ class AccountSubscriptionState {
   final DateTime? trialEnd;
   final DateTime? currentPeriodEnd;
 
-  const AccountSubscriptionState({this.status, this.trialEnd, this.currentPeriodEnd});
+  /// Set by a super admin on accounts the platform does not bill.
+  final bool billingExempt;
+
+  const AccountSubscriptionState({
+    this.status,
+    this.trialEnd,
+    this.currentPeriodEnd,
+    this.billingExempt = false,
+  });
 
   bool get hasTrial => status == 'trialing';
 
@@ -76,8 +92,15 @@ SubscriptionBannerDecision decideSubscriptionBanner({
   required AccountSubscriptionState? account,
   required List<FacilitySubscriptionState> facilities,
   required DateTime now,
+  /// True while a super admin is working inside a facility they do not own.
+  /// Their own billing is not the subject at hand, and on a shared screen the
+  /// banner would show one customer another customer's business name and
+  /// payment status.
+  bool supportSession = false,
 }) {
   if (account == null) return const SubscriptionBannerDecision.none();
+  if (supportSession) return const SubscriptionBannerDecision.none();
+  if (account.billingExempt) return const SubscriptionBannerDecision.none();
 
   final perFacility = facilities.where((f) => f.perFacility).toList();
   if (perFacility.isNotEmpty) {

@@ -67,6 +67,12 @@ class SubscriptionGuardService {
       final accountFetcher =
           accountProvider ?? FacilityCreatorAccountService.getAccountByOwnerUid;
       final account = await accountFetcher(user.uid);
+
+      // Accounts the platform does not bill are never locked out. Set by a
+      // super admin; an owner cannot grant it to themselves.
+      if (account != null && account.billingExempt) {
+        return const SubscriptionAccessResult(canAccess: true);
+      }
       if (account == null) {
         // No account yet - allow access (will be created on first facility creation)
         if (kDebugMode) {
