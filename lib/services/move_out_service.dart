@@ -52,6 +52,38 @@ class MoveOutService {
     }
   }
 
+  /// The rent line for a move-out, in dollars.
+  ///
+  /// Rent is billed in advance, so which way the money moves depends on
+  /// whether this month was already posted:
+  ///
+  /// * [alreadyCharged] true — the tenant has paid for the whole month and is
+  ///   owed the unused days back, so [amount] is the credit due.
+  /// * false — the month was never billed, so [amount] is the charge for the
+  ///   days actually used.
+  ///
+  /// The caller applies the sign. Extracted from [calculateMoveOutCharges] so
+  /// the arithmetic can be tested without Firestore; the surrounding method
+  /// reads a tenant, a balance and a ledger before it gets here.
+  ///
+  /// Day counts come from [moveOutDate].day rather than a date subtraction, so
+  /// there is no daylight-saving truncation to worry about.
+  static ({double amount, int days, int unusedDays}) moveOutRentAmount({
+    required double monthlyRate,
+    required DateTime moveOutDate,
+    required bool alreadyCharged,
+  }) {
+    final daysInMonth =
+        DateTime(moveOutDate.year, moveOutDate.month + 1, 0).day;
+    final daysUsed = moveOutDate.day.clamp(0, daysInMonth);
+    final daysUnused = daysInMonth - daysUsed;
+    final dailyRate = monthlyRate / daysInMonth;
+    final billableDays = alreadyCharged ? daysUnused : daysUsed;
+    final amount =
+        double.parse((dailyRate * billableDays).toStringAsFixed(2));
+    return (amount: amount, days: daysUsed, unusedDays: daysUnused);
+  }
+
   /// Calculate move-out charges and refunds
   static Future<MoveOutCalculation> calculateMoveOutCharges({
     required String tenantId,
@@ -95,19 +127,21 @@ class MoveOutService {
       // days back, so post a credit. Only when it has not been charged does
       // prorated rent make sense as a charge.
       if (prorateRent && tenantModel.monthlyRate > 0) {
-        final daysInMonth = DateTime(moveOutDate.year, moveOutDate.month + 1, 0).day;
-        final daysUsed = moveOutDate.day.clamp(0, daysInMonth);
-        final daysUnused = daysInMonth - daysUsed;
-        final dailyRate = tenantModel.monthlyRate / daysInMonth;
         final alreadyCharged = await _monthlyRentAlreadyCharged(
           facilityId: facilityId,
           tenantId: tenantId,
           month: moveOutDate,
         );
+        final rent = moveOutRentAmount(
+          monthlyRate: tenantModel.monthlyRate,
+          moveOutDate: moveOutDate,
+          alreadyCharged: alreadyCharged,
+        );
+        final daysUsed = rent.days;
+        final daysUnused = rent.unusedDays;
 
         if (alreadyCharged) {
-          final refundForUnusedDays =
-              double.parse((dailyRate * daysUnused).toStringAsFixed(2));
+          final refundForUnusedDays = rent.amount;
           if (refundForUnusedDays > 0) {
             lineItems.add(InvoiceLineItem(
               id: 'prorated_rent_credit_${DateTime.now().millisecondsSinceEpoch}',
@@ -121,7 +155,7 @@ class MoveOutService {
           }
         } else {
           final proratedRent =
-              double.parse((dailyRate * daysUsed).toStringAsFixed(2));
+              rent.amount;
           if (proratedRent > 0) {
             lineItems.add(InvoiceLineItem(
               id: 'prorated_rent_${DateTime.now().millisecondsSinceEpoch}',
