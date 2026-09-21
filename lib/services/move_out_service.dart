@@ -18,6 +18,40 @@ class MoveOutService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  /// Whether the scheduled rent job has already posted this tenant's rent for
+  /// the month containing [month].
+  ///
+  /// The job tags its entries `metadata.chargeType == 'monthlyRent'` with the
+  /// month and year, so this is an exact lookup rather than a guess from the
+  /// description. Returns false on error: charging prorated rent for the days
+  /// used is the safer wrong answer than issuing a credit for a month that was
+  /// never billed.
+  static Future<bool> _monthlyRentAlreadyCharged({
+    required String facilityId,
+    required String tenantId,
+    required DateTime month,
+  }) async {
+    try {
+      final snapshot = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('ledgers')
+          .where('tenantId', isEqualTo: tenantId)
+          .where('status', isEqualTo: 'posted')
+          .where('metadata.chargeType', isEqualTo: 'monthlyRent')
+          .where('metadata.year', isEqualTo: month.year)
+          .where('metadata.month', isEqualTo: month.month)
+          .limit(1)
+          .get();
+      return snapshot.docs.isNotEmpty;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [MoveOut] Could not check for an existing rent charge: $e');
+      }
+      return false;
+    }
+  }
+
   /// Calculate move-out charges and refunds
   static Future<MoveOutCalculation> calculateMoveOutCharges({
     required String tenantId,
@@ -49,23 +83,56 @@ class MoveOutService {
       final lineItems = <InvoiceLineItem>[];
       double totalCharges = 0.0;
 
-      // 1. Prorated rent (if move-out is mid-month)
+      // 1. Rent for the month of move-out.
+      //
+      // Rent is billed in advance: the scheduled job posts the whole month on
+      // the 1st, and `currentBalance` above already contains it. Adding
+      // prorated rent for the days used therefore charged the month twice — a
+      // tenant on $150 leaving on the 10th of a 30-day month was billed $150
+      // plus $50, or $200 for ten days.
+      //
+      // When the month has already been charged, the tenant is owed the unused
+      // days back, so post a credit. Only when it has not been charged does
+      // prorated rent make sense as a charge.
       if (prorateRent && tenantModel.monthlyRate > 0) {
         final daysInMonth = DateTime(moveOutDate.year, moveOutDate.month + 1, 0).day;
-        final daysUsed = moveOutDate.day;
+        final daysUsed = moveOutDate.day.clamp(0, daysInMonth);
+        final daysUnused = daysInMonth - daysUsed;
         final dailyRate = tenantModel.monthlyRate / daysInMonth;
-        final proratedRent = dailyRate * daysUsed;
+        final alreadyCharged = await _monthlyRentAlreadyCharged(
+          facilityId: facilityId,
+          tenantId: tenantId,
+          month: moveOutDate,
+        );
 
-        if (proratedRent > 0) {
-          lineItems.add(InvoiceLineItem(
-            id: 'prorated_rent_${DateTime.now().millisecondsSinceEpoch}',
-            type: InvoiceLineItemType.proratedRent,
-            description: 'Prorated Rent (${daysUsed} days)',
-            amount: proratedRent,
-            isProrated: true,
-            dueDate: moveOutDate,
-          ));
-          totalCharges += proratedRent;
+        if (alreadyCharged) {
+          final refundForUnusedDays =
+              double.parse((dailyRate * daysUnused).toStringAsFixed(2));
+          if (refundForUnusedDays > 0) {
+            lineItems.add(InvoiceLineItem(
+              id: 'prorated_rent_credit_${DateTime.now().millisecondsSinceEpoch}',
+              type: InvoiceLineItemType.proratedRent,
+              description: 'Prorated Rent Credit ($daysUnused unused days)',
+              amount: -refundForUnusedDays,
+              isProrated: true,
+              dueDate: moveOutDate,
+            ));
+            totalCharges -= refundForUnusedDays;
+          }
+        } else {
+          final proratedRent =
+              double.parse((dailyRate * daysUsed).toStringAsFixed(2));
+          if (proratedRent > 0) {
+            lineItems.add(InvoiceLineItem(
+              id: 'prorated_rent_${DateTime.now().millisecondsSinceEpoch}',
+              type: InvoiceLineItemType.proratedRent,
+              description: 'Prorated Rent ($daysUsed days)',
+              amount: proratedRent,
+              isProrated: true,
+              dueDate: moveOutDate,
+            ));
+            totalCharges += proratedRent;
+          }
         }
       }
 
@@ -203,7 +270,12 @@ class MoveOutService {
           tenantId: tenantId,
           facilityId: facilityId,
           type: LedgerEntryType.refund,
-          amount: -calculation.refundAmount, // Negative for refunds
+          // Positive. A refund hands money back to the tenant, which removes a
+          // credit they were holding, so what they owe goes back up. Written
+          // negative, a $50 refund against a -$50 balance produced -$100: the
+          // system believed the facility still owed the money it had just paid
+          // out. The Stripe webhook already writes refunds positive.
+          amount: calculation.refundAmount,
           description: 'Move-out Refund - ${refundMethod ?? 'Cash'}',
           referenceId: refundReferenceId,
           entryDate: DateTime.now(),

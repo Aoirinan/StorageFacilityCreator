@@ -149,12 +149,17 @@ class _LedgerEntryCreationDialogState extends State<LedgerEntryCreationDialog> {
 
     _formKey.currentState!.save();
 
-    // For payments/credits/adjustments/refunds, amount should be negative
-    // For charges, amount should be positive
+    // Payments, credits and adjustments reduce what the tenant owes, so they
+    // are stored negative. Charges are positive.
+    //
+    // Refunds are positive, with payments: handing money back to the tenant
+    // removes a credit they were holding, so the balance goes back up. Grouping
+    // refunds with payments here meant a $50 refund against a -$50 balance
+    // produced -$100, and the facility looked like it still owed money it had
+    // already paid out. The Stripe webhook has always written them positive.
     final amount = (_selectedType == LedgerEntryType.payment ||
             _selectedType == LedgerEntryType.credit ||
-            _selectedType == LedgerEntryType.adjustment ||
-            _selectedType == LedgerEntryType.refund)
+            _selectedType == LedgerEntryType.adjustment)
         ? -_amount
         : _amount;
 
