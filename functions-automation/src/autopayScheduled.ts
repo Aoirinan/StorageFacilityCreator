@@ -269,12 +269,20 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
             continue;
           }
 
+          // Deterministic id, keyed on the payment intent.
+          //
+          // The Stripe Connect webhook also writes a payment entry for this
+          // same charge, and with auto-generated ids the two landed as separate
+          // documents: a $150 autopay posted -150 twice, leaving a $150 credit
+          // that silently absorbed the following month's rent, so the tenant
+          // stopped being billed. Both writers now address one document, so
+          // whichever lands second overwrites rather than duplicates.
           const paymentEntryRef = admin
             .firestore()
             .collection('facilities')
             .doc(facilityId)
             .collection('ledgers')
-            .doc();
+            .doc(`payment_${paymentIntent.id}`);
 
           await paymentEntryRef.set({
             tenantId,

@@ -100,7 +100,17 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
     // Create ledger entry for payment (skip if chargeTenantOffSession already created it)
     const chargeType = paymentIntent.metadata?.chargeType;
     if (chargeType !== 'tenant_one_time_card_on_file') {
-      const ledgerRef = admin.firestore().collection('facilities').doc(facilityId).collection('ledgers').doc();
+      // Deterministic id, keyed on the payment intent, so a charge that is also
+      // recorded by its originating job (autopay does this) converges on one
+      // document instead of being credited to the tenant twice. An allowlist of
+      // chargeTypes was too easy to fall out of date: autopay never set one, so
+      // every autopay charge was double-credited.
+      const ledgerRef = admin
+        .firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .doc(`payment_${paymentIntent.id}`);
 
       await ledgerRef.set({
         tenantId: tenantId,
