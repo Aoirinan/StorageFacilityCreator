@@ -58,33 +58,79 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
       try {
         const stripe = getStripeClient();
 
-        // Look up the original payment intent
-        const paymentIntent = await stripe.paymentIntents.retrieve(referenceId, {
-          expand: ['charges'],
-        });
+        // Look up the original payment intent ON THE CONNECTED ACCOUNT.
+        //
+        // Tenant charges live on the facility's connected account, so a
+        // platform-scoped retrieve raises "no such payment_intent". That threw
+        // into the catch below, which fell through to the manual branch and
+        // returned success with an invented refund id — so the operator was
+        // told the refund went through while the card was never touched.
+        const paymentIntent = await stripe.paymentIntents.retrieve(
+          referenceId,
+          { expand: ['charges'] },
+          { stripeAccount: stripeConnectAccountId },
+        );
 
         if (paymentIntent.status !== 'succeeded') {
           throw new Error('Payment intent not succeeded, cannot refund');
         }
 
-        // Get the charge ID - retrieve payment intent with charges expanded
-        const expandedPaymentIntent = await stripe.paymentIntents.retrieve(paymentIntent.id, {
-          expand: ['charges'],
-        });
-        const chargeId = (expandedPaymentIntent as any).charges?.data?.[0]?.id;
+        const chargeId =
+          (paymentIntent as any).charges?.data?.[0]?.id ??
+          (typeof (paymentIntent as any).latest_charge === 'string'
+            ? (paymentIntent as any).latest_charge
+            : (paymentIntent as any).latest_charge?.id);
         if (!chargeId) {
           throw new Error('Charge ID not found in payment intent');
         }
 
-        // Create refund on the connected account
-        const refund = await stripe.refunds.create({
-          charge: chargeId,
-          amount: Math.round(amount * 100), // Convert to cents
-        }, {
-          stripeAccount: stripeConnectAccountId,
-        });
+        // Create refund on the connected account. The idempotency key is
+        // derived from the charge and amount so a double-click, or a retry
+        // after a timeout, cannot refund the tenant twice.
+        const refund = await stripe.refunds.create(
+          {
+            charge: chargeId,
+            amount: Math.round(amount * 100), // Convert to cents
+          },
+          {
+            stripeAccount: stripeConnectAccountId,
+            idempotencyKey: `refund_${chargeId}_${Math.round(amount * 100)}`,
+          },
+        );
 
         functions.logger.info(`Stripe refund processed: ${refund.id} for $${amount}`);
+
+        // Record it on the ledger. Without this the tenant kept the credit from
+        // the original payment: the facility was out the cash and the tenant
+        // still looked paid up.
+        //
+        // Positive, matching the charge.refunded webhook: a refund removes a
+        // credit the tenant held, so what they owe goes back up. The document
+        // id is derived from the Stripe refund so the webhook for this same
+        // refund converges here rather than posting a second entry.
+        await admin
+          .firestore()
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('ledgers')
+          .doc(`refund_${refund.id}`)
+          .set({
+            tenantId,
+            facilityId,
+            type: 'refund',
+            amount,
+            description: `Refund for charge ${chargeId}`,
+            referenceId: referenceId || null,
+            entryDate: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'posted',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdBy: context.auth.uid,
+            metadata: {
+              stripeRefundId: refund.id,
+              stripeChargeId: chargeId,
+              refundMethod,
+            },
+          });
 
         // Log audit event
         await writeAuditLog(facilityId, {
@@ -115,8 +161,22 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
           message: 'Refund processed successfully via Stripe',
         };
       } catch (stripeError: any) {
+        // Do not fall through to the manual branch. It returns success with an
+        // invented refund id, which told the operator a card refund had been
+        // made when it had not. A card refund that fails must fail loudly so
+        // they can retry or refund by another method deliberately.
         functions.logger.error('Stripe refund error:', stripeError);
-        // Fall through to manual processing
+        await writeAuditLog(facilityId, {
+          action: 'refund_failed',
+          userId: context.auth.uid,
+          tenantId,
+          amount,
+          error: stripeError?.message || 'unknown',
+        });
+        throw new functions.https.HttpsError(
+          'internal',
+          `Card refund failed: ${stripeError?.message || 'unknown error'}. No refund was issued.`,
+        );
       }
     }
 

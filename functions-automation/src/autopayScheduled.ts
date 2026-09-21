@@ -181,6 +181,9 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
       }
 
       {
+        // Set as soon as the card has actually been charged, so the catch below
+        // can tell a decline apart from a failure to write the books.
+        let chargedPaymentIntentId: string | null = null;
         try {
           const autopaySchedule = methodData.autopaySchedule;
           if (!autopaySchedule) continue;
@@ -255,6 +258,10 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
           );
 
           if (paymentIntent.status !== 'succeeded') continue;
+
+          // The money has moved. Anything that throws from here on is a
+          // bookkeeping failure, not a decline.
+          chargedPaymentIntentId = paymentIntent.id;
 
           // A retry gets the original succeeded PaymentIntent back, so writing
           // unconditionally would credit the tenant twice for a single charge —
@@ -346,6 +353,19 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
           processed += 1;
           functions.logger.info(`Autopay processed: ${tenantData.name} - $${amount}`);
         } catch (error: any) {
+          // A failure AFTER the card was charged is a bookkeeping problem, not
+          // a decline. Treating it as one recorded 'failed', pushed the next
+          // run out, told the operator "the card was declined" and counted
+          // toward the three strikes that disarm autopay — for a tenant whose
+          // card had just taken the money.
+          if (chargedPaymentIntentId) {
+            functions.logger.error(
+              `Autopay charged ${chargedPaymentIntentId} for tenant ${tenantId} but failed to record it. ` +
+                'Not counting as a decline; this needs manual reconciliation.',
+              error,
+            );
+            continue;
+          }
           functions.logger.error(
             `Error processing autopay for payment method ${methodDoc.id}:`,
             error,

@@ -99,6 +99,11 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
       },
     }, {
       stripeAccount: connectAccountId,
+      // Without a key, an operator double-clicking "charge card on file" makes
+      // two real charges for the same amount. Keyed on facility, tenant, amount
+      // and the current minute, so a rapid second press reuses the first
+      // charge while a deliberate repeat later still goes through.
+      idempotencyKey: `offsession_${facilityId}_${tenantId}_${Math.round(amountNum * 100)}_${Math.floor(Date.now() / 60000)}`,
     });
 
     if (paymentIntent.status !== 'succeeded') {
