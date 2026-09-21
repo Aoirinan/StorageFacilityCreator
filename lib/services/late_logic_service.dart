@@ -182,17 +182,36 @@ class LateLogicService {
     return _defaultGracePeriodDays;
   }
 
+  /// Whole calendar days from [from] to [to], ignoring the time of day.
+  ///
+  /// Both endpoints are rebuilt as UTC midnights. Subtracting the raw instants
+  /// made the answer depend on two things it should not: what time of day a
+  /// record happened to be written (Firestore timestamps carry one), and
+  /// whether the span crossed a daylight-saving change, which makes a local
+  /// day 23 or 25 hours long and truncates a day away. Either shifts the
+  /// legacy accrual by a day, which is $5.
+  static int _calendarDaysBetween(DateTime from, DateTime to) {
+    final a = DateTime.utc(from.year, from.month, from.day);
+    final b = DateTime.utc(to.year, to.month, to.day);
+    return b.difference(a).inDays;
+  }
+
   /// Whether a tenant is late, using the facility's grace period (or default 3 days).
-  static bool isTenantLate(TenantModel tenant, {int? gracePeriodDays}) {
+  ///
+  /// [now] is injectable so the boundaries can be tested; it defaults to the
+  /// current time.
+  static bool isTenantLate(TenantModel tenant,
+      {int? gracePeriodDays, DateTime? now}) {
     final grace = gracePeriodDays ?? _defaultGracePeriodDays;
-    final now = DateTime.now();
-    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+    final today = now ?? DateTime.now();
+    final startOfCurrentMonth = DateTime(today.year, today.month, 1);
     final paidThroughDate = tenant.paidThrough;
 
     if (paidThroughDate == null) {
-      final daysSinceCreation = now.difference(tenant.createdAt).inDays;
+      final daysSinceCreation = _calendarDaysBetween(tenant.createdAt, today);
       if (daysSinceCreation <= 30) return false;
-      final tenantCreatedThisMonth = tenant.createdAt.year == now.year && tenant.createdAt.month == now.month;
+      final tenantCreatedThisMonth = tenant.createdAt.year == today.year &&
+          tenant.createdAt.month == today.month;
       if (tenantCreatedThisMonth) return false;
       return true;
     }
@@ -201,21 +220,22 @@ class LateLogicService {
   }
 
   /// Days late (0 if not late). Use facility grace period when available.
-  static int getTenantDaysLate(TenantModel tenant, {int? gracePeriodDays}) {
+  static int getTenantDaysLate(TenantModel tenant,
+      {int? gracePeriodDays, DateTime? now}) {
     final grace = gracePeriodDays ?? _defaultGracePeriodDays;
-    if (!isTenantLate(tenant, gracePeriodDays: grace)) return 0;
-    final now = DateTime.now();
-    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+    final today = now ?? DateTime.now();
+    if (!isTenantLate(tenant, gracePeriodDays: grace, now: today)) return 0;
+    final startOfCurrentMonth = DateTime(today.year, today.month, 1);
     final paidThroughDate = tenant.paidThrough;
 
     // Never paid: align with [isTenantLate] — late after the 30-day onboarding window.
     if (paidThroughDate == null) {
-      final daysSinceCreation = now.difference(tenant.createdAt).inDays;
+      final daysSinceCreation = _calendarDaysBetween(tenant.createdAt, today);
       return daysSinceCreation > 30 ? daysSinceCreation - 30 : 1;
     }
 
     final difference =
-        startOfCurrentMonth.difference(paidThroughDate).inDays - grace;
+        _calendarDaysBetween(paidThroughDate, startOfCurrentMonth) - grace;
     return difference < 0 ? 0 : difference;
   }
 
