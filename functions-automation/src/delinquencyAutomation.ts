@@ -97,8 +97,13 @@ export function resolveLateFee(params: {
     fee = rules.baseLateFee + (daysLate - rules.gracePeriodDays) * rules.dailyLateFee;
   }
 
+  // A non-positive cap clamps to zero rather than disabling the cap. Guarding
+  // the comparison with `cap > 0` meant a zero balance fell through uncapped:
+  // 90 days late on $0 resolved to $460. The caller skips tenants who owe
+  // nothing, so this was latent here, but the Dart port displays the same
+  // figure from a payment amount and had no such guard.
   const cap = rules.maxLateFee !== null && rules.maxLateFee > 0 ? rules.maxLateFee : balance;
-  if (cap > 0 && fee > cap) fee = cap;
+  if (fee > cap) fee = cap;
   if (fee < 0) fee = 0;
   return Math.round(fee * 100) / 100;
 }

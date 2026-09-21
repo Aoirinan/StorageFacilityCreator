@@ -6,6 +6,71 @@ import '../models/contract_model.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 
+/// The operator's configured late fee rules, as the settings screen writes them.
+///
+/// Mirrors the `rules` argument of `resolveLateFee` in
+/// `functions-automation/src/delinquencyAutomation.ts`, which is what actually
+/// charges the tenant. Anything the app displays has to be derived the same way
+/// or the operator reads one number on screen and the tenant is billed another.
+class LateFeeRules {
+  final int gracePeriodDays;
+  final double baseLateFee;
+  final double dailyLateFee;
+  final String? lateFeeType;
+  final double? lateFeeAmount;
+  final double? maxLateFee;
+
+  const LateFeeRules({
+    this.gracePeriodDays = LateLogicService.defaultGracePeriodDays,
+    this.baseLateFee = LateLogicService.defaultBaseLateFee,
+    this.dailyLateFee = LateLogicService.defaultDailyLateFee,
+    this.lateFeeType,
+    this.lateFeeAmount,
+    this.maxLateFee,
+  });
+
+  /// Read the rules out of `facility.billingSettings`.
+  ///
+  /// Values arrive from Firestore as int, double or String depending on how
+  /// they were written, so each is coerced rather than cast.
+  factory LateFeeRules.fromBillingSettings(Map<String, dynamic>? settings) {
+    if (settings == null) return const LateFeeRules();
+
+    int asInt(Object? v, int fallback) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v == null) return fallback;
+      return int.tryParse(v.toString()) ?? fallback;
+    }
+
+    double asDouble(Object? v, double fallback) {
+      if (v is num) return v.toDouble();
+      if (v == null) return fallback;
+      return double.tryParse(v.toString()) ?? fallback;
+    }
+
+    double? asNullableDouble(Object? v) {
+      if (v == null) return null;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString());
+    }
+
+    final type = settings['lateFeeType']?.toString();
+
+    return LateFeeRules(
+      gracePeriodDays: asInt(
+          settings['gracePeriodDays'], LateLogicService.defaultGracePeriodDays),
+      baseLateFee:
+          asDouble(settings['baseLateFee'], LateLogicService.defaultBaseLateFee),
+      dailyLateFee: asDouble(
+          settings['dailyLateFee'], LateLogicService.defaultDailyLateFee),
+      lateFeeType: (type == null || type.isEmpty) ? null : type,
+      lateFeeAmount: asNullableDouble(settings['lateFeeAmount']),
+      maxLateFee: asNullableDouble(settings['maxLateFee']),
+    );
+  }
+}
+
 enum LateStatus {
   current,
   late,
@@ -60,10 +125,53 @@ class LateLogicService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   // Defaults when facility has no billing settings
-  static const double _baseLateFee = 25.00;
-  static const double _dailyLateFee = 5.00;
-  static const int _defaultGracePeriodDays = 3;
+  static const double defaultBaseLateFee = 25.00;
+  static const double defaultDailyLateFee = 5.00;
+  static const int defaultGracePeriodDays = 3;
+  static const double _baseLateFee = defaultBaseLateFee;
+  static const double _dailyLateFee = defaultDailyLateFee;
+  static const int _defaultGracePeriodDays = defaultGracePeriodDays;
   static const int _severeOverdueDays = 30;
+
+  /// The late fee for one overdue tenant, in dollars.
+  ///
+  /// A Dart port of `resolveLateFee` in
+  /// `functions-automation/src/delinquencyAutomation.ts`. The scheduled job
+  /// there is what posts the charge; this exists so the app can show the same
+  /// number. Keep the two in step — `functions-automation/src/test/lateFee.test.ts`
+  /// and `test/late_fee_rules_test.dart` cover the same cases on each side.
+  ///
+  /// Prefers what the operator configured (`lateFeeType` flat or percentage
+  /// with `lateFeeAmount`). The legacy daily accrual applies only when nothing
+  /// is configured, and is bounded: uncapped it reached $310 on a $150 unit
+  /// after two months. The cap is `maxLateFee` where set, otherwise the
+  /// outstanding balance, because a late fee above the debt it is charged on is
+  /// not defensible.
+  static double resolveLateFee({
+    required LateFeeRules rules,
+    required int daysLate,
+    required double balance,
+  }) {
+    double fee;
+    final configured = rules.lateFeeAmount;
+    if (configured != null && configured > 0) {
+      fee = rules.lateFeeType == 'percentage'
+          ? (balance * configured) / 100
+          : configured;
+    } else {
+      fee = rules.baseLateFee +
+          (daysLate - rules.gracePeriodDays) * rules.dailyLateFee;
+    }
+
+    // A non-positive cap clamps to zero rather than disabling the cap. Guarding
+    // the comparison with `cap > 0` meant a tenant who owed nothing fell through
+    // uncapped: 90 days late on a $0 balance resolved to $460.
+    final maxFee = rules.maxLateFee;
+    final cap = (maxFee != null && maxFee > 0) ? maxFee : balance;
+    if (fee > cap) fee = cap;
+    if (fee < 0) fee = 0;
+    return double.parse(fee.toStringAsFixed(2));
+  }
 
   /// Grace period for a facility (from Billing Settings). Use this so "late" matches what the owner configured.
   static Future<int> getFacilityGracePeriodDays(String facilityId) async {
@@ -200,9 +308,10 @@ class LateLogicService {
         final tenant = TenantModel.fromFirestore(tenantDoc);
         final tenantPayments = entry.value;
 
-        final graceDaysForFees = await getFacilityGracePeriodDays(facilityId);
+        final feeRules = await getFacilityLateFeeRules(facilityId);
+        final graceDaysForFees = feeRules.gracePeriodDays;
         final totalDue = tenantPayments.fold<double>(0, (sum, payment) => sum + payment.amount);
-        final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment, gracePeriodDays: graceDaysForFees));
+        final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment, rules: feeRules));
         final maxDaysOverdue = tenantPayments.fold<int>(0, (max, payment) => payment.daysOverdue > max ? payment.daysOverdue : max);
         final status = _statusForOverduePayments(tenantPayments, gracePeriodDays: graceDaysForFees);
 
@@ -284,20 +393,43 @@ class LateLogicService {
 
   // --- Late Fee Calculation ---
 
-  static double calculateLateFee(PaymentModel payment, {int? gracePeriodDays}) {
+  /// The late fee shown for one overdue payment.
+  ///
+  /// Pass [rules] wherever the facility is in scope. Without them this falls
+  /// back to the platform defaults, which is what every call site used to do
+  /// unconditionally: a facility that had configured a flat $15 fee saw the
+  /// uncapped $25 + $5/day accrual on screen while the tenant was charged $15.
+  static double calculateLateFee(
+    PaymentModel payment, {
+    int? gracePeriodDays,
+    LateFeeRules? rules,
+  }) {
     if (payment.status != PaymentStatus.pending) return 0.0;
     if (!payment.isOverdue) return 0.0;
 
-    final grace = gracePeriodDays ?? _defaultGracePeriodDays;
+    final effective = rules ??
+        LateFeeRules(
+            gracePeriodDays: gracePeriodDays ?? defaultGracePeriodDays);
     final daysOverdue = payment.daysOverdue;
-    if (daysOverdue <= grace) return 0.0;
+    if (daysOverdue <= effective.gracePeriodDays) return 0.0;
 
-    return _baseLateFee + ((daysOverdue - grace) * _dailyLateFee);
+    return resolveLateFee(
+      rules: effective,
+      daysLate: daysOverdue,
+      balance: payment.amount,
+    );
+  }
+
+  /// The facility's configured late fee rules (from Billing Settings).
+  static Future<LateFeeRules> getFacilityLateFeeRules(String facilityId) async {
+    final facility = await FacilityService.getFacility(facilityId);
+    return LateFeeRules.fromBillingSettings(facility?.billingSettings);
   }
 
   static Future<double> calculateTotalLateFees(String facilityId, String tenantId) async {
     try {
-      final graceDays = await getFacilityGracePeriodDays(facilityId);
+      final feeRules = await getFacilityLateFeeRules(facilityId);
+      final graceDays = feeRules.gracePeriodDays;
       final querySnapshot = await _firestore
           .collection('facilities')
           .doc(facilityId)
@@ -309,7 +441,7 @@ class LateLogicService {
       double totalLateFees = 0.0;
       for (final doc in querySnapshot.docs) {
         final payment = PaymentModel.fromFirestore(doc);
-        totalLateFees += calculateLateFee(payment, gracePeriodDays: graceDays);
+        totalLateFees += calculateLateFee(payment, rules: feeRules);
       }
 
       return totalLateFees;

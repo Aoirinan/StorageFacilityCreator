@@ -496,7 +496,16 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
     String facilityId,
   ) {
     final badgeInfo = ref.read(paymentBadgeProvider(payment));
-    final lateFee = LateLogicService.calculateLateFee(payment);
+    // Show the fee the tenant will actually be charged. Without the facility's
+    // rules this fell back to the platform default accrual, so an operator who
+    // had configured a flat fee, a percentage, or a cap saw a number here that
+    // the delinquency job would never post.
+    final facility =
+        ref.watch(facilityProvider(facilityId)).whenOrNull(data: (d) => d);
+    final lateFee = LateLogicService.calculateLateFee(
+      payment,
+      rules: LateFeeRules.fromBillingSettings(facility?.billingSettings),
+    );
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
