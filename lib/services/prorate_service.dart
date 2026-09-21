@@ -17,14 +17,23 @@ class ProrateService {
     required DateTime moveInDate,
     DateTime? endDate,
   }) {
-    // Default end date is last day of move-in month
-    final effectiveEndDate = endDate ?? DateTime(moveInDate.year, moveInDate.month + 1, 0);
-    
+    // Compare calendar days, not instants.
+    //
+    // `difference(...).inDays` truncates, so a move-in stamped 15 Jan 14:30
+    // against a 31 Jan midnight end date measured 15 days rather than 16,
+    // billing one day short: on $200 that is $103.23 charged where $109.68 was
+    // owed. Normalising both endpoints to midnight removes the dependence on
+    // what time of day the record happened to be created.
+    final startDay = DateTime(moveInDate.year, moveInDate.month, moveInDate.day);
+    final lastDayOfMonth = DateTime(moveInDate.year, moveInDate.month + 1, 0);
+    final rawEnd = endDate ?? lastDayOfMonth;
+    final endDay = DateTime(rawEnd.year, rawEnd.month, rawEnd.day);
+
     // Calculate days in the month
-    final daysInMonth = DateTime(moveInDate.year, moveInDate.month + 1, 0).day;
-    
+    final daysInMonth = lastDayOfMonth.day;
+
     // Calculate days remaining (including move-in day)
-    final daysRemaining = effectiveEndDate.difference(moveInDate).inDays + 1;
+    final daysRemaining = endDay.difference(startDay).inDays + 1;
     
     // Calculate daily rate
     final dailyRate = monthlyRate / daysInMonth;
@@ -41,7 +50,9 @@ class ProrateService {
       print('💰 [Prorate] Prorated Amount: \$${proratedAmount.toStringAsFixed(2)}');
     }
     
-    return proratedAmount;
+    // Rounded to cents. A raw float here reached the ledger and left residue
+    // that never let a balance settle to exactly zero.
+    return double.parse(proratedAmount.toStringAsFixed(2));
   }
 
   /// Calculate prorated amount for any charge

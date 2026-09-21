@@ -14,6 +14,51 @@ import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './sec
  * Scheduled function to process delinquency automation daily
  * Runs at 3:00 AM UTC every day
  */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Days a never-paid tenant is given before the clock starts, matching the app. */
+const ONBOARDING_GRACE_DAYS = 30;
+
+/**
+ * How many days past due a tenant is, counted from what they actually owe.
+ *
+ * This used to be measured from the start of the current month minus the grace
+ * period, which made it both wrong and self-limiting:
+ *
+ * * It reset on the 1st, so it could never exceed about 34. `lockoutDays`
+ *   defaults to 45, so automatic lockout could never fire at all, and
+ *   `lienDays` of 30 only triggered in the last days of a month.
+ * * It ignored the grace period it claimed to apply. On the 2nd, with a 3-day
+ *   grace, the boundary sat in the previous month and the tenant already
+ *   counted as 4 days late — so a 3-day grace granted zero days.
+ *
+ * Counting from `paidThrough` instead makes it continuous: a tenant three
+ * months behind reads as roughly 90 days, which is what the lien and lockout
+ * thresholds were written for. A tenant who has never paid starts after the
+ * same 30-day onboarding window the Flutter side uses.
+ */
+export function calculateDaysLate(params: {
+  now: Date;
+  paidThrough: Date | null | undefined;
+  createdAt: Date | null | undefined;
+  gracePeriodDays: number;
+}): number {
+  const { now, paidThrough, createdAt, gracePeriodDays } = params;
+
+  let owedFrom: Date;
+  if (paidThrough) {
+    owedFrom = paidThrough;
+  } else if (createdAt) {
+    owedFrom = new Date(createdAt.getTime() + ONBOARDING_GRACE_DAYS * DAY_MS);
+  } else {
+    // Nothing to anchor to; treat as not late rather than inventing a debt.
+    return 0;
+  }
+
+  const dueAfterGrace = owedFrom.getTime() + gracePeriodDays * DAY_MS;
+  return Math.max(0, Math.floor((now.getTime() - dueAfterGrace) / DAY_MS));
+}
+
 /**
  * The late fee for one overdue tenant, in dollars.
  *
@@ -240,8 +285,12 @@ async function processDelinquencyForFacility(
           continue; // Skip non-delinquent tenants
         }
 
-        // Calculate days late
-        const daysLate = Math.max(0, Math.floor((now.getTime() - graceBoundary.getTime()) / (1000 * 60 * 60 * 24)));
+        const daysLate = calculateDaysLate({
+          now,
+          paidThrough,
+          createdAt: tenantData.createdAt?.toDate?.() ?? null,
+          gracePeriodDays: rules.gracePeriodDays,
+        });
 
         // Get ledger balance
         const ledgerSnapshot = await admin.firestore()
