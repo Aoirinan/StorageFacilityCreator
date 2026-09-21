@@ -13,7 +13,7 @@ const ITEMS: Item[] = [
   },
   {
     q: 'Can we migrate from our current software or from spreadsheets?',
-    a: 'Yes. Migration support is available based on your existing data and workflow complexity. Most operators can import units, tenants, and balances in a guided flow.',
+    a: 'Yes. Your tenant list comes over through a guided CSV import, and any unit number it does not recognize is created as it goes. Units can also be created in bulk by number range. Outstanding balances are entered after the import rather than imported, and we help with that during setup.',
   },
   {
     q: 'How does SFC handle payments and autopay?',

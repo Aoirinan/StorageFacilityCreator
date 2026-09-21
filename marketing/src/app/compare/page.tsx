@@ -146,7 +146,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'Can I migrate data from my current software?',
-    a: 'Yes. Migration support is available for tenants, units, and balances based on the export formats your current platform provides. Saved cards generally cannot be moved between payment processors, so tenants re-enter payment details once through the tenant portal. Complexity varies by platform and by how custom your setup is. See the Migration page for scope and timelines.',
+    a: 'Yes. Tenants import through a guided CSV flow, and units are created either by that import or in bulk by number range. Outstanding balances are entered after the import rather than imported, so plan for that step. Saved cards generally cannot be moved between payment processors, so tenants re-enter payment details once through the tenant portal. Complexity varies by platform and by how custom your setup is. See the Migration page for scope and timelines.',
   },
   {
     q: 'Does SFC have feature parity with legacy storage management software?',
