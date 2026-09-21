@@ -322,11 +322,12 @@ export const onFacilityCreatorAccountWrite = functions
       if (ok) marks['onboardingEmails.underReviewSentAt'] = admin.firestore.FieldValue.serverTimestamp();
     };
 
-    if (needsUnderReview) await sendUnderReview('automatic');
-
-    if (needsAdminAlert) {
-      // Internal mail, deliberately not gated: the whole point is that a
-      // pending account never again sits unnoticed for hours.
+    /**
+     * Internal mail, deliberately not gated: the whole point is that a pending
+     * account never again sits unnoticed for hours. Resendable so it can be
+     * proved to work without waiting for a stranger to sign up.
+     */
+    const sendAdminAlert = async (trigger: 'automatic' | 'resend') => {
       const content = buildNewAccountAdminAlertEmail({
         ownerName,
         ownerEmail,
@@ -345,18 +346,25 @@ export const onFacilityCreatorAccountWrite = functions
           to,
           content,
           gated: false,
-          trigger: 'automatic',
+          trigger,
         });
         anyDelivered = anyDelivered || ok;
       }
-      if (anyDelivered) marks['onboardingEmails.adminAlertSentAt'] = admin.firestore.FieldValue.serverTimestamp();
-    }
+      if (anyDelivered && trigger === 'automatic') {
+        marks['onboardingEmails.adminAlertSentAt'] = admin.firestore.FieldValue.serverTimestamp();
+      }
+    };
+
+    if (needsUnderReview) await sendUnderReview('automatic');
+
+    if (needsAdminAlert) await sendAdminAlert('automatic');
 
     if (needsApproved) await sendApproved('automatic');
 
     if (resendRequested) {
       if (resendType === 'account_approved') await sendApproved('resend');
       else if (resendType === 'account_under_review') await sendUnderReview('resend');
+      else if (resendType === 'new_account_admin_alert') await sendAdminAlert('resend');
       else functions.logger.warn('Unknown onboarding resend type', { accountId, resendType });
       // Clear the request either way, so a bad value cannot wedge the trigger.
       marks.onboardingEmailResendRequestedAt = admin.firestore.FieldValue.delete();

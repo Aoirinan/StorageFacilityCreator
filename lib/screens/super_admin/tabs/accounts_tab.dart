@@ -427,16 +427,25 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
   }
 
   Future<void> _resendOnboardingEmail(String type) async {
-    final label = type == 'account_approved'
-        ? 'approval email'
-        : 'signup received email';
+    final label = switch (type) {
+      'account_approved' => 'approval email',
+      'new_account_admin_alert' => 'new-signup alert',
+      _ => 'signup received email',
+    };
+    // The admin alert goes to super admins, not to the owner, so the
+    // pre-launch gate never applies to it.
+    final toAdmins = type == 'new_account_admin_alert';
     final confirmed = await _confirm(
       title: 'Resend $label',
-      message:
-          'Send the $label to ${widget.account.ownerEmail} again? While the '
-          'pre-launch gate is on, only super admins and allowlisted test '
-          'addresses actually receive it. Either way the attempt is recorded '
-          'under Auto emails.',
+      message: toAdmins
+          ? 'Send the new-signup alert for ${widget.account.ownerEmail} to '
+              'every super admin again? This one is internal, so the '
+              'pre-launch gate does not apply and it will actually send. '
+              'Recorded under Auto emails.'
+          : 'Send the $label to ${widget.account.ownerEmail} again? While the '
+              'pre-launch gate is on, only super admins and allowlisted test '
+              'addresses actually receive it. Either way the attempt is '
+              'recorded under Auto emails.',
       confirmLabel: 'Send',
       confirmColor: AppTheme.info,
     );
@@ -803,6 +812,9 @@ class _AccountRowState extends ConsumerState<_AccountRow> {
                     PopupMenuItem(
                         value: 'account_under_review',
                         child: Text('Resend signup received email')),
+                    PopupMenuItem(
+                        value: 'new_account_admin_alert',
+                        child: Text('Resend new-signup alert to admins')),
                   ],
                   onSelected: _resendOnboardingEmail,
                   child: TextButton.icon(
