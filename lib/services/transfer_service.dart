@@ -6,6 +6,7 @@ import 'package:sfcapp/models/transfer_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
+import 'package:sfcapp/services/prorate_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 
@@ -16,33 +17,26 @@ class TransferService {
 
   /// Calculate prorated rent for a unit
   /// Returns the amount owed for the remaining days in the month
+  ///
+  /// [isMoveIn] does not change the magnitude — leaving the old unit and
+  /// taking the new one both cover transfer day through month end. The
+  /// direction is applied by the caller, which subtracts the old unit's share
+  /// from the new one's. The flag is kept so call sites still read clearly.
+  ///
+  /// This used to be a second copy of the proration arithmetic and had drifted
+  /// from [ProrateService]: it measured from the raw timestamp (so the time of
+  /// day a transfer was recorded moved the money), it lost a day across the
+  /// spring daylight-saving change, and it returned an unrounded float straight
+  /// into the ledger. Delegating keeps one implementation under test.
   static double calculateProratedRent({
     required double monthlyRate,
     required DateTime transferDate,
-    bool isMoveIn = true, // true = moving in (charge), false = moving out (refund)
+    bool isMoveIn = true,
   }) {
-    final now = DateTime.now();
-    final year = transferDate.year;
-    final month = transferDate.month;
-    
-    // Get first and last day of the month
-    final firstDay = DateTime(year, month, 1);
-    final lastDay = DateTime(year, month + 1, 0);
-    final daysInMonth = lastDay.day;
-    
-    // Calculate days
-    int days;
-    if (isMoveIn) {
-      // Moving in: charge from transfer date to end of month
-      days = lastDay.difference(transferDate).inDays + 1;
-    } else {
-      // Moving out: refund from transfer date to end of month
-      days = lastDay.difference(transferDate).inDays + 1;
-    }
-    
-    // Calculate prorated amount
-    final dailyRate = monthlyRate / daysInMonth;
-    return dailyRate * days;
+    return ProrateService.calculateProratedRent(
+      monthlyRate: monthlyRate,
+      moveInDate: transferDate,
+    );
   }
 
   /// Create a transfer request
