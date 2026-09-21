@@ -701,8 +701,10 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
         _navigateToContractDetail(contract);
         break;
       case 'edit':
-        _navigateToContractDetail(contract);
-        // Edit functionality is available in the detail screen
+        // This used to open the detail screen with a comment claiming edit
+        // lived there. It did not: the detail screen's edit handler sat inside
+        // a menu dispatcher nothing called, so "Edit" opened a read-only page.
+        _navigateToEditContract(contract);
         break;
       case 'send':
         _sendContract(contract);
@@ -720,6 +722,13 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
         _deleteContract(contract);
         break;
     }
+  }
+
+  void _navigateToEditContract(ContractModel contract) {
+    context.push(
+      '${AppRoute.contractCreate}?facilityId=${contract.facilityId}',
+      extra: contract,
+    ).then((_) => _invalidateContractsList(contract));
   }
 
   void _invalidateContractsList(ContractModel contract) {

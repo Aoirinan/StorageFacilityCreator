@@ -504,9 +504,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
               final tenantId = state.uri.queryParameters['tenantId'] ?? '';
+              // ContractCreationScreen is also the edit screen: passing a
+              // contract puts it in edit mode and its save calls
+              // ContractService.updateContract. This builder discarded
+              // state.extra, so the one caller that passed a contract got a
+              // blank create screen, and editing a contract was impossible.
+              final extra = state.extra;
+              final contract = extra is ContractModel ? extra : null;
               return ContractCreationScreen(
-                facilityId: facilityId,
+                facilityId: contract?.facilityId ?? facilityId,
                 tenantId: tenantId.isEmpty ? null : tenantId,
+                contract: contract,
               );
             },
           ),

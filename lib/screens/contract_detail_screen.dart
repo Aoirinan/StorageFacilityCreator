@@ -13,11 +13,7 @@ import '../services/tenant_service.dart';
 import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
-import 'contract_creation_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
 import '../utils/error_message_helper.dart';
 
 class ContractDetailScreen extends ConsumerStatefulWidget {
@@ -106,7 +102,7 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Status and Type Header
-            _buildStatusHeader(context),
+            _buildStatusHeader(context, ref),
             const SizedBox(height: 24),
             
             // Basic Information
@@ -234,7 +230,7 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
     );
   }
 
-  Widget _buildStatusHeader(BuildContext context) {
+  Widget _buildStatusHeader(BuildContext context, WidgetRef ref) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -270,6 +266,16 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
               ],
             ),
           ),
+          // A draft could be sent or signed but never corrected. The edit
+          // handler existed, inside a menu dispatcher nothing called, and the
+          // list screen's Edit item opened this read-only page with a comment
+          // saying editing lived here.
+          if (contract.status == ContractStatus.draft)
+            IconButton(
+              onPressed: () => _navigateToEditContract(context, ref),
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Edit contract',
+            ),
         ],
       ),
     );
@@ -691,42 +697,15 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
     }
   }
 
-  void _handleAction(BuildContext context, WidgetRef ref, String action) {
-    switch (action) {
-      case 'edit':
-        _navigateToEditContract(context, ref);
-        break;
-      case 'send':
-        _sendContract(context, ref);
-        break;
-      case 'sign_in_person':
-        _signContractInPerson(context, ref);
-        break;
-      case 'resend':
-        _resendContract(context, ref);
-        break;
-      case 'sign':
-        _signContract(context, ref);
-        break;
-      case 'download':
-        _downloadContract(context);
-        break;
-      case 'delete':
-        _deleteContract(context, ref);
-        break;
-    }
-  }
-
   void _navigateToEditContract(BuildContext context, WidgetRef ref) {
     // Navigate to contract detail screen - edit functionality can be added there
     // For now, show a message that editing is available through the creation screen
     // In the future, we can add an edit mode to ContractCreationScreen
+    // The route reads a ContractModel from extra and puts the screen in edit
+    // mode. It used to be handed a whole widget, which the builder ignored.
     context.push(
       '${AppRoute.contractCreate}?facilityId=${contract.facilityId}',
-      extra: ContractCreationScreen(
-        facilityId: contract.facilityId,
-        contract: contract,
-      ),
+      extra: contract,
     ).then((_) {
       // Refresh contract data when returning
       if (context.mounted) {
@@ -771,63 +750,5 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
     if (signed == true && context.mounted) {
       ref.invalidate(contractsProvider(contract.facilityId));
     }
-  }
-
-  Future<void> _downloadContract(BuildContext context) async {
-    if (contract.signedFileUrl == null && contract.fileUrl == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No contract file available for download.'),
-          backgroundColor: AppTheme.warning,
-        ),
-      );
-      return;
-    }
-
-    final urlToDownload = contract.signedFileUrl ?? contract.fileUrl;
-    if (urlToDownload == null) return;
-
-    try {
-      final uri = Uri.parse(urlToDownload);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        throw Exception('Could not open URL');
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error opening contract: $e'),
-          backgroundColor: AppTheme.error,
-        ),
-      );
-    }
-  }
-
-  void _deleteContract(BuildContext context, WidgetRef ref) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Contract'),
-        content: const Text('Are you sure you want to delete this contract?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              ref.read(contractOperationsProvider.notifier).deleteContract(contract.facilityId, contract.id);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.error,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
   }
 }

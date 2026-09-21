@@ -1217,6 +1217,17 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                               tooltip: 'View Map',
                               color: AppTheme.primaryBlue,
                             ),
+                            const SizedBox(width: AppConstants.spacingS),
+                            // _navigateToCreatePayment was written and never
+                            // wired, so the payments list had no way to add a
+                            // payment. The only route in was the calendar's
+                            // "payment due on this date" item.
+                            IconButton(
+                              onPressed: _navigateToCreatePayment,
+                              icon: const Icon(Icons.add),
+                              tooltip: 'Add payment',
+                              color: AppTheme.primaryBlue,
+                            ),
                           ],
                         ],
                       );

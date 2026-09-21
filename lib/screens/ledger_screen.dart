@@ -3,19 +3,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
-import 'dart:typed_data';
 import '../models/ledger_entry_model.dart';
 import '../models/tenant_model.dart';
 import '../providers/ledger_provider.dart';
 import '../services/ledger_service.dart';
 import '../services/statement_service.dart';
 import '../services/facility_service.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
-import '../providers/ledger_provider.dart';
 import '../widgets/ledger_entry_card.dart';
 import '../utils/error_message_helper.dart';
 
@@ -183,6 +180,46 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       icon: const Icon(Icons.filter_alt),
                       onPressed: () => _showFiltersDialog(context),
                       tooltip: 'Filter',
+                    ),
+                    // Both statement dialogs were written and neither was
+                    // wired: this row only ever offered filter, invoice and
+                    // add entry. StatementService had no other caller, so a
+                    // tenant could not be given an account statement on paper
+                    // or by email from anywhere in the app.
+                    PopupMenuButton<String>(
+                      icon: const Icon(Icons.description_outlined),
+                      tooltip: 'Statement',
+                      onSelected: (value) {
+                        if (value == 'print') {
+                          _showPrintStatementDialog(context);
+                        } else if (value == 'send') {
+                          _showSendStatementDialog(context);
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                          value: 'print',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.print_outlined),
+                            title: Text('Print statement'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'send',
+                          enabled: widget.tenant.email.isNotEmpty,
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.mail_outline),
+                            title: const Text('Email statement'),
+                            subtitle: widget.tenant.email.isEmpty
+                                ? const Text('No email on file')
+                                : null,
+                          ),
+                        ),
+                      ],
                     ),
                     FilledButton.icon(
                       icon: const Icon(Icons.receipt_long, size: 18),

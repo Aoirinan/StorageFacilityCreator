@@ -1,15 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/foundation.dart';
 import '../providers/reports_provider.dart';
 import '../services/reports_service.dart';
 import '../services/facility_service.dart';
 import '../services/facility_creator_account_service.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
 import '../models/facility_model.dart';
 import '../providers/auth_provider.dart';
 import '../utils/error_message_helper.dart';
@@ -388,6 +385,21 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // _exportToCsv was written and never wired, and the consolidated
+          // reports screen turns its own CSV button off for financial reports
+          // with the comment "Use FinancialReportsScreen for export" — which
+          // pointed here, at a button that did not exist. There was no way to
+          // get a financial report out of the app.
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: () => _exportToCsv(reportData),
+              icon: const Icon(Icons.download_outlined, size: 18),
+              label: const Text('Export CSV'),
+            ),
+          ),
+          const SizedBox(height: 12),
+
           // Summary cards
           _buildSummaryCards(reportData),
           const SizedBox(height: 24),
@@ -719,16 +731,34 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
     }
   }
 
-  void _exportToCsv(ReportData reportData) {
+  Future<void> _exportToCsv(ReportData reportData) async {
     final now = DateTime.now();
     final facilityName = _currentFacilityName().replaceAll(' ', '_');
     final filename =
         'financial_report_${facilityName}_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}.csv';
 
-    ref.read(reportExportProvider.notifier).exportToCsv(reportData, filename);
+    // The export is async and its failures land in provider state. This used
+    // to fire and forget, then announce the file had been exported on the very
+    // next line, so a failed download still read as a success.
+    await ref.read(reportExportProvider.notifier).exportToCsv(reportData, filename);
+    if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Report exported as $filename')),
+    final result = ref.read(reportExportProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    result.when(
+      data: (_) => messenger.showSnackBar(
+        SnackBar(content: Text('Report exported as $filename')),
+      ),
+      loading: () {},
+      error: (error, _) => messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not export the report: '
+            '${ErrorMessageHelper.getUserFriendlyMessage(error)}',
+          ),
+          backgroundColor: AppTheme.error,
+        ),
+      ),
     );
   }
 
