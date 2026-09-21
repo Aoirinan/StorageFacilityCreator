@@ -138,12 +138,19 @@ class SubscriptionGuardService {
         if (status == SubscriptionStatus.pendingApproval) {
           message = 'Your account is pending approval.';
           redirectRoute = '/pending-approval';
-        } else if (account.hasTrial && account.isTrialExpired) {
-          message = 'Your trial has expired. Please subscribe to continue using the platform.';
-          redirectRoute = '/subscription?trialExpired=1';
         } else if (status == SubscriptionStatus.pastDue) {
+          // Checked before the trial case: an operator who trialled, subscribed,
+          // then missed a payment still has a trial end date in the past, and
+          // the billing problem is the more useful thing to tell them about.
           message = 'Your subscription payment is past due. Please renew your subscription to continue using the platform.';
           redirectRoute = '/subscription?pastDue=1';
+        } else if (account.trialHasEnded &&
+            (account.hasTrial || status == SubscriptionStatus.cancelled)) {
+          // trialHasEnded rather than isTrialExpired: the nightly sweep moves a
+          // lapsed trial to `cancelled`, and this must still name the trial as
+          // the reason instead of claiming a subscription was cancelled.
+          message = 'Your trial has expired. Please subscribe to continue using the platform.';
+          redirectRoute = '/subscription?trialExpired=1';
         } else if (status == SubscriptionStatus.cancelled) {
           if (account.subscriptionCurrentPeriodEnd != null &&
               DateTime.now().isBefore(account.subscriptionCurrentPeriodEnd!)) {

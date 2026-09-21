@@ -303,6 +303,18 @@ class FacilityCreatorAccountModel {
     return DateTime.now().isAfter(subscriptionTrialEnd!);
   }
 
+  /// True once a granted trial has run out, whatever the status says now.
+  ///
+  /// [isTrialExpired] requires the status to still read `trialing`, but a
+  /// locally granted trial has no Stripe subscription behind it, so the nightly
+  /// sweep moves the account to `cancelled` when the date passes. Anything that
+  /// explains to an operator *why* they lost access must keep working after
+  /// that, otherwise the explanation disappears exactly when it is needed.
+  bool get trialHasEnded {
+    if (subscriptionTrialEnd == null) return false;
+    return DateTime.now().isAfter(subscriptionTrialEnd!);
+  }
+
   /// Check if trial is expiring soon (within 3 days)
   bool get isTrialExpiringSoon {
     if (!hasTrial || subscriptionTrialEnd == null) return false;
