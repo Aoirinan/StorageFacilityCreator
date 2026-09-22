@@ -1,5 +1,11 @@
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
+// The analyzer resolves lib/ against the Flutter (non-web) platform, so it
+// does not see dart:js_util even though this file is only ever compiled for
+// web through the conditional export in print_util.dart. The web build
+// compiles it fine.
+// ignore: uri_does_not_exist, avoid_web_libraries_in_flutter
+import 'dart:js_util' as js_util;
 
 /// Triggers the browser print dialog (web only).
 void printWindow() {
@@ -293,6 +299,11 @@ void _printDocument(String doc) {
     ..style.right = '0'
     ..style.bottom = '0';
 
+  // A previous print's frame, if the operator printed twice in a row.
+  for (final stale in html.document.querySelectorAll('iframe[data-sfc-print]')) {
+    stale.remove();
+  }
+  iframe.setAttribute('data-sfc-print', '1');
   html.document.body!.append(iframe);
 
   // srcdoc, not a blob URL. A blob: document is a different origin from this
@@ -312,21 +323,37 @@ void _printDocument(String doc) {
 
   iframe.onLoad.listen((_) {
     final cw = iframe.contentWindow;
-    if (cw is! html.Window) {
+    if (cw == null) {
+      html.window.console.error('Print failed: the frame has no window');
       cleanup();
       return;
     }
     try {
-      cw.print();
+      // The window is fetched off the element with js_util rather than used
+      // as `cw.print()`, and the reason is worth keeping. `iframe.contentWindow`
+      // hands back a dart:html WindowBase wrapper: the old
+      // `if (cw is! html.Window) return;` guard was therefore always true and
+      // returned before printing, and calling js_util on the wrapper fails the
+      // same way — "method not found: 'focus' (n.focus is not a function)".
+      // Reading contentWindow off the element gives the real JS window, which
+      // does have print. Measured in the browser both ways.
+      final jsWindow = js_util.getProperty<Object?>(iframe, 'contentWindow');
+      if (jsWindow == null) {
+        html.window.console.error('Print failed: no window on the frame');
+        cleanup();
+        return;
+      }
+      js_util.callMethod<void>(jsWindow, 'print', const []);
     } catch (e) {
-      // Leave a trace rather than failing mutely, which is exactly how the
-      // blob version hid this for as long as it did.
+      // Leave a trace rather than failing mutely.
       html.window.console.error('Print failed: $e');
       cleanup();
       return;
     }
-    // dart:html does not expose onAfterPrint on Window; clean up shortly after the dialog closes.
-    Future<void>.delayed(const Duration(seconds: 1), cleanup);
-    Future<void>.delayed(const Duration(seconds: 60), cleanup);
+    // Deliberately no short timer here. Removing the frame while Chrome is
+    // still opening its preview cancels the preview, which looks exactly like
+    // a button that does nothing. The frame is invisible and weighs a few KB,
+    // so it can wait for the dialog to be done with it.
+    Future<void>.delayed(const Duration(minutes: 5), cleanup);
   });
 }
