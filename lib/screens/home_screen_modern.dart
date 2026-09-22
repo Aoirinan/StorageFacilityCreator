@@ -10,6 +10,7 @@ import '../providers/facility_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../providers/search_provider.dart' as search;
 import '../providers/dashboard_provider.dart';
+import 'package:sfcapp/providers/feature_flag_provider.dart';
 import '../models/facility_model.dart';
 import '../services/search_service.dart';
 import '../services/tenant_service.dart';
@@ -515,6 +516,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
             const SizedBox(height: 24),
           ],
           if (hasFacilities) const SizedBox(height: 24),
+
+          // Carrier approval for a facility's own number takes up to two weeks,
+          // so this is raised during the trial rather than at the first bill.
+          if (hasFacilities) _buildTextingSetupPrompt(context),
           
           // Metrics grid
           dashboardStats.when(
@@ -1085,6 +1090,84 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     }
     
     return activities;
+  }
+
+  /// Invites the operator to register their own texting number, while there
+  /// is still time for it to clear.
+  ///
+  /// Every facility sends on the shared toll-free number until its own number
+  /// is approved, and that approval is a carrier filing that can take up to two
+  /// weeks. Raising it at the first invoice would be too late, so it is raised
+  /// during the trial and stays until the facility is registered.
+  Widget _buildTextingSetupPrompt(BuildContext context) {
+    final enabled = ref.watch(featureFlagEnabledProvider('TEXTING_ONBOARDING_V1'));
+    if (!enabled) return const SizedBox.shrink();
+
+    final facilityId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (id) => id);
+    if (facilityId == null || facilityId.isEmpty) return const SizedBox.shrink();
+
+    final facility = ref.watch(facilityProvider(facilityId)).whenOrNull(data: (f) => f);
+    if (facility == null) return const SizedBox.shrink();
+
+    final status = (facility.a2pStatus ?? 'draft').toLowerCase();
+    // Registered, or already filed and waiting on the carrier: nothing to ask.
+    if (status != 'draft' && status != 'none' && status.isNotEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.sms_outlined),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Set up texting for ${facility.name}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Your texts go out on our shared number today, which works right '
+                'away. To send from your own number, carriers require a one-time '
+                'registration for your business, and approval can take up to two '
+                'weeks. Starting it now means it is done before you need it — '
+                'nothing stops while you wait.',
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: () => context.push(
+                      '${AppRoute.textingSetup}?facilityId=$facilityId',
+                    ),
+                    icon: const Icon(Icons.arrow_forward, size: 18),
+                    label: const Text('Start texting setup'),
+                  ),
+                  TextButton(
+                    onPressed: () => context.push(AppRoute.settings),
+                    child: const Text('Later, from Settings'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildQuickActionsGrid() {

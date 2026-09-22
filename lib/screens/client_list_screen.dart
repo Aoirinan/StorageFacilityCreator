@@ -466,6 +466,14 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               label: Text('Email invites (${_selectedTenantIds.length})'),
                             ),
                             const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: _selectedTenantIds.isEmpty
+                                  ? null
+                                  : () => _recordSmsConsentForSelected(),
+                              icon: const Icon(Icons.sms_outlined),
+                              label: Text('Record SMS consent (${_selectedTenantIds.length})'),
+                            ),
+                            const SizedBox(width: 8),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -997,6 +1005,83 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 });
               }
             : () => context.push(AppRoute.tenantDetail, extra: tenant),
+      ),
+    );
+  }
+
+  /// Records SMS consent against the selected tenants.
+  ///
+  /// For the operator who collected agreement on paper or in their old system
+  /// and has just imported the rent roll: without this they would have to open
+  /// each tenant in turn. The dialog states plainly what is being asserted,
+  /// because this is the record we would stand behind if a carrier or a tenant
+  /// ever asked why we texted them.
+  Future<void> _recordSmsConsentForSelected() async {
+    final tenantIds = _selectedTenantIds.toList();
+    if (tenantIds.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Record consent for ${tenantIds.length} '
+            '${tenantIds.length == 1 ? 'tenant' : 'tenants'}?'),
+        content: const Text(
+          'Only do this for tenants who have actually agreed to receive text '
+          'messages — on a signed agreement, a move-in form, or in writing. '
+          'It is dated today and is what we rely on if anyone asks why they '
+          'were texted. Tenants with no mobile number on file are skipped.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Record consent'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    var updated = 0;
+    var skipped = 0;
+    final now = DateTime.now();
+    for (final tenantId in tenantIds) {
+      try {
+        final tenant = await TenantService.getTenantById(_selectedFacilityId, tenantId);
+        final digits = (tenant?.phone ?? '').replaceAll(RegExp(r'[^\d]'), '');
+        if (digits.length < 10) {
+          skipped++;
+          continue;
+        }
+        await TenantService.updateTenant(
+          facilityId: _selectedFacilityId,
+          tenantId: tenantId,
+          // updateTenant clears smsOptOut and its date whenever a consent
+          // date is written, so opting in here cannot leave a stale opt-out.
+          smsOptInDate: now,
+        );
+        updated++;
+      } catch (_) {
+        skipped++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isSelectionMode = false;
+      _selectedTenantIds.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(skipped == 0
+            ? 'Consent recorded for $updated '
+                '${updated == 1 ? 'tenant' : 'tenants'}'
+            : 'Consent recorded for $updated; $skipped skipped for having no '
+                'mobile number on file'),
       ),
     );
   }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:sfcapp/utils/sms_consent_import.dart';
 import 'package:go_router/go_router.dart';
 import '../services/tenant_service.dart';
 import '../theme/app_theme.dart';
@@ -53,6 +54,11 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     {'key': 'unitNumber', 'label': 'Unit Number', 'required': false, 'synonyms': ['unit', 'unit number', 'unit #', 'unit id', 'storage unit']},
     {'key': 'monthlyRate', 'label': 'Monthly Rate', 'required': false, 'synonyms': ['rate', 'monthly rate', 'rent', 'rental rate', 'price', 'monthly rent']},
     {'key': 'notes', 'label': 'Notes', 'required': false, 'synonyms': ['notes', 'note', 'comments', 'remarks', 'description']},
+    // Carriers require a per-tenant opt-in before we may text anyone. Without
+    // these two columns an imported rent roll arrives with nobody textable,
+    // and the reminders the operator just switched on reach no one.
+    {'key': 'smsConsent', 'label': 'SMS Consent', 'required': false, 'synonyms': ['sms consent', 'text consent', 'sms opt in', 'sms opt-in', 'opt in', 'opt-in', 'texting consent', 'consent to text', 'sms']},
+    {'key': 'smsConsentDate', 'label': 'SMS Consent Date', 'required': false, 'synonyms': ['sms consent date', 'consent date', 'opt in date', 'opt-in date', 'consent signed', 'date consented']},
   ];
 
   @override
@@ -346,6 +352,65 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     });
   }
 
+  /// Says how many of these tenants may actually be texted.
+  ///
+  /// Shown before the import runs, because "reminders are on but nobody got
+  /// one" is the confusing half of this feature, and the cause is almost
+  /// always that the sheet carried no consent column.
+  Widget _buildConsentSummary() {
+    if (_parsedRows.isEmpty) return const SizedBox.shrink();
+
+    var consented = 0;
+    var consentedWithoutPhone = 0;
+    for (final row in _parsedRows) {
+      final consent = parseSmsConsent(
+        consentValue: row['smsConsent'] as String?,
+        consentDateValue: row['smsConsentDate'] as String?,
+      );
+      if (!consent.optedIn) continue;
+      consented++;
+      if (!consentIsUsable(optedIn: true, phone: row['phone'] as String?)) {
+        consentedWithoutPhone++;
+      }
+    }
+
+    final mappedConsent = (_columnMapping['smsConsent'] ?? '').isNotEmpty ||
+        (_columnMapping['smsConsentDate'] ?? '').isNotEmpty;
+
+    final String message;
+    if (!mappedConsent) {
+      message = 'No SMS consent column mapped, so these tenants are imported as '
+          'not opted in and automatic texts will not go to them. That is the '
+          'safe default — carriers require each tenant to agree first. Map an '
+          'SMS Consent column, or record consent per tenant later.';
+    } else if (consented == 0) {
+      message = 'None of these rows record SMS consent, so automatic texts will '
+          'not go to them. Email reminders are unaffected.';
+    } else {
+      final phoneNote = consentedWithoutPhone > 0
+          ? ' $consentedWithoutPhone of them have no usable mobile number, so '
+              'those still cannot be texted.'
+          : '';
+      message = '$consented of ${_parsedRows.length} tenants record SMS consent '
+          'and can receive automatic texts.$phoneNote';
+    }
+
+    return Card(
+      color: AppTheme.backgroundLight,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.sms_outlined, size: 20),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _performImport() async {
     if (_parsedRows.isEmpty) return;
 
@@ -364,10 +429,18 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
 
     for (final row in rowsToImport) {
       try {
+        final consent = parseSmsConsent(
+          consentValue: row['smsConsent'] as String?,
+          consentDateValue: row['smsConsentDate'] as String?,
+          importedAt: DateTime.now(),
+        );
         // Use empty strings or defaults for missing fields
         await TenantService.createTenant(
           facilityId: widget.facilityId,
           name: (row['name'] as String? ?? '').trim(),
+          smsOptInDate: consent.optedIn
+              ? (consent.consentedAt ?? DateTime.now())
+              : null,
           // Missing contact details are stored as blank. Placeholders like
           // pending@example.com looked harmless but sent that tenant's
           // receipts to a real stranger's mailbox, and made every later
@@ -804,6 +877,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
       content: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _buildConsentSummary(),
           if (_validationErrors.isNotEmpty) ...[
             Card(
               color: AppTheme.error.withOpacity(0.1),
