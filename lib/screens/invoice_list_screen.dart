@@ -346,14 +346,19 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
       data: (invoices) {
         // Include tenant-based overdue (from Delinquency) so Billing aligns when no invoices exist
         final tenantsOverdueAsync = ref.watch(tenantsWithOverdueProvider(_selectedFacilityId));
-        final overdueInvoices = invoices.where((i) => i.isOverdue).length;
+        // Voided invoices are in the list so they can be reviewed under the
+        // Voided filter, but they are not money: counting them here would
+        // inflate every headline figure on the screen.
+        final live =
+            invoices.where((i) => i.status != InvoiceStatus.voided).toList();
+        final overdueInvoices = live.where((i) => i.isOverdue).length;
         final overdueTenants = tenantsOverdueAsync.whenOrNull(data: (d) => d)?.length ?? 0;
         final overdue = overdueInvoices > overdueTenants ? overdueInvoices : overdueTenants;
 
-        final total = invoices.length;
-        final paid = invoices.where((i) => i.status == InvoiceStatus.paid).length;
-        final totalAmount = invoices.fold(0.0, (sum, i) => sum + i.total);
-        final unpaidAmount = invoices.where((i) => i.balance > 0).fold(0.0, (sum, i) => sum + i.balance);
+        final total = live.length;
+        final paid = live.where((i) => i.status == InvoiceStatus.paid).length;
+        final totalAmount = live.fold(0.0, (sum, i) => sum + i.total);
+        final unpaidAmount = live.where((i) => i.balance > 0).fold(0.0, (sum, i) => sum + i.balance);
 
         final isPhone = MediaQuery.of(context).size.width < Breakpoints.xs;
         return Container(
@@ -484,6 +489,13 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
         
         if (_statusFilter != null) {
           filteredInvoices = filteredInvoices.where((i) => i.status == _statusFilter).toList();
+        } else {
+          // "All" means all live invoices. Voided ones are reachable through
+          // their own chip, where an operator goes looking for them on
+          // purpose, rather than mixed into the working list.
+          filteredInvoices = filteredInvoices
+              .where((i) => i.status != InvoiceStatus.voided)
+              .toList();
         }
         
         if (_searchQuery.isNotEmpty) {

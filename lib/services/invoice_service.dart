@@ -14,6 +14,7 @@ import 'ledger_service.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 import 'audit_service.dart';
+import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'email_service.dart';
 
 /// Service for managing invoices
@@ -57,6 +58,32 @@ class InvoiceService {
     }
   }
 
+  /// Ledger entry ids already covered by an invoice that has not been voided.
+  ///
+  /// A voided invoice releases its charges deliberately: voiding is how an
+  /// operator corrects a mistaken invoice, and the charge still needs billing.
+  static Future<Set<String>> _ledgerEntryIdsOnLiveInvoices({
+    required String facilityId,
+    required String tenantId,
+  }) async {
+    final snapshot = await _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('invoices')
+        .where('tenantId', isEqualTo: tenantId)
+        .get();
+
+    final covered = <String>{};
+    for (final doc in snapshot.docs) {
+      final data = doc.data();
+      if ((data['status'] as String?) == InvoiceStatus.voided.name) continue;
+      final ids = (data['ledgerEntryIds'] as List<dynamic>? ?? const [])
+          .whereType<String>();
+      covered.addAll(ids);
+    }
+    return covered;
+  }
+
   /// Generate invoice from unpaid ledger entries
   static Future<InvoiceModel> generateInvoiceFromLedger({
     required String tenantId,
@@ -87,26 +114,30 @@ class InvoiceService {
         facilityId: facilityId,
       );
 
-      List<LedgerEntry> entriesToInvoice;
-      if (ledgerEntryIds != null && ledgerEntryIds.isNotEmpty) {
-        entriesToInvoice = allEntries
-            .where((e) =>
-                ledgerEntryIds.contains(e.id) &&
-                e.isCharge &&
-                e.isActive &&
-                (e.metadata?['allocatedAmount'] == null ||
-                    (e.metadata?['allocatedAmount'] as num).toDouble() < e.amount))
-            .toList();
-      } else {
-        // Get all unpaid charges
-        entriesToInvoice = allEntries
-            .where((e) =>
-                e.isCharge &&
-                e.isActive &&
-                (e.metadata?['allocatedAmount'] == null ||
-                    (e.metadata?['allocatedAmount'] as num).toDouble() < e.amount))
-            .toList();
-      }
+      // Charges already sitting on an invoice that has not been voided are
+      // off the table: without this the same rent can be put on a second
+      // invoice, which is how a tenant ends up billed twice for one month.
+      final idsOnLiveInvoices = await _ledgerEntryIdsOnLiveInvoices(
+        facilityId: facilityId,
+        tenantId: tenantId,
+      );
+
+      final selectableIds = selectableChargeIds(
+        charges: allEntries.map((e) => SelectableCharge(
+              id: e.id,
+              isCharge: e.isCharge,
+              isActive: e.isActive,
+              amount: e.amount,
+              allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
+            )),
+        idsOnLiveInvoices: idsOnLiveInvoices,
+        onlyThese: (ledgerEntryIds != null && ledgerEntryIds.isNotEmpty)
+            ? ledgerEntryIds
+            : null,
+      ).toSet();
+
+      final entriesToInvoice =
+          allEntries.where((e) => selectableIds.contains(e.id)).toList();
 
       if (entriesToInvoice.isEmpty) {
         throw Exception('No unpaid charges to invoice');
@@ -609,11 +640,15 @@ class InvoiceService {
         throw Exception('Not signed in');
       }
 
+      // Voided invoices are included. Voiding sets isActive to false, so
+      // filtering on it here made the Voided tab permanently empty: an
+      // operator could void an invoice, type a reason, and then never see
+      // either again — which is precisely the record wanted when a tenant
+      // asks why they were billed. The list screen filters by status.
       return _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('invoices')
-          .where('isActive', isEqualTo: true)
           .snapshots()
           .map((snapshot) {
         final list = snapshot.docs
@@ -873,6 +908,18 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
         'updatedBy': user.uid,
       });
 
+      // Settle the charges behind it. Marking the invoice paid used to update
+      // the invoice and nothing else, leaving its ledger entries unallocated
+      // and therefore offered again by the next Generate Invoice — the same
+      // rent, billed twice, with the dialog cheerfully reporting "2 unpaid
+      // charges".
+      await _settleLedgerEntries(
+        facilityId: facilityId,
+        tenantId: invoice.tenantId,
+        ledgerEntryIds: invoice.ledgerEntryIds,
+        invoiceId: invoiceId,
+      );
+
       // Audit log
       await AuditService.logInvoiceAction(
         facilityId: facilityId,
@@ -999,6 +1046,46 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
       }
       rethrow;
     }
+  }
+
+  /// Marks the given charges fully allocated, so they are not invoiced again.
+  ///
+  /// Allocation is what selection reads, and it is stored on the entry rather
+  /// than inferred from the invoice, so a later invoice cannot miss it.
+  static Future<void> _settleLedgerEntries({
+    required String facilityId,
+    required String tenantId,
+    required List<String> ledgerEntryIds,
+    required String invoiceId,
+  }) async {
+    if (ledgerEntryIds.isEmpty) return;
+
+    final entries = await LedgerService.getLedgerEntries(
+      tenantId: tenantId,
+      facilityId: facilityId,
+    );
+    final byId = {for (final e in entries) e.id: e};
+
+    final batch = _firestore.batch();
+    var wrote = false;
+    for (final entryId in ledgerEntryIds) {
+      final entry = byId[entryId];
+      if (entry == null) continue;
+      final metadata = Map<String, dynamic>.from(entry.metadata ?? {});
+      metadata['allocatedAmount'] = entry.amount;
+      metadata['settledByInvoiceId'] = invoiceId;
+      metadata['settledAt'] = DateTime.now().toIso8601String();
+      batch.update(
+        _firestore
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('ledgers')
+            .doc(entryId),
+        {'metadata': metadata},
+      );
+      wrote = true;
+    }
+    if (wrote) await batch.commit();
   }
 
   static Future<void> voidInvoice({
