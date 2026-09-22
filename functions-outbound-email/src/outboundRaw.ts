@@ -227,20 +227,28 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
         createdByUid: context.auth.uid,
         createdByEmail: userEmail || null,
       });
-      // Reported, not thrown: the caller has to be able to tell "we did not
-      // send this" apart from "sending failed", and must never show success.
-      return {
-        success: false,
-        blocked: 'prelaunch' as const,
-        messageLogId,
-        status: 'blocked',
-        provider: 'sendgrid' as const,
-        messageId: null,
-        providerMessageId: null,
-        error:
-          'Customer email is switched off before launch. Ask a super admin to enable ' +
-          'customerEmailsEnabled on appConfig/outbound, or add this address to the allowlist.',
-      };
+      // Thrown rather than returned, and the reason is the deploy order.
+      //
+      // A returned {success:false} is only understood by a client that reads
+      // it. The EmailService in production does not: it takes any result that
+      // comes back without throwing, writes a contact log saying the tenant
+      // was emailed, and reports success. So between deploying this and
+      // deploying the app, every blocked send would have left a false entry in
+      // a tenant's contact history — the record someone later cites to show a
+      // tenant was notified.
+      //
+      // Throwing is understood by both. The deployed client already maps a
+      // FirebaseFunctionsException to EmailResult(success:false) and writes no
+      // contact log, and the current one reads the code below to say which
+      // kind of not-sent this was. The gate is then correct whichever half
+      // ships first.
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'prelaunch_gate: customer email is switched off before launch. Ask a super ' +
+          'admin to enable customerEmailsEnabled on appConfig/outbound, or add this ' +
+          'address to the allowlist.',
+        { blocked: 'prelaunch', messageLogId },
+      );
     }
 
     // Check and increment email usage

@@ -134,6 +134,17 @@ class EmailService {
         print('❌ [EmailService] Firebase Functions error: ${e.code} - ${e.message}');
       }
 
+      // Blocked before launch. The server throws this rather than returning a
+      // result, so that a client which does not read the result still writes
+      // no contact log and shows no sent toast.
+      if (e.message?.contains('prelaunch_gate') == true) {
+        return EmailResult(
+          success: false,
+          error: stripErrorMarker(e.message),
+          errorCode: 'prelaunch_gate',
+        );
+      }
+
       // Recipient opted out via List-Unsubscribe / emailSuppressions
       if (e.code == 'failed-precondition' &&
           e.message?.toLowerCase().contains('unsubscribed') == true) {
@@ -189,6 +200,15 @@ class EmailService {
       // Web / some platforms surface callable failures as a generic Exception
       // instead of FirebaseFunctionsException; still map known copy.
       final es = e.toString().toLowerCase();
+      // Some platforms surface a callable failure as a plain Exception, so the
+      // pre-launch refusal has to be recognised here too.
+      if (es.contains('prelaunch_gate')) {
+        return EmailResult(
+          success: false,
+          error: stripErrorMarker(e.toString()),
+          errorCode: 'prelaunch_gate',
+        );
+      }
       if (es.contains('unsubscribed')) {
         return const EmailResult(
           success: false,
@@ -203,6 +223,18 @@ class EmailService {
         error: 'Failed to send email: $e',
       );
     }
+  }
+
+  /// Drop the machine-readable marker from a server message before it is put
+  /// in front of a person.
+  ///
+  /// Public so the copy an operator actually reads can be asserted on.
+  static String stripErrorMarker(String? message) {
+    final text = (message ?? '').replaceFirst('prelaunch_gate: ', '').trim();
+    if (text.isEmpty) {
+      return 'Customer email is switched off before launch, so this was not sent.';
+    }
+    return text.substring(0, 1).toUpperCase() + text.substring(1);
   }
 
   /// Send a digest email via Cloud Functions
