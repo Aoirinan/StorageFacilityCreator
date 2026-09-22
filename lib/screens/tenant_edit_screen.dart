@@ -10,6 +10,7 @@ import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/tenant_contact_validation.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
@@ -1048,20 +1049,15 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
                         TextFormField(
                           controller: _emailController,
                           decoration: const InputDecoration(
-                            labelText: 'Email *',
+                            labelText: 'Email',
+                            helperText: 'Optional. Leave blank if you do not '
+                                'have one.',
+                            helperMaxLines: 2,
                             border: OutlineInputBorder(),
                             prefixIcon: Icon(Icons.email),
                           ),
                           keyboardType: TextInputType.emailAddress,
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Please enter an email address';
-                            }
-                            if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
-                              return 'Please enter a valid email address';
-                            }
-                            return null;
-                          },
+                          validator: validateOptionalTenantEmail,
                         ),
                         const SizedBox(height: 16),
                         

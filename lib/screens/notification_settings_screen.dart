@@ -208,7 +208,9 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
                             SwitchListTile(
                               title: const Text('Enable Payment Reminders'),
                               subtitle: const Text(
-                                'Automatically send email reminders to tenants before payments are due',
+                                'Automatically remind tenants before rent is due, '
+                                'by email or text. Texts go to tenants who have '
+                                'given SMS consent and have a mobile number.',
                               ),
                               value: _enablePaymentReminders,
                               onChanged: (value) {

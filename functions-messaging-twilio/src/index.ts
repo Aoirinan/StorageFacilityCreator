@@ -44,3 +44,5 @@ export { getSMSUsageStatus, overrideSMSLimit } from './smsUsage';
 export { listFacilitySmsOptOuts, restoreFacilitySmsForPhone } from './smsStaffOptOut';
 
 export { handleIncomingSMS } from './incomingSmsWebhook';
+
+export { processRentDueSmsReminders } from './rentReminderSms';

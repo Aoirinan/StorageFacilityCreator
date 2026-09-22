@@ -13,6 +13,7 @@ import '../services/tenant_service.dart';
 import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
 import '../models/facility_model.dart';
+import '../utils/print_util.dart';
 import '../widgets/invoice_pdf_viewer.dart';
 
 class InvoiceDetailScreen extends ConsumerStatefulWidget {
@@ -32,6 +33,7 @@ class InvoiceDetailScreen extends ConsumerStatefulWidget {
 class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   bool _isGeneratingPDF = false;
   bool _isSending = false;
+  bool _isPreparingPrint = false;
 
   @override
   Widget build(BuildContext context) {
@@ -590,10 +592,74 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     }
   }
 
+  /// Builds the printable invoice and opens the print dialog.
+  ///
+  /// The tenant and facility are read here rather than passed in, because the
+  /// printed document has to carry both parties' details — a tenant's name and
+  /// unit alone is not something an operator can send to a customer.
+  Future<void> _printInvoice() async {
+    setState(() => _isPreparingPrint = true);
+    try {
+      final tenant = await TenantService.getTenantById(
+        widget.facilityId,
+        widget.invoice.tenantId,
+      );
+      final facility = await FacilityService.getFacility(widget.facilityId);
+      if (facility == null) {
+        throw Exception('Facility not found');
+      }
+
+      final money = NumberFormat.currency(symbol: '\$');
+      final date = DateFormat('MMM d, yyyy');
+
+      printInvoice(
+        facilityName: facility.name,
+        facilityAddress: facility.address,
+        facilityPhone: facility.phone,
+        facilityEmail: facility.email,
+        tenantName: tenant?.name ?? 'Tenant',
+        tenantAddress: tenant?.addresses.isNotEmpty == true
+            ? tenant!.addresses.first.toString()
+            : null,
+        tenantPhone: tenant?.phone,
+        tenantEmail: tenant?.email,
+        unitNumber: tenant?.unitNumber,
+        invoiceNumber: widget.invoice.invoiceNumber,
+        issueDateFormatted: date.format(widget.invoice.issueDate),
+        dueDateFormatted: date.format(widget.invoice.dueDate),
+        lineItems: widget.invoice.lineItems
+            .map((item) => (
+                  description: item.description,
+                  amount: money.format(item.amount),
+                ))
+            .toList(),
+        subtotalFormatted: money.format(widget.invoice.subtotal),
+        taxFormatted: widget.invoice.tax != null && widget.invoice.tax! > 0
+            ? money.format(widget.invoice.tax)
+            : null,
+        totalFormatted: money.format(widget.invoice.total),
+        balanceFormatted: money.format(widget.invoice.balance),
+        notes: widget.invoice.notes,
+        statusLabel: widget.invoice.status == InvoiceStatus.paid ? 'Paid' : null,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not prepare the invoice for printing: $e'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPreparingPrint = false);
+    }
+  }
+
   Widget _buildInvoiceActions() {
     final actions = availableInvoiceActions(widget.invoice.status);
     final canMakePdf = widget.invoice.pdfUrl == null;
-    if (actions.isEmpty && !canMakePdf) return const SizedBox.shrink();
+    // Printing is always offered, so this card never collapses away.
 
     return Card(
       child: Padding(
@@ -612,12 +678,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               spacing: 8,
               runSpacing: 8,
               children: [
+                // Printing is the first thing an operator reaches for, and it
+                // must not depend on a file having been generated first: this
+                // builds the page and opens the browser's print dialog, which
+                // also offers Save as PDF.
+                ElevatedButton.icon(
+                  onPressed: _isPreparingPrint ? null : _printInvoice,
+                  icon: const Icon(Icons.print_outlined, size: 18),
+                  label: Text(
+                    _isPreparingPrint ? 'Preparing...' : 'Print / Save as PDF',
+                  ),
+                ),
                 if (canMakePdf)
                   OutlinedButton.icon(
                     onPressed: _isGeneratingPDF ? null : _generatePDF,
                     icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
                     label: Text(
-                      _isGeneratingPDF ? 'Generating...' : 'Generate PDF',
+                      _isGeneratingPDF ? 'Generating...' : 'Attach PDF copy',
                     ),
                   ),
                 for (final action in actions)

@@ -2,13 +2,14 @@
   "name": "functions-messaging-twilio",
   "version": "1.0.0",
   "private": true,
-  "description": "SFC Cloud Functions — Twilio SMS, texting onboarding, SMS usage",
+  "description": "SFC Cloud Functions \u2014 Twilio SMS, texting onboarding, SMS usage",
   "main": "lib/index.js",
   "engines": {
     "node": "22"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\""
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.0",

@@ -110,9 +110,12 @@ service firebase.storage {
     // Path: facilities/{facilityId}/contracts/{contractId}/{fileName}
     // Path: facilities/{facilityId}/documents/{documentId}/{fileName}
     // Path: facilities/{facilityId}/invoices/{invoiceId}/invoice.pdf
+    // Managers are included deliberately: Firestore already lets a manager read
+    // and write the invoice, contract and document records, so owner-only
+    // storage meant a manager could open an invoice and not its PDF, and could
+    // not produce one at all.
     match /facilities/{facilityId}/{allPaths=**} {
-      allow read, write: if signedIn() && 
-        firestore.get(/databases/(default)/documents/facilities/$(facilityId)).data.ownerUid == request.auth.uid;
+      allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
     }
     
     // Storage templates - DEPRECATED/UNUSED

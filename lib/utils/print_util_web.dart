@@ -170,3 +170,184 @@ void printPaymentReceipt({
     Future<void>.delayed(const Duration(seconds: 60), cleanup);
   });
 }
+
+/// Opens a print-friendly invoice so it can be printed or saved as a PDF.
+///
+/// The facility's details sit at the top and the tenant's underneath, which is
+/// what makes it a document you can hand or post to a customer. The browser's
+/// own print dialog offers "Save as PDF", so this covers printing and emailing
+/// without waiting on a generated file.
+void printInvoice({
+  required String facilityName,
+  String? facilityAddress,
+  String? facilityPhone,
+  String? facilityEmail,
+  required String tenantName,
+  String? tenantAddress,
+  String? tenantPhone,
+  String? tenantEmail,
+  String? unitNumber,
+  required String invoiceNumber,
+  required String issueDateFormatted,
+  required String dueDateFormatted,
+  required List<({String description, String amount})> lineItems,
+  required String subtotalFormatted,
+  String? taxFormatted,
+  required String totalFormatted,
+  required String balanceFormatted,
+  String? notes,
+  String? statusLabel,
+}) {
+  String line(String? label, String? value) {
+    if (value == null || value.trim().isEmpty) return '';
+    final text = _escapeHtml(value.trim());
+    return label == null
+        ? '<div>$text</div>'
+        : '<div><span class="muted">${_escapeHtml(label)}</span> $text</div>';
+  }
+
+  final rows = lineItems
+      .map((item) => '''
+      <tr>
+        <td>${_escapeHtml(item.description)}</td>
+        <td class="num">${_escapeHtml(item.amount)}</td>
+      </tr>''')
+      .join();
+
+  final taxRow = (taxFormatted == null || taxFormatted.isEmpty)
+      ? ''
+      : '''
+      <tr>
+        <td class="label">Tax</td>
+        <td class="num">${_escapeHtml(taxFormatted)}</td>
+      </tr>''';
+
+  final notesBlock = (notes == null || notes.trim().isEmpty)
+      ? ''
+      : '<div class="notes"><span class="muted">Notes</span><br>${_escapeHtml(notes.trim())}</div>';
+
+  final doc = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invoice ${_escapeHtml(invoiceNumber)}</title>
+  <style>
+    @page { margin: 16mm; size: portrait; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #111827;
+      background: #fff;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    .top { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+    .facility-name { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
+    h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px 0; text-align: right; }
+    .meta { text-align: right; }
+    .muted { color: #6b7280; }
+    .parties { margin: 24px 0 8px 0; }
+    .bill-to { font-weight: 600; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+    th { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
+    td.num, th.num { text-align: right; }
+    td.label { color: #6b7280; }
+    tfoot td { border-bottom: none; padding-top: 10px; }
+    tfoot tr.total td { font-size: 16px; font-weight: 700; border-top: 2px solid #111827; }
+    .notes { margin-top: 20px; font-size: 12px; }
+    .status { font-size: 12px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <div class="facility-name">${_escapeHtml(facilityName)}</div>
+        ${line(null, facilityAddress)}
+        ${line(null, facilityPhone)}
+        ${line(null, facilityEmail)}
+      </div>
+      <div class="meta">
+        <h1>Invoice</h1>
+        <div>${_escapeHtml(invoiceNumber)}</div>
+        <div><span class="muted">Issued</span> ${_escapeHtml(issueDateFormatted)}</div>
+        <div><span class="muted">Due</span> ${_escapeHtml(dueDateFormatted)}</div>
+        ${statusLabel == null || statusLabel.isEmpty ? '' : '<div class="status">${_escapeHtml(statusLabel)}</div>'}
+      </div>
+    </div>
+
+    <div class="parties">
+      <div class="bill-to">Bill to</div>
+      ${line(null, tenantName)}
+      ${line('Unit', unitNumber)}
+      ${line(null, tenantAddress)}
+      ${line(null, tenantPhone)}
+      ${line(null, tenantEmail)}
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Description</th><th class="num">Amount</th></tr>
+      </thead>
+      <tbody>
+        $rows
+      </tbody>
+      <tfoot>
+        <tr><td class="label">Subtotal</td><td class="num">${_escapeHtml(subtotalFormatted)}</td></tr>
+        $taxRow
+        <tr class="total"><td>Total</td><td class="num">${_escapeHtml(totalFormatted)}</td></tr>
+        <tr><td class="label">Balance due</td><td class="num">${_escapeHtml(balanceFormatted)}</td></tr>
+      </tfoot>
+    </table>
+
+    $notesBlock
+  </div>
+</body>
+</html>
+''';
+
+  _printDocument(doc);
+}
+
+/// Renders [doc] in a hidden frame and opens the print dialog on it, so the
+/// page being printed is the document rather than the whole app.
+void _printDocument(String doc) {
+  final iframe = html.IFrameElement()
+    ..setAttribute('aria-hidden', 'true')
+    ..style.border = '0'
+    ..style.width = '0'
+    ..style.height = '0'
+    ..style.position = 'fixed'
+    ..style.right = '0'
+    ..style.bottom = '0';
+
+  html.document.body!.append(iframe);
+
+  final blob = html.Blob([doc], 'text/html');
+  final url = html.Url.createObjectUrlFromBlob(blob);
+  iframe.src = url;
+
+  var cleaned = false;
+  void cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    html.Url.revokeObjectUrl(url);
+    iframe.remove();
+  }
+
+  iframe.onLoad.listen((_) {
+    final cw = iframe.contentWindow;
+    if (cw is! html.Window) {
+      cleanup();
+      return;
+    }
+    cw.print();
+    Future<void>.delayed(const Duration(seconds: 1), cleanup);
+    Future<void>.delayed(const Duration(seconds: 60), cleanup);
+  });
+}

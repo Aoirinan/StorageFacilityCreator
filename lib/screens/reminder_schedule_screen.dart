@@ -154,7 +154,9 @@ class _ReminderScheduleScreenState extends ConsumerState<ReminderScheduleScreen>
             ),
             const SizedBox(height: 8),
             Text(
-              'Create a schedule to automatically send SMS and email reminders for upcoming rent due dates, overdue accounts, or expiring contracts.',
+              'Schedules here are queued for you to review and send. For rent '
+              'reminders that go out on their own, use Notification Settings, '
+              'where you choose email, text, or both.',
               style: Theme.of(context).textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),

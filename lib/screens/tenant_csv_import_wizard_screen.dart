@@ -255,35 +255,79 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
       // Get existing tenants for facility
       final existingTenants = await TenantService.getTenantsForFacility(widget.facilityId);
 
+      // Rows already accepted from this file, so two rows sharing a unit are
+      // caught as well. Existing tenants alone would miss them.
+      final seenEmails = <String, String>{};
+      final seenPhones = <String, String>{};
+      final seenUnits = <String, String>{};
+
       for (int i = 0; i < _parsedRows.length; i++) {
         final row = _parsedRows[i];
-        final email = (row['email'] as String? ?? '').toLowerCase();
+        final email = (row['email'] as String? ?? '').trim().toLowerCase();
         final phone = (row['phone'] as String? ?? '').replaceAll(RegExp(r'[^\d]'), '');
         final unitNumber = (row['unitNumber'] as String? ?? '').trim();
+        final name = (row['name'] as String? ?? '').trim();
 
-        // Check for duplicate email
-        final emailMatch = existingTenants.where((t) => t.email.toLowerCase() == email).firstOrNull;
-        if (emailMatch != null) {
-          duplicateIndices.add(i);
-          duplicateReasons[i] = 'Email "${email}" already exists (Tenant: ${emailMatch.name})';
-          continue;
+        // Blank never counts as a match. Most of a small operator's rent roll
+        // has no email address, and comparing empty to empty marked every one
+        // of those rows a duplicate of the first, so only one row imported.
+        if (email.isNotEmpty) {
+          final emailMatch =
+              existingTenants.where((t) => t.email.trim().toLowerCase() == email).firstOrNull;
+          if (emailMatch != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Email "$email" already exists (Tenant: ${emailMatch.name})';
+            continue;
+          }
+          final earlierRow = seenEmails[email];
+          if (earlierRow != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Email "$email" is repeated in this file (row for $earlierRow)';
+            continue;
+          }
         }
 
         // Check for duplicate phone
-        final phoneMatch = existingTenants.where((t) => t.phone.replaceAll(RegExp(r'[^\d]'), '') == phone).firstOrNull;
-        if (phoneMatch != null) {
-          duplicateIndices.add(i);
-          duplicateReasons[i] = 'Phone "${row['phone']}" already exists (Tenant: ${phoneMatch.name})';
-          continue;
+        if (phone.isNotEmpty) {
+          final phoneMatch = existingTenants
+              .where((t) => t.phone.replaceAll(RegExp(r'[^\d]'), '') == phone)
+              .firstOrNull;
+          if (phoneMatch != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Phone "${row['phone']}" already exists (Tenant: ${phoneMatch.name})';
+            continue;
+          }
+          final earlierRow = seenPhones[phone];
+          if (earlierRow != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Phone "${row['phone']}" is repeated in this file (row for $earlierRow)';
+            continue;
+          }
         }
 
         // Check for duplicate unit (if unit is occupied)
-        final unitMatch = existingTenants.where((t) => t.unitNumber.trim().toLowerCase() == unitNumber.toLowerCase() && t.isActive).firstOrNull;
-        if (unitMatch != null) {
-          duplicateIndices.add(i);
-          duplicateReasons[i] = 'Unit "$unitNumber" is already occupied by ${unitMatch.name}';
-          continue;
+        if (unitNumber.isNotEmpty) {
+          final unitMatch = existingTenants
+              .where((t) =>
+                  t.unitNumber.trim().toLowerCase() == unitNumber.toLowerCase() && t.isActive)
+              .firstOrNull;
+          if (unitMatch != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Unit "$unitNumber" is already occupied by ${unitMatch.name}';
+            continue;
+          }
+          final earlierRow = seenUnits[unitNumber.toLowerCase()];
+          if (earlierRow != null) {
+            duplicateIndices.add(i);
+            duplicateReasons[i] = 'Unit "$unitNumber" is used twice in this file (row for $earlierRow)';
+            continue;
+          }
         }
+
+        final label = name.isNotEmpty ? name : 'row ${i + 1}';
+        if (email.isNotEmpty) seenEmails[email] = label;
+        if (phone.isNotEmpty) seenPhones[phone] = label;
+        if (unitNumber.isNotEmpty) seenUnits[unitNumber.toLowerCase()] = label;
       }
     } catch (e) {
       if (mounted) {
@@ -324,17 +368,15 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         await TenantService.createTenant(
           facilityId: widget.facilityId,
           name: (row['name'] as String? ?? '').trim(),
-          email: (row['email'] as String? ?? '').trim().isEmpty 
-              ? 'pending@example.com' // Placeholder email if not provided
-              : (row['email'] as String).trim(),
-          phone: (row['phone'] as String? ?? '').trim().isEmpty 
-              ? '000-000-0000' // Placeholder phone if not provided
-              : (row['phone'] as String).trim(),
+          // Missing contact details are stored as blank. Placeholders like
+          // pending@example.com looked harmless but sent that tenant's
+          // receipts to a real stranger's mailbox, and made every later
+          // blank-email row read as a duplicate of the first.
+          email: (row['email'] as String? ?? '').trim(),
+          phone: (row['phone'] as String? ?? '').trim(),
           unitNumber: (row['unitNumber'] as String? ?? '').trim(),
           monthlyRate: (row['monthlyRate'] as double? ?? 0.0),
-          notes: (row['notes'] as String? ?? '').trim().isEmpty 
-              ? 'Imported from CSV - please complete tenant information'
-              : (row['notes'] as String).trim(),
+          notes: (row['notes'] as String? ?? '').trim(),
         );
 
         setState(() {
