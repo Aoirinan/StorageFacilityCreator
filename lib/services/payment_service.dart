@@ -502,12 +502,22 @@ class PaymentService {
 
   /// Record a manual payment (cash, check, etc.) - writes to facility payments and tenant
   /// payments so it shows in both the main Payments list and Payment History in the panel.
+  /// Record a payment taken outside the card flow — cash, cheque, transfer.
+  ///
+  /// [appliesToRent] controls whether the money advances the tenant's
+  /// paidThrough. It defaults to true because the button this sits behind is
+  /// the one an operator presses when a tenant pays their rent at the counter.
+  /// Pass false for money that is not rent — a security deposit, a lock sale, a
+  /// late fee settled on its own — because paidThrough moves in whole months of
+  /// rent, so a deposit equal to one month would otherwise buy a month the
+  /// tenant has not paid for.
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
     required double amount,
     required PaymentMethod method,
     String? notes,
+    bool appliesToRent = true,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -598,6 +608,30 @@ class PaymentService {
         );
       } catch (e) {
         if (kDebugMode) print('⚠️ Ledger entry failed: $e');
+      }
+
+      // 4. Advance paidThrough.
+      //
+      // This path never did, so an operator who took cash at the counter booked
+      // the money correctly and the tenant stayed late forever: isTenantLate
+      // kept returning true, the delinquency job kept chasing them, late fees
+      // kept accruing on rent they had already paid, and the lien sequence sits
+      // downstream of that. The third of three paths to write this date, and
+      // the only one that never wrote it at all.
+      if (appliesToRent) {
+        final newPaidThrough = advancePaidThrough(
+          amountPaid: amount,
+          monthlyRate: (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0,
+          existingPaidThrough:
+              (tenantData['paidThrough'] as Timestamp?)?.toDate(),
+          now: DateTime.now(),
+        );
+        if (newPaidThrough != null) {
+          await tenantDoc.reference.update({
+            'paidThrough': Timestamp.fromDate(newPaidThrough),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
       }
 
       if (kDebugMode) {
