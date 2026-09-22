@@ -319,3 +319,97 @@ local number. The two code changes made that day-one ready are in
 - **Terms URL:** https://www.storagefacilitycreator.com/terms
 - **Website URL on the campaign must match the brand:**
   https://www.storagefacilitycreator.com (error 30907 otherwise).
+
+## The toll-free verification does not describe what we actually send (2026-09-22)
+
+Read straight from the API
+(`GET /v1/Tollfree/Verifications/HH8589d700c3a7c4c995bedbf410351655`), the
+approved submission says this:
+
+| Field | Approved content |
+|---|---|
+| Status | `TWILIO_APPROVED` |
+| Use case | `ACCOUNT_NOTIFICATIONS` |
+| Summary | "Storage Facility Creator uses this toll-free number for demo requests, support, onboarding follow-up, and account notifications. **Users opt in through our public web form**…" |
+| Opt-in type | `WEB_FORM`, evidenced by `https://www.storagefacilitycreator.com/contact?intent=trial` |
+| Sample | "Storage Facility Creator: Thanks for contacting us about a demo or trial…" |
+| Volume | 1,000 |
+| Additional info | "This toll-free number is the **primary business text line for Storage Facility Creator**… for Storage Facility Creator." |
+
+Every word of that describes SFC texting **its own prospects and customers**,
+the operators, who opted in on our contact form.
+
+It does not describe what the platform actually sends. Production traffic on
+this number goes to **facility tenants** — people who have never visited
+storagefacilitycreator.com, whose consent was collected by the *operator* at
+move-in, on a signed agreement or on the facility's own rental page. That is
+the traffic the rent reminder job sends, and it is the traffic Keepsake's test
+message was.
+
+This is the same structural mismatch that produced **30909** on the 10DLC
+campaign: the call to action belongs to a facility the reviewer cannot reach.
+It is now true of the toll-free as well, and the toll-free is the number every
+facility shares, so a carrier complaint or audit takes texting down for every
+customer at once rather than one.
+
+The public site is not the problem. `/sms-terms` already states the ISV model
+correctly — that SFC sends "on the Customer's behalf", that "the Customer is
+the responsible party for obtaining lawful consent from their tenants", and it
+quotes the tenant consent checkbox, with `/sms-consent-demo` showing it live.
+The filing is simply narrower than the product and older than it.
+
+### What to file (Russell submits; this is a filing, not a code change)
+
+Edit the toll-free verification and replace these fields:
+
+**Use case summary**
+
+> Storage Facility Creator LLC is a SaaS platform used by self-storage
+> facility operators to manage their facilities. Messages on this number are
+> sent by Storage Facility Creator on behalf of those operators to their own
+> storage tenants, and every message names the facility it is from. Content is
+> account notifications only: rent reminders before a due date, past-due
+> notices, payment receipts, gate access codes, and move-in and move-out
+> confirmations. Tenants give express written consent to their facility
+> operator — on the facility's online rental page, on a signed rental
+> agreement, or on a move-in form — and the operator records that consent per
+> tenant in the software before any message can be sent. Msg frequency varies.
+> Msg & data rates may apply. Reply STOP to opt out, HELP for help.
+
+**Production message sample**
+
+> Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due
+> Oct 1. Reply STOP to opt out, HELP for help.
+
+**Opt-in type / evidence**
+
+Keep `WEB_FORM`, and point the evidence URL at
+`https://www.storagefacilitycreator.com/sms-consent-demo`, which shows the
+exact unchecked consent checkbox a tenant sees, rather than
+`/contact?intent=trial`, which is the form our *operators* fill in.
+
+**Additional information**
+
+> Storage Facility Creator is the messaging platform; the sending party for
+> tenant messages is the facility operator who subscribes to it. Each outbound
+> message is prefixed with the facility's name so the recipient can identify
+> the sender, and carries the STOP/HELP footer. Consent is captured and stored
+> per tenant, with the date and source, and STOP is honoured automatically for
+> that tenant across the platform. Program terms are published at
+> https://www.storagefacilitycreator.com/sms-terms and a live demonstration of
+> the tenant opt-in checkbox is at
+> https://www.storagefacilitycreator.com/sms-consent-demo .
+
+**Volume**
+
+1,000 is the current registered figure. One facility of Caprock's size sending
+a monthly rent reminder plus receipts is a few hundred segments a month, so
+this binds at roughly a dozen active facilities. Raise it in the same edit.
+
+### The direction this points
+
+Per-facility 10DLC (Route B) remains the structurally correct shape, because
+then the brand, the campaign and the consent all belong to the business whose
+tenants are being texted. The shared toll-free is the right answer for a trial
+and the wrong answer at scale. The app now asks operators to start their own
+registration during the trial, for exactly this reason.
