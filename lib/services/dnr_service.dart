@@ -5,7 +5,6 @@ import '../models/dnr_model.dart';
 import 'facility_service.dart';
 import 'global_dnr_service.dart';
 import 'audit_service.dart';
-import 'email_service.dart';
 
 class DNRService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -901,59 +900,6 @@ class DNRService {
         print('⚠️ Error during DNR backfill: $e');
       }
       // Don't rethrow - backfill is non-critical
-    }
-  }
-
-  /// Send verification code email when a DNR entry is created
-  static Future<void> _sendDNRVerificationCodeEmail({
-    required String facilityId,
-    required String ownerEmail,
-    required String dnrName,
-  }) async {
-    // Skip if no owner email provided
-    if (ownerEmail.isEmpty) {
-      if (kDebugMode) {
-        print('⚠️ Skipping DNR verification code email: no owner email');
-      }
-      return;
-    }
-
-    try {
-      // Generate a 6-digit verification code
-      final code = (100000 + (DateTime.now().millisecondsSinceEpoch % 900000)).toString();
-
-      final subject = 'DNR Verification Code';
-      
-      final text = 'Use this code to verify the Do Not Rent request for $dnrName: $code';
-      
-      final html = '<p>Use this code to verify the Do Not Rent request for <strong>$dnrName</strong>: <strong>$code</strong></p>';
-
-      // Send email
-      final result = await EmailService.sendEmail(
-        to: ownerEmail,
-        subject: subject,
-        text: text,
-        html: html,
-        facilityId: facilityId,
-      );
-
-      if (result.success) {
-        if (kDebugMode) {
-          print('✅ DNR verification code email sent successfully to: $ownerEmail');
-          print('📧 Verification code: $code');
-        }
-      } else {
-        if (kDebugMode) {
-          print(
-            '❌ Failed to send DNR verification code email: ${EmailService.staffEmailFailureHint(result)}',
-          );
-        }
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error sending DNR verification code email: $e');
-      }
-      // Don't rethrow - email failure shouldn't break DNR creation
     }
   }
 }
