@@ -1110,29 +1110,23 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
           _isLoading = false;
         });
         
-        // Show error message
+        // Stay on the form. It used to pop this screen and the client list
+        // behind it, dumping the operator on the home screen with everything
+        // they had typed gone — which reads as "it won't let me add another
+        // one" rather than as one failed save. The message stays on screen
+        // above the button so the cause is still readable after the snack bar
+        // goes.
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to create tenant: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
             backgroundColor: AppTheme.error,
-            duration: const Duration(seconds: 5),
+            duration: const Duration(seconds: 8),
           ),
         );
-        
-        // Navigate back to home screen after error
+
         if (kDebugMode) {
-          print('🔄 Error occurred, navigating back to home screen...');
+          print('⚠️ Tenant creation failed, keeping the form open: $e');
         }
-        
-        // Pop the tenant creation screen
-        Navigator.of(context).pop();
-        
-        // Pop the client list screen to return to home
-        Future.delayed(const Duration(milliseconds: 100), () {
-          if (mounted) {
-            Navigator.of(context).pop();
-          }
-        });
       }
     }
   }

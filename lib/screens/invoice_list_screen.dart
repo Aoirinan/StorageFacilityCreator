@@ -9,6 +9,8 @@ import '../providers/late_logic_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/active_facility_provider.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import '../models/facility_model.dart';
 import '../services/facility_creator_account_service.dart';
 import '../theme/app_theme.dart';
@@ -451,12 +453,29 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
     );
   }
 
+  /// How a tenant is named on an invoice row.
+  ///
+  /// An invoice stores only the tenant's id, and an operator does not know
+  /// their tenants by Firestore id. Falls back to the id only when the tenant
+  /// record is gone, so a row is never blank.
+  String _tenantLabel(TenantModel? tenant, String tenantId) {
+    if (tenant == null) return 'Tenant $tenantId';
+    final unit = tenant.unitNumber.trim();
+    return unit.isEmpty ? tenant.name : '${tenant.name} · Unit $unit';
+  }
+
   Widget _buildInvoicesList() {
     if (_selectedFacilityId.isEmpty) {
       return const Center(child: Text('Select a facility'));
     }
 
     final invoicesAsync = ref.watch(invoicesForFacilityProvider(_selectedFacilityId));
+    final tenantsById = <String, TenantModel>{
+      for (final t in ref
+              .watch(facilityTenantsProvider(_selectedFacilityId))
+              .maybeWhen(data: (d) => d, orElse: () => const <TenantModel>[]))
+        t.id: t,
+    };
 
     return invoicesAsync.when(
       data: (invoices) {
@@ -469,7 +488,10 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
         
         if (_searchQuery.isNotEmpty) {
           filteredInvoices = filteredInvoices.where((invoice) {
+            final tenant = tenantsById[invoice.tenantId];
             return invoice.invoiceNumber.toLowerCase().contains(_searchQuery) ||
+                   (tenant?.name.toLowerCase().contains(_searchQuery) ?? false) ||
+                   (tenant?.unitNumber.toLowerCase().contains(_searchQuery) ?? false) ||
                    invoice.tenantId.toLowerCase().contains(_searchQuery);
           }).toList();
         }
@@ -541,7 +563,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
           itemCount: filteredInvoices.length,
           itemBuilder: (context, index) {
             final invoice = filteredInvoices[index];
-            return _buildInvoiceCard(invoice, isPhone);
+            return _buildInvoiceCard(invoice, isPhone, tenantsById[invoice.tenantId]);
           },
         );
       },
@@ -577,7 +599,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
     );
   }
 
-  Widget _buildInvoiceCard(InvoiceModel invoice, bool isPhone) {
+  Widget _buildInvoiceCard(InvoiceModel invoice, bool isPhone, TenantModel? tenant) {
     final statusColor = _getStatusColor(invoice.status);
     final dateFormat = DateFormat('MMM d, yyyy');
     final pad = isPhone ? 12.0 : 16.0;
@@ -637,7 +659,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                     ),
                     SizedBox(height: 8),
                     Text(
-                      'Tenant: ${invoice.tenantId}',
+                      _tenantLabel(tenant, invoice.tenantId),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: AppTheme.textSecondary,
                         fontSize: bodySize,
@@ -732,7 +754,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Tenant ID: ${invoice.tenantId}',
+                            _tenantLabel(tenant, invoice.tenantId),
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: AppTheme.textSecondary,
                             ),

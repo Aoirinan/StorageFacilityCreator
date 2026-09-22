@@ -895,6 +895,112 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
   }
 
   /// Void invoice
+  /// Updates the parts of an invoice that are presentation rather than money.
+  ///
+  /// The due date, the notes and (while it is still a draft) the invoice
+  /// number. Amounts are not accepted here by design — they come from the
+  /// ledger, and an invoice that disagreed with its charges would be worse
+  /// than one that cannot be retyped. See lib/utils/invoice_edit_rules.dart.
+  static Future<void> updateInvoiceDetails({
+    required String facilityId,
+    required String invoiceId,
+    DateTime? dueDate,
+    String? notes,
+    String? invoiceNumber,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) throw Exception('User not authenticated');
+
+      final invoiceRef = _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('invoices')
+          .doc(invoiceId);
+
+      final invoiceDoc = await invoiceRef.get();
+      if (!invoiceDoc.exists) {
+        throw Exception('Invoice not found');
+      }
+      final invoice = InvoiceModel.fromFirestore(invoiceDoc);
+
+      if (invoice.status == InvoiceStatus.voided) {
+        throw Exception('A voided invoice cannot be edited');
+      }
+
+      final updateData = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': user.uid,
+      };
+
+      if (dueDate != null) {
+        updateData['dueDate'] = Timestamp.fromDate(dueDate);
+      }
+
+      if (notes != null) {
+        final trimmed = notes.trim();
+        updateData['notes'] = trimmed.isEmpty ? FieldValue.delete() : trimmed;
+      }
+
+      if (invoiceNumber != null) {
+        final trimmed = invoiceNumber.trim();
+        if (trimmed.isEmpty) {
+          throw Exception('Give the invoice a number');
+        }
+        if (trimmed != invoice.invoiceNumber) {
+          if (invoice.status != InvoiceStatus.draft) {
+            throw Exception(
+              'Only a draft invoice can be renumbered. Void this one and '
+              'generate a new invoice instead.',
+            );
+          }
+          // Re-checked here rather than trusting the form: the list the form
+          // validated against could be stale by the time Save is pressed.
+          final clash = await _firestore
+              .collection('facilities')
+              .doc(facilityId)
+              .collection('invoices')
+              .where('invoiceNumber', isEqualTo: trimmed)
+              .limit(1)
+              .get();
+          final clashesWithOther =
+              clash.docs.any((doc) => doc.id != invoiceId);
+          if (clashesWithOther) {
+            throw Exception(
+              'Another invoice at this facility already uses $trimmed',
+            );
+          }
+          updateData['invoiceNumber'] = trimmed;
+        }
+      }
+
+      await invoiceRef.update(updateData);
+
+      await AuditService.logEvent(
+        facilityId: facilityId,
+        eventType: 'invoice.updated',
+        targetType: 'invoice',
+        targetId: invoiceId,
+        tenantId: invoice.tenantId,
+        after: {
+          if (dueDate != null) 'dueDate': dueDate.toIso8601String(),
+          if (notes != null) 'notes': notes.trim(),
+          if (updateData.containsKey('invoiceNumber'))
+            'invoiceNumber': updateData['invoiceNumber'],
+        },
+      );
+
+      if (kDebugMode) {
+        print('✅ [Invoice] Updated invoice details: $invoiceId');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [Invoice] Error updating invoice: $e');
+      }
+      rethrow;
+    }
+  }
+
   static Future<void> voidInvoice({
     required String facilityId,
     required String invoiceId,

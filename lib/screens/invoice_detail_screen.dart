@@ -13,7 +13,8 @@ import '../services/tenant_service.dart';
 import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
 import '../models/facility_model.dart';
-import '../utils/print_util.dart';
+import 'package:sfcapp/utils/invoice_edit_rules.dart';
+import 'package:sfcapp/utils/print_util.dart';
 import '../widgets/invoice_pdf_viewer.dart';
 
 class InvoiceDetailScreen extends ConsumerStatefulWidget {
@@ -34,6 +35,8 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   bool _isGeneratingPDF = false;
   bool _isSending = false;
   bool _isPreparingPrint = false;
+  bool _isSavingEdits = false;
+  late InvoiceModel _invoice = widget.invoice;
 
   @override
   Widget build(BuildContext context) {
@@ -54,15 +57,15 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             _buildLineItems(),
             const SizedBox(height: 16),
             _buildTotals(),
-            if (widget.invoice.pdfUrl != null) ...[
+            if (_invoice.pdfUrl != null) ...[
               const SizedBox(height: 16),
               _buildPDFSection(),
             ],
-            if (widget.invoice.paymentIds.isNotEmpty) ...[
+            if (_invoice.paymentIds.isNotEmpty) ...[
               const SizedBox(height: 16),
               _buildPaymentHistory(),
             ],
-            if (widget.invoice.notes != null && widget.invoice.notes!.isNotEmpty) ...[
+            if (_invoice.notes != null && _invoice.notes!.isNotEmpty) ...[
               const SizedBox(height: 16),
               _buildNotes(),
             ],
@@ -72,7 +75,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   }
 
   Widget _buildStatusCard() {
-    final statusColor = _getStatusColor(widget.invoice.status);
+    final statusColor = _getStatusColor(_invoice.status);
     
     return Card(
       color: statusColor.withOpacity(0.1),
@@ -83,7 +86,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             CircleAvatar(
               backgroundColor: statusColor,
               child: Icon(
-                _getStatusIcon(widget.invoice.status),
+                _getStatusIcon(_invoice.status),
                 color: AppTheme.textOnDark,
               ),
             ),
@@ -93,29 +96,29 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.invoice.statusDisplayName,
+                    _invoice.statusDisplayName,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       color: statusColor,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   Text(
-                    widget.invoice.formattedTotal,
+                    _invoice.formattedTotal,
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  if (widget.invoice.balance > 0)
+                  if (_invoice.balance > 0)
                     Text(
-                      'Balance: ${widget.invoice.formattedBalance}',
+                      'Balance: ${_invoice.formattedBalance}',
                       style: TextStyle(
                         color: AppTheme.error,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                  if (widget.invoice.isOverdue)
+                  if (_invoice.isOverdue)
                     Text(
-                      '${widget.invoice.daysOverdue} days overdue',
+                      '${_invoice.daysOverdue} days overdue',
                       style: TextStyle(
                         color: AppTheme.error,
                         fontWeight: FontWeight.w500,
@@ -146,21 +149,36 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            _buildInfoRow('Invoice Number', widget.invoice.invoiceNumber),
-            _buildInfoRow('Issue Date', dateFormat.format(widget.invoice.issueDate)),
-            _buildInfoRow('Due Date', dateFormat.format(widget.invoice.dueDate)),
-            if (widget.invoice.paidDate != null)
-              _buildInfoRow('Paid Date', dateFormat.format(widget.invoice.paidDate!)),
-            if (widget.invoice.sentAt != null)
-              _buildInfoRow('Sent Date', dateFormat.format(widget.invoice.sentAt!)),
-            _buildInfoRow('Tenant ID', widget.invoice.tenantId),
+            _buildInfoRow('Invoice Number', _invoice.invoiceNumber),
+            _buildInfoRow('Issue Date', dateFormat.format(_invoice.issueDate)),
+            _buildInfoRow('Due Date', dateFormat.format(_invoice.dueDate)),
+            if (_invoice.paidDate != null)
+              _buildInfoRow('Paid Date', dateFormat.format(_invoice.paidDate!)),
+            if (_invoice.sentAt != null)
+              _buildInfoRow('Sent Date', dateFormat.format(_invoice.sentAt!)),
+            // The tenant's name and unit, not the Firestore id that used to
+            // lead this section. The id is what the record is keyed by, not
+            // anything an operator recognises or can act on.
             FutureBuilder<TenantModel?>(
-              future: TenantService.getTenantById(widget.facilityId, widget.invoice.tenantId),
+              future: TenantService.getTenantById(widget.facilityId, _invoice.tenantId),
               builder: (context, snapshot) {
-                if (snapshot.hasData && snapshot.data != null) {
-                  return _buildInfoRow('Tenant Name', snapshot.data!.name);
+                final tenant = snapshot.data;
+                if (tenant == null) {
+                  return _buildInfoRow(
+                    'Tenant',
+                    snapshot.connectionState == ConnectionState.waiting
+                        ? 'Loading...'
+                        : 'No longer on file',
+                  );
                 }
-                return const SizedBox.shrink();
+                final unit = tenant.unitNumber.trim();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildInfoRow('Tenant', tenant.name),
+                    if (unit.isNotEmpty) _buildInfoRow('Unit', unit),
+                  ],
+                );
               },
             ),
           ],
@@ -218,7 +236,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                     ),
                   ],
                 ),
-                ...widget.invoice.lineItems.map((item) {
+                ..._invoice.lineItems.map((item) {
                   return TableRow(
                     children: [
                       Padding(
@@ -278,12 +296,12 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
                 Text(
-                  widget.invoice.formattedSubtotal,
+                  _invoice.formattedSubtotal,
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
               ],
             ),
-            if (widget.invoice.tax != null) ...[
+            if (_invoice.tax != null) ...[
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -293,7 +311,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                     style: Theme.of(context).textTheme.bodyLarge,
                   ),
                   Text(
-                    widget.invoice.formattedTax!,
+                    _invoice.formattedTax!,
                     style: Theme.of(context).textTheme.bodyLarge,
                   ),
                 ],
@@ -310,14 +328,14 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                   ),
                 ),
                 Text(
-                  widget.invoice.formattedTotal,
+                  _invoice.formattedTotal,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
             ),
-            if (widget.invoice.balance > 0) ...[
+            if (_invoice.balance > 0) ...[
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -329,7 +347,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                     ),
                   ),
                   Text(
-                    widget.invoice.formattedBalance,
+                    _invoice.formattedBalance,
                     style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                       color: AppTheme.error,
                       fontWeight: FontWeight.bold,
@@ -358,14 +376,14 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            InvoicePDFViewer(pdfUrl: widget.invoice.pdfUrl!),
+            InvoicePDFViewer(pdfUrl: _invoice.pdfUrl!),
             const SizedBox(height: 16),
             Row(
               children: [
                 ElevatedButton.icon(
                   onPressed: () async {
-                    if (widget.invoice.pdfUrl != null) {
-                      final uri = Uri.parse(widget.invoice.pdfUrl!);
+                    if (_invoice.pdfUrl != null) {
+                      final uri = Uri.parse(_invoice.pdfUrl!);
                       if (await canLaunchUrl(uri)) {
                         await launchUrl(uri, mode: LaunchMode.externalApplication);
                       }
@@ -377,8 +395,8 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                 const SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: () async {
-                    if (widget.invoice.pdfUrl != null) {
-                      final uri = Uri.parse(widget.invoice.pdfUrl!);
+                    if (_invoice.pdfUrl != null) {
+                      final uri = Uri.parse(_invoice.pdfUrl!);
                       if (await canLaunchUrl(uri)) {
                         await launchUrl(uri, mode: LaunchMode.externalApplication);
                       }
@@ -409,7 +427,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            ...widget.invoice.paymentIds.map((paymentId) {
+            ..._invoice.paymentIds.map((paymentId) {
               return ListTile(
                 leading: const Icon(Icons.payment, color: AppTheme.success),
                 title: Text('Payment $paymentId'),
@@ -444,7 +462,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              widget.invoice.notes!,
+              _invoice.notes!,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
@@ -519,9 +537,9 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     try {
       final operations = ref.read(invoiceOperationsProvider.notifier);
       await operations.generateAndUploadPDF(
-        invoice: widget.invoice,
+        invoice: _invoice,
         facilityId: widget.facilityId,
-        invoiceId: widget.invoice.id,
+        invoiceId: _invoice.id,
       );
 
       if (mounted) {
@@ -561,7 +579,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       final operations = ref.read(invoiceOperationsProvider.notifier);
       await operations.sendInvoice(
         facilityId: widget.facilityId,
-        invoiceId: widget.invoice.id,
+        invoiceId: _invoice.id,
       );
 
       if (mounted) {
@@ -602,7 +620,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     try {
       final tenant = await TenantService.getTenantById(
         widget.facilityId,
-        widget.invoice.tenantId,
+        _invoice.tenantId,
       );
       final facility = await FacilityService.getFacility(widget.facilityId);
       if (facility == null) {
@@ -624,23 +642,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
         tenantPhone: tenant?.phone,
         tenantEmail: tenant?.email,
         unitNumber: tenant?.unitNumber,
-        invoiceNumber: widget.invoice.invoiceNumber,
-        issueDateFormatted: date.format(widget.invoice.issueDate),
-        dueDateFormatted: date.format(widget.invoice.dueDate),
-        lineItems: widget.invoice.lineItems
+        invoiceNumber: _invoice.invoiceNumber,
+        issueDateFormatted: date.format(_invoice.issueDate),
+        dueDateFormatted: date.format(_invoice.dueDate),
+        lineItems: _invoice.lineItems
             .map((item) => (
                   description: item.description,
                   amount: money.format(item.amount),
                 ))
             .toList(),
-        subtotalFormatted: money.format(widget.invoice.subtotal),
-        taxFormatted: widget.invoice.tax != null && widget.invoice.tax! > 0
-            ? money.format(widget.invoice.tax)
+        subtotalFormatted: money.format(_invoice.subtotal),
+        taxFormatted: _invoice.tax != null && _invoice.tax! > 0
+            ? money.format(_invoice.tax)
             : null,
-        totalFormatted: money.format(widget.invoice.total),
-        balanceFormatted: money.format(widget.invoice.balance),
-        notes: widget.invoice.notes,
-        statusLabel: widget.invoice.status == InvoiceStatus.paid ? 'Paid' : null,
+        totalFormatted: money.format(_invoice.total),
+        balanceFormatted: money.format(_invoice.balance),
+        notes: _invoice.notes,
+        statusLabel: _invoice.status == InvoiceStatus.paid ? 'Paid' : null,
       );
     } catch (e) {
       if (mounted) {
@@ -656,9 +674,157 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     }
   }
 
+  /// Lets the operator change the due date, the notes, and — while the invoice
+  /// is still a draft — its number.
+  ///
+  /// Amounts are absent on purpose: they come from the ledger entries this
+  /// invoice was generated from. See lib/utils/invoice_edit_rules.dart.
+  Future<void> _openEditSheet() async {
+    final dateFormat = DateFormat('MMM d, yyyy');
+    final numberController = TextEditingController(text: _invoice.invoiceNumber);
+    final notesController = TextEditingController(text: _invoice.notes ?? '');
+    var dueDate = _invoice.dueDate;
+    final numberEditable = canEditInvoiceNumber(_invoice.status);
+
+    // Every other number in use at this facility, so a clash is caught while
+    // the operator is still typing rather than on save.
+    final otherNumbers = ref
+        .read(invoicesForFacilityProvider(widget.facilityId))
+        .maybeWhen(data: (list) => list, orElse: () => const <InvoiceModel>[])
+        .where((i) => i.id != _invoice.id)
+        .map((i) => i.invoiceNumber)
+        .toList();
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        String? numberError;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Edit invoice details'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: numberController,
+                      enabled: numberEditable,
+                      decoration: InputDecoration(
+                        labelText: 'Invoice number',
+                        border: const OutlineInputBorder(),
+                        errorText: numberError,
+                        helperText: numberEditable
+                            ? 'Use your own numbering if you have one'
+                            : invoiceNumberLockReason(_invoice.status),
+                        helperMaxLines: 3,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: dueDate,
+                          firstDate: DateTime(DateTime.now().year - 2),
+                          lastDate: DateTime(DateTime.now().year + 5),
+                        );
+                        if (picked != null) {
+                          setDialogState(() => dueDate = picked);
+                        }
+                      },
+                      icon: const Icon(Icons.calendar_today, size: 18),
+                      label: Text('Due ${dateFormat.format(dueDate)}'),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: notesController,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        labelText: 'Notes',
+                        hintText: 'Anything the tenant should see on the invoice',
+                        border: OutlineInputBorder(),
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (numberEditable) {
+                      final error = validateInvoiceNumber(
+                        numberController.text,
+                        existingNumbers: otherNumbers,
+                      );
+                      if (error != null) {
+                        setDialogState(() => numberError = error);
+                        return;
+                      }
+                    }
+                    Navigator.of(dialogContext).pop(true);
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true) return;
+
+    setState(() => _isSavingEdits = true);
+    try {
+      await InvoiceService.updateInvoiceDetails(
+        facilityId: widget.facilityId,
+        invoiceId: _invoice.id,
+        dueDate: dueDate,
+        notes: notesController.text,
+        invoiceNumber: numberEditable ? numberController.text.trim() : null,
+      );
+
+      final trimmedNotes = notesController.text.trim();
+      setState(() {
+        _invoice = _invoice.copyWith(
+          dueDate: dueDate,
+          notes: trimmedNotes.isEmpty ? null : trimmedNotes,
+          invoiceNumber:
+              numberEditable ? numberController.text.trim() : _invoice.invoiceNumber,
+        );
+      });
+      ref.invalidate(invoicesForFacilityProvider(widget.facilityId));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invoice updated')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not save: $e'),
+            backgroundColor: AppTheme.error,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSavingEdits = false);
+    }
+  }
+
   Widget _buildInvoiceActions() {
-    final actions = availableInvoiceActions(widget.invoice.status);
-    final canMakePdf = widget.invoice.pdfUrl == null;
+    final actions = availableInvoiceActions(_invoice.status);
+    final canMakePdf = _invoice.pdfUrl == null;
     // Printing is always offered, so this card never collapses away.
 
     return Card(
@@ -689,6 +855,12 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                     _isPreparingPrint ? 'Preparing...' : 'Print / Save as PDF',
                   ),
                 ),
+                if (canEditDueDateAndNotes(_invoice.status))
+                  OutlinedButton.icon(
+                    onPressed: _isSavingEdits ? null : _openEditSheet,
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    label: Text(_isSavingEdits ? 'Saving...' : 'Edit details'),
+                  ),
                 if (canMakePdf)
                   OutlinedButton.icon(
                     onPressed: _isGeneratingPDF ? null : _generatePDF,
@@ -710,7 +882,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                           onPressed: () => _runInvoiceAction(action),
                           child: Text(
                             action == InvoiceAction.send &&
-                                    widget.invoice.status != InvoiceStatus.draft
+                                    _invoice.status != InvoiceStatus.draft
                                 ? 'Resend to tenant'
                                 : action.label,
                           ),
@@ -748,7 +920,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Mark Invoice as Paid'),
         content: Text(
-          'Are you sure you want to mark invoice ${widget.invoice.invoiceNumber} as paid? This will set the balance to \$0.00.',
+          'Are you sure you want to mark invoice ${_invoice.invoiceNumber} as paid? This will set the balance to \$0.00.',
         ),
         actions: [
           TextButton(
@@ -768,13 +940,13 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     try {
       await InvoiceService.markInvoiceAsPaid(
         facilityId: widget.facilityId,
-        invoiceId: widget.invoice.id,
+        invoiceId: _invoice.id,
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Invoice ${widget.invoice.invoiceNumber} marked as paid'),
+            content: Text('Invoice ${_invoice.invoiceNumber} marked as paid'),
             backgroundColor: AppTheme.success,
           ),
         );
@@ -806,7 +978,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Are you sure you want to void invoice ${widget.invoice.invoiceNumber}? This action cannot be undone.',
+              'Are you sure you want to void invoice ${_invoice.invoiceNumber}? This action cannot be undone.',
             ),
             const SizedBox(height: 16),
             TextField(
@@ -843,14 +1015,14 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     try {
       await InvoiceService.voidInvoice(
         facilityId: widget.facilityId,
-        invoiceId: widget.invoice.id,
+        invoiceId: _invoice.id,
         reason: reason,
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Invoice ${widget.invoice.invoiceNumber} has been voided'),
+            content: Text('Invoice ${_invoice.invoiceNumber} has been voided'),
             backgroundColor: AppTheme.warning,
           ),
         );
