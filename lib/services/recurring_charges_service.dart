@@ -164,51 +164,80 @@ class RecurringChargesService {
     return entry;
   }
 
+  /// Whether [entries] already contain this month's recurring rent charge.
+  ///
+  /// Matches the month two ways on purpose: the entry's own date, and the
+  /// month and year the generator stamped into metadata. The scheduled job in
+  /// functions-automation writes the same four metadata fields with a 1-based
+  /// month, so a charge posted server-side is recognised here and the two
+  /// paths cannot bill the same month twice between them.
+  ///
+  /// Voided entries do not count. A month whose charge was voided is a month
+  /// with no charge, and the operator must be able to post it again.
+  static bool hasPostedRecurringRentCharge(
+    List<LedgerEntry> entries,
+    DateTime targetDate,
+  ) {
+    return entries.any((entry) {
+      if (entry.type != LedgerEntryType.rentCharge) return false;
+      if (entry.status != LedgerEntryStatus.posted) return false;
+
+      final entryDate = entry.entryDate;
+      final isSameMonth = entryDate.year == targetDate.year &&
+          entryDate.month == targetDate.month;
+
+      if (!isSameMonth) return false;
+
+      // Check metadata to confirm it's a recurring charge
+      final metadata = entry.metadata;
+      if (metadata == null) return false;
+
+      return metadata['recurringCharge'] == true &&
+          metadata['chargeType'] == 'monthlyRent' &&
+          metadata['month'] == targetDate.month &&
+          metadata['year'] == targetDate.year;
+    });
+  }
+
+  /// Whether this month's rent is already posted, treating a failed read as
+  /// yes.
+  ///
+  /// Split from the Firestore call so the failure branch can be tested, which
+  /// is the branch that matters: it used to return false, which the caller
+  /// reads as "no charge yet" and acts on by posting one, so a read failure
+  /// raised a second month of rent against every tenant in the facility. That
+  /// is the outcome the comment here claimed to be avoiding.
+  ///
+  /// Failing closed turns a read failure into a skipped tenant: a missing
+  /// charge an operator can re-run, rather than a duplicate landing on a real
+  /// balance where autopay can collect it.
+  static Future<bool> rentChargeAlreadyPosted({
+    required DateTime targetDate,
+    required Future<List<LedgerEntry>> Function() loadEntries,
+  }) async {
+    try {
+      return hasPostedRecurringRentCharge(await loadEntries(), targetDate);
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [RecurringCharges] Error checking existing charge: $e');
+      }
+      return true;
+    }
+  }
+
   /// Check if a charge already exists for the target month
   static Future<bool> _checkExistingCharge({
     required String tenantId,
     required String facilityId,
     required DateTime targetDate,
-  }) async {
-    try {
-      final entries = await LedgerService.getLedgerEntries(
+  }) {
+    return rentChargeAlreadyPosted(
+      targetDate: targetDate,
+      loadEntries: () => LedgerService.getLedgerEntries(
         tenantId: tenantId,
         facilityId: facilityId,
-      );
-
-      // Check for existing rent charge for this month
-      return entries.any((entry) {
-        if (entry.type != LedgerEntryType.rentCharge) return false;
-        if (entry.status != LedgerEntryStatus.posted) return false;
-
-        final entryDate = entry.entryDate;
-        final isSameMonth = entryDate.year == targetDate.year &&
-            entryDate.month == targetDate.month;
-
-        if (!isSameMonth) return false;
-
-        // Check metadata to confirm it's a recurring charge
-        final metadata = entry.metadata;
-        if (metadata == null) return false;
-
-        return metadata['recurringCharge'] == true &&
-            metadata['chargeType'] == 'monthlyRent' &&
-            metadata['month'] == targetDate.month &&
-            metadata['year'] == targetDate.year;
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ [RecurringCharges] Error checking existing charge: $e');
-      }
-      // Fail closed. This returned false, which the caller reads as "no charge
-      // yet" and acts on by posting one — so a Firestore read failure raised a
-      // second month of rent against every tenant in the facility, which is
-      // the outcome the comment here said it was avoiding. Reporting the
-      // charge as already present instead means a failed read skips the tenant:
-      // a missing charge an operator can re-run, rather than a duplicate that
-      // lands on a real balance and can be collected by autopay.
-      return true;
-    }
+      ),
+    );
   }
 
   /// Generate insurance charge for a tenant (if applicable)
