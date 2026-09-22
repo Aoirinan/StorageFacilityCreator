@@ -32,6 +32,7 @@ import { isFeatureFlagEnabled } from './featureFlags';
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkQuietHours, checkPerTenantRateLimit, addOptOutFooter } from './smsComplianceHelpers';
 import { SMSUsageState, checkAndIncrementSMSUsage } from './smsUsage';
+import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
 
 interface SMSRequest {
   to: string;
@@ -417,6 +418,27 @@ export const sendSMS = functions.runWith({
       ? facilityDedicatedFromNumber
       : twilioPhoneNumber;
 
+    // A facility still on the shared number may only send while it is in
+    // trial or waiting on its own registration, and within a monthly ceiling.
+    // Enforced here as well as in the automated reminder job, so the rule
+    // cannot be sidestepped by sending by hand. forceSend does not override
+    // it: this is a carrier-facing limit, not a convenience check.
+    const sharedDecision = await evaluateSharedNumberSend({
+      facilityId,
+      facilityData,
+      usesOwnNumber: resolvedFromNumber !== twilioPhoneNumber,
+    });
+    if (!sharedDecision.allowed) {
+      functions.logger.info('[sendSMS] held by shared-number policy', {
+        facilityId,
+        refusal: sharedDecision.refusal,
+      });
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        sharedDecision.message ?? 'Texting for this facility is not available right now.',
+      );
+    }
+
     // The shared platform number sends on behalf of many facilities, so the
     // recipient cannot tell who is texting from the number alone. Prefix the
     // facility name, as the samples registered with carriers do. A facility's
@@ -767,6 +789,11 @@ export const sendSMS = functions.runWith({
     }
 
     twilioSmsSendCommitted = true;
+    // Counted only once the carrier has it, so a failed send does not consume
+    // the facility's shared-number allowance for the month.
+    if (resolvedFromNumber === twilioPhoneNumber) {
+      await recordSharedNumberSend(facilityId);
+    }
     return {
       success: true,
       messageId: result.sid,

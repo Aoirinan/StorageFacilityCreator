@@ -18,6 +18,7 @@ import { reservePlatformOutgoing } from './platformOutgoing';
 import { addOptOutFooter, checkPerTenantRateLimit, checkQuietHours } from './smsComplianceHelpers';
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkAndIncrementSMSUsage } from './smsUsage';
+import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
 import {
   buildRentReminderMessage,
   decideRentReminder,
@@ -169,6 +170,24 @@ async function sendReminderSms(params: {
   const fromNumber = a2pApproved && facilityNumber ? facilityNumber : platformNumber;
   if (!fromNumber) return 'failed';
 
+  // A facility still on the shared number may only send while it is in trial
+  // or waiting on its own registration, and within a monthly ceiling. See
+  // sharedNumberPolicy.ts for why the shared number is a starting point
+  // rather than a destination.
+  const sharedDecision = await evaluateSharedNumberSend({
+    facilityId,
+    facilityData,
+    usesOwnNumber: fromNumber !== platformNumber,
+  });
+  if (!sharedDecision.allowed) {
+    functions.logger.info('[rentReminderSms] held by shared-number policy', {
+      facilityId,
+      tenantId,
+      refusal: sharedDecision.refusal,
+    });
+    return 'blocked';
+  }
+
   if (fromNumber === platformNumber) {
     const label = ((facilityData?.name as string | undefined) || '').trim();
     if (label && !body.toLowerCase().startsWith(label.toLowerCase())) {
@@ -249,6 +268,9 @@ async function sendReminderSms(params: {
 
   const payload = (await response.json()) as { sid?: string };
   await writeLog('sent', { providerMessageId: payload?.sid ?? null });
+  if (fromNumber === platformNumber) {
+    await recordSharedNumberSend(facilityId);
+  }
   return 'sent';
 }
 
