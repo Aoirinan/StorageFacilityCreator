@@ -432,57 +432,6 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     }
   }
 
-  Future<void> _processPayment() async {
-    if (_totalAmount <= 0) {
-      // No payment needed, proceed to complete move-in
-      await _completeMoveIn();
-      return;
-    }
-
-    try {
-      // Create a public payment checkout session
-      // Note: This would need a Cloud Function that creates a payment link for the reservation
-      // For now, we'll show a message that payment will be processed
-
-      if (mounted) {
-        final proceed = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Payment Required'),
-            content: Text(
-              'Total amount due: \$${_totalAmount.toStringAsFixed(2)}\n\n'
-              'Payment processing will be integrated with Stripe Connect. '
-              'For now, you can proceed and payment will be collected separately.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Proceed'),
-              ),
-            ],
-          ),
-        );
-
-        if (proceed == true) {
-          await _completeMoveIn();
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error processing payment: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
-  }
-
   Future<void> _completeMoveIn() async {
     // Validate required fields
     if (_nameController.text.trim().isEmpty) {

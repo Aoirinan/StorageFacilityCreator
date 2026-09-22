@@ -4,11 +4,9 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/invoice_model.dart';
+import '../models/invoice_status_actions.dart';
 import '../providers/invoice_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../services/invoice_service.dart';
 import '../services/tenant_service.dart';
@@ -44,6 +42,11 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
           children: [
             _buildStatusCard(),
             const SizedBox(height: 16),
+            // An invoice could be looked at and its PDF opened, and nothing
+            // else: _handleMenuAction dispatched send, mark paid and void from
+            // a menu that was never built, and _generatePDF had no caller
+            // either, so an invoice with no PDF yet could not be given one.
+            _buildInvoiceActions(),
             _buildInvoiceInfo(),
             const SizedBox(height: 16),
             _buildLineItems(),
@@ -587,15 +590,75 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     }
   }
 
-  void _handleMenuAction(String action) {
+  Widget _buildInvoiceActions() {
+    final actions = availableInvoiceActions(widget.invoice.status);
+    final canMakePdf = widget.invoice.pdfUrl == null;
+    if (actions.isEmpty && !canMakePdf) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Actions',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (canMakePdf)
+                  OutlinedButton.icon(
+                    onPressed: _isGeneratingPDF ? null : _generatePDF,
+                    icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                    label: Text(
+                      _isGeneratingPDF ? 'Generating...' : 'Generate PDF',
+                    ),
+                  ),
+                for (final action in actions)
+                  action.isDestructive
+                      ? OutlinedButton(
+                          onPressed: () => _runInvoiceAction(action),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.error,
+                          ),
+                          child: Text(action.label),
+                        )
+                      : ElevatedButton(
+                          onPressed: () => _runInvoiceAction(action),
+                          child: Text(
+                            action == InvoiceAction.send &&
+                                    widget.invoice.status != InvoiceStatus.draft
+                                ? 'Resend to tenant'
+                                : action.label,
+                          ),
+                        ),
+              ],
+            ),
+            if (_isGeneratingPDF) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _runInvoiceAction(InvoiceAction action) {
     switch (action) {
-      case 'send':
+      case InvoiceAction.send:
         _sendInvoice();
         break;
-      case 'mark_paid':
+      case InvoiceAction.markPaid:
         _markAsPaid();
         break;
-      case 'void':
+      case InvoiceAction.voidInvoice:
         _voidInvoice();
         break;
     }

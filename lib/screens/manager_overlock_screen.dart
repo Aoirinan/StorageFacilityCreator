@@ -410,46 +410,6 @@ class _ManagerOverlockScreenState extends ConsumerState<ManagerOverlockScreen> {
     }
   }
 
-  Widget _buildTable() {
-    if (_facilityId == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    // Need facilities list for _resolveData in all-facilities mode
-    final authState = ref.watch(authStateProvider);
-    final user = authState.whenOrNull(data: (u) => u);
-    if (user == null) return const Center(child: CircularProgressIndicator());
-    final facilitiesAsync = ref.watch(userFacilitiesProvider(user.uid));
-    final facilities = facilitiesAsync.whenOrNull(data: (d) => d) ?? <FacilityModel>[];
-    final resolved = _resolveData(facilities);
-    if (resolved == null) return const Center(child: CircularProgressIndicator());
-    final units = resolved.units;
-    final tenantMap = resolved.tenantMap;
-    final balances = resolved.balances;
-    final rows = _filterUnits(units, tenantMap, balances);
-    if (rows.isEmpty) {
-      return const Center(child: Text('No units match filters'));
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: SingleChildScrollView(
-        child: DataTable(
-          headingRowColor: WidgetStateProperty.all(Theme.of(context).colorScheme.surfaceContainerHighest),
-          columns: const [
-            DataColumn(label: Text('', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Unit #', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Tenant', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Phone / Email', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Balance', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Overlock', style: TextStyle(fontWeight: FontWeight.bold))),
-            DataColumn(label: Text('Actions', style: TextStyle(fontWeight: FontWeight.bold))),
-          ],
-          rows: rows.map((unit) => _buildRow(unit, tenantMap, balances)).toList(),
-        ),
-      ),
-    );
-  }
-
   /// Desktop: only the table body scrolls; header is sticky.
   Widget _buildTableOrScrollableData(BuildContext context, double width, List<FacilityModel> facilities) {
     if (_facilityId == null) {

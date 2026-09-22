@@ -91,10 +91,6 @@ class UnitLayoutNotifier extends StateNotifier<UnitLayoutState> {
     );
   }
 
-  void updateLayout(String layout) {
-    // Update layout logic here
-  }
-
   void updateSorting(String sortBy, bool ascending) {
     state = state.copyWith(sortBy: sortBy, sortAscending: ascending);
   }

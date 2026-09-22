@@ -220,26 +220,6 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     }
   }
 
-  Future<void> processOverduePayments(String facilityId) async {
-    state = const AsyncValue.loading();
-    try {
-      // Process overdue payments logic here - would need to implement in service
-      state = const AsyncValue.data(null);
-    } catch (e, stackTrace) {
-      state = AsyncValue.error(e, stackTrace);
-    }
-  }
-
-  Future<void> processContractExpirations(String facilityId) async {
-    state = const AsyncValue.loading();
-    try {
-      // Process contract expirations logic here - would need to implement in service
-      state = const AsyncValue.data(null);
-    } catch (e, stackTrace) {
-      state = AsyncValue.error(e, stackTrace);
-    }
-  }
-
   Future<ReminderAutomationResult> runAutomation(String facilityId) async {
     state = const AsyncValue.loading();
     try {

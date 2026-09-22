@@ -289,21 +289,4 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       rethrow;
     }
   }
-
-  Future<void> updatePayment({
-    required String facilityId,
-    required String paymentId,
-    double? amount,
-    String? description,
-    DateTime? dueDate,
-  }) async {
-    state = const AsyncValue.loading();
-    try {
-      // Update payment logic here - would need to implement in service
-      state = const AsyncValue.data(null);
-    } catch (e, stackTrace) {
-      state = AsyncValue.error(e, stackTrace);
-      rethrow;
-    }
-  }
 }

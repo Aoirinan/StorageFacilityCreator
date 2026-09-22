@@ -821,47 +821,6 @@ The facility certifies that upon execution of this waiver, the tenant is entitle
     });
   }
 
-  Future<void> _updateTemplate(
-    String templateId,
-    String name,
-    String description,
-    String content,
-    ContractType type,
-  ) async {
-    if (_selectedFacilityId == null) return;
-
-    try {
-      await ContractService.updateContractTemplate(
-        facilityId: _selectedFacilityId!,
-        templateId: templateId,
-        name: name,
-        description: description,
-        content: content,
-        type: type,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Template updated successfully!'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-        // Refresh templates
-        ref.invalidate(contractTemplatesProvider(_selectedFacilityId!));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
-  }
-
   Future<void> _deleteTemplate(ContractTemplateModel template) async {
     final confirm = await showDialog<bool>(
       context: context,
