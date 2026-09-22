@@ -135,40 +135,7 @@ void printPaymentReceipt({
 </html>
 ''';
 
-  final iframe = html.IFrameElement()
-    ..setAttribute('aria-hidden', 'true')
-    ..style.border = '0'
-    ..style.width = '0'
-    ..style.height = '0'
-    ..style.position = 'fixed'
-    ..style.right = '0'
-    ..style.bottom = '0';
-
-  html.document.body!.append(iframe);
-
-  final blob = html.Blob([doc], 'text/html');
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  iframe.src = url;
-
-  var cleaned = false;
-  void cleanup() {
-    if (cleaned) return;
-    cleaned = true;
-    html.Url.revokeObjectUrl(url);
-    iframe.remove();
-  }
-
-  iframe.onLoad.listen((_) {
-    final cw = iframe.contentWindow;
-    if (cw is! html.Window) {
-      cleanup();
-      return;
-    }
-    cw.print();
-    // dart:html does not expose onAfterPrint on Window; clean up shortly after the dialog closes.
-    Future<void>.delayed(const Duration(seconds: 1), cleanup);
-    Future<void>.delayed(const Duration(seconds: 60), cleanup);
-  });
+  _printDocument(doc);
 }
 
 /// Opens a print-friendly invoice so it can be printed or saved as a PDF.
@@ -328,15 +295,18 @@ void _printDocument(String doc) {
 
   html.document.body!.append(iframe);
 
-  final blob = html.Blob([doc], 'text/html');
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  iframe.src = url;
+  // srcdoc, not a blob URL. A blob: document is a different origin from this
+  // page, so reaching into it for contentWindow.print() throws
+  // "Blocked a frame with origin ... from accessing a cross-origin frame" and
+  // the print dialog never opens — silently, because the throw happens inside
+  // the load listener. A srcdoc document inherits this page's origin, so
+  // print() is reachable. Verified in the browser before changing it.
+  iframe.srcdoc = doc;
 
   var cleaned = false;
   void cleanup() {
     if (cleaned) return;
     cleaned = true;
-    html.Url.revokeObjectUrl(url);
     iframe.remove();
   }
 
@@ -346,7 +316,16 @@ void _printDocument(String doc) {
       cleanup();
       return;
     }
-    cw.print();
+    try {
+      cw.print();
+    } catch (e) {
+      // Leave a trace rather than failing mutely, which is exactly how the
+      // blob version hid this for as long as it did.
+      html.window.console.error('Print failed: $e');
+      cleanup();
+      return;
+    }
+    // dart:html does not expose onAfterPrint on Window; clean up shortly after the dialog closes.
     Future<void>.delayed(const Duration(seconds: 1), cleanup);
     Future<void>.delayed(const Duration(seconds: 60), cleanup);
   });
