@@ -45,4 +45,4 @@ export { listFacilitySmsOptOuts, restoreFacilitySmsForPhone } from './smsStaffOp
 
 export { handleIncomingSMS } from './incomingSmsWebhook';
 
-export { processRentDueSmsReminders } from './rentReminderSms';
+export { processRentDueTextReminders } from './rentReminderSms';

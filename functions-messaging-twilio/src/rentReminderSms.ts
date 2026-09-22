@@ -252,7 +252,7 @@ async function sendReminderSms(params: {
   return 'sent';
 }
 
-export const processRentDueSmsReminders = functions
+export const processRentDueTextReminders = functions
   .runWith({
     secrets: [...TWILIO_SECRETS, ...SENDGRID_SECRETS],
     timeoutSeconds: 540,
