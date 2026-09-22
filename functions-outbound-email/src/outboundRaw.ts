@@ -239,9 +239,19 @@ export const sendEmail = functions.runWith({ secrets: SENDGRID_SECRETS }).https.
       //
       // Throwing is understood by both. The deployed client already maps a
       // FirebaseFunctionsException to EmailResult(success:false) and writes no
-      // contact log, and the current one reads the code below to say which
-      // kind of not-sent this was. The gate is then correct whichever half
-      // ships first.
+      // contact log, and the current one reads the marker below to say which
+      // kind of not-sent this was.
+      //
+      // That makes THIS CODEBASE safe to ship ahead of the app. It does not
+      // make the order optional: ship the app first and the server here is
+      // still ungated, so real tenants receive real mail, which is the fault
+      // all of this exists to prevent. Server first, always.
+      //
+      // The marker lives in the message rather than only in details because a
+      // callable failure reaches some platforms as a plain Exception with no
+      // details to read, and a gate that fails open on one platform is not a
+      // gate. The cost is that a client older than this one prints the
+      // message verbatim, marker and all. Accurate, and it fails closed.
       throw new functions.https.HttpsError(
         'failed-precondition',
         'prelaunch_gate: customer email is switched off before launch. Ask a super ' +
