@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:sfcapp/utils/invoice_charge_selection.dart';
+import 'package:sfcapp/services/invoice_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -535,23 +537,41 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     }
   }
 
-  void _showGenerateInvoiceDialog(BuildContext context) {
+  Future<void> _showGenerateInvoiceDialog(BuildContext context) async {
     final ledgerParams = LedgerParams(
       tenantId: widget.tenant.id,
       facilityId: widget.tenant.facilityId,
     );
 
     final ledgerAsync = ref.read(ledgerStreamProvider(ledgerParams));
-    
+
+    // The same exclusions generation applies, so the dialog cannot promise to
+    // bill a charge that is already on a live invoice or already settled.
+    // These used to be different rules, and the preview was the optimistic one.
+    final idsOnLiveInvoices = await InvoiceService.ledgerEntryIdsOnLiveInvoices(
+      facilityId: widget.tenant.facilityId,
+      tenantId: widget.tenant.id,
+    );
+    if (!mounted) return;
+
     ledgerAsync.whenData((entries) {
-      // Get unpaid charges
-      final unpaidCharges = entries.where((e) => 
-        e.status == LedgerEntryStatus.posted &&
-        e.type != LedgerEntryType.payment &&
-        e.type != LedgerEntryType.credit &&
-        e.type != LedgerEntryType.refund &&
-        e.amount > 0
-      ).toList();
+      final invoiceableIds = selectableChargeIds(
+        charges: entries.map((e) => SelectableCharge(
+              id: e.id,
+              isCharge: e.status == LedgerEntryStatus.posted &&
+                  e.type != LedgerEntryType.payment &&
+                  e.type != LedgerEntryType.credit &&
+                  e.type != LedgerEntryType.refund &&
+                  e.amount > 0,
+              isActive: e.isActive,
+              amount: e.amount,
+              allocatedAmount: (e.metadata?['allocatedAmount'] as num?)?.toDouble(),
+            )),
+        idsOnLiveInvoices: idsOnLiveInvoices,
+      ).toSet();
+
+      final unpaidCharges =
+          entries.where((e) => invoiceableIds.contains(e.id)).toList();
 
       if (unpaidCharges.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(

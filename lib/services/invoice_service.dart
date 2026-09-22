@@ -60,9 +60,14 @@ class InvoiceService {
 
   /// Ledger entry ids already covered by an invoice that has not been voided.
   ///
+  /// Public so the Generate Invoice preview can apply the same rule the
+  /// generation applies. When they disagreed, the dialog promised to bill a
+  /// charge that generation would then refuse — or worse, before this was
+  /// fixed, billed one that had already been paid.
+  ///
   /// A voided invoice releases its charges deliberately: voiding is how an
   /// operator corrects a mistaken invoice, and the charge still needs billing.
-  static Future<Set<String>> _ledgerEntryIdsOnLiveInvoices({
+  static Future<Set<String>> ledgerEntryIdsOnLiveInvoices({
     required String facilityId,
     required String tenantId,
   }) async {
@@ -117,7 +122,7 @@ class InvoiceService {
       // Charges already sitting on an invoice that has not been voided are
       // off the table: without this the same rent can be put on a second
       // invoice, which is how a tenant ends up billed twice for one month.
-      final idsOnLiveInvoices = await _ledgerEntryIdsOnLiveInvoices(
+      final idsOnLiveInvoices = await ledgerEntryIdsOnLiveInvoices(
         facilityId: facilityId,
         tenantId: tenantId,
       );
