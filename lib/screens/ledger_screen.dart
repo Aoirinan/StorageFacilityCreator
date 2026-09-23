@@ -196,6 +196,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                           _showPrintStatementDialog(context);
                         } else if (value == 'send') {
                           _showSendStatementDialog(context);
+                        } else if (value == 'customize') {
+                          // Logo, mailing address and closing message live
+                          // on the facility, so every owner sets their own.
+                          context.push(
+                            '${AppRoute.facilityEdit}?facilityId=${widget.tenant.facilityId}',
+                          );
                         }
                       },
                       itemBuilder: (context) => [
@@ -219,6 +225,17 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                             subtitle: widget.tenant.email.isEmpty
                                 ? const Text('No email on file')
                                 : null,
+                          ),
+                        ),
+                        const PopupMenuDivider(),
+                        const PopupMenuItem(
+                          value: 'customize',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.tune),
+                            title: Text('Customize statement'),
+                            subtitle: Text('Logo, mailing address, message'),
                           ),
                         ),
                       ],

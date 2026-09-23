@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
@@ -34,11 +36,17 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _addressController;
+  late final TextEditingController _mailingAddressController;
+  late final TextEditingController _statementMessageController;
   late final TextEditingController _phoneController;
   late final TextEditingController _emailController;
   late final TextEditingController _gracePeriodController;
   late final TextEditingController _lateFeeAmountController;
   late final TextEditingController _totalUnitsController;
+
+  String? _logoUrl;
+  bool _isUploadingLogo = false;
+  String? _logoError;
 
   String? _selectedTimeZone;
   String _lateFeeType = 'flat';
@@ -77,6 +85,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     _nameController = TextEditingController(text: widget.facility.name);
     _addressController =
         TextEditingController(text: widget.facility.address ?? '');
+    _mailingAddressController =
+        TextEditingController(text: widget.facility.mailingAddress ?? '');
+    _statementMessageController =
+        TextEditingController(text: widget.facility.statementMessage ?? '');
+    _logoUrl = widget.facility.logoUrl;
     _phoneController = TextEditingController(text: widget.facility.phone ?? '');
     _emailController = TextEditingController(text: widget.facility.email ?? '');
 
@@ -109,6 +122,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   void dispose() {
     _nameController.dispose();
     _addressController.dispose();
+    _mailingAddressController.dispose();
+    _statementMessageController.dispose();
     _phoneController.dispose();
     _emailController.dispose();
     _gracePeriodController.dispose();
@@ -223,6 +238,120 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     }
   }
 
+  /// Uploads the logo printed on statements and invoices. PNG and JPEG only,
+  /// because those are the formats the PDF renderer can embed.
+  Future<void> _uploadLogo() async {
+    setState(() {
+      _isUploadingLogo = true;
+      _logoError = null;
+    });
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) {
+        setState(() => _isUploadingLogo = false);
+        return;
+      }
+      final file = result.files.first;
+      if (file.bytes == null) {
+        throw Exception('Unable to read selected image data.');
+      }
+      if (file.bytes!.length > 2 * 1024 * 1024) {
+        throw Exception('Logo must be under 2 MB.');
+      }
+      final ext = (file.extension ?? 'png').toLowerCase();
+      final contentType = ext == 'png' ? 'image/png' : 'image/jpeg';
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final ref = FirebaseStorage.instance.ref(
+          'facilities/${widget.facility.id}/public-branding/document-logo-$stamp.$ext');
+      await ref.putData(file.bytes!, SettableMetadata(contentType: contentType));
+      final url = await ref.getDownloadURL();
+      if (!mounted) return;
+      setState(() {
+        _logoUrl = url;
+        _isUploadingLogo = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUploadingLogo = false;
+        _logoError =
+            'Logo upload failed: ${ErrorMessageHelper.getUserFriendlyMessage(e)}';
+      });
+    }
+  }
+
+  Widget _buildLogoPicker() {
+    final hasLogo = _logoUrl != null && _logoUrl!.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Logo',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Printed at the top of statements and invoices. PNG or JPG, under 2 MB.',
+          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Container(
+              width: 120,
+              height: 64,
+              decoration: BoxDecoration(
+                border: Border.all(
+                    color: AppTheme.textSecondary.withOpacity(0.3)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              padding: const EdgeInsets.all(6),
+              alignment: Alignment.center,
+              child: hasLogo
+                  ? Image.network(
+                      _logoUrl!,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) =>
+                          const Icon(Icons.broken_image_outlined),
+                    )
+                  : const Icon(Icons.image_outlined,
+                      color: AppTheme.textSecondary),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton.icon(
+              onPressed: _isUploadingLogo ? null : _uploadLogo,
+              icon: _isUploadingLogo
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.upload),
+              label: Text(hasLogo ? 'Replace' : 'Upload logo'),
+            ),
+            if (hasLogo) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: _isUploadingLogo
+                    ? null
+                    : () => setState(() => _logoUrl = ''),
+                child: const Text('Remove'),
+              ),
+            ],
+          ],
+        ),
+        if (_logoError != null) ...[
+          const SizedBox(height: 6),
+          Text(_logoError!, style: const TextStyle(color: AppTheme.error)),
+        ],
+      ],
+    );
+  }
+
   Future<void> _copyToClipboard(String label, String value) async {
     await Clipboard.setData(ClipboardData(text: value));
     if (!mounted) return;
@@ -287,6 +416,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         address: _addressController.text.trim().isEmpty
             ? null
             : _addressController.text.trim(),
+        // Empty strings clear these, so an owner can remove them again.
+        mailingAddress: _mailingAddressController.text.trim(),
+        statementMessage: _statementMessageController.text.trim(),
+        logoUrl: _logoUrl == widget.facility.logoUrl ? null : (_logoUrl ?? ''),
         phone: _phoneController.text.trim().isEmpty
             ? null
             : _phoneController.text.trim(),
@@ -415,6 +548,21 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   ),
                   const SizedBox(height: 16),
 
+                  // Mailing address (optional)
+                  TextFormField(
+                    controller: _mailingAddressController,
+                    decoration: const InputDecoration(
+                      labelText: 'Mailing Address (if different)',
+                      hintText: 'PO Box 123, City, State 12345',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.markunread_mailbox_outlined),
+                      helperText:
+                          'Where tenants mail payments. Shown on statements and invoices.',
+                    ),
+                    maxLines: 2,
+                  ),
+                  const SizedBox(height: 16),
+
                   // Phone
                   TextFormField(
                     controller: _phoneController,
@@ -442,6 +590,26 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   const SizedBox(height: 24),
 
                   const SizedBox(height: 8),
+                  _sectionTitle('Statements & Invoices'),
+                  const SizedBox(height: 16),
+                  _buildLogoPicker(),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _statementMessageController,
+                    decoration: const InputDecoration(
+                      labelText: 'Message on statements',
+                      hintText:
+                          'Please make payment by the due date to avoid late fees.',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.notes),
+                      helperText:
+                          'Printed at the bottom of every account statement. Leave blank for the default.',
+                    ),
+                    maxLines: 3,
+                    maxLength: 500,
+                  ),
+                  const SizedBox(height: 24),
+
                   _sectionTitle('Settings'),
                   const SizedBox(height: 16),
 

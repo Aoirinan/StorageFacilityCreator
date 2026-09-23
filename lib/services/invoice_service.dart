@@ -16,6 +16,7 @@ import 'facility_service.dart';
 import 'audit_service.dart';
 import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'email_service.dart';
+import 'pdf_letterhead.dart';
 
 /// Service for managing invoices
 class InvoiceService {
@@ -275,6 +276,7 @@ class InvoiceService {
   }) async {
     try {
       final pdf = pw.Document();
+      final logo = await PdfLetterhead.loadLogo(facility);
 
       pdf.addPage(
         pw.MultiPage(
@@ -282,54 +284,13 @@ class InvoiceService {
           margin: const pw.EdgeInsets.all(72),
           build: (pw.Context context) {
             return [
-              // Header
-              pw.Header(
-                level: 0,
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(
-                          facility.name,
-                          style: pw.TextStyle(
-                            fontSize: 24,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        if (facility.address != null)
-                          pw.Text(
-                            facility.address!,
-                            style: const pw.TextStyle(fontSize: 10),
-                          ),
-                        if (facility.phone != null)
-                          pw.Text(
-                            facility.phone!,
-                            style: const pw.TextStyle(fontSize: 10),
-                          ),
-                      ],
-                    ),
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.end,
-                      children: [
-                        pw.Text(
-                          'INVOICE',
-                          style: pw.TextStyle(
-                            fontSize: 32,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.Text(
-                          invoice.invoiceNumber,
-                          style: const pw.TextStyle(fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              PdfLetterhead.build(
+                facility: facility,
+                title: 'Invoice',
+                titleDetails: [invoice.invoiceNumber],
+                logo: logo,
               ),
-              pw.SizedBox(height: 40),
+              pw.SizedBox(height: 28),
 
               // Bill To
               pw.Row(

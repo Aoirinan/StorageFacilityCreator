@@ -17,6 +17,14 @@ class FacilityModel {
   final DateTime createdAt;
   final DateTime? updatedAt;
   final String? address;
+
+  /// Where tenants mail payments, when it differs from [address] (the
+  /// physical site). Shown on statements and invoices.
+  final String? mailingAddress;
+
+  /// The owner's own closing note on account statements. Null keeps the
+  /// default wording.
+  final String? statementMessage;
   final String? phone;
   final String? email;
   final String? description;
@@ -115,6 +123,8 @@ class FacilityModel {
     required this.createdAt,
     this.updatedAt,
     this.address,
+    this.mailingAddress,
+    this.statementMessage,
     this.phone,
     this.email,
     this.description,
@@ -182,6 +192,8 @@ class FacilityModel {
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate(),
       address: data?['address'],
+      mailingAddress: data?['mailingAddress'] as String?,
+      statementMessage: data?['statementMessage'] as String?,
       phone: data?['phone'],
       email: data?['email'],
       description: data?['description'],
@@ -292,6 +304,8 @@ class FacilityModel {
           ? Timestamp.fromDate(updatedAt!)
           : FieldValue.serverTimestamp(),
       'address': address,
+      if (mailingAddress != null) 'mailingAddress': mailingAddress,
+      if (statementMessage != null) 'statementMessage': statementMessage,
       'phone': phone,
       'email': email,
       'description': description,
@@ -356,6 +370,8 @@ class FacilityModel {
     DateTime? createdAt,
     DateTime? updatedAt,
     String? address,
+    String? mailingAddress,
+    String? statementMessage,
     String? phone,
     String? email,
     String? description,
@@ -419,6 +435,8 @@ class FacilityModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       address: address ?? this.address,
+      mailingAddress: mailingAddress ?? this.mailingAddress,
+      statementMessage: statementMessage ?? this.statementMessage,
       phone: phone ?? this.phone,
       email: email ?? this.email,
       description: description ?? this.description,

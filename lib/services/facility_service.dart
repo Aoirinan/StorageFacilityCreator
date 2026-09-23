@@ -732,6 +732,8 @@ class FacilityService {
     String? name,
     String? logoUrl,
     String? address,
+    String? mailingAddress, // '' clears it
+    String? statementMessage, // '' clears it
     String? phone,
     String? email,
     String? timeZone,
@@ -763,8 +765,18 @@ class FacilityService {
       };
 
       if (name != null) updateData['name'] = name;
-      if (logoUrl != null) updateData['logoUrl'] = logoUrl;
+      if (logoUrl != null) {
+        updateData['logoUrl'] = logoUrl.isEmpty ? FieldValue.delete() : logoUrl;
+      }
       if (address != null) updateData['address'] = address;
+      if (mailingAddress != null) {
+        updateData['mailingAddress'] =
+            mailingAddress.isEmpty ? FieldValue.delete() : mailingAddress;
+      }
+      if (statementMessage != null) {
+        updateData['statementMessage'] =
+            statementMessage.isEmpty ? FieldValue.delete() : statementMessage;
+      }
       if (phone != null) updateData['phone'] = phone;
       if (email != null) updateData['email'] = email;
       if (timeZone != null) updateData['timeZone'] = timeZone;

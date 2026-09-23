@@ -12,6 +12,7 @@ import 'ledger_service.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 import 'email_service.dart';
+import 'pdf_letterhead.dart';
 import 'package:intl/intl.dart';
 
 /// Service for generating and sending account statements
@@ -31,6 +32,9 @@ class StatementService {
   }) async {
     try {
       final pdf = pw.Document();
+      final logo = await PdfLetterhead.loadLogo(facility);
+      final remitTo = PdfLetterhead.remitAddress(facility);
+      final customMessage = facility.statementMessage?.trim();
       final now = DateTime.now();
       final statementDate = endDate ?? now;
       
@@ -44,19 +48,24 @@ class StatementService {
       
       for (final entry in sortedEntries) {
         if (entry.status != LedgerEntryStatus.voided) {
-          if (entry.type == LedgerEntryType.payment || 
-              entry.type == LedgerEntryType.credit || 
-              entry.type == LedgerEntryType.refund) {
+          final reducesBalance = entry.type == LedgerEntryType.payment ||
+              entry.type == LedgerEntryType.credit ||
+              entry.type == LedgerEntryType.refund;
+          if (reducesBalance) {
             runningBalance -= entry.amount.abs(); // Payments reduce balance
           } else {
             runningBalance += entry.amount; // Charges increase balance
           }
-          
+
+          // Columns follow the same rule as the balance, so a row can never
+          // sit under Charges while lowering what is owed.
           transactions.add(_TransactionRow(
             date: entry.entryDate,
             description: entry.description ?? entry.typeDisplayName,
-            charges: entry.isCharge ? entry.amount : 0.0,
-            payments: entry.isPayment || entry.type == LedgerEntryType.credit ? entry.amount.abs() : 0.0,
+            charges: !reducesBalance && entry.amount > 0 ? entry.amount : 0.0,
+            payments: reducesBalance || entry.amount < 0
+                ? entry.amount.abs()
+                : 0.0,
             balance: runningBalance,
             reference: entry.referenceId,
           ));
@@ -69,54 +78,13 @@ class StatementService {
           margin: const pw.EdgeInsets.all(72),
           build: (pw.Context context) {
             return [
-              // Header
-              pw.Header(
-                level: 0,
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(
-                          facility.name,
-                          style: pw.TextStyle(
-                            fontSize: 24,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        if (facility.address != null)
-                          pw.Text(
-                            facility.address!,
-                            style: const pw.TextStyle(fontSize: 10),
-                          ),
-                        if (facility.phone != null)
-                          pw.Text(
-                            facility.phone!,
-                            style: const pw.TextStyle(fontSize: 10),
-                          ),
-                      ],
-                    ),
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.end,
-                      children: [
-                        pw.Text(
-                          'ACCOUNT STATEMENT',
-                          style: pw.TextStyle(
-                            fontSize: 28,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.Text(
-                          'Date: ${_formatDate(statementDate)}',
-                          style: const pw.TextStyle(fontSize: 10),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              PdfLetterhead.build(
+                facility: facility,
+                title: 'Account Statement',
+                titleDetails: ['Date: ${_formatDate(statementDate)}'],
+                logo: logo,
               ),
-              pw.SizedBox(height: 40),
+              pw.SizedBox(height: 28),
 
               // Account Information
               pw.Row(
@@ -253,9 +221,26 @@ class StatementService {
                     ),
                     pw.SizedBox(height: 8),
                     pw.Text(
-                      'Please make payment by the due date to avoid late fees.',
+                      customMessage != null && customMessage.isNotEmpty
+                          ? customMessage
+                          : 'Please make payment by the due date to avoid late fees.',
                       style: const pw.TextStyle(fontSize: 9),
                     ),
+                    if (remitTo != null) ...[
+                      pw.SizedBox(height: 8),
+                      pw.Text(
+                        'Mail payments to:',
+                        style: pw.TextStyle(
+                          fontSize: 9,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.Text(
+                        '${facility.name}\n$remitTo',
+                        style: const pw.TextStyle(fontSize: 9),
+                      ),
+                    ],
+                    pw.SizedBox(height: 4),
                     if (facility.email != null)
                       pw.Text(
                         'Questions? Email us at ${facility.email}',
@@ -377,9 +362,10 @@ class StatementService {
 <body style="font-family: Arial, sans-serif;">
   <h2>Account Statement</h2>
   <p>Dear ${tenant.name},</p>
-  <p>Please find attached your account statement for ${periodText}.</p>
+  <p>Your account statement for ${periodText} is ready.</p>
+  <p><a href="${pdfUrl}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Statement PDF</a></p>
   <p><strong>Current Balance:</strong> ${_formatCurrency(_calculateCurrentBalance(ledgerEntries))}</p>
-  <p>Please review the attached statement and contact us if you have any questions.</p>
+  <p>Please review the statement and contact us if you have any questions.</p>
   <p>Thank you for your business!</p>
   <br>
   <p>${facility.name}<br>
@@ -395,11 +381,13 @@ Account Statement
 
 Dear ${tenant.name},
 
-Please find attached your account statement for ${periodText}.
+Your account statement for ${periodText} is ready.
+
+Download it here: ${pdfUrl}
 
 Current Balance: ${_formatCurrency(_calculateCurrentBalance(ledgerEntries))}
 
-Please review the attached statement and contact us if you have any questions.
+Please review the statement and contact us if you have any questions.
 
 Thank you for your business!
 
