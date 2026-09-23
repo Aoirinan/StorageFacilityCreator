@@ -18,13 +18,30 @@ final ledgerEntriesProvider = FutureProvider.family<List<LedgerEntry>, LedgerPar
   );
 });
 
-/// Provider for ledger balance
-final ledgerBalanceProvider = FutureProvider.family<double, LedgerParams>((ref, params) {
-  return LedgerService.getLedgerBalance(
-    tenantId: params.tenantId,
-    facilityId: params.facilityId,
-  );
+/// Live balance for the ledger screen: the sum of posted entries, derived
+/// from [ledgerStreamProvider].
+///
+/// This was a one-shot FutureProvider over LedgerService.getLedgerBalance,
+/// fetched once and never refreshed, so adding or voiding an entry left the
+/// header showing the old balance (seen on the live app: $1.00 after the
+/// only charge was voided). The stream is uncapped for a tenant, so summing
+/// it gives the same answer as the server sum and moves with every change.
+final ledgerBalanceProvider =
+    Provider.family<AsyncValue<double>, LedgerParams>((ref, params) {
+  return ref
+      .watch(ledgerStreamProvider(params))
+      .whenData(sumPostedLedgerEntries);
 });
+
+/// Same rule as LedgerService.getLedgerBalance: signed amounts of posted
+/// entries, rounded to cents.
+double sumPostedLedgerEntries(List<LedgerEntry> entries) {
+  var total = 0.0;
+  for (final entry in entries) {
+    if (entry.status == LedgerEntryStatus.posted) total += entry.amount;
+  }
+  return double.parse(total.toStringAsFixed(2));
+}
 
 /// Provider for ledger entries by date range
 final ledgerEntriesByDateRangeProvider = FutureProvider.family<List<LedgerEntry>, LedgerDateRangeParams>((ref, params) {
