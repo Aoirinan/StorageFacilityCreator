@@ -39,6 +39,37 @@ class MoveInData {
   });
 }
 
+/// Statuses in which a tenant is in the unit.
+const _tenantInUnitStatuses = {
+  UnitStatus.occupied,
+  UnitStatus.overlocked,
+  UnitStatus.lockout,
+  UnitStatus.auction,
+};
+
+/// Why a move-in of [tenantId] into [unit] (as just read from Firestore) must
+/// not run, or null when it may.
+///
+/// A move-in submitted twice, or retried after it had in fact finished, wrote
+/// a second contract, second charges, a second payment allocation and a
+/// second gate code: nothing checked the unit before writing. The unit is
+/// the last thing a move-in writes, so it reads as occupied once one is done.
+/// [unit] null (it could not be read) lets the move-in run as before.
+String? moveInUnitConflict({required UnitModel? unit, required String tenantId}) {
+  if (unit == null) return null;
+  final holder = unit.tenantId ?? '';
+  if (holder.isEmpty || !_tenantInUnitStatuses.contains(unit.status)) {
+    return null;
+  }
+  if (holder == tenantId) {
+    return 'This tenant has already moved into Unit ${unit.unitNumber}. '
+        'Check their ledger before trying again.';
+  }
+  final name = unit.tenantName ?? '';
+  return 'Unit ${unit.unitNumber} is already occupied'
+      '${name.isEmpty ? '' : ' by $name'}.';
+}
+
 /// Service for managing move-in workflow
 class MoveInService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -253,6 +284,14 @@ class MoveInService {
       TenantModel tenant;
       ContractModel contract;
       List<String> ledgerEntryIds = [];
+
+      // Read the unit fresh, before any write: the wizard's copy is from
+      // when the unit was picked.
+      final conflict = moveInUnitConflict(
+        unit: await UnitService.getUnit(facilityId, moveInData.unit.id),
+        tenantId: moveInData.existingTenant?.id ?? '',
+      );
+      if (conflict != null) throw Exception(conflict);
 
       // Step 1: Create or update tenant
       if (moveInData.existingTenant != null) {
