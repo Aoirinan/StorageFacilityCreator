@@ -14,6 +14,7 @@ import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
 
 class ContractDetailScreen extends ConsumerStatefulWidget {
@@ -560,7 +561,9 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       children: [
         Expanded(
           child: OutlinedButton.icon(
-            onPressed: () => Navigator.of(context).pop(),
+            // The calendar opens this page by id with go, where a bare pop
+            // would take the last page off the stack.
+            onPressed: () => popOrGo(context, AppRoute.contracts),
             icon: const Icon(Icons.arrow_back),
             label: const Text('Back'),
             style: OutlinedButton.styleFrom(

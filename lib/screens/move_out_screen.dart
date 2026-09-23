@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../models/contract_model.dart';
 import '../models/tenant_model.dart';
@@ -13,6 +12,8 @@ import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
 import '../router/app_router.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 class MoveOutScreen extends ConsumerStatefulWidget {
   final String contractId;
@@ -151,7 +152,20 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     }
   }
 
+  /// The contract's page, by id: where a move-out is started from, and where
+  /// leaving goes when nothing is underneath (a link or a reload).
+  String get _contractPage => Uri(
+        path: AppRoute.contractDetail,
+        queryParameters: {
+          'contractId': widget.contractId,
+          'facilityId': widget.facilityId,
+        },
+      ).toString();
+
   Future<void> _completeMoveOut() async {
+    // A second tap in the same frame, before the rebuild disables the
+    // button, would run the move-out (and its refund) twice.
+    if (_isProcessing) return;
     if (!_formKey.currentState!.validate()) return;
     if (_calculation == null || _contract == null || _tenant == null || _unit == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -167,6 +181,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       _isProcessing = true;
     });
 
+    var completed = false;
     try {
       final result = await MoveOutService.completeMoveOut(
         tenantId: _tenant!.id,
@@ -184,6 +199,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       );
 
       if (result.success) {
+        completed = true;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -194,7 +210,6 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
               duration: const Duration(seconds: 5),
             ),
           );
-          context.pop(true);
         }
       } else {
         throw Exception(result.error ?? 'Unknown error');
@@ -207,12 +222,17 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
             backgroundColor: AppTheme.error,
           ),
         );
+        setState(() {
+          _isProcessing = false;
+        });
       }
-    } finally {
-      setState(() {
-        _isProcessing = false;
-      });
     }
+
+    // Leave outside the try, and leave the button off: a bare context.pop
+    // threw when the page was opened by a link, the catch reported the
+    // finished move-out as an error and re-enabled the button, inviting a
+    // second move-out and refund.
+    if (completed && mounted) popOrGo(context, _contractPage, true);
   }
 
   @override
@@ -679,7 +699,8 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       children: [
         Expanded(
           child: OutlinedButton(
-            onPressed: _isProcessing ? null : () => context.pop(),
+            onPressed:
+                _isProcessing ? null : () => popOrGo(context, _contractPage),
             child: const Text('Cancel'),
           ),
         ),

@@ -12,6 +12,7 @@ import '../models/provider_params.dart';
 import '../theme/app_theme.dart';
 import 'tenant_creation_screen.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 /// The range `showDatePicker` may open on for a due date.
 ///
@@ -388,11 +389,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
         // The calendar reaches this screen with context.go, which leaves
         // nothing on the stack to pop, so fall back to the payments list
         // rather than popping out of the shell.
-        if (context.canPop()) {
-          context.pop();
-        } else {
-          context.go(AppRoute.payments);
-        }
+        popOrGo(context, AppRoute.payments);
       }
     } catch (e) {
       if (mounted) {

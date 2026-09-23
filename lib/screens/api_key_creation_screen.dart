@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import '../models/api_key_model.dart';
 import '../services/api_key_service.dart';
-import '../providers/facility_provider.dart';
 import '../providers/search_provider.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 /// Screen for creating new API keys
 class ApiKeyCreationScreen extends ConsumerStatefulWidget {
@@ -97,7 +97,7 @@ class _ApiKeyCreationScreenState extends ConsumerState<ApiKeyCreationScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('API Key Created'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -146,8 +146,10 @@ class _ApiKeyCreationScreenState extends ConsumerState<ApiKeyCreationScreen> {
         actions: [
           FilledButton(
             onPressed: () {
-              Navigator.of(context).pop();
-              context.pop(); // Go back to list
+              Navigator.of(dialogContext).pop();
+              // Back to the key list from the page's own context. A bare pop
+              // threw when this page was opened by a link or a reload.
+              popOrGo(context, AppRoute.apiKeys);
             },
             child: const Text('Done'),
           ),

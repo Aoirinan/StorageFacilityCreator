@@ -412,7 +412,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
   }
 
   Future<void> _performImport() async {
-    if (_parsedRows.isEmpty) return;
+    if (_parsedRows.isEmpty || _isImporting) return;
 
     final rowsToImport = _skipDuplicates
         ? _parsedRows.asMap().entries.where((e) => !_duplicateRowIndices.contains(e.key)).map((e) => e.value).toList()
@@ -1134,6 +1134,9 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
   }
 
   void _handleStepContinue() {
+    // The Stepper's Continue stays live during an import. A second tap left
+    // for the tenant list mid-import, and the import stopped part way.
+    if (_isImporting) return;
     switch (_currentStep) {
       case 0:
         if (_csvData != null) {

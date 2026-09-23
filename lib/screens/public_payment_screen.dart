@@ -114,7 +114,9 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   }
 
   Future<void> _proceedToPayment() async {
-    if (_paymentLink == null) return;
+    // A second tap in the same frame, before the rebuild disables the
+    // button, would open a second checkout.
+    if (_paymentLink == null || _isProcessing) return;
 
     setState(() {
       _isProcessing = true;

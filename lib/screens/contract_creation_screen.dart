@@ -20,6 +20,7 @@ import '../services/dnr_service.dart';
 import '../services/audit_service.dart';
 import '../services/compliance_service.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../theme/app_theme.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../widgets/modern_page_wrapper.dart';
@@ -107,6 +108,11 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
   Map<String, _SignerAssignment> _signerAssignments = {};
   DateTime? _expiresAt;
   bool _isLoading = false;
+
+  /// Set as soon as the contract exists. Create stays off from then on: the
+  /// upload, attestation and post-create dialog that follow turn _isLoading
+  /// off (or fail), and a second Create then made a second contract.
+  String? _createdContractId;
   String? _errorMessage;
   bool _dnrOverride = false;
   List<DNRModel>? _dnrMatches;
@@ -447,7 +453,9 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
                   const SizedBox(width: 16),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: _isLoading ? null : _createContract,
+                      onPressed: _isLoading || _createdContractId != null
+                          ? null
+                          : _createContract,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppTheme.primaryBlueDark,
                         foregroundColor: AppTheme.textOnDark,
@@ -1538,6 +1546,8 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
   }
 
   Future<void> _createContract() async {
+    // Prevent multiple submissions, and a second contract once one exists.
+    if (_isLoading || _createdContractId != null) return;
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -1548,9 +1558,6 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       });
       return;
     }
-
-    // Prevent multiple submissions
-    if (_isLoading) return;
 
     setState(() {
       _isLoading = true;
@@ -1630,6 +1637,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
           customFields: customFields,
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         );
+        _createdContractId = contractId;
 
         // Update contract with compliance fields
         await _firestore
@@ -1716,7 +1724,9 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       } catch (e) {
         if (mounted) {
           setState(() {
-            _errorMessage = 'Error uploading file: $e';
+            _errorMessage = _createdContractId != null
+                ? _createdButFailed(e)
+                : 'Error uploading file: $e';
             _isLoading = false;
           });
         }
@@ -1810,6 +1820,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
             customFields: customFields,
             notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
           );
+          _createdContractId = contractId;
 
           await _firestore
               .collection('facilities')
@@ -1906,7 +1917,9 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       } catch (e) {
         if (mounted) {
           setState(() {
-            _errorMessage = 'Failed to generate document from template: $e';
+            _errorMessage = _createdContractId != null
+                ? _createdButFailed(e)
+                : 'Failed to generate document from template: $e';
             _isLoading = false;
           });
         }
@@ -1986,6 +1999,7 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
         customFields: customFields,
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
       );
+      _createdContractId = contractId;
 
       // Log DNR override if it was used
       if (_dnrOverride && _dnrMatches != null && _dnrMatches!.isNotEmpty && _selectedTenantModel != null) {
@@ -2015,12 +2029,19 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to create contract: ${e.toString()}';
+          _errorMessage = _createdContractId != null
+              ? _createdButFailed(e)
+              : 'Failed to create contract: ${e.toString()}';
           _isLoading = false;
         });
       }
     }
   }
+
+  /// The error once the contract exists, so it is not created again.
+  String _createdButFailed(Object e) =>
+      'The contract was created, but the steps after it did not finish: $e. '
+      'Open it from Contracts rather than creating it again.';
 
   Future<void> _updateContract() async {
     if (widget.contract == null) return;
@@ -2093,7 +2114,16 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
             backgroundColor: AppTheme.success,
           ),
         );
-        context.pop(true); // Return success
+        // A bare pop threw when the page was opened by a link, and the catch
+        // below reported the saved update as failed.
+        popOrGo(
+          context,
+          Uri(path: AppRoute.contractDetail, queryParameters: {
+            'contractId': widget.contract!.id,
+            'facilityId': _selectedFacilityId!,
+          }).toString(),
+          true, // Return success
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -2412,7 +2442,12 @@ class _ContractCreationScreenState extends ConsumerState<ContractCreationScreen>
       _selectedFacilityId!,
       contractId,
     );
-    if (contract == null || !mounted) return;
+    if (!mounted) return;
+    // It was created; leave for the list rather than stay on the form.
+    if (contract == null) {
+      _navigateToContractsList();
+      return;
+    }
 
     final action = await showDialog<String>(
       context: context,

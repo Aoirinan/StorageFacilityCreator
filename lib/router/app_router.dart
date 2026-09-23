@@ -14,6 +14,7 @@ import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
 import 'facility_edit_route.dart';
+import 'package:sfcapp/router/detail_routes.dart';
 import 'public_auth_entry_routes.dart';
 import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
@@ -45,12 +46,9 @@ import '../widgets/global_home_overlay.dart';
 import '../screens/subscription_test_screen.dart';
 import '../screens/billing_and_payments_screen.dart';
 import '../models/tenant_model.dart';
-import '../models/payment_model.dart';
-import '../screens/payment_detail_screen.dart';
 import '../screens/reminder_creation_screen.dart';
 import '../screens/reminder_detail_screen.dart';
 import '../screens/reminder_schedule_screen.dart';
-import '../screens/contract_detail_screen.dart';
 import '../screens/contract_creation_screen.dart';
 import '../screens/contract_template_management_screen.dart';
 import '../screens/create_contract_template_screen.dart';
@@ -61,11 +59,9 @@ import '../screens/payment_reconciliation_screen.dart';
 import '../models/contract_model.dart';
 import '../models/contract_template_model.dart';
 import '../models/unit_model.dart';
-import '../screens/client_detail_screen.dart';
 import '../models/reminder_model.dart';
 import '../screens/data_integrity_screen.dart';
 import '../screens/contract_signing_test_screen.dart';
-import '../screens/ledger_screen.dart';
 import '../screens/move_in_wizard_screen.dart';
 import '../screens/invoice_detail_screen.dart';
 import '../models/invoice_model.dart';
@@ -77,8 +73,6 @@ import '../screens/deposit_creation_screen.dart';
 import '../models/deposit_model.dart';
 import '../screens/move_out_screen.dart';
 import '../screens/lien_list_screen.dart';
-import '../screens/lien_detail_screen.dart';
-import '../models/lien_model.dart';
 import '../screens/inventory_list_screen.dart';
 import '../screens/pos_screen.dart';
 import '../screens/retail_sales_history_screen.dart';
@@ -102,7 +96,6 @@ import '../screens/appearance_settings_screen.dart';
 import '../screens/facility_website_setup_screen.dart';
 import '../screens/bulk_messaging_screen.dart';
 import '../services/subscription_guard_service.dart';
-import '../services/tenant_service.dart';
 import '../widgets/subscription_warning_banner.dart';
 import '../widgets/messaging_facility_selector.dart';
 import '../screens/email_template_management_screen.dart';
@@ -226,7 +219,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       ),
       ShellRoute(
         builder: (context, state, child) =>
-            AppShell(child: child, showSubscriptionBanner: true),
+            AppShell(showSubscriptionBanner: true, child: child),
         routes: [
           GoRoute(
             path: AppRoute.dashboard,
@@ -291,82 +284,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return TenantCsvImportWizardScreen(facilityId: facilityId);
             },
           ),
-          GoRoute(
-            path: AppRoute.tenantDetail,
-            name: 'tenant-detail',
-            builder: (context, state) {
-              final tenantExtra = state.extra;
-              if (tenantExtra is TenantModel) {
-                return ClientDetailScreen(tenant: tenantExtra);
-              }
-              // Load from query params when navigating from dashboard etc.
-              final tenantId = state.uri.queryParameters['tenantId'];
-              final facilityId = state.uri.queryParameters['facilityId'];
-              if (tenantId == null ||
-                  tenantId.isEmpty ||
-                  facilityId == null ||
-                  facilityId.isEmpty) {
-                return NotFoundPage(state: state);
-              }
-              return FutureBuilder<TenantModel?>(
-                future: TenantService.getTenantById(facilityId, tenantId),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Scaffold(
-                      body: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  if (snapshot.hasError ||
-                      !snapshot.hasData ||
-                      snapshot.data == null) {
-                    return NotFoundPage(state: state);
-                  }
-                  return ClientDetailScreen(tenant: snapshot.data!);
-                },
-              );
-            },
-          ),
-          GoRoute(
-            path: '/tenants/:tenantId/ledger',
-            name: 'tenant-ledger',
-            builder: (context, state) {
-              final tenantId = state.pathParameters['tenantId'];
-              if (tenantId == null) {
-                return NotFoundPage(state: state);
-              }
-
-              // Try to get tenant from state.extra first (preferred)
-              final tenantExtra = state.extra;
-              if (tenantExtra is TenantModel) {
-                return LedgerScreen(tenant: tenantExtra);
-              }
-
-              // Otherwise, try to load from facilityId query parameter
-              final facilityId = state.uri.queryParameters['facilityId'];
-              if (facilityId != null && facilityId.isNotEmpty) {
-                // Return a FutureBuilder to load the tenant
-                return FutureBuilder<TenantModel?>(
-                  future: TenantService.getTenantById(facilityId, tenantId),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Scaffold(
-                        body: Center(child: CircularProgressIndicator()),
-                      );
-                    }
-                    if (snapshot.hasError ||
-                        !snapshot.hasData ||
-                        snapshot.data == null) {
-                      return NotFoundPage(state: state);
-                    }
-                    return LedgerScreen(tenant: snapshot.data!);
-                  },
-                );
-              }
-
-              // If no facilityId provided and no tenant in extra, show not found
-              return NotFoundPage(state: state);
-            },
-          ),
+          // The tenant, ledger, contract, payment and lien pages open with
+          // their model as extra or load it by id: detail_routes.dart.
+          tenantDetailRoute(),
+          tenantLedgerRoute(),
           GoRoute(
             path: AppRoute.contactLogs,
             name: 'contact-logs',
@@ -555,17 +476,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return LeaseTemplatesScreen(facilityId: facilityId);
             },
           ),
-          GoRoute(
-            path: AppRoute.contractDetail,
-            name: 'contract-detail',
-            builder: (context, state) {
-              final contract = state.extra;
-              if (contract is! ContractModel) {
-                return NotFoundPage(state: state);
-              }
-              return ContractDetailScreen(contract: contract);
-            },
-          ),
+          contractDetailRoute(),
           GoRoute(
             path: AppRoute.insurance,
             name: 'insurance',
@@ -581,17 +492,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'payments',
             builder: (context, state) => const RentPaymentsShellScreen(),
           ),
-          GoRoute(
-            path: AppRoute.paymentDetail,
-            name: 'payment-detail',
-            builder: (context, state) {
-              final payment = state.extra;
-              if (payment is! PaymentModel) {
-                return NotFoundPage(state: state);
-              }
-              return PaymentDetailScreen(payment: payment);
-            },
-          ),
+          paymentDetailRoute(),
           GoRoute(
             path: AppRoute.paymentCreate,
             name: 'payment-create',
@@ -1321,24 +1222,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'liens',
             builder: (context, state) => const LienListScreen(),
           ),
-          GoRoute(
-            path: AppRoute.lienDetail,
-            name: 'lien-detail',
-            builder: (context, state) {
-              final extra = state.extra;
-              if (extra is Map<String, dynamic>) {
-                final lien = extra['lien'];
-                final facilityId = extra['facilityId'];
-                if (lien is LienModel && facilityId is String) {
-                  return LienDetailScreen(
-                    lien: lien,
-                    facilityId: facilityId,
-                  );
-                }
-              }
-              return NotFoundPage(state: state);
-            },
-          ),
+          lienDetailRoute(),
           GoRoute(
             path: AppRoute.inventory,
             name: 'inventory',

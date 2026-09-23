@@ -94,6 +94,9 @@ class _POSScreenState extends ConsumerState<POSScreen>
   }
 
   Future<void> _processSale() async {
+    // A second tap in the same frame, before the rebuild disables the
+    // button, would record the sale (and, by card, charge it) twice.
+    if (_isProcessing) return;
     if (_cart.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
@@ -9,6 +8,7 @@ import '../providers/tenant_provider.dart';
 import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
@@ -24,6 +24,12 @@ class PaymentDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
+  // True from the dialog's Process tap until the processing fails. The
+  // page's Process button stayed live while one ran, and the payment still
+  // read pending, so tapping it again processed it twice: paidThrough moved
+  // on a second month and a second receipt went out.
+  bool _processing = false;
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -86,7 +92,10 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => context.go(AppRoute.payments),
+            // Back to where the payment was opened from (the payment list,
+            // the past-due tab). go() cleared the stack and always landed
+            // on the default payments tab.
+            onPressed: () => popOrGo(context, AppRoute.payments),
             tooltip: 'Back',
             color: cs.onSurfaceVariant,
           ),
@@ -106,7 +115,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           if (widget.payment.status == PaymentStatus.pending)
             IconButton(
               icon: const Icon(Icons.payment),
-              onPressed: _processPayment,
+              onPressed: _processing ? null : _processPayment,
               tooltip: 'Process payment',
               color: cs.primary,
             ),
@@ -590,19 +599,22 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   void _processPayment() {
+    if (_processing) return;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Process Payment'),
         content: Text('Process payment of ${widget.payment.formattedAmount}?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              if (_processing) return;
+              setState(() => _processing = true);
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).processPayment(
                   facilityId: widget.payment.facilityId,
@@ -610,15 +622,18 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                   method: widget.payment.method,
                 );
                 if (!mounted) return;
-                context.go(AppRoute.payments);
+                // The page's own context: the dialog's is dead after the
+                // await, so the go and the SnackBars threw instead of running.
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment processed successfully'),
                     backgroundColor: AppTheme.success,
                   ),
                 );
+                popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
+                setState(() => _processing = false);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
@@ -789,19 +804,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   void _cancelPayment() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Cancel Payment'),
         content: const Text(
           'Are you sure you want to cancel this payment?',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('No'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               try {
                 await PaymentService.updatePayment(
                   facilityId: widget.payment.facilityId,
@@ -809,13 +824,14 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                   status: PaymentStatus.cancelled,
                 );
                 if (mounted) {
-                  context.go(AppRoute.payments);
+                  // The page's own context, as in _processPayment.
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('Payment cancelled'),
                       backgroundColor: AppTheme.success,
                     ),
                   );
+                  popOrGo(context, AppRoute.payments);
                 }
               } catch (e) {
                 if (mounted) {
@@ -842,32 +858,33 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   void _deletePayment() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Payment'),
         content: const Text(
           'Are you sure you want to delete this payment? This action cannot be undone.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).deletePayment(
                   widget.payment.facilityId,
                   widget.payment.id,
                 );
                 if (!mounted) return;
-                context.go(AppRoute.payments);
+                // The page's own context, as in _processPayment.
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment deleted'),
                     backgroundColor: AppTheme.success,
                   ),
                 );
+                popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(

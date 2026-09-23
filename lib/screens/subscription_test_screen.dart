@@ -18,6 +18,8 @@ import 'package:sfcapp/services/referral_program_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/screens/cancellation/cancellation_retention_wizard.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
@@ -470,7 +472,10 @@ class _SubscriptionTestScreenState extends ConsumerState<SubscriptionTestScreen>
                 TextButton(
                   onPressed: () {
                     Navigator.of(context).pop(); // Close dialog
-                    Navigator.of(context).pop(); // Go back to home
+                    // Go back from this page's own context. A second pop on
+                    // the dialog's (root) navigator removed the whole app
+                    // shell and left a blank screen.
+                    if (mounted) popOrGo(this.context, AppRoute.dashboard);
                   },
                   child: const Text('Get Started'),
                 ),

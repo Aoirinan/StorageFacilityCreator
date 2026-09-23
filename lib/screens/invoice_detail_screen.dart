@@ -8,11 +8,11 @@ import '../models/invoice_status_actions.dart';
 import '../providers/invoice_provider.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../services/invoice_service.dart';
 import '../services/tenant_service.dart';
 import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
 import 'package:sfcapp/utils/invoice_edit_rules.dart';
 import 'package:sfcapp/utils/print_util.dart';
 import '../widgets/invoice_pdf_viewer.dart';
@@ -34,6 +34,10 @@ class InvoiceDetailScreen extends ConsumerStatefulWidget {
 class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   bool _isGeneratingPDF = false;
   bool _isSending = false;
+  // Send, mark paid or void in flight. The action buttons stayed live while
+  // one ran, so a second tap emailed the tenant twice, or ran mark paid a
+  // second time before the first had written.
+  bool _isRunningAction = false;
   bool _isPreparingPrint = false;
   bool _isSavingEdits = false;
   late InvoiceModel _invoice = widget.invoice;
@@ -436,7 +440,12 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                   icon: const Icon(Icons.open_in_new),
                   onPressed: () {
                     // Navigate to payment detail
-                    context.push('${AppRoute.paymentDetail}?paymentId=$paymentId');
+                    // With the facility: the payment page loads by both ids
+                    // and showed "Page not found" without it.
+                    context.push(AppRoute.paymentDetailFor(
+                      paymentId: paymentId,
+                      facilityId: widget.facilityId,
+                    ));
                   },
                 ),
               );
@@ -872,14 +881,18 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                 for (final action in actions)
                   action.isDestructive
                       ? OutlinedButton(
-                          onPressed: () => _runInvoiceAction(action),
+                          onPressed: _isRunningAction
+                              ? null
+                              : () => _runInvoiceAction(action),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppTheme.error,
                           ),
                           child: Text(action.label),
                         )
                       : ElevatedButton(
-                          onPressed: () => _runInvoiceAction(action),
+                          onPressed: _isRunningAction
+                              ? null
+                              : () => _runInvoiceAction(action),
                           child: Text(
                             action == InvoiceAction.send &&
                                     _invoice.status != InvoiceStatus.draft
@@ -899,17 +912,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     );
   }
 
-  void _runInvoiceAction(InvoiceAction action) {
-    switch (action) {
-      case InvoiceAction.send:
-        _sendInvoice();
-        break;
-      case InvoiceAction.markPaid:
-        _markAsPaid();
-        break;
-      case InvoiceAction.voidInvoice:
-        _voidInvoice();
-        break;
+  Future<void> _runInvoiceAction(InvoiceAction action) async {
+    if (_isRunningAction) return;
+    setState(() => _isRunningAction = true);
+    try {
+      switch (action) {
+        case InvoiceAction.send:
+          await _sendInvoice();
+          break;
+        case InvoiceAction.markPaid:
+          await _markAsPaid();
+          break;
+        case InvoiceAction.voidInvoice:
+          await _voidInvoice();
+          break;
+      }
+    } finally {
+      if (mounted) setState(() => _isRunningAction = false);
     }
   }
 
@@ -950,8 +969,10 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        // Refresh the screen by popping and pushing again
-        context.pop();
+        // Leave for the refreshed list. popOrGo, not a bare pop: that throws
+        // when nothing is underneath, and the catch below would then report
+        // the finished change as failed.
+        popOrGo(context, AppRoute.paymentsInvoices);
       }
     } catch (e) {
       if (mounted) {
@@ -1026,8 +1047,10 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             backgroundColor: AppTheme.warning,
           ),
         );
-        // Refresh the screen by popping and pushing again
-        context.pop();
+        // Leave for the refreshed list. popOrGo, not a bare pop: that throws
+        // when nothing is underneath, and the catch below would then report
+        // the finished change as failed.
+        popOrGo(context, AppRoute.paymentsInvoices);
       }
     } catch (e) {
       if (mounted) {

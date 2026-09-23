@@ -66,6 +66,10 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   bool _appliedRouteParams = false;
   final SetupRetryController _setupRetry = SetupRetryController();
 
+  /// Payments with a Process running or done. A second Process on the same
+  /// row ran it again (paidThrough moved on a second month).
+  final Set<String> _processingPaymentIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -1685,7 +1689,9 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             if (payment.status == PaymentStatus.pending)
               IconButton(
                 icon: const Icon(Icons.payment),
-                onPressed: () => _processPayment(payment),
+                onPressed: _processingPaymentIds.contains(payment.id)
+                    ? null
+                    : () => _processPayment(payment),
               ),
             IconButton(
               icon: const Icon(Icons.arrow_forward_ios),
@@ -1768,30 +1774,38 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   }
 
   void _processPayment(PaymentModel payment) {
+    if (_processingPaymentIds.contains(payment.id)) return;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Process Payment'),
         content: Text('Process payment of ${payment.formattedAmount}?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              if (!_processingPaymentIds.add(payment.id)) return;
+              setState(() {});
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).processPayment(
                   facilityId: _selectedFacilityId,
                   paymentId: payment.id,
                   method: payment.method,
                 );
-                if (!context.mounted) return;
+                // The list's own context. The dialog's is dead after the
+                // await, so the refresh never ran and the row stayed
+                // pending with its Process button, inviting a second one.
+                // The id stays in the set: the payment is paid.
+                if (!mounted) return;
                 ref.invalidate(paymentListProvider(_selectedFacilityId));
                 ref.invalidate(paymentStatsProvider(_selectedFacilityId));
               } catch (e) {
-                if (!context.mounted) return;
+                if (!mounted) return;
+                setState(() => _processingPaymentIds.remove(payment.id));
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),

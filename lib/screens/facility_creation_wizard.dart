@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
 import '../services/facility_service.dart';
 import '../services/permission_service.dart';
 import '../services/facility_creator_account_service.dart';
@@ -16,10 +15,11 @@ import 'package:sfcapp/constants/email_monthly_limits.dart';
 import 'package:sfcapp/constants/facility_capacity.dart';
 import '../theme/app_theme.dart';
 import '../screens/subscription_test_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
+import 'package:sfcapp/utils/facility_create_recovery.dart';
 
 class FacilityCreationWizard extends ConsumerStatefulWidget {
   final VoidCallback? onFacilityCreated;
@@ -54,6 +54,11 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
 
   bool _isLoading = false;
   String? _errorMessage;
+
+  /// Set once the facility exists. Create stays off from then on: the
+  /// account linking that follows turned _isLoading off, and the wizard
+  /// stays open when it was opened with go, so Create made a second one.
+  String? _createdFacilityId;
   
   // Common time zones
   final List<String> _timeZones = [
@@ -85,6 +90,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   }
 
   Future<void> _createFacility() async {
+    // A second tap in the same frame, before the rebuild disables Create,
+    // would make a second facility.
+    if (_isLoading || _createdFacilityId != null) return;
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
@@ -92,6 +100,8 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
       _errorMessage = null;
     });
 
+    // Set when the create itself failed and no facility it made was found.
+    var createUnconfirmed = false;
     try {
       if (kDebugMode) {
         print('🔄 Creating facility: ${_nameController.text.trim()}');
@@ -382,14 +392,18 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                     TextButton(
                       onPressed: () {
                         Navigator.of(context).pop();
-                        Navigator.of(context).pop(); // Close wizard
+                        // Close the wizard from its own context. A second pop
+                        // here ran on the dialog's (root) navigator, removed
+                        // the whole app shell and left a blank screen.
+                        if (mounted) popOrGo(this.context, AppRoute.facilities);
                       },
                       child: const Text('Cancel'),
                     ),
                     ElevatedButton.icon(
                       onPressed: () {
                         Navigator.of(context).pop();
-                        Navigator.of(context).pop(); // Close wizard
+                        // go() below replaces the wizard; a second pop here
+                        // removed the app shell first (see Cancel).
                 context.go(
                   AppRoute.subscription,
                   extra: const SubscriptionTestScreen(
@@ -512,42 +526,38 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         }
         
         final totalUnits = int.tryParse(_totalUnitsController.text.trim()) ?? 0;
-        facilityId = await FacilityService.createFacility(
-          name: _nameController.text.trim(),
-          address: _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
-          phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
-          email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
-          timeZone: _selectedTimeZone ?? TimeZoneHelper.defaultTimeZoneId,
-          billingSettings: billingSettings,
-          paymentProcessor: _paymentProcessor,
-          totalUnits: totalUnits,
+        final name = _nameController.text.trim();
+        // Even after a timeout the facility may have been created: then this
+        // carries on with it rather than inviting a second one.
+        facilityId = await createFacilityOrRecover(
+          name: name,
+          create: () => FacilityService.createFacility(
+            name: name,
+            address: _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
+            phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
+            email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
+            timeZone: _selectedTimeZone ?? TimeZoneHelper.defaultTimeZoneId,
+            billingSettings: billingSettings,
+            paymentProcessor: _paymentProcessor,
+            totalUnits: totalUnits,
+          ),
+          // From the server: the cached list is up to 2 minutes old.
+          reloadFacilities: () {
+            FacilityService.clearFacilitiesCache();
+            return FacilityService.getUserFacilities();
+          },
         );
+        // So the facility lists show it now, not when the cache expires.
+        FacilityService.clearFacilitiesCache();
+        _createdFacilityId = facilityId;
       } catch (e) {
         if (kDebugMode) {
-          print('⚠️ Facility creation had connectivity issues: $e');
-          print('🔄 Checking if facility was created despite connectivity issues...');
+          print('⚠️ Facility creation failed and no facility it made was found: $e');
         }
-        
-        // Even if there was a timeout, the facility might have been created
-        try {
-          final facilities = await FacilityService.getUserFacilities();
-          if (facilities.isNotEmpty) {
-            if (kDebugMode) {
-              print('✅ Found facilities - creation likely succeeded despite timeout');
-            }
-            facilityId = facilities.last.id; // Use the most recent facility
-          }
-        } catch (facilityCheckError) {
-          if (kDebugMode) {
-            print('❌ Could not verify facility creation: $facilityCheckError');
-          }
-        }
-        
-        if (facilityId == null) {
-          rethrow; // Re-throw if we couldn't find any evidence of success
-        }
+        createUnconfirmed = true;
+        rethrow;
       }
-      
+
       if (kDebugMode) {
         print('🎯 FacilityService.createFacility completed with ID: $facilityId');
       }
@@ -570,7 +580,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         // Fire and forget - don't wait for this to complete
         PermissionService.createDefaultOwnerRole(
           ownerId: ownerUser.uid,
-          facilityId: facilityId!,
+          facilityId: facilityId,
         ).then((_) {
           if (kDebugMode) {
             print('✅ Owner role assigned to facility successfully (background)');
@@ -594,11 +604,6 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         print('🔄 Permission assignment completed, checking if widget is mounted...');
       }
 
-      // Ensure we have a valid facility ID before proceeding to success
-      if (facilityId == null) {
-        throw Exception('Facility ID is null - creation may have failed');
-      }
-
       if (kDebugMode) {
         print('🔄 Checking if widget is mounted...');
       }
@@ -620,12 +625,12 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
           // Link facility to account
           await FacilityCreatorAccountService.addFacilityToAccount(
             accountId: account.accountId,
-            facilityId: facilityId!,
+            facilityId: facilityId,
           );
           
           final emailLimit =
               emailMonthlyLimitForAccount(isTrialing: account.hasTrial);
-          await EmailUsageService.setEmailLimit(facilityId!, emailLimit);
+          await EmailUsageService.setEmailLimit(facilityId, emailLimit);
           
           if (kDebugMode) {
             print('✅ Email limit set to $emailLimit for facility $facilityId (${account.hasTrial ? "Trial" : "Active"})');
@@ -715,31 +720,20 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
       }
       
       if (mounted) {
+        final message = ErrorMessageHelper.getUserFriendlyMessage(e);
         setState(() {
           _isLoading = false;
-          _errorMessage = ErrorMessageHelper.getUserFriendlyMessage(e);
+          _errorMessage = createUnconfirmed
+              ? '$message $facilityCreateUnconfirmedHint'
+              : message;
         });
-        
-        if (kDebugMode) {
-          print('🔄 Error occurred, navigating back to home screen...');
-        }
-        
-        // Pop the facility creation wizard
-        if (Navigator.of(context).canPop()) {
-          Navigator.of(context).pop();
-        }
-        
-        // If no callback provided, pop again to reach home screen
-        if (widget.onFacilityCreated == null) {
-          if (kDebugMode) {
-            print('🔄 No callback provided, popping again to reach home screen');
-          }
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (mounted) {
-              Navigator.of(context).pop(); // Pop facility management screen to reach home
-            }
-          });
-        }
+
+        // Stay on the wizard so the owner sees the error above the Create
+        // button and can retry. It used to pop the wizard and, 100 ms later,
+        // pop again "to reach home". With the wizard opened by go (Billing,
+        // Settings, Invoices...) or pushed over /facilities, that second pop
+        // took the last page: go_router threw, the screen went blank and the
+        // error was never seen.
       }
     }
   }
@@ -1199,7 +1193,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                     
                     // Create Button
                     ElevatedButton(
-                      onPressed: _isLoading ? null : _createFacility,
+                      onPressed: _isLoading || _createdFacilityId != null
+                          ? null
+                          : _createFacility,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppTheme.primaryBlue,
                         foregroundColor: AppTheme.textOnDark,

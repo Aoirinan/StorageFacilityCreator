@@ -9,6 +9,7 @@ import '../services/payment_service.dart';
 import '../models/payment_model.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 class DepositDetailScreen extends ConsumerStatefulWidget {
   final DepositModel deposit;
@@ -270,9 +271,12 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
                       trailing: IconButton(
                         icon: const Icon(Icons.open_in_new),
                         onPressed: () {
-                          context.push(
-                            '${AppRoute.paymentDetail}?paymentId=${payment.id}',
-                          );
+                          // With the facility: the payment page loads by
+                          // both ids and showed "Page not found" without it.
+                          context.push(AppRoute.paymentDetailFor(
+                            paymentId: payment.id,
+                            facilityId: widget.facilityId,
+                          ));
                         },
                       ),
                     );
@@ -559,7 +563,9 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        context.pop(true); // Refresh list
+        // popOrGo, not a bare pop: that throws when nothing is underneath,
+        // and the catch below would then report the change as failed.
+        popOrGo(context, AppRoute.deposits, true); // Refresh list
       }
     } catch (e) {
       if (mounted) {
@@ -602,7 +608,9 @@ class _DepositDetailScreenState extends ConsumerState<DepositDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        context.pop(true); // Refresh list
+        // popOrGo, not a bare pop: that throws when nothing is underneath,
+        // and the catch below would then report the change as failed.
+        popOrGo(context, AppRoute.deposits, true); // Refresh list
       }
     } catch (e) {
       if (mounted) {

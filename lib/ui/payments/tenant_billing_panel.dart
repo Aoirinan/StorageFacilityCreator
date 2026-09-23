@@ -176,6 +176,9 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
   }
 
   Future<void> _payWithCardOnFile() async {
+    // One charge at a time: _isLoading is the in-flight flag for every
+    // payment action on this panel.
+    if (_isLoading) return;
     final amount = await showDialog<double>(
       context: context,
       builder: (ctx) => _AmountDialog(tenantName: widget.tenantName),
@@ -225,11 +228,14 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
   }
 
   Future<void> _recordManualPayment() async {
+    // The "Record cash/check" button beside Refresh Status stayed live while
+    // a payment was being recorded, so a second tap recorded it twice.
+    if (_isLoading) return;
     final result = await showDialog<({double amount, PaymentMethod method, String? notes})>(
       context: context,
       builder: (ctx) => _ManualPaymentDialog(tenantName: widget.tenantName),
     );
-    if (result == null || result.amount < 0.01) return;
+    if (result == null || result.amount < 0.01 || !mounted || _isLoading) return;
     setState(() {
       _isLoading = true;
       _error = null;
@@ -263,7 +269,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
   }
 
   Future<void> _payWithNewCard() async {
-    if (!kIsWeb) return;
+    if (!kIsWeb || _isLoading) return;
     final amount = await showDialog<double>(
       context: context,
       builder: (ctx) => _AmountDialog(tenantName: widget.tenantName),
@@ -409,7 +415,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
                               label: const Text('Refresh Status'),
                             ),
                             OutlinedButton.icon(
-                              onPressed: _recordManualPayment,
+                              onPressed: _isLoading ? null : _recordManualPayment,
                               icon: const Icon(Icons.payments_outlined, size: 18),
                               label: const Text('Record cash/check'),
                             ),
