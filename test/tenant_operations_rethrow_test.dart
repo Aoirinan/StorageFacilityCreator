@@ -14,11 +14,19 @@ class _FailingBackend extends TenantOperationsBackend {
       Future.error(error);
 
   @override
-  Future<void> deleteTenant({required String facilityId, required String tenantId}) =>
+  Future<bool> deleteTenant({
+    required String facilityId,
+    required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
       Future.error(error);
 
   @override
-  Future<void> deleteTenants({required String facilityId, required List<String> tenantIds}) =>
+  Future<bool> deleteTenants({
+    required String facilityId,
+    required List<String> tenantIds,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
       Future.error(error);
 }
 
@@ -26,12 +34,18 @@ class _OkBackend extends TenantOperationsBackend {
   const _OkBackend();
 
   @override
-  Future<void> deleteTenant({required String facilityId, required String tenantId}) async {}
+  Future<bool> deleteTenant({
+    required String facilityId,
+    required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) async =>
+      true;
 }
 
 /// The notifier used to catch every error and return normally, so the tenant
 /// list said "deleted successfully" even when the delete was refused.
 void main() {
+  Future<bool> yes(List<TenantDeletePlan> _) async => true;
   const refusal = TenantDeleteRefusedException([
     TenantDeleteBlock(tenantId: 't1', tenantName: 'Ada Park', reasons: ['an invoice']),
   ]);
@@ -41,7 +55,7 @@ void main() {
     addTearDown(notifier.dispose);
 
     await expectLater(
-      notifier.deleteTenant(facilityId: 'f1', tenantId: 't1'),
+      notifier.deleteTenant(facilityId: 'f1', tenantId: 't1', confirmUnitsFreed: yes),
       throwsA(same(refusal)),
     );
     expect(notifier.state, isA<AsyncError<void>>());
@@ -53,7 +67,7 @@ void main() {
     addTearDown(notifier.dispose);
 
     await expectLater(
-      notifier.deleteTenants(facilityId: 'f1', tenantIds: ['t1', 't2']),
+      notifier.deleteTenants(facilityId: 'f1', tenantIds: ['t1', 't2'], confirmUnitsFreed: yes),
       throwsA(same(refusal)),
     );
     expect(notifier.state.error, same(refusal));
@@ -77,7 +91,8 @@ void main() {
     final notifier = TenantOperationsNotifier(const _OkBackend());
     addTearDown(notifier.dispose);
 
-    await notifier.deleteTenant(facilityId: 'f1', tenantId: 't1');
+    expect(await notifier.deleteTenant(facilityId: 'f1', tenantId: 't1', confirmUnitsFreed: yes),
+        isTrue);
     expect(notifier.state, isA<AsyncData<void>>());
   });
 }

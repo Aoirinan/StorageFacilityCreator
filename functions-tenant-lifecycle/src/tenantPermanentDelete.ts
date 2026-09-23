@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import {
   LinkedDoc,
+  MAX_TENANTS_PER_PERMANENT_DELETE,
   PERMANENT_TENANT_DELETE_NOT_ENTITLED_MESSAGE,
   TENANT_DELETE_SCAN_LIMIT,
   TenantDeleteBlock,
@@ -26,8 +27,8 @@ import {
  * transaction that deletes.
  */
 
-/** Tenants per call. The app's bulk delete sends every selected tenant at once. */
-export const MAX_TENANTS_PER_DELETE = 100;
+/** Tenants per call; the app refuses a bigger selection before it gets here. */
+export const MAX_TENANTS_PER_DELETE = MAX_TENANTS_PER_PERMANENT_DELETE;
 
 /** Writes per transaction, at Firestore's 500 cap. */
 export const MAX_WRITES_PER_DELETE = 500;
@@ -262,9 +263,10 @@ function writesFor(plan: TenantDeletePlan): number {
 }
 
 /**
- * Reads every tenant's records, refuses them all if any one has history or
- * still holds a unit (the app's dialog said "Delete N"), and otherwise, in
- * the same transaction, unlinks their units, turns their gate codes off,
+ * Reads every tenant's records, refuses them all if any one has history
+ * (the app's dialog said "Delete N"), and otherwise, in the same
+ * transaction, unlinks their units (the app named any they still held and
+ * the owner agreed to free them), turns their gate codes off,
  * deletes the tenant docs and writes a tenant.deleted audit row per tenant
  * with its before snapshot, plus a tenant.bulkDeleted row for more than one.
  * Reads run inside the transaction, so a ledger row or unit assignment made

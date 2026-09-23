@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   DocData,
   LinkedDoc,
+  MAX_TENANTS_PER_PERMANENT_DELETE,
   TenantDeleteRecords,
   buildTenantDeletePlan,
   facilityAllowsPermanentTenantDelete,
@@ -30,11 +31,13 @@ import { isFacilityOwnerOrManager } from '../auth/facilityAccess';
  */
 type ParityCases = {
   scanLimit: number;
+  maxTenantsPerDelete: number;
   rows: Array<{ kind: string; row: DocData; live: boolean }>;
-  autopay: Array<{ billing: DocData | null; has: boolean }>;
+  autopay: Array<{ billing: DocData | null; paymentMethods?: DocData[]; has: boolean }>;
   blockers: Array<{ counts: Record<string, number | boolean>; reasons: string[] }>;
   plans: Array<{
     name: string;
+    blocked: boolean;
     records: Record<string, unknown>;
     reasons: string[];
     heldUnits: Array<{ unitNumber: string; status: string }>;
@@ -80,7 +83,7 @@ test('parity: each row predicate matches the shared table', () => {
 
 test('parity: autopay subscription matches the shared table', () => {
   for (const c of parity.autopay) {
-    assert.equal(hasAutopaySubscription(c.billing), c.has, JSON.stringify(c.billing));
+    assert.equal(hasAutopaySubscription(c.billing, c.paymentMethods), c.has, JSON.stringify(c));
   }
 });
 
@@ -95,8 +98,13 @@ test('parity: plans give the same reasons and held units as the app', () => {
     const plan = buildTenantDeletePlan('t1', records('t1', c.records), parity.scanLimit);
     assert.deepEqual(plan.reasons, c.reasons, c.name);
     assert.deepEqual(plan.heldUnits, c.heldUnits, c.name);
-    assert.equal(isTenantDeleteBlocked(plan), c.reasons.length > 0 || c.heldUnits.length > 0, c.name);
+    // Only history blocks: a held unit is freed by the delete.
+    assert.equal(isTenantDeleteBlocked(plan), c.blocked, c.name);
   }
+});
+
+test('parity: the per-call tenant limit is the one the app checks', () => {
+  assert.equal(MAX_TENANTS_PER_PERMANENT_DELETE, parity.maxTenantsPerDelete);
 });
 
 test('scanLiveRows: a row that cannot be read counts as live', () => {

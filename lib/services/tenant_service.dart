@@ -17,6 +17,7 @@ import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
 
 /// A unit that still shows a tenant as its occupant, and how to free it.
 class HeldUnit {
@@ -42,6 +43,13 @@ class HeldUnit {
         '$unit > Edit Unit, set Status to Occupied, then Unassign Tenant',
     };
   }
+
+  /// "unit 101", or "unit 7 (lockout)" when it is not simply occupied.
+  String get described => switch (status) {
+        UnitStatus.occupied => 'unit $unitNumber',
+        UnitStatus.outOfOrder => 'unit $unitNumber (out of order)',
+        _ => 'unit $unitNumber (${status.name})',
+      };
 
   /// "unit 101" or "units 101 and 102".
   static String label(List<HeldUnit> units) => units.length == 1
@@ -99,10 +107,10 @@ class TenantDeleteBlock {
 }
 
 /// Permanent delete refused for every selected tenant, because at least one
-/// has billing or legal history or still holds a unit. Deleting such a tenant
-/// orphaned their ledger (the balance fell out of AR and the history could no
-/// longer be opened), or freed a unit that was still theirs and listed it as
-/// rentable.
+/// has billing or legal history. Deleting such a tenant orphaned their ledger
+/// (the balance fell out of AR and the history could no longer be opened).
+/// Units a blocked tenant holds are named too: they stay assigned, and have
+/// to be unassigned before the tenant can be archived.
 class TenantDeleteRefusedException implements Exception {
   const TenantDeleteRefusedException(this.blocked);
 
@@ -128,22 +136,17 @@ class TenantDeleteRefusedException implements Exception {
   String get details {
     if (blocked.length == 1) {
       final b = blocked.single;
-      final why = b.reasons.isEmpty
-          ? 'Permanent delete is only for tenants entered by mistake; deleting '
-              'them would free the unit and list it as rentable.'
-          : 'Permanently deleting them would orphan that history, so it has '
-              'to be kept.';
+      const why = 'Permanently deleting them would orphan that history, so it '
+          'has to be kept.';
       final next = b.canArchiveInstead
           ? 'You can archive ${b.tenantName} instead: they leave your active '
               'lists and their history is kept.'
-          : '${HeldUnit.unassignFirst(b.heldUnits)} Then '
-              '${b.reasons.isEmpty ? 'you can delete them' : 'archive them'}.';
+          : '${HeldUnit.unassignFirst(b.heldUnits)} Then archive them.';
       return '${b.tenantName} ${b.summary}. $why\n\n$next';
     }
 
     final lines = [
-      'Nothing was deleted. These tenants have history that has to be kept, '
-          'or still hold a unit:',
+      'Nothing was deleted. These tenants have history that has to be kept:',
       for (final b in blocked)
         '• ${b.tenantName}: ${b.summary}.'
             '${b.canArchiveInstead ? '' : ' ${HeldUnit.unassignFirst(b.heldUnits)}'}',
@@ -156,6 +159,28 @@ class TenantDeleteRefusedException implements Exception {
     }
     return lines.join('\n');
   }
+
+  @override
+  String toString() => message;
+}
+
+/// Asked before a permanent delete frees units the tenants still hold;
+/// [freeing] are the tenants who hold one. True to go ahead.
+typedef ConfirmUnitsFreed = Future<bool> Function(List<TenantDeletePlan> freeing);
+
+/// A bulk permanent delete over [TenantService.maxTenantsPerDelete]. Each
+/// call is all or nothing, so it is refused rather than split. It used to
+/// reach the callable after the pre-check and come back as
+/// "[firebase_functions/invalid-argument] ...".
+class TenantDeleteTooManyException implements Exception {
+  const TenantDeleteTooManyException(this.count);
+
+  final int count;
+
+  String get message =>
+      'You selected $count tenants. Permanent delete takes at most '
+      '${TenantService.maxTenantsPerDelete} at a time, so nothing was '
+      'deleted. Select fewer and try again.';
 
   @override
   String toString() => message;
@@ -255,11 +280,14 @@ class TenantDeletePlan {
   /// Billing or legal history that rules the delete out.
   final List<String> blockers;
 
-  /// The linked units the tenant actually occupies; any one rules the
-  /// delete out too.
+  /// The linked units the tenant actually occupies. They don't rule the
+  /// delete out: for a tenant with no history they are freed with them,
+  /// once the owner has agreed (see [TenantService.unitsFreedMessage]).
   final List<HeldUnit> heldUnits;
 
-  bool get isBlocked => blockers.isNotEmpty || heldUnits.isNotEmpty;
+  /// Only history blocks. A held unit alone used to as well, so a bad CSV
+  /// import could only be cleaned up by unassigning every unit by hand.
+  bool get isBlocked => blockers.isNotEmpty;
 
   TenantDeleteBlock toBlock() => TenantDeleteBlock(
         tenantId: tenantId,
@@ -1420,10 +1448,11 @@ class TenantService {
   // --- Permanent delete guard -------------------------------------------
   //
   // Permanent delete is only for tenants entered by mistake. Anyone with
-  // billing or legal history, or who still holds a unit, is refused, because
-  // deleting the tenant doc orphaned their ledger, invoices and payments: the
-  // balance vanished from AR and the history could no longer be opened.
-  // Archive keeps it.
+  // billing or legal history is refused, because deleting the tenant doc
+  // orphaned their ledger, invoices and payments: the balance vanished from
+  // AR and the history could no longer be opened. Archive keeps it. Units a
+  // tenant with no history still holds are freed with them, once the owner
+  // has seen which (confirmUnitsFreed).
   //
   // The deleteTenantsPermanently callable (functions-tenant-lifecycle)
   // enforces this and does the delete; the rules no longer let owners or
@@ -1445,6 +1474,11 @@ class TenantService {
 
   /// Tenants checked at once in a bulk delete; each check is ~10 reads.
   static const int _deleteCheckConcurrency = 8;
+
+  /// Tenants per permanent delete (MAX_TENANTS_PER_PERMANENT_DELETE on the
+  /// server). Each call is all or nothing, so a bigger selection is refused
+  /// rather than split.
+  static const int maxTenantsPerDelete = 100;
 
   static TenantRecordsStore _records(String facilityId) =>
       _FirestoreTenantRecords(_firestore.collection('facilities').doc(facilityId));
@@ -1482,12 +1516,19 @@ class TenantService {
   static bool isLiveCardPaymentRow(Map<String, dynamic> row) =>
       !_deadPaymentStatuses.contains(_statusOf(row));
 
-  /// billing/default holds the tenant's Stripe autopay subscription while it
-  /// is armed. Deleting the tenant left Stripe charging them with nowhere to
-  /// record the payments.
-  static bool hasAutopaySubscription(Map<String, dynamic>? billing) {
+  /// Autopay is armed. Deleting the tenant left it charging them with
+  /// nowhere to record the payments. What arms it today is autopayEnabled
+  /// on billing/default or on a saved card ([paymentMethods]); the Stripe
+  /// subscription id on billing/default is the legacy form, and is deleted
+  /// whenever autopay is switched on or off.
+  static bool hasAutopaySubscription(
+    Map<String, dynamic>? billing, [
+    Iterable<Map<String, dynamic>> paymentMethods = const [],
+  ]) {
     final id = billing?['stripeSubscriptionId'];
-    return id is String && id.trim().isNotEmpty;
+    if (id is String && id.trim().isNotEmpty) return true;
+    if (billing?['autopayEnabled'] == true) return true;
+    return paymentMethods.any((card) => card['autopayEnabled'] == true);
   }
 
   /// Saved cards and gate codes count as on unless switched off. A missing
@@ -1623,13 +1664,16 @@ class TenantService {
   }
 
   /// The order that makes permanent delete safe: read every tenant first,
-  /// refuse them all if any is blocked (the dialog said "Delete N"), and
-  /// only then write. [commit] is never called on a refusal.
+  /// refuse them all if any is blocked (the dialog said "Delete N"), ask
+  /// [confirmUnitsFreed] when the delete would free units they still hold,
+  /// and only then write. [commit] is never called on a refusal or a "no";
+  /// null means the owner said no.
   @visibleForTesting
-  static Future<List<TenantDeletePlan>> runPermanentDelete({
+  static Future<List<TenantDeletePlan>?> runPermanentDelete({
     required List<String> tenantIds,
     required Future<TenantDeletePlan> Function(String tenantId) loadPlan,
     required Future<void> Function(List<TenantDeletePlan> plans) commit,
+    ConfirmUnitsFreed? confirmUnitsFreed,
   }) async {
     final plans = await loadAllForDelete(tenantIds, loadPlan);
     final blocked =
@@ -1637,8 +1681,33 @@ class TenantService {
     if (blocked.isNotEmpty) {
       throw TenantDeleteRefusedException(blocked);
     }
+    final freeing = [
+      for (final p in plans)
+        if (p.heldUnits.isNotEmpty) p
+    ];
+    // No way to ask means no: a unit is never freed unannounced.
+    if (freeing.isNotEmpty &&
+        !(await confirmUnitsFreed?.call(freeing) ?? false)) {
+      return null;
+    }
     await commit(plans);
     return plans;
+  }
+
+  /// The confirmation shown before a delete frees units: which tenant
+  /// holds which unit, and that each is listed as available again.
+  static String unitsFreedMessage(List<TenantDeletePlan> freeing) {
+    final count = freeing.fold<int>(0, (n, p) => n + p.heldUnits.length);
+    final lines = [
+      for (final p in freeing)
+        '• ${p.tenantName}: ${p.heldUnits.map((u) => u.described).join(', ')}',
+    ];
+    return '${count == 1 ? 'This unit is' : 'These units are'} still '
+        'assigned to the ${freeing.length == 1 ? 'tenant' : 'tenants'} you '
+        'are deleting:\n${lines.join('\n')}\n\n'
+        '${count == 1 ? 'It' : 'Each'} will be unassigned and listed as '
+        'available to rent. Only go ahead if they never actually rented '
+        '${count == 1 ? 'it' : 'them'}.';
   }
 
   static String _displayName(Map<String, dynamic>? data, String tenantId) {
@@ -1806,7 +1875,8 @@ class TenantService {
     final payments = live(await paymentsRead, isLivePaymentRow);
     final contracts = live(await contractsRead, anyRow);
     final liens = live(await liensRead, anyRow);
-    final cards = live(await cardsRead, isActiveFlagSet);
+    final cardRows = await cardsRead;
+    final cards = live(cardRows, isActiveFlagSet);
     final cardPayments = live(await cardPaymentsRead, isLiveCardPaymentRow);
     return TenantDeletePlan(
       tenantId: tenantId,
@@ -1819,11 +1889,11 @@ class TenantService {
         contracts: contracts,
         liens: liens,
         activeSavedCards: cards,
-        hasAutopaySubscription: hasAutopaySubscription(await billingRead),
+        hasAutopaySubscription:
+            hasAutopaySubscription(await billingRead, cardRows),
         moreThanChecked: moreThanChecked,
       ),
-      // An occupant is refused too: deleting them freed their unit and
-      // listed it as rentable, even with no billing history yet.
+      // Not a blocker: named to the owner, who agrees to free them.
       heldUnits: unitsHeldByTenant(tenantId, await unitsRead),
     );
   }
@@ -1878,27 +1948,50 @@ class TenantService {
         'see what changed.');
   }
 
-  /// Checks, then deletes, every tenant in [tenantIds], or none. The
-  /// pre-check refuses without a round trip when this user can already see
-  /// a blocker (or can't read the records); otherwise [deleteOnServer] sends
-  /// the ids to the deleteTenantsPermanently callable, which checks again
-  /// inside the transaction that deletes, and its answer is final. The
-  /// callable also unlinks the units, turns the gate codes off and writes
-  /// the audit rows.
+  /// Checks, then deletes, every tenant in [tenantIds], or none. More than
+  /// [maxTenantsPerDelete] is refused before any read. The pre-check
+  /// refuses without a round trip when this user can already see a blocker
+  /// (or can't read the records), and [confirmUnitsFreed] is asked before
+  /// units they still hold are freed; then [deleteOnServer] sends the ids to
+  /// the deleteTenantsPermanently callable, which checks again inside the
+  /// transaction that deletes, and its answer is final. The callable also
+  /// unlinks the units, turns the gate codes off and writes the audit rows.
+  /// Null means the owner said no to freeing the units.
   @visibleForTesting
-  static Future<({int unitsUnlinked, int gateCodesOff})> permanentlyDelete(
+  static Future<({int unitsUnlinked, int gateCodesOff})?> permanentlyDelete(
     TenantRecordsStore store,
     List<String> tenantIds, {
     required Future<Object?> Function(List<String> tenantIds) deleteOnServer,
+    required ConfirmUnitsFreed confirmUnitsFreed,
   }) async {
+    // The callable refuses more, after this check had read ~10 docs a tenant.
+    if (tenantIds.length > maxTenantsPerDelete) {
+      throw TenantDeleteTooManyException(tenantIds.length);
+    }
     ({int unitsUnlinked, int gateCodesOff})? result;
     await runPermanentDelete(
       tenantIds: tenantIds,
       loadPlan: (id) => loadDeletePlan(store, id),
-      commit: (_) async =>
-          result = parseServerDeleteResult(await deleteOnServer(tenantIds)),
+      confirmUnitsFreed: confirmUnitsFreed,
+      commit: (_) async {
+        final Object? answer;
+        try {
+          answer = await deleteOnServer(tenantIds);
+        } on FirebaseFunctionsException catch (e) {
+          throw callableFailure(
+            e,
+            permissionDenied: 'Only the facility owner or a manager can '
+                'permanently delete tenants. Nothing was deleted.',
+            notFound: "Couldn't find this facility on the server, so nothing "
+                'was deleted. Refresh the page and try again.',
+            unreachable: "Couldn't reach the server, so the delete may not have "
+                'gone through. Refresh the tenant list to see what changed.',
+          );
+        }
+        result = parseServerDeleteResult(answer);
+      },
     );
-    return result!;
+    return result;
   }
 
   static Future<Object?> _deleteOnServer(
@@ -1915,30 +2008,34 @@ class TenantService {
   /// [permanentlyDelete] for a facility, then the public map resynced if a
   /// unit was freed, as before the delete moved to the server (the unit
   /// write trigger resyncs it too).
-  static Future<({int unitsUnlinked, int gateCodesOff})>
+  static Future<({int unitsUnlinked, int gateCodesOff})?>
       _permanentlyDeleteInFacility(
     String facilityId,
     List<String> tenantIds,
+    ConfirmUnitsFreed confirmUnitsFreed,
   ) async {
     final result = await permanentlyDelete(
       _records(facilityId),
       tenantIds,
       deleteOnServer: (ids) => _deleteOnServer(facilityId, ids),
+      confirmUnitsFreed: confirmUnitsFreed,
     );
-    if (result.unitsUnlinked > 0) {
+    if (result != null && result.unitsUnlinked > 0) {
       UnitService.schedulePublicMapInventorySync(facilityId);
     }
     return result;
   }
 
   // Delete tenant permanently. Refused (TenantDeleteRefusedException) when
-  // the tenant has billing or legal history or still holds a unit. The
-  // deleteTenantsPermanently callable unlinks their units, turns off their
-  // gate codes, deletes the doc and audit-logs it in one transaction; then
-  // facility counts are refreshed.
-  static Future<void> deleteTenant({
+  // the tenant has billing or legal history. Units they still hold are named
+  // to [confirmUnitsFreed] first; false (or no) means nothing was deleted.
+  // The deleteTenantsPermanently callable unlinks their units, turns off
+  // their gate codes, deletes the doc and audit-logs it in one transaction;
+  // then facility counts are refreshed.
+  static Future<bool> deleteTenant({
     required String facilityId,
     required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -1952,7 +2049,9 @@ class TenantService {
         print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
       }
 
-      final result = await _permanentlyDeleteInFacility(facilityId, [tenantId]);
+      final result = await _permanentlyDeleteInFacility(
+          facilityId, [tenantId], confirmUnitsFreed);
+      if (result == null) return false;
 
       if (kDebugMode) {
         print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${result.unitsUnlinked} unit(s)');
@@ -1961,6 +2060,7 @@ class TenantService {
       // Refresh facility counts so dashboard/list stay correct.
       // force: a delete must be reflected immediately, not swallowed by the cooldown.
       await FacilityStatsService.updateFacilityStats(facilityId, force: true);
+      return true;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [TenantService] Error deleting tenant: $e');
@@ -1972,10 +2072,12 @@ class TenantService {
   // Delete multiple tenants permanently, all or nothing: if any selected
   // tenant is blocked, none are deleted. The callable logs a tenant.deleted
   // event per tenant (with its before snapshot) and one tenant.bulkDeleted
-  // event. Then refresh facility counts once.
-  static Future<void> deleteTenants({
+  // event. Then refresh facility counts once. False: the owner said no to
+  // freeing units, and nothing was deleted.
+  static Future<bool> deleteTenants({
     required String facilityId,
     required List<String> tenantIds,
+    required ConfirmUnitsFreed confirmUnitsFreed,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -1984,7 +2086,7 @@ class TenantService {
       }
 
       final ids = tenantIds.toSet().toList();
-      if (ids.isEmpty) return;
+      if (ids.isEmpty) return false;
 
       if (kDebugMode) {
         print('🔄 [TenantService] Deleting ${ids.length} tenants (facility: $facilityId)');
@@ -1992,7 +2094,9 @@ class TenantService {
 
       await _assertFacilityAllowsPermanentTenantDeletion(facilityId);
 
-      final result = await _permanentlyDeleteInFacility(facilityId, ids);
+      final result =
+          await _permanentlyDeleteInFacility(facilityId, ids, confirmUnitsFreed);
+      if (result == null) return false;
 
       if (kDebugMode) {
         print('✅ [TenantService] Deleted ${ids.length} tenants, unlinked ${result.unitsUnlinked} unit(s)');
@@ -2001,6 +2105,7 @@ class TenantService {
       // force: a bulk delete must be reflected immediately, not swallowed by
       // the cooldown. One call for the whole batch, not one per tenant.
       await FacilityStatsService.updateFacilityStats(facilityId, force: true);
+      return true;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [TenantService] Error deleting tenants: $e');

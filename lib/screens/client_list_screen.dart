@@ -16,6 +16,7 @@ import 'package:sfcapp/services/tenant_portal_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/constants/app_constants.dart';
 import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/setup_retry_controller.dart';
 import 'package:sfcapp/screens/tenant_creation_screen.dart';
@@ -1290,12 +1291,13 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     if (confirmed == true) {
       try {
-        await ref.read(tenantOperationsProvider.notifier).deleteTenant(
+        final deleted = await ref.read(tenantOperationsProvider.notifier).deleteTenant(
           facilityId: tenant.facilityId,
           tenantId: tenant.id,
+          confirmUnitsFreed: _confirmUnitsFreed,
         );
 
-        if (mounted) {
+        if (deleted && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('${tenant.name} deleted successfully'),
@@ -1306,11 +1308,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       } on TenantDeleteRefusedException catch (e) {
         await _showDeleteRefused(e, facilityId: tenant.facilityId);
       } on TenantDeleteCheckFailedException catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(e.message), backgroundColor: AppTheme.error),
-          );
-        }
+        _showDeleteFailed(e.message);
+      } on CallableFailureException catch (e) {
+        _showDeleteFailed(e.message);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1328,10 +1328,48 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   // Move-out: it has no entry point in the app, needs a contract, and
   // emails the tenant.
   static const _permanentDeleteNote =
-      'Permanent delete is only for tenants entered by mistake: no unit, and '
-      'no charges, payments, invoices, contracts, liens or saved cards. For '
-      'someone who has left: unassign their unit, then Archive. Their history '
-      'is kept.';
+      'Permanent delete is only for tenants entered by mistake: no charges, '
+      'payments, invoices, contracts, liens or saved cards. A unit they hold '
+      'is unassigned and listed as available; you will see which before '
+      'anything is deleted. For someone who has left: unassign their unit, '
+      'then Archive. Their history is kept.';
+
+  /// Asked once the check has passed and the delete would free units the
+  /// tenants still hold; names each one.
+  Future<bool> _confirmUnitsFreed(List<TenantDeletePlan> freeing) async {
+    if (!mounted) return false;
+    final count = freeing.fold<int>(0, (n, p) => n + p.heldUnits.length);
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(count == 1 ? 'Free this unit?' : 'Free these $count units?'),
+        content: SingleChildScrollView(
+          child: Text(TenantService.unitsFreedMessage(freeing)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(
+              count == 1 ? 'Delete and free unit' : 'Delete and free units',
+              style: const TextStyle(color: AppTheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    return go == true;
+  }
+
+  void _showDeleteFailed(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: AppTheme.error),
+    );
+  }
 
   Future<void> _deleteSelectedTenants() async {
     if (_selectedTenantIds.isEmpty) return;
@@ -1361,6 +1399,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     final selectedTenants = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
     final count = _selectedTenantIds.length;
     final tenantIdsToDelete = _selectedTenantIds.toList();
+
+    // All or nothing per call, so a bigger selection is refused up front.
+    if (count > TenantService.maxTenantsPerDelete) {
+      _showDeleteFailed(TenantDeleteTooManyException(count).message);
+      return;
+    }
 
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
@@ -1395,12 +1439,13 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     if (confirmed == true) {
       try {
-        await ref.read(tenantOperationsProvider.notifier).deleteTenants(
+        final deleted = await ref.read(tenantOperationsProvider.notifier).deleteTenants(
           facilityId: _selectedFacilityId,
           tenantIds: tenantIdsToDelete,
+          confirmUnitsFreed: _confirmUnitsFreed,
         );
 
-        if (mounted) {
+        if (deleted && mounted) {
           setState(() {
             _selectedTenantIds.clear();
             _isSelectionMode = false;
@@ -1426,14 +1471,15 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
           note: remaining == 0
               ? null
               : 'They have been taken out of your selection, so pressing Delete '
-                  'again removes only the other $remaining.',
+                  'again removes only the other $remaining (any units those hold '
+                  'are named before anything is deleted).',
         );
       } on TenantDeleteCheckFailedException catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(e.message), backgroundColor: AppTheme.error),
-          );
-        }
+        _showDeleteFailed(e.message);
+      } on TenantDeleteTooManyException catch (e) {
+        _showDeleteFailed(e.message);
+      } on CallableFailureException catch (e) {
+        _showDeleteFailed(e.message);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

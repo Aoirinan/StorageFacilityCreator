@@ -260,11 +260,22 @@ class TenantOperationsBackend {
   Future<void> archiveTenant({required String facilityId, required String tenantId}) =>
       TenantService.archiveTenant(facilityId: facilityId, tenantId: tenantId);
 
-  Future<void> deleteTenant({required String facilityId, required String tenantId}) =>
-      TenantService.deleteTenant(facilityId: facilityId, tenantId: tenantId);
+  /// False: the owner said no to freeing units, and nothing was deleted.
+  Future<bool> deleteTenant({
+    required String facilityId,
+    required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
+      TenantService.deleteTenant(
+          facilityId: facilityId, tenantId: tenantId, confirmUnitsFreed: confirmUnitsFreed);
 
-  Future<void> deleteTenants({required String facilityId, required List<String> tenantIds}) =>
-      TenantService.deleteTenants(facilityId: facilityId, tenantIds: tenantIds);
+  Future<bool> deleteTenants({
+    required String facilityId,
+    required List<String> tenantIds,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
+      TenantService.deleteTenants(
+          facilityId: facilityId, tenantIds: tenantIds, confirmUnitsFreed: confirmUnitsFreed);
 }
 
 class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
@@ -276,11 +287,12 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   /// Records the outcome in [state] and rethrows. Swallowing the error here
   /// made every caller show "deleted successfully" (or "saved") even when the
   /// write was refused.
-  Future<void> _run(Future<void> Function() operation) async {
+  Future<T> _run<T>(Future<T> Function() operation) async {
     state = const AsyncValue.loading();
     try {
-      await operation();
+      final result = await operation();
       state = const AsyncValue.data(null);
+      return result;
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
       rethrow;
@@ -394,18 +406,23 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     return _run(() => _backend.archiveTenant(facilityId: facilityId, tenantId: tenantId));
   }
 
-  Future<void> deleteTenant({
+  /// False: the owner said no to freeing units, and nothing was deleted.
+  Future<bool> deleteTenant({
     required String facilityId,
     required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
   }) {
-    return _run(() => _backend.deleteTenant(facilityId: facilityId, tenantId: tenantId));
+    return _run(() => _backend.deleteTenant(
+        facilityId: facilityId, tenantId: tenantId, confirmUnitsFreed: confirmUnitsFreed));
   }
 
-  Future<void> deleteTenants({
+  Future<bool> deleteTenants({
     required String facilityId,
     required List<String> tenantIds,
+    required ConfirmUnitsFreed confirmUnitsFreed,
   }) {
-    return _run(() => _backend.deleteTenants(facilityId: facilityId, tenantIds: tenantIds));
+    return _run(() => _backend.deleteTenants(
+        facilityId: facilityId, tenantIds: tenantIds, confirmUnitsFreed: confirmUnitsFreed));
   }
 }
 

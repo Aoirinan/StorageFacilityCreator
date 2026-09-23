@@ -113,27 +113,53 @@ test('each source is read at the scan limit the app uses', async () => {
   assert.ok(txn.limits.every((l) => l === 10));
 });
 
-test('bulk is all or nothing: one occupant refuses the lot, naming only the blocked tenant', async () => {
+test('bulk is all or nothing: history refuses the lot, naming only the blocked tenant', async () => {
   const txn = new FakeTxn({
     clean: { doc: { name: 'Clean Entry' } },
     held: {
       doc: { name: 'Bo Diaz' },
       units: [{ id: 'u7', data: { unitNumber: '7', status: 'lockout' } }],
     },
-    card: { doc: { name: 'Cy Lee' }, ownRows: { payments: [{ status: 'processing' }] } },
+    card: {
+      doc: { name: 'Cy Lee' },
+      ownRows: { payments: [{ status: 'processing' }] },
+      units: [{ id: 'u8', data: { unitNumber: '8', status: 'occupied' } }],
+    },
   });
   const result = await run(txn, ['clean', 'held', 'card']);
   assert.equal(result.status, 'refused');
+  // A unit alone does not block (Bo Diaz); history does, and a blocked
+  // tenant's units are reported so the app can say what to unassign.
   assert.deepEqual(result.status === 'refused' ? result.blocked : null, [
-    { tenantId: 'held', tenantName: 'Bo Diaz', reasons: [], heldUnits: [{ unitNumber: '7', status: 'lockout' }] },
     {
       tenantId: 'card',
       tenantName: 'Cy Lee',
       reasons: ['a card payment in progress or payment history'],
-      heldUnits: [],
+      heldUnits: [{ unitNumber: '8', status: 'occupied' }],
     },
   ]);
-  // The clean tenant was not deleted on its own either.
+  // The others were not deleted on their own either.
+  assert.deepEqual(txn.writes, []);
+});
+
+test('a tenant with no history who holds a unit is deleted and the unit freed with them', async () => {
+  // Held units used to refuse the delete, so a bad CSV import could only be
+  // cleaned up by unassigning every unit by hand first.
+  const txn = new FakeTxn({
+    t1: { doc: { name: 'Ada Park' }, units: [{ id: 'u7', data: { unitNumber: '7', status: 'occupied' } }] },
+  });
+  const result = await run(txn, ['t1']);
+  assert.equal(result.status, 'deleted');
+  assert.deepEqual(txn.paths(), ['update units/u7', 'delete tenants/t1', 'create auditLogs']);
+  assert.equal(txn.writes[0].fields!.status, 'available');
+});
+
+test('autopay armed on a saved card refuses, even with no subscription id', async () => {
+  const txn = new FakeTxn({
+    t1: { ownRows: { paymentMethods: [{ isActive: false, autopayEnabled: true }] }, billing: { autopayEnabled: false } },
+  });
+  const result = await run(txn, ['t1']);
+  assert.deepEqual(result.status === 'refused' ? result.blocked[0].reasons : null, ['an autopay subscription']);
   assert.deepEqual(txn.writes, []);
 });
 

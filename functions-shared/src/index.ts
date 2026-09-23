@@ -266,6 +266,7 @@ export type {
   UnitStatus,
 } from './tenants/permanentDeleteRules';
 export {
+  MAX_TENANTS_PER_PERMANENT_DELETE,
   PERMANENT_TENANT_DELETE_NOT_ENTITLED_MESSAGE,
   TENANT_DELETE_SCAN_LIMIT,
   UNIT_STATUSES,

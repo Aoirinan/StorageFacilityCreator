@@ -3,8 +3,9 @@
  *
  * Permanent delete is only for tenants entered by mistake. Deleting a tenant
  * with billing or legal history orphaned their ledger (the balance fell out
- * of AR and the history could no longer be opened), and deleting an occupant
- * freed their unit and listed it as rentable. The deleteTenantsPermanently
+ * of AR and the history could no longer be opened). A tenant with no history
+ * who holds a unit can be deleted: the unit is freed with them, and the app
+ * names it before asking to go ahead. The deleteTenantsPermanently
  * callable enforces these rules with admin reads inside its transaction, so
  * an old browser tab or a direct API call cannot get round them.
  *
@@ -23,6 +24,13 @@ export type DocData = Record<string, unknown>;
 
 /** Rows read per source when checking a tenant for history. */
 export const TENANT_DELETE_SCAN_LIMIT = 10;
+
+/**
+ * Tenants per permanent delete call. The app refuses a bigger selection
+ * before its pre-check (TenantService.maxTenantsPerDelete) and the
+ * callable refuses it too; each call stays all or nothing.
+ */
+export const MAX_TENANTS_PER_PERMANENT_DELETE = 100;
 
 function statusOf(row: DocData): string {
   const status = row.status;
@@ -60,10 +68,21 @@ export function isLiveCardPaymentRow(row: DocData): boolean {
   return !DEAD_PAYMENT_STATUSES.has(statusOf(row));
 }
 
-/** billing/default holds the tenant's Stripe autopay subscription while armed. */
-export function hasAutopaySubscription(billing: DocData | null | undefined): boolean {
+/**
+ * Autopay is armed: billing/default.autopayEnabled or a saved card's
+ * autopayEnabled (what arms it today; tenant_billing.ts deletes the
+ * subscription id when autopay is switched on or off), or a legacy Stripe
+ * subscription id on billing/default. [paymentMethods] are the rows read
+ * from tenants/{id}/paymentMethods.
+ */
+export function hasAutopaySubscription(
+  billing: DocData | null | undefined,
+  paymentMethods: DocData[] = [],
+): boolean {
   const id = billing?.stripeSubscriptionId;
-  return typeof id === 'string' && id.trim().length > 0;
+  if (typeof id === 'string' && id.trim().length > 0) return true;
+  if (billing?.autopayEnabled === true) return true;
+  return paymentMethods.some((card) => card.autopayEnabled === true);
 }
 
 /** Saved cards and gate codes count as on unless switched off. */
@@ -211,7 +230,12 @@ export type TenantDeletePlan = {
   before: DocData | null;
   /** Billing or legal history that rules the delete out. */
   reasons: string[];
-  /** Units the tenant still occupies; any one rules the delete out too. */
+  /**
+   * Units the tenant still occupies. They don't rule the delete out: for a
+   * tenant with no history the delete frees them (the app names them in
+   * its confirmation first). A blocked tenant's are reported so the app
+   * can say what to unassign before archiving.
+   */
   heldUnits: HeldUnit[];
   /** Non-archived units linked to the tenant; the delete unlinks them. */
   unitIds: string[];
@@ -249,7 +273,7 @@ export function buildTenantDeletePlan(
     contracts,
     liens,
     activeSavedCards,
-    hasAutopaySubscription: hasAutopaySubscription(records.billing),
+    hasAutopaySubscription: hasAutopaySubscription(records.billing, records.paymentMethods),
     moreThanChecked,
   });
 
@@ -268,8 +292,13 @@ export function buildTenantDeletePlan(
   };
 }
 
+/**
+ * Only history blocks. A held unit alone used to as well, so a bad CSV
+ * import could only be cleaned up by unassigning each unit by hand; the
+ * delete unlinks the units in the same transaction instead.
+ */
 export function isTenantDeleteBlocked(plan: TenantDeletePlan): boolean {
-  return plan.reasons.length > 0 || plan.heldUnits.length > 0;
+  return plan.reasons.length > 0;
 }
 
 /** What the client needs to explain a refusal (TenantDeleteBlock in Dart). */

@@ -1,6 +1,7 @@
 {
-  "_about": "Permanent tenant delete rules, one table for both implementations. Run by functions-shared/src/test/tenantPermanentDeleteRules.test.ts (the deleteTenantsPermanently callable's rules) and test/tenant_delete_guard_test.dart (TenantService's client pre-check). If one side changes, change the other and add a case here. Every plan is for tenant t1; units carry tenantId t1 unless they say otherwise.",
+  "_about": "Permanent tenant delete rules, one table for both implementations. Only history blocks (blocked); held units are freed by the delete. Run by functions-shared/src/test/tenantPermanentDeleteRules.test.ts (the deleteTenantsPermanently callable's rules) and test/tenant_delete_guard_test.dart (TenantService's client pre-check). If one side changes, change the other and add a case here. Every plan is for tenant t1; units carry tenantId t1 unless they say otherwise.",
   "scanLimit": 10,
+  "maxTenantsPerDelete": 100,
   "rows": [
     { "kind": "ledger", "row": { "status": "posted" }, "live": true },
     { "kind": "ledger", "row": { "status": "pending" }, "live": true },
@@ -37,7 +38,12 @@
     { "billing": { "stripeSubscriptionId": null }, "has": false },
     { "billing": { "stripeSubscriptionId": " " }, "has": false },
     { "billing": { "autopayEnabled": false }, "has": false },
-    { "billing": null, "has": false }
+    { "billing": null, "has": false },
+    { "billing": { "autopayEnabled": true }, "has": true },
+    { "billing": { "autopayEnabled": true, "stripeSubscriptionId": null }, "has": true },
+    { "billing": { "autopayEnabled": false }, "paymentMethods": [{ "isActive": true, "autopayEnabled": true }], "has": true },
+    { "billing": null, "paymentMethods": [{ "isActive": false, "autopayEnabled": true }], "has": true },
+    { "billing": null, "paymentMethods": [{ "isActive": true, "autopayEnabled": false }, {}], "has": false }
   ],
   "blockers": [
     { "counts": {}, "reasons": [] },
@@ -80,57 +86,80 @@
     }
   ],
   "plans": [
-    { "name": "no records at all", "records": {}, "reasons": [], "heldUnits": [] },
+    { "name": "no records at all", "blocked": false, "records": {}, "reasons": [], "heldUnits": [] },
     {
       "name": "a posted ledger row",
+      "blocked": true,
       "records": { "ledgers": [{ "status": "posted" }] },
       "reasons": ["charges or payments on the ledger"],
       "heldUnits": []
     },
     {
       "name": "a sent invoice",
+      "blocked": true,
       "records": { "invoices": [{ "status": "sent" }] },
       "reasons": ["an invoice"],
       "heldUnits": []
     },
     {
       "name": "a completed facility payment",
+      "blocked": true,
       "records": { "payments": [{ "status": "completed" }] },
       "reasons": ["a payment record"],
       "heldUnits": []
     },
     {
       "name": "an ended contract",
+      "blocked": true,
       "records": { "contracts": [{ "isActive": false, "status": "terminated" }] },
       "reasons": ["a contract"],
       "heldUnits": []
     },
     {
       "name": "a released lien",
+      "blocked": true,
       "records": { "liens": [{ "isActive": false, "status": "released" }] },
       "reasons": ["a lien"],
       "heldUnits": []
     },
     {
       "name": "an active saved card",
+      "blocked": true,
       "records": { "paymentMethods": [{ "isActive": true }] },
       "reasons": ["a saved card"],
       "heldUnits": []
     },
     {
       "name": "a card payment the webhook has not recorded yet",
+      "blocked": true,
       "records": { "tenantPayments": [{ "status": "processing" }] },
       "reasons": ["a card payment in progress or payment history"],
       "heldUnits": []
     },
     {
       "name": "an armed autopay subscription",
+      "blocked": true,
       "records": { "billing": { "stripeSubscriptionId": "sub_1" } },
       "reasons": ["an autopay subscription"],
       "heldUnits": []
     },
     {
+      "name": "autopay switched on, no subscription id",
+      "blocked": true,
+      "records": { "billing": { "autopayEnabled": true, "stripeSubscriptionId": null } },
+      "reasons": ["an autopay subscription"],
+      "heldUnits": []
+    },
+    {
+      "name": "autopay armed on a card that was switched off",
+      "blocked": true,
+      "records": { "paymentMethods": [{ "isActive": false, "autopayEnabled": true }] },
+      "reasons": ["an autopay subscription"],
+      "heldUnits": []
+    },
+    {
       "name": "rows that never became history",
+      "blocked": false,
       "records": {
         "ledgers": [{ "status": "voided" }],
         "invoices": [{ "status": "voided" }],
@@ -144,6 +173,7 @@
     },
     {
       "name": "a full page of voided ledger rows",
+      "blocked": true,
       "records": {
         "ledgers": [
           { "status": "voided" }, { "status": "voided" }, { "status": "voided" }, { "status": "voided" },
@@ -156,6 +186,7 @@
     },
     {
       "name": "units: occupied and locked out are held; a stale link on an available unit and an unknown status are not",
+      "blocked": false,
       "records": {
         "units": [
           { "id": "u101", "unitNumber": "101", "status": "occupied" },
@@ -172,6 +203,7 @@
     },
     {
       "name": "every non-available status holds",
+      "blocked": false,
       "records": {
         "units": [
           { "id": "u1", "unitNumber": "1", "status": "reserved" },
@@ -192,6 +224,7 @@
     },
     {
       "name": "history and a held unit together",
+      "blocked": true,
       "records": {
         "invoices": [{ "status": "paid" }, { "status": "draft" }],
         "units": [{ "id": "u7", "unitNumber": "7", "status": "occupied" }]

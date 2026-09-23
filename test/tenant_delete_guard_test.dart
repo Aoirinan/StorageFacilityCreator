@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/invoice_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
@@ -11,6 +12,7 @@ import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/screens/unit_detail_screen.dart';
 import 'package:sfcapp/services/move_out_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
 
 /// One write a guard made, as the fake store saw it.
 class _Write {
@@ -142,6 +144,12 @@ class _FakeRecords implements TenantRecordsStore {
         ...directWrites.map((w) => '$w'),
         ...writtenPaths,
       ];
+}
+
+/// A callable error as the plugin raises it.
+class _CallableError extends FirebaseFunctionsException {
+  _CallableError(String code, String message)
+      : super(code: code, message: message);
 }
 
 /// Records what updateTenant would audit and refresh.
@@ -320,6 +328,18 @@ void main() {
       expect(TenantService.hasAutopaySubscription({'stripeSubscriptionId': ' '}), isFalse);
       expect(TenantService.hasAutopaySubscription({'autopayEnabled': false}), isFalse);
       expect(TenantService.hasAutopaySubscription(null), isFalse);
+      // What arms autopay today: the flag, on billing/default or on a card.
+      expect(TenantService.hasAutopaySubscription({'autopayEnabled': true}), isTrue);
+      expect(
+          TenantService.hasAutopaySubscription(null, [
+            {'isActive': false, 'autopayEnabled': true}
+          ]),
+          isTrue);
+      expect(
+          TenantService.hasAutopaySubscription({'autopayEnabled': false}, [
+            {'autopayEnabled': false}
+          ]),
+          isFalse);
     });
 
     test('cards and gate codes are on unless switched off', () {
@@ -465,7 +485,7 @@ void main() {
       expect(p.blockers, ['more records than could be checked here']);
     });
 
-    test('a tenant who holds a unit is blocked even with no history', () async {
+    test('a unit alone does not block: it is reported to be freed', () async {
       final store = _FakeRecords();
       store['t1'].units = [
         unit('101', UnitStatus.occupied, 't1'),
@@ -475,7 +495,16 @@ void main() {
       final p = await TenantService.loadDeletePlan(store, 't1');
       expect(p.blockers, isEmpty);
       expect(p.heldUnits, [const HeldUnit('101', UnitStatus.occupied)]);
-      expect(p.isBlocked, isTrue);
+      expect(p.isBlocked, isFalse);
+    });
+
+    test('autopay armed on a switched-off card blocks, with no subscription id', () async {
+      final store = _FakeRecords();
+      store['t1'].ownRows['paymentMethods'] = [
+        {'isActive': false, 'autopayEnabled': true}
+      ];
+      final p = await TenantService.loadDeletePlan(store, 't1');
+      expect(p.blockers, ['an autopay subscription']);
     });
 
     test('names the tenant from its doc, trimmed', () async {
@@ -496,18 +525,25 @@ void main() {
       'gateAccessDeactivated': 0,
     };
 
-    Future<({int unitsUnlinked, int gateCodesOff})> run(
+    Future<({int unitsUnlinked, int gateCodesOff})?> run(
       _FakeRecords store,
       List<String> ids, {
       Object? answer = deletedNothing,
       List<List<String>>? calls,
+      bool confirm = true,
+      List<List<TenantDeletePlan>>? asked,
     }) {
       return TenantService.permanentlyDelete(
         store,
         ids,
         deleteOnServer: (sent) async {
           calls?.add(sent);
+          if (answer is Exception) throw answer;
           return answer;
+        },
+        confirmUnitsFreed: (freeing) async {
+          asked?.add(freeing);
+          return confirm;
         },
       );
     }
@@ -522,19 +558,96 @@ void main() {
       expect(store.transactions, isEmpty);
     });
 
-    test('an occupant with no history is told to unassign the unit first', () async {
+    test('an occupant with no history: the owner is shown the unit, and "no" deletes nothing', () async {
+      // A held unit used to refuse the delete outright, so a bad CSV import
+      // could only be cleaned up by unassigning each unit by hand.
       final store = _FakeRecords();
       store['t1'].units = [unit('101', UnitStatus.occupied, 't1')];
       final calls = <List<String>>[];
-      final error = await run(store, ['t1'], calls: calls)
-          .then<Object?>((_) => null, onError: (Object e) => e);
-      expect(error, isA<TenantDeleteRefusedException>());
-      final refusal = error! as TenantDeleteRefusedException;
-      expect(refusal.blocked.single.canArchiveInstead, isFalse);
-      expect(refusal.message, 'Nothing was deleted. Ada Park is still assigned to unit 101.');
-      expect(refusal.details,
-          contains('Unassign the unit first (Units > unit 101 > Unassign Tenant). Then you can delete them.'));
+      final asked = <List<TenantDeletePlan>>[];
+      expect(await run(store, ['t1'], calls: calls, asked: asked, confirm: false), isNull);
+      expect(asked.single.single.heldUnits, [const HeldUnit('101', UnitStatus.occupied)]);
       expect(calls, isEmpty);
+    });
+
+    test('an occupant with no history: "yes" sends the delete, which frees the unit', () async {
+      final store = _FakeRecords();
+      store['t1'].units = [unit('101', UnitStatus.occupied, 't1')];
+      final calls = <List<String>>[];
+      final result = await run(store, ['t1'],
+          calls: calls,
+          answer: {'status': 'deleted', 'unitsUnlinked': 1, 'gateAccessDeactivated': 0});
+      expect(calls, [
+        ['t1']
+      ]);
+      expect(result!.unitsUnlinked, 1);
+    });
+
+    test('nobody holding a unit: nothing to confirm', () async {
+      final store = _FakeRecords();
+      final asked = <List<TenantDeletePlan>>[];
+      await run(store, ['t1'], asked: asked, confirm: false);
+      expect(asked, isEmpty);
+    });
+
+    test('history is refused before the owner is asked about units', () async {
+      final store = _FakeRecords();
+      store['t1'].units = [unit('101', UnitStatus.occupied, 't1')];
+      store['t2'].facilityRows['invoices'] = [invoice(InvoiceStatus.sent).toFirestore()];
+      final asked = <List<TenantDeletePlan>>[];
+      await expectLater(run(store, ['t1', 't2'], asked: asked),
+          throwsA(isA<TenantDeleteRefusedException>()));
+      expect(asked, isEmpty);
+    });
+
+    test('more than 100 is refused before any record is read', () async {
+      // The callable refuses them, after the pre-check had read ~10 docs a
+      // tenant, and the raw "[firebase_functions/invalid-argument]" reached
+      // the screen.
+      final store = _FakeRecords();
+      store.failing['tenant'] = StateError('read');
+      final calls = <List<String>>[];
+      final ids = [for (var i = 0; i < 101; i++) 't$i'];
+      await expectLater(
+        run(store, ids, calls: calls),
+        throwsA(isA<TenantDeleteTooManyException>().having((e) => e.message, 'message',
+            'You selected 101 tenants. Permanent delete takes at most 100 at a time, '
+            'so nothing was deleted. Select fewer and try again.')),
+      );
+      expect(calls, isEmpty);
+      // Exactly 100 goes ahead.
+      store.failing.clear();
+      await run(store, ids.take(100).toList(), calls: calls);
+      expect(calls.single, hasLength(100));
+    });
+
+    test("the callable's failures are worded for the owner, not '[firebase_functions/...]'", () async {
+      Future<CallableFailureException> failure(Exception e) async {
+        try {
+          await run(_FakeRecords(), ['t1'], answer: e);
+        } on CallableFailureException catch (f) {
+          return f;
+        }
+        fail('expected a CallableFailureException');
+      }
+
+      expect((await failure(_CallableError('permission-denied', 'x'))).message,
+          'Only the facility owner or a manager can permanently delete tenants. Nothing was deleted.');
+      expect((await failure(_CallableError('not-found', 'NOT_FOUND'))).message,
+          contains("Couldn't find this facility on the server, so nothing was deleted."));
+      for (final code in ['unavailable', 'deadline-exceeded']) {
+        expect((await failure(_CallableError(code, 'x'))).message,
+            contains('the delete may not have gone through'),
+            reason: code);
+      }
+      // Our callable's own words for what it refuses.
+      expect(
+          (await failure(_CallableError('failed-precondition',
+                  'Nothing was deleted: too many records to change in one go.')))
+              .message,
+          'Nothing was deleted: too many records to change in one go.');
+      expect((await failure(_CallableError('internal', 'INTERNAL'))).message,
+          contains('Something went wrong on our side'));
     });
 
     test('an unreadable record refuses the whole bulk delete before the server', () async {
@@ -572,7 +685,7 @@ void main() {
       expect(calls, [
         ['t1', 't2']
       ]);
-      expect(result.unitsUnlinked, 1);
+      expect(result!.unitsUnlinked, 1);
       expect(result.gateCodesOff, 2);
       expect(store.transactions, isEmpty);
     });
@@ -692,7 +805,9 @@ void main() {
         final billing = c['billing'] == null
             ? null
             : Map<String, dynamic>.from(c['billing'] as Map);
-        expect(TenantService.hasAutopaySubscription(billing), c['has'], reason: '$billing');
+        expect(TenantService.hasAutopaySubscription(billing, maps(c['paymentMethods'])),
+            c['has'],
+            reason: '$c');
       }
     });
 
@@ -714,8 +829,9 @@ void main() {
       }
     });
 
-    test('plans give the same reasons and held units as the server', () async {
+    test('plans give the same reasons, held units and verdict as the server', () async {
       expect(parity['scanLimit'], 10, reason: 'TenantService._deleteCheckScanLimit');
+      expect(parity['maxTenantsPerDelete'], TenantService.maxTenantsPerDelete);
       for (final c in maps(parity['plans'])) {
         final records = Map<String, dynamic>.from(c['records'] as Map);
         final store = _FakeRecords();
@@ -752,6 +868,8 @@ void main() {
           c['heldUnits'],
           reason: '${c['name']}',
         );
+        // Only history blocks; held units are freed by the delete.
+        expect(p.isBlocked, c['blocked'], reason: '${c['name']}');
       }
     });
   });
@@ -1222,6 +1340,40 @@ void main() {
     });
   });
 
+  group('the units-freed confirmation names every unit', () {
+    test('one tenant, one unit', () {
+      final text = TenantService.unitsFreedMessage([
+        const TenantDeletePlan(
+            tenantId: 't1',
+            tenantName: 'Ada Park',
+            heldUnits: [HeldUnit('101', UnitStatus.occupied)]),
+      ]);
+      expect(
+          text,
+          'This unit is still assigned to the tenant you are deleting:\n'
+          '• Ada Park: unit 101\n\n'
+          'It will be unassigned and listed as available to rent. Only go ahead '
+          'if they never actually rented it.');
+    });
+
+    test('several tenants and units, with any status that is not plain occupied', () {
+      final text = TenantService.unitsFreedMessage([
+        const TenantDeletePlan(tenantId: 't1', tenantName: 'Ada Park', heldUnits: [
+          HeldUnit('101', UnitStatus.occupied),
+          HeldUnit('7', UnitStatus.lockout),
+        ]),
+        const TenantDeletePlan(
+            tenantId: 't2',
+            tenantName: 'Bo Diaz',
+            heldUnits: [HeldUnit('9', UnitStatus.outOfOrder)]),
+      ]);
+      expect(text, startsWith('These units are still assigned to the tenants you are deleting:'));
+      expect(text, contains('• Ada Park: unit 101, unit 7 (lockout)'));
+      expect(text, contains('• Bo Diaz: unit 9 (out of order)'));
+      expect(text, contains('Each will be unassigned and listed as available to rent.'));
+    });
+  });
+
   group('refusal copy leads somewhere', () {
     test('each unit status gets the step that frees it', () {
       expect(const HeldUnit('1', UnitStatus.occupied).freeingSteps,
@@ -1290,13 +1442,15 @@ void main() {
         TenantDeleteBlock(
           tenantId: 'b',
           tenantName: 'Bo Diaz',
+          reasons: ['a lien'],
           heldUnits: [HeldUnit('7', UnitStatus.lockout)],
         ),
       ]);
+      expect(refusal.details, startsWith('Nothing was deleted. These tenants have history that has to be kept:'));
       expect(refusal.details, contains('• Ada Park: has an invoice.'));
       expect(
           refusal.details,
-          contains('• Bo Diaz: is still assigned to unit 7. Unassign the unit first '
+          contains('• Bo Diaz: has a lien and is still assigned to unit 7. Unassign the unit first '
               '(Units > unit 7 > Remove Lockout, then Unassign Tenant).'));
       expect(refusal.details, contains('archive the 1 tenant who holds no unit'));
     });

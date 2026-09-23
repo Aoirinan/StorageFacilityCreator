@@ -235,6 +235,7 @@ jobs:
       matrix:
         package:
           - functions-admin
+          - functions-tenant-lifecycle
     defaults:
       run:
         working-directory: ${{ matrix.package }}
