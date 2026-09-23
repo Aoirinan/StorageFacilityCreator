@@ -507,22 +507,19 @@ class FacilityService {
         return facilities;
       }
 
-      final List<FacilityModel> facilities;
       if (forceRefresh) {
         // A forced refresh follows a write. Anything already loading may have
-        // read before it: keep it out of the cache, and don't let later
-        // callers join it.
+        // read before it: keep it out of the cache, and hand later callers
+        // this load instead of it.
         _facilitiesGeneration++;
         _facilitiesFlight.clear();
-        facilities = await loadAndCache();
-      } else {
-        // On a cold load the dashboard, sidebar, banner and route guard each
-        // ran this whole chain at once; now they share one.
-        facilities = await _facilitiesFlight.run(
-          '$uid|$includeArchived',
-          loadAndCache,
-        );
       }
+      // On a cold load the dashboard, sidebar, banner and route guard each
+      // ran this whole chain at once; now they share one.
+      final facilities = await _facilitiesFlight.run(
+        '$uid|$includeArchived',
+        loadAndCache,
+      );
       // #region agent log
       DebugLogger.log(
         hypothesisId: 'H3',
@@ -601,100 +598,138 @@ class FacilityService {
   }
 
   static Stream<List<FacilityModel>> getFacilitiesForUserStream() {
+    return facilitiesForUserStream(
+      currentUid: () => _auth.currentUser?.uid,
+      ownedFacilities: (uid) => _firestore
+          .collection('facilities')
+          .where('active', isEqualTo: true)
+          .where('ownerUid', isEqualTo: uid)
+          .snapshots()
+          .map((snap) => snap.docs.map(FacilityModel.fromFirestore).toList()),
+      roleFacilityIds: (uid) => _firestore
+          .collection(PermissionService.userRolesCollection)
+          .where('userId', isEqualTo: uid)
+          .where('isActive', isEqualTo: true)
+          .snapshots()
+          .map((snap) => snap.docs
+              .map((doc) => doc.data()['facilityId'] as String?)
+              .where((id) => id != null && id.isNotEmpty)
+              .cast<String>()
+              .toSet()),
+      facility: (facilityId) => _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .snapshots()
+          .map((doc) => doc.exists ? FacilityModel.fromFirestore(doc) : null),
+    );
+  }
+
+  /// [getFacilitiesForUserStream] with its Firestore streams passed in: the
+  /// signed-in uid, the owned (active) facilities, the ids the user reaches
+  /// through an active role, and one facility doc (null when missing).
+  /// Everything else is what production runs. Exposed for tests.
+  ///
+  /// A role facility (invited staff, a super admin's support session) is
+  /// listened to, like the owned ones. It used to be read once, when it first
+  /// appeared, so the facility list and everything that reuses it kept its
+  /// old name, address and settings, and kept an archived one, until the page
+  /// was reloaded.
+  @visibleForTesting
+  static Stream<List<FacilityModel>> facilitiesForUserStream({
+    required String? Function() currentUid,
+    required Stream<List<FacilityModel>> Function(String uid) ownedFacilities,
+    required Stream<Set<String>> Function(String uid) roleFacilityIds,
+    required Stream<FacilityModel?> Function(String facilityId) facility,
+  }) {
     final controller = StreamController<List<FacilityModel>>.broadcast();
-    StreamSubscription? ownedSub;
-    StreamSubscription? rolesSub;
-    final facilityMap = <String, FacilityModel>{};
-    var ownerFacilityIds = <String>{};
-    var roleFacilityIds = <String>{};
+    StreamSubscription<List<FacilityModel>>? ownedSub;
+    StreamSubscription<Set<String>>? rolesSub;
+    final roleDocSubs = <String, StreamSubscription<FacilityModel?>>{};
+    // Latest doc per listened role facility; null when missing or unreadable.
+    final roleDocs = <String, FacilityModel?>{};
+    var owned = <String, FacilityModel>{};
+    var roleIds = <String>{};
+    var ownedLoaded = false;
+    var rolesLoaded = false;
+
+    // Role facilities the user also owns come from the owned query already.
+    Set<String> listenedRoleIds() => roleIds.difference(owned.keys.toSet());
 
     void emit() {
       if (controller.isClosed) return;
-      final list = facilityMap.values
-          .map(
-            (f) => f.copyWith(
-              currentUserOwnsFacility: ownerFacilityIds.contains(f.id),
-            ),
-          )
-          .toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
+      // Nothing until every source has answered once. The owned query used
+      // to emit on its own, so invited staff were shown "no facilities"
+      // before their role facilities arrived.
+      final listened = listenedRoleIds();
+      if (!ownedLoaded || !rolesLoaded || !listened.every(roleDocs.containsKey)) {
+        return;
+      }
+      final list = <FacilityModel>[
+        for (final f in owned.values) f.copyWith(currentUserOwnsFacility: true),
+        for (final id in listened)
+          if (roleDocs[id] case final f? when f.active)
+            f.copyWith(currentUserOwnsFacility: false),
+      ]..sort((a, b) => a.name.compareTo(b.name));
       controller.add(list);
     }
 
-    Future<void> syncRoleFacilities(QuerySnapshot<Map<String, dynamic>> snapshot) async {
-      final ids = snapshot.docs
-          .map((doc) => doc.data()['facilityId'] as String?)
-          .where((id) => id != null && id.isNotEmpty)
-          .cast<String>()
-          .toSet();
-      roleFacilityIds = ids;
-
-      final missing = ids.where((id) => !facilityMap.containsKey(id)).toList();
-      if (missing.isNotEmpty) {
-        final futures = missing
-            .map((id) => _firestore.collection('facilities').doc(id).get())
-            .toList();
-        final results = await Future.wait(futures);
-        for (final doc in results) {
-          if (!doc.exists) continue;
-          final model = FacilityModel.fromFirestore(doc);
-          if (model.active) {
-            facilityMap[model.id] = model;
-          }
-        }
+    void syncRoleListeners() {
+      final wanted = listenedRoleIds();
+      for (final id in roleDocSubs.keys.where((id) => !wanted.contains(id)).toList()) {
+        roleDocSubs.remove(id)?.cancel();
+        roleDocs.remove(id);
       }
-
-      final toRemove = facilityMap.keys
-          .where((id) => !ownerFacilityIds.contains(id) && !roleFacilityIds.contains(id))
-          .toList();
-      for (final id in toRemove) {
-        facilityMap.remove(id);
+      for (final id in wanted) {
+        if (roleDocSubs.containsKey(id)) continue;
+        roleDocSubs[id] = facility(id).listen(
+          (model) {
+            roleDocs[id] = model;
+            emit();
+          },
+          onError: (Object e) {
+            // Left out, as when the one-off read of it failed; one facility
+            // the user cannot read must not take the whole list down.
+            if (kDebugMode) {
+              _facilityServiceDebugLog('⚠️ [FacilityService] Role facility $id unreadable: $e');
+            }
+            roleDocs[id] = null;
+            emit();
+          },
+        );
       }
-      emit();
-    }
-
-    void syncOwnedFacilities(QuerySnapshot<Map<String, dynamic>> snapshot) {
-      ownerFacilityIds = snapshot.docs.map((doc) => doc.id).toSet();
-      for (final doc in snapshot.docs) {
-        final model = FacilityModel.fromFirestore(doc);
-        facilityMap[model.id] = model;
-      }
-      final toRemove = facilityMap.keys
-          .where((id) => !ownerFacilityIds.contains(id) && !roleFacilityIds.contains(id))
-          .toList();
-      for (final id in toRemove) {
-        facilityMap.remove(id);
-      }
-      emit();
     }
 
     void start() {
-      final user = _auth.currentUser;
-      if (user == null) {
+      final uid = currentUid();
+      if (uid == null) {
         controller.add([]);
         controller.close();
         return;
       }
 
-      ownedSub = _firestore
-          .collection('facilities')
-          .where('active', isEqualTo: true)
-          .where('ownerUid', isEqualTo: user.uid)
-          .snapshots()
-          .listen(syncOwnedFacilities, onError: controller.addError);
+      ownedSub = ownedFacilities(uid).listen((list) {
+        owned = {for (final f in list) f.id: f};
+        ownedLoaded = true;
+        syncRoleListeners();
+        emit();
+      }, onError: controller.addError);
 
-      rolesSub = _firestore
-          .collection(PermissionService.userRolesCollection)
-          .where('userId', isEqualTo: user.uid)
-          .where('isActive', isEqualTo: true)
-          .snapshots()
-          .listen(syncRoleFacilities, onError: controller.addError);
+      rolesSub = roleFacilityIds(uid).listen((ids) {
+        roleIds = ids;
+        rolesLoaded = true;
+        syncRoleListeners();
+        emit();
+      }, onError: controller.addError);
     }
 
     controller.onListen = start;
     controller.onCancel = () async {
       await ownedSub?.cancel();
       await rolesSub?.cancel();
+      for (final sub in roleDocSubs.values) {
+        await sub.cancel();
+      }
+      roleDocSubs.clear();
       if (!controller.isClosed) {
         await controller.close();
       }

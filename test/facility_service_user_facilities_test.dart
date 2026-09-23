@@ -195,6 +195,24 @@ void main() {
       expect(names(await old), ['Before write']);
     });
 
+    test('a caller arriving after a forced refresh gets the post-write list', () async {
+      // Without dropping the pre-write load from the shared slot, the next
+      // caller joined it and got the list from before the write.
+      final old = load('uid-A', fetch: gated);
+      await pumpEventQueue();
+      final forced = load('uid-A', fetch: gated, forceRefresh: true);
+      await pumpEventQueue();
+      final later = load('uid-A', fetch: gated);
+      await pumpEventQueue();
+      expect(fetches['uid-A'], 2, reason: 'the later caller joins the forced load');
+
+      pending['uid-A']![0].complete([_facility('f1', 'Before write')]);
+      pending['uid-A']![1].complete([_facility('f2', 'After write')]);
+      expect(names(await later), ['After write']);
+      expect(names(await forced), ['After write']);
+      expect(names(await old), ['Before write']);
+    });
+
     test('a load that started before a forced refresh never overwrites its newer list', () async {
       // The old load finishes last. It used to write its list over the forced
       // one with a fresh 2-minute timestamp.
@@ -270,5 +288,132 @@ void main() {
       await expectLater(run(throwOnError: true), throwsException);
       expect(fetches, isEmpty);
     });
+  });
+
+  group('facilitiesForUserStream (the facility list, fake Firestore streams)', () {
+    // getFacilitiesForUserStream is this with the real queries passed in.
+    late StreamController<List<FacilityModel>> owned;
+    late StreamController<Set<String>> roles;
+    late Map<String, StreamController<FacilityModel?>> docs;
+    late List<List<FacilityModel>> emitted;
+    late StreamSubscription<List<FacilityModel>> sub;
+
+    setUp(() {
+      owned = StreamController<List<FacilityModel>>();
+      roles = StreamController<Set<String>>();
+      docs = {};
+      emitted = [];
+      sub = FacilityService.facilitiesForUserStream(
+        currentUid: () => 'staff-1',
+        ownedFacilities: (_) => owned.stream,
+        roleFacilityIds: (_) => roles.stream,
+        facility: (id) => (docs[id] ??= StreamController<FacilityModel?>()).stream,
+      ).listen(emitted.add);
+    });
+
+    tearDown(() async {
+      await sub.cancel();
+    });
+
+    FacilityModel roleFacility(String id, String name, {bool active = true}) => FacilityModel(
+          id: id,
+          name: name,
+          ownerUid: 'someone-else',
+          createdAt: DateTime(2026),
+          active: active,
+        );
+
+    List<String> latest() => emitted.last.map((f) => f.name).toList();
+
+    test('a role facility stays live: a later edit reaches the list', () async {
+      // It was read once when it first appeared, so a manager or a support
+      // session kept its old name, address and settings until a reload.
+      owned.add(const []);
+      roles.add({'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Old name'));
+      await pumpEventQueue();
+      expect(latest(), ['Old name']);
+      expect(emitted.last.single.currentUserOwnsFacility, isFalse);
+
+      docs['f1']!.add(roleFacility('f1', 'New name'));
+      await pumpEventQueue();
+      expect(latest(), ['New name']);
+    });
+
+    test('a role facility archived later drops out', () async {
+      owned.add(const []);
+      roles.add({'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Keepsake', active: false));
+      await pumpEventQueue();
+      expect(emitted.last, isEmpty);
+    });
+
+    test('a role that ends stops the listener', () async {
+      owned.add(const []);
+      roles.add({'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      await pumpEventQueue();
+      roles.add(const {});
+      await pumpEventQueue();
+      expect(emitted.last, isEmpty);
+      expect(docs['f1']!.hasListener, isFalse);
+    });
+
+    test('nothing is emitted until every source has answered once', () async {
+      // The owned query emitted on its own first, so invited staff were shown
+      // "no facilities" before their role facilities arrived.
+      owned.add(const []);
+      await pumpEventQueue();
+      roles.add({'f1'});
+      await pumpEventQueue();
+      expect(emitted, isEmpty);
+      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      await pumpEventQueue();
+      expect(emitted, hasLength(1));
+      expect(latest(), ['Keepsake']);
+    });
+
+    test('an owned facility comes from the owned query, not a second listener', () async {
+      owned.add([_facility('o1', 'Mine')]);
+      roles.add({'o1', 'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+      expect(latest(), ['Mine', 'Theirs']);
+      expect(
+        {for (final f in emitted.last) f.id: f.currentUserOwnsFacility},
+        {'o1': true, 'f1': false},
+      );
+      expect(docs.containsKey('o1'), isFalse);
+    });
+
+    test('an unreadable or missing role facility is left out, not an error', () async {
+      final errors = <Object>[];
+      sub.onError(errors.add);
+      owned.add(const []);
+      roles.add({'gone', 'denied', 'f1'});
+      await pumpEventQueue();
+      docs['gone']!.add(null);
+      docs['denied']!.addError(StateError('permission-denied'));
+      docs['f1']!.add(roleFacility('f1', 'Keepsake'));
+      await pumpEventQueue();
+      expect(latest(), ['Keepsake']);
+      expect(errors, isEmpty);
+    });
+  });
+
+  test('facilitiesForUserStream: signed out is one empty list', () async {
+    final stream = FacilityService.facilitiesForUserStream(
+      currentUid: () => null,
+      ownedFacilities: (_) => fail('no query when signed out'),
+      roleFacilityIds: (_) => fail('no query when signed out'),
+      facility: (_) => fail('no query when signed out'),
+    );
+    expect(await stream.toList(), [isEmpty]);
   });
 }

@@ -148,7 +148,7 @@ final dashboardStatsProvider = FutureProvider<DashboardStats>((ref) async {
   }
 
   // Get all facilities for user
-  final allFacilities = await FacilityService.getUserFacilities();
+  final allFacilities = await FacilityService.getUserFacilities(throwOnError: true);
   
   if (kDebugMode) {
     print('🔍 [Dashboard] Total facilities for user: ${allFacilities.length}');
