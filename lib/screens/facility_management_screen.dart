@@ -428,10 +428,19 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
           ],
         ),
         subtitle: FutureBuilder<({int totalUnits, int occupiedUnits})>(
-          future: _unitCountMemos.putIfAbsent(facility.id, KeyedMemo.new)(
-            '${facility.id}|${facility.occupiedUnits}|${facility.unitDocCount}',
-            () => FacilityStatsService.computeUnitCounts(facility.id),
-          ),
+          // A result that disagrees with the mirror is shown but not kept, so
+          // a failed read (which comes back as zeros) is retried on the next
+          // rebuild instead of sticking until the mirror changes.
+          future: _unitCountMemos
+              .putIfAbsent(facility.id, KeyedMemo.new)
+              .callKeeping(
+                '${facility.id}|${facility.occupiedUnits}|${facility.unitDocCount}',
+                () => FacilityStatsService.computeUnitCounts(facility.id),
+                keep: (counts) => FacilityStatsService.countsMatchFacilityMirror(
+                  counts,
+                  facility,
+                ),
+              ),
           builder: (context, snapshot) {
             // Show the actual count of unit documents (live > cached field).
             // `facility.totalUnits` is the user-set capacity max and is not used here.

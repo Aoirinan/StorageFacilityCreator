@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
@@ -13,6 +14,7 @@ UnitModel _unit(
   UnitStatus status = UnitStatus.occupied,
   String? tenantId = 't1',
   DateTime? moveOutNoticeDate,
+  bool publicListingEnabled = true,
 }) {
   return UnitModel(
     id: id,
@@ -26,8 +28,21 @@ UnitModel _unit(
     updatedAt: DateTime(2026, 1, 1),
     createdBy: 'test',
     moveOutNoticeDate: moveOutNoticeDate,
+    publicListingEnabled: publicListingEnabled,
   );
 }
+
+TenantModel _tenant(String id, {bool isActive = true}) => TenantModel(
+      id: id,
+      facilityId: 'fac1',
+      name: id,
+      email: '',
+      phone: '',
+      unitNumber: '',
+      monthlyRate: 100,
+      createdAt: DateTime(2026, 1, 1),
+      isActive: isActive,
+    );
 
 void main() {
   group('waiting for the saved facility selection', () {
@@ -114,6 +129,27 @@ void main() {
       ], now);
       expect(due.map((d) => d.unit.id), ['in-window']);
       expect(due.single.moveOutDate, DateTime(2026, 9, 26));
+    });
+  });
+
+  group('facilityUnitCounts (what the dashboard shows per facility)', () {
+    test("counts an archived tenant's unit and leaves staff-only units out", () {
+      final counts = facilityUnitCounts(
+        [
+          _unit('active', tenantId: 'active-t'),
+          _unit('archived', tenantId: 'archived-t'),
+          _unit('office', tenantId: 'active-t', publicListingEnabled: false),
+          _unit('orphan', tenantId: 'deleted-t'),
+          _unit('free', status: UnitStatus.available, tenantId: null),
+        ],
+        [_tenant('active-t'), _tenant('archived-t', isActive: false)],
+      );
+      // Before: the dashboard counted every unit doc and only active
+      // tenants' units, giving 5 total / 2 occupied here (the office in, the
+      // archived tenant's unit out) against the Units list's 4 / 2.
+      expect(counts.totalUnits, 4);
+      expect(counts.occupiedUnits, 2);
+      expect(counts.unitDocs, 5);
     });
   });
 

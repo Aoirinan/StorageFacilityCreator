@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import '../models/unit_model.dart';
 import '../services/unit_service.dart';
 import '../services/tenant_service.dart';
@@ -51,6 +52,41 @@ class FacilityStatsService {
       }
       return false;
     }
+  }
+
+  /// True if the facility has at least one active tenant (cheap `limit(1)`
+  /// probe). For the onboarding checklist, which only needs yes or no.
+  static Future<bool> facilityHasAnyActiveTenant(String facilityId) async {
+    try {
+      final snap = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .where('isActive', isEqualTo: true)
+          .limit(1)
+          .get();
+      return snap.docs.isNotEmpty;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [FacilityStatsService] facilityHasAnyActiveTenant failed: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Whether counts read for a facility agree with the counts the Cloud
+  /// Function mirrors onto its doc (`unitDocCount`, `occupiedUnits`), which
+  /// use the same rule as [countUnits].
+  ///
+  /// [computeUnitCounts] turns a failed read into (0, 0), and a failed tenant
+  /// read into 0 occupied. A facility card that kept such a result until the
+  /// mirror changed showed it long after the read recovered.
+  static bool countsMatchFacilityMirror(
+    ({int totalUnits, int occupiedUnits}) counts,
+    FacilityModel facility,
+  ) {
+    return counts.totalUnits == facility.unitDocCount &&
+        counts.occupiedUnits == facility.occupiedUnits;
   }
 
   /// Set of tenant IDs that exist for the facility (used for canonical occupancy).
@@ -134,96 +170,6 @@ class FacilityStatsService {
     }
   }
 
-  /// Compute comprehensive facility statistics including tenants, revenue, and delinquency.
-  /// Uses canonical occupancy through [countUnits]. Read-only: orphan units are
-  /// healed by the Cloud Function, never here.
-  static Future<Map<String, dynamic>> computeFacilityStats(String facilityId) async {
-    try {
-      final facility = await FacilityService.getFacility(facilityId);
-      final units = await UnitService.getUnitsForFacility(facilityId);
-      final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final counts = countUnits(units, tenants.map((t) => t.id).toSet());
-      final occupiedUnits = counts.occupiedUnits;
-      final totalUnits = counts.totalUnits;
-      final availableUnits = (totalUnits - occupiedUnits).clamp(0, totalUnits);
-
-      final activeTenants = tenants.where((t) => t.isActive == true).toList();
-      final totalTenantsActive = activeTenants.length;
-
-      // Scheduled revenue = all active tenants; autopay subset uses Firestore `autopay.status` (ON).
-      double scheduledMonthlyRevenue = 0.0;
-      for (final tenant in activeTenants) {
-        scheduledMonthlyRevenue += tenant.monthlyRate;
-      }
-      final autopayMonthlyRevenue = sumAutopayMonthlyRevenue(activeTenants);
-
-      // Count delinquent tenants using facility's grace period (Billing Settings)
-      final graceDays = LateLogicService.gracePeriodDaysFromBillingSettings(
-        facility?.billingSettings,
-      );
-      int tenantsLate = 0;
-      int tenantsOverdue = 0;
-      int tenantsSeverelyOverdue = 0;
-
-      for (final tenant in activeTenants) {
-        if (!LateLogicService.isTenantLate(tenant, gracePeriodDays: graceDays)) {
-          continue;
-        }
-        final daysLate =
-            LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: graceDays);
-        if (daysLate >= 30) {
-          tenantsSeverelyOverdue++;
-        } else if (daysLate >= 10) {
-          tenantsOverdue++;
-        } else {
-          tenantsLate++;
-        }
-      }
-
-      final totalPastDue = tenantsLate + tenantsOverdue + tenantsSeverelyOverdue;
-
-      if (kDebugMode) {
-        print('✅ [FacilityStatsService] Computed stats for $facilityId:');
-        print('   - Total units: $totalUnits (occupied: $occupiedUnits, available: $availableUnits)');
-        print('   - Active tenants: $totalTenantsActive');
-        print('   - Scheduled monthly revenue: \$${scheduledMonthlyRevenue.toStringAsFixed(2)} '
-            '(autopay: \$${autopayMonthlyRevenue.toStringAsFixed(2)})');
-        print('   - Past due: $totalPastDue (late: $tenantsLate, overdue: $tenantsOverdue, severe: $tenantsSeverelyOverdue)');
-      }
-
-      return {
-        'totalUnits': totalUnits,
-        'occupiedUnits': occupiedUnits,
-        'availableUnits': availableUnits,
-        'totalTenantsActive': totalTenantsActive,
-        'scheduledMonthlyRevenue': scheduledMonthlyRevenue,
-        'autopayMonthlyRevenue': autopayMonthlyRevenue,
-        'tenantsLate': tenantsLate,
-        'tenantsOverdue': tenantsOverdue,
-        'tenantsSeverelyOverdue': tenantsSeverelyOverdue,
-        'totalPastDue': totalPastDue,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [FacilityStatsService] Error computing facility stats: $e');
-      }
-      return {
-        'totalUnits': 0,
-        'occupiedUnits': 0,
-        'availableUnits': 0,
-        'totalTenantsActive': 0,
-        'scheduledMonthlyRevenue': 0.0,
-        'autopayMonthlyRevenue': 0.0,
-        'tenantsLate': 0,
-        'tenantsOverdue': 0,
-        'tenantsSeverelyOverdue': 0,
-        'totalPastDue': 0,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-    }
-  }
-
   /// Kept so existing callers compile; does nothing, on purpose.
   ///
   /// It used to heal orphan units and then write the stats doc and the
@@ -298,13 +244,21 @@ class FacilityStatsService {
   ) {
     final total = result.synced + result.failed;
     if (total == 0) {
-      return (message: 'No facilities to sync.', isError: false);
+      // The button only shows for an owner with facilities, and
+      // getUserFacilities returns [] when its read fails, so an empty list
+      // here is a failed load. It used to read as a green "nothing to do".
+      return (
+        message: 'Could not load your facilities to sync. Try again in a moment.',
+        isError: true,
+      );
     }
     if (result.failed > 0) {
+      // "Could not finish", not "nothing was changed": the server can heal
+      // units before a later step of the same pass fails.
       return (
         message: result.failed == total
-            ? 'Could not sync counts. Nothing was changed; try again in a moment.'
-            : 'Could not sync counts for ${result.failed} of $total facilities. Try again in a moment.',
+            ? 'Could not finish syncing counts. Try again in a moment.'
+            : 'Could not finish syncing counts for ${result.failed} of $total facilities. Try again in a moment.',
         isError: true,
       );
     }

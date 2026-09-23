@@ -13,7 +13,9 @@
 
 - **Dashboard** (`dashboardStatsProvider`, autoDispose, reloads on each visit and after returning from tenant/contract detail): computed live from the facility's unit and tenant lists with `countUnits`. The "Total Units" card notes how many staff-only units exist and are not counted. The cached `facilities/{id}/stats/current` doc is not read: no Firestore rule lets clients read it.
 - **Units list header**: `countUnits` over the unit and tenant streams already on screen, e.g. `72 / 78 rentable units occupied (4 staff-only not counted)`. The table rows include staff-only units.
-- **Facilities card**: `FacilityStatsService.computeUnitCounts` (same rule), memoized per facility on the mirrored counts; falls back to the facility-doc mirror while loading.
+- **Facilities card**: `FacilityStatsService.computeUnitCounts` (same rule), memoized per facility on the mirrored counts; falls back to the facility-doc mirror while loading. A result that disagrees with the mirror (a failed read comes back as zeros) is shown but not kept, so the next rebuild reads again.
+- **Dashboard per facility**: `facilityUnitCounts` in `dashboard_provider.dart`, which is `countUnits` over every unit and every tenant doc.
+- **Settings → Onboarding** checklist: `onboardingProgressProvider`, one `limit(1)` unit probe and one active-tenant probe per facility. It does not load the dashboard.
 - **Facility-doc mirror** (`facility.occupiedUnits`, `facility.unitDocCount`; used by search, super admin, the card fallback): written only by the Cloud Function, same rule.
 
 ## Who writes stats and heals orphans
@@ -43,6 +45,6 @@ The client never heals or writes stats. `FacilityStatsService.updateFacilityStat
 
 ## Automated tests
 
-- `test/facility_stats_logic_test.dart`: `countUnits`, `cachedUnitTotalDrifted`, Sync counts messages and failure tally.
-- `test/unit_counts_header_test.dart`, `test/dashboard_load_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
+- `test/facility_stats_logic_test.dart`: `countUnits`, `cachedUnitTotalDrifted`, `countsMatchFacilityMirror`, Sync counts messages (an empty facility list is an error) and failure tally.
+- `test/dashboard_load_test.dart` (`facilityUnitCounts`), `test/unit_counts_header_test.dart` (header and rows keep the last tenant list through a stream error), `test/keyed_memo_test.dart` (`callKeeping`), `test/settings_onboarding_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
 - `functions-facility-ops/src/test/facility_stats.test.ts` (archived exclusion, heal scope, no zeros on read failure) and `facility_stats_manual.test.ts` (access check).

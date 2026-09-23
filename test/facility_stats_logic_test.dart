@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_autopay_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
@@ -208,6 +209,58 @@ void main() {
 
       final ok = FacilityStatsService.syncCountsMessage((synced: 3, failed: 0));
       expect(ok.isError, isFalse);
+    });
+
+    test('an empty facility list is a failed load, not "nothing to sync"', () {
+      // getUserFacilities returns [] when its read fails, and the button only
+      // shows for an owner with facilities. Before: a green "No facilities
+      // to sync."
+      final empty = FacilityStatsService.syncCountsMessage((synced: 0, failed: 0));
+      expect(empty.isError, isTrue);
+      expect(empty.message, contains('Could not load your facilities'));
+    });
+
+    test('a failure never claims nothing was changed', () {
+      // The server can heal units before a later step of the pass fails.
+      for (final result in [(synced: 0, failed: 2), (synced: 1, failed: 1)]) {
+        final outcome = FacilityStatsService.syncCountsMessage(result);
+        expect(outcome.isError, isTrue);
+        expect(outcome.message, startsWith('Could not finish syncing counts'));
+        expect(outcome.message.toLowerCase(), isNot(contains('nothing was changed')));
+      }
+    });
+  });
+
+  group('countsMatchFacilityMirror', () {
+    FacilityModel facility({required int unitDocCount, required int occupiedUnits}) =>
+        FacilityModel(
+          id: 'fac1',
+          name: 'Fac',
+          ownerUid: 'owner',
+          createdAt: DateTime(2026, 1, 1),
+          unitDocCount: unitDocCount,
+          occupiedUnits: occupiedUnits,
+        );
+
+    test('agrees only when both counts match the mirror', () {
+      final f = facility(unitDocCount: 78, occupiedUnits: 72);
+      expect(
+        FacilityStatsService.countsMatchFacilityMirror(
+            (totalUnits: 78, occupiedUnits: 72), f),
+        isTrue,
+      );
+      // What computeUnitCounts returns for a failed read, and for a failed
+      // tenant read: never kept on the facility card.
+      expect(
+        FacilityStatsService.countsMatchFacilityMirror(
+            (totalUnits: 0, occupiedUnits: 0), f),
+        isFalse,
+      );
+      expect(
+        FacilityStatsService.countsMatchFacilityMirror(
+            (totalUnits: 78, occupiedUnits: 0), f),
+        isFalse,
+      );
     });
   });
 }

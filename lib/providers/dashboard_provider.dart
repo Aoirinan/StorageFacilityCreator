@@ -306,12 +306,7 @@ Future<_FacilityDashboard> _loadFacilityDashboard(
     facilityRevenue += tenant.monthlyRate;
   }
 
-  // ALL tenant ids, archived included, and no staff-only units: the same
-  // numbers as the Units list and the facility cards.
-  final counts = FacilityStatsService.countUnits(
-    units,
-    tenants.map((t) => t.id).toSet(),
-  );
+  final counts = facilityUnitCounts(units, tenants);
 
   // Count past due tenants using facility's grace period (Billing Settings)
   final graceDays = LateLogicService.gracePeriodDaysFromBillingSettings(
@@ -330,7 +325,7 @@ Future<_FacilityDashboard> _loadFacilityDashboard(
   if (kDebugMode) {
     print('📊 [Dashboard] ${facility.name}: ${activeTenants.length} active tenants, '
         '${counts.occupiedUnits}/${counts.totalUnits} rentable units occupied '
-        '(${units.length} unit docs), past due $pastDue');
+        '(${counts.unitDocs} unit docs), past due $pastDue');
   }
 
   return _FacilityDashboard(
@@ -340,11 +335,33 @@ Future<_FacilityDashboard> _loadFacilityDashboard(
         FacilityStatsService.sumAutopayMonthlyRevenue(activeTenants),
     totalUnits: counts.totalUnits,
     occupiedUnits: counts.occupiedUnits,
-    unitDocs: units.length,
+    unitDocs: counts.unitDocs,
     pastDue: pastDue,
     openLeads: openLeads,
     delinquent: second[0] as List<TopDelinquentTenant>,
     moveOuts: second[1] as List<UpcomingMoveOut>,
+  );
+}
+
+/// One facility's unit numbers for the dashboard: rentable total and
+/// occupied by [FacilityStatsService.countUnits], plus every unit doc.
+///
+/// [tenants] is every tenant doc, archived included: archiving a tenant does
+/// not free the unit. The dashboard used to count only units held by active
+/// tenants, and staff-only units too, so it disagreed with the Units list and
+/// the facility cards (82/74 against 78/72 at one facility).
+({int totalUnits, int occupiedUnits, int unitDocs}) facilityUnitCounts(
+  List<UnitModel> units,
+  List<TenantModel> tenants,
+) {
+  final counts = FacilityStatsService.countUnits(
+    units,
+    {for (final t in tenants) t.id},
+  );
+  return (
+    totalUnits: counts.totalUnits,
+    occupiedUnits: counts.occupiedUnits,
+    unitDocs: units.length,
   );
 }
 

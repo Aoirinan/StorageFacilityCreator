@@ -34,3 +34,30 @@ class KeyedMemo<T extends Object> {
   /// Whether anything is currently cached. Exposed for tests.
   bool get hasValue => _value != null;
 }
+
+extension KeyedFutureMemo<R> on KeyedMemo<Future<R>> {
+  /// [call] for a future whose result may not be worth keeping.
+  ///
+  /// Once the future completes, a result [keep] rejects, or an error, is
+  /// forgotten, so the next call for the same key reads again. The caller
+  /// still gets this future, so what is on screen does not change. Without
+  /// this, a transient failure was held until the key changed.
+  Future<R> callKeeping(
+    String key,
+    Future<R> Function() create, {
+    required bool Function(R value) keep,
+  }) {
+    return call(key, () {
+      final created = create();
+      void forget() {
+        // Only this future: a newer key may already have replaced it.
+        if (identical(_value, created)) invalidate();
+      }
+
+      created.then((value) {
+        if (!keep(value)) forget();
+      }, onError: (Object _) => forget());
+      return created;
+    });
+  }
+}

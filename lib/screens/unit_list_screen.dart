@@ -29,6 +29,16 @@ String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantI
   return staffOnly > 0 ? '$label ($staffOnly staff-only not counted)' : label;
 }
 
+/// The tenants the Units list matches units against: the latest list the
+/// stream delivered, kept through a later stream error.
+///
+/// `whenOrNull(data:)` gave null for an error that still holds the previous
+/// list, while the header is shown whenever a list exists, so after an
+/// auto-retried stream error it read "0 / 78 rentable units occupied" and
+/// every rented unit was hidden as a ghost.
+List<TenantModel> unitListTenants(AsyncValue<List<TenantModel>> tenantsAsync) =>
+    tenantsAsync.value ?? const <TenantModel>[];
+
 /// Unit List Screen - Table/List view of all units for selected facility
 class UnitListScreen extends ConsumerStatefulWidget {
   const UnitListScreen({super.key});
@@ -395,8 +405,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
 
     return unitsAsync.when(
       data: (units) {
-        final tenants =
-            tenantsAsync.whenOrNull(data: (d) => d) ?? <TenantModel>[];
+        final tenants = unitListTenants(tenantsAsync);
         final tenantMap = {for (final t in tenants) t.id: t};
         bool isGhostUnit(unit) =>
             unit.tenantId != null &&
