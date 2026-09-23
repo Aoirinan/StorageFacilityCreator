@@ -9,6 +9,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\"",
+    "test:emulator": "npm run build && node ../firestore-rules-test/scripts/run-with-firestore-emulator.mjs \"node --test functions-admin/lib/test/emulator/*.test.js\"",
     "security:cleanup": "node scripts/security-hardening-cleanup.cjs"
   },
   "dependencies": {

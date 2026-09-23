@@ -226,6 +226,39 @@ jobs:
       - run: npm run build
       - run: npm test --if-present
 
+  # Admin SDK tests on the Firestore emulator (the rules tests' harness): the
+  # real callables and transaction adapters that the unit tests fake.
+  functions-emulator:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - functions-admin
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ${{ matrix.package }}/package-lock.json
+            functions-shared/package-lock.json
+      - name: Build functions-shared and vendor into function packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm ci --prefix functions-shared
+          node scripts/vendor-functions-shared.cjs
+      - run: npm ci
+      - run: npm run test:emulator
+
   firestore-rules:
     runs-on: ubuntu-latest
     defaults:

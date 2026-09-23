@@ -15,6 +15,7 @@ import {
   summarizeCancelOutcomes,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
+import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
 const USER_ROLES_COLLECTION = 'user_roles';
@@ -278,27 +279,6 @@ export const superAdminDeleteFacilityCreatorAccount = functions
     return { success: true, facilitiesDeleted: facilitiesSnap.size };
   });
 
-/**
- * Remove all Firebase Storage objects under `facilities/{facilityId}/` (contracts,
- * documents, branding, etc.). Best-effort: logs and does not throw so Firestore
- * cleanup can still proceed if Storage is unavailable.
- */
-async function deleteFacilityStoragePrefixBestEffort(facilityId: string): Promise<void> {
-  const prefix = `facilities/${facilityId}/`;
-  try {
-    const bucket = admin.storage().bucket();
-    await bucket.deleteFiles({ prefix, force: true });
-    functions.logger.info('deleteFacilityStoragePrefix: removed objects', { facilityId, prefix });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    functions.logger.warn('deleteFacilityStoragePrefix: failed (Firestore delete will still run)', {
-      facilityId,
-      prefix,
-      error: msg,
-    });
-  }
-}
-
 interface SuperAdminDeleteFacilityData {
   facilityId: string;
   facilityNameConfirmation: string;
@@ -352,95 +332,34 @@ export const superAdminDeleteFacility = functions
       );
     }
 
-    // Stop the billing before removing the thing being billed for. Done first
-    // on purpose: if the delete succeeded and this failed, the customer would
-    // keep paying for a facility that no longer exists, and nothing would be
-    // left to point at the charge.
-    const facilitySubscriptions = collectSubscriptionsToCancel(facilityData, null);
-    const cancelOutcomes = await cancelSubscriptions(getStripeClient(), facilitySubscriptions);
-    if (anyCancelFailed(cancelOutcomes)) {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        `Could not cancel this facility's Stripe subscriptions, so nothing was deleted: ` +
-          `${summarizeCancelOutcomes(cancelOutcomes)}. Resolve it in Stripe and try again.`,
-      );
-    }
-    if (cancelOutcomes.length > 0) {
-      functions.logger.info('Cancelled facility subscriptions before delete', {
-        facilityId,
-        outcomes: summarizeCancelOutcomes(cancelOutcomes),
-      });
-    }
-
-    const metaSnap = await facilityRef.collection('mapEngine').doc('meta').get();
-    const publicSlug = metaSnap.exists
-      ? String(metaSnap.get('publicSlug') || '').trim().toLowerCase()
-      : '';
-
-    if (publicSlug) {
-      const pubRef = db.collection('publicFacilityMaps').doc(publicSlug);
-      const pubSnap = await pubRef.get();
-      if (pubSnap.exists && String(pubSnap.get('facilityId') || '') === facilityId) {
-        await adminDeleteDocumentTree(pubRef);
-      }
-    }
-
+    // Shared with the owner's deleteFacilityPermanently (facilityPurge.ts):
+    // billing stopped first, then the public map entry, the account link,
+    // Storage and the whole Firestore subtree.
     const accountId = String(facilityData.facilityCreatorAccountId || '').trim();
-    if (accountId) {
-      const accRef = db.collection('facilityCreatorAccounts').doc(accountId);
-      const accSnap = await accRef.get();
-      if (accSnap.exists) {
-        const accountData = accSnap.data() as Record<string, unknown>;
-        const oldIds = (accountData.facilityIds as string[]) || [];
-        const newIds = oldIds.filter((id) => id !== facilityId);
-
-        const accUpdates: Record<string, unknown> = {
-          facilityIds: admin.firestore.FieldValue.arrayRemove(facilityId),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-        if (accountData.referralRewardPreferredFacilityId === facilityId) {
-          accUpdates.referralRewardPreferredFacilityId = admin.firestore.FieldValue.delete();
-        }
-        await accRef.update(accUpdates);
-
-        const subscriptionId = (accountData.stripeSubscriptionId as string | undefined)?.trim();
-        if (subscriptionId) {
-          const stripe = getStripeClient();
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          const basePriceId = process.env.STRIPE_BASE_PRICE_ID || (await getOrCreateBasePriceId(stripe));
-          const addOnPriceId = process.env.STRIPE_ADDON_PRICE_ID || (await getOrCreateAddOnPriceId(stripe));
-          const facilityCount = newIds.length;
-          const additionalFacilityCount = Math.max(0, facilityCount - 1);
-          const baseItem = subscription.items.data.find((item: Stripe.SubscriptionItem) => item.price.id === basePriceId);
-          const addOnItem = subscription.items.data.find((item: Stripe.SubscriptionItem) => item.price.id === addOnPriceId);
-          const currentAddOnQty = addOnItem ? addOnItem.quantity : 0;
-          if (!(baseItem?.quantity === 1 && currentAddOnQty === additionalFacilityCount)) {
-            const updatesStripe: Stripe.SubscriptionUpdateParams = {
-              items: [],
-              proration_behavior: 'create_prorations',
-            };
-            if (baseItem) {
-              updatesStripe.items!.push({ id: baseItem.id, quantity: 1 });
-            } else {
-              updatesStripe.items!.push({ price: basePriceId, quantity: 1 });
-            }
-            if (additionalFacilityCount > 0) {
-              if (addOnItem) {
-                updatesStripe.items!.push({ id: addOnItem.id, quantity: additionalFacilityCount });
-              } else {
-                updatesStripe.items!.push({ price: addOnPriceId, quantity: additionalFacilityCount });
-              }
-            } else if (addOnItem) {
-              updatesStripe.items!.push({ id: addOnItem.id, deleted: true });
-            }
-            await stripe.subscriptions.update(subscriptionId, updatesStripe);
-          }
-        }
+    try {
+      const { subscriptionOutcomes } = await purgeFacility(
+        db,
+        facilityRef,
+        facilityData,
+        stripeFacilityPurgeDeps(),
+        accountId || null,
+      );
+      if (subscriptionOutcomes.length > 0) {
+        functions.logger.info('Cancelled facility subscriptions before delete', {
+          facilityId,
+          outcomes: summarizeCancelOutcomes(subscriptionOutcomes),
+        });
       }
+    } catch (error: unknown) {
+      if (error instanceof FacilityBillingNotStoppedError) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          `Could not cancel this facility's Stripe subscriptions, so nothing was deleted: ` +
+            `${summarizeCancelOutcomes(error.outcomes)}. Resolve it in Stripe and try again.`,
+        );
+      }
+      throw error;
     }
-
-    await deleteFacilityStoragePrefixBestEffort(facilityId);
-    await adminDeleteDocumentTree(facilityRef);
 
     functions.logger.info('superAdminDeleteFacility', {
       facilityId,

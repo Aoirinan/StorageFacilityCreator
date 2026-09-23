@@ -94,6 +94,9 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, the screen said "deleted permanently" even when the
+      // server refused (no email code, not the owner) or failed.
+      rethrow;
     }
   }
 

@@ -240,6 +240,25 @@ test('tenant docs: only a super admin deletes directly; owners and managers use 
   );
 });
 
+test('facility docs: only a super admin deletes directly; owners use the callable', async () => {
+  // The app's own facility delete skipped subcollections it couldn't delete
+  // (tenants, now super-admin only) and then deleted the facility doc,
+  // leaving the tenant records behind. The deleteFacilityPermanently
+  // callable removes the whole subtree instead.
+  await seedFacility();
+  const facilityAs = (context) => context.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(facilityAs(testEnv.authenticatedContext(OWNER_UID)).delete());
+  await assertFails(facilityAs(testEnv.authenticatedContext(STAFF_UID)).delete());
+  await assertFails(facilityAs(testEnv.authenticatedContext(OUTSIDER_UID)).delete());
+  // The owner can still edit it.
+  await assertSucceeds(facilityAs(testEnv.authenticatedContext(OWNER_UID)).update({ name: 'Renamed' }));
+
+  await assertSucceeds(
+    facilityAs(testEnv.authenticatedContext('admin-user', { superadmin: true })).delete(),
+  );
+});
+
 test('unmatched collections like stripeWebhookEvents deny client access', async () => {
   const authed = testEnv.authenticatedContext(OWNER_UID);
   await assertFails(
