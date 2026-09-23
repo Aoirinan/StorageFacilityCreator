@@ -40,6 +40,41 @@ UnitModel _occupiedUnit({required String id, required String tenantId}) {
   );
 }
 
+UnitModel _unit(
+  String id, {
+  UnitStatus status = UnitStatus.available,
+  String? tenantId,
+  bool publicListingEnabled = true,
+}) {
+  return UnitModel(
+    id: id,
+    facilityId: 'fac1',
+    unitNumber: id,
+    unitType: 'standard',
+    status: status,
+    tenantId: tenantId,
+    monthlyRate: 100,
+    createdAt: DateTime(2026, 1, 1),
+    updatedAt: DateTime(2026, 1, 1),
+    createdBy: 'test',
+    publicListingEnabled: publicListingEnabled,
+  );
+}
+
+/// The six cases behind the dashboard/Units list disagreement (82/74 against
+/// 78/72 at one facility).
+List<UnitModel> _mixedFacility() => [
+      _unit('active', status: UnitStatus.occupied, tenantId: 'active-t'),
+      _unit('archived-tenant', status: UnitStatus.occupied, tenantId: 'archived-t'),
+      _unit('office',
+          status: UnitStatus.occupied,
+          tenantId: 'active-t',
+          publicListingEnabled: false),
+      _unit('orphan', status: UnitStatus.occupied, tenantId: 'deleted-t'),
+      _unit('reserved', status: UnitStatus.reserved, tenantId: 'active-t'),
+      _unit('free'),
+    ];
+
 void main() {
   group('sumAutopayMonthlyRevenue', () {
     test('sums monthlyRate only for autopay ON', () {
@@ -96,6 +131,83 @@ void main() {
 
       expect(occupiedWithAll, 1);
       expect(occupiedActiveOnly, 0);
+    });
+  });
+
+  group('countUnits (the one definition every screen uses)', () {
+    test('leaves staff-only units out and counts archived tenants as occupying', () {
+      final counts = FacilityStatsService.countUnits(
+        _mixedFacility(),
+        {'active-t', 'archived-t'},
+      );
+      // Staff-only office excluded from the total; orphan and reserved are
+      // vacant. The dashboard's old inline count gave 6 total / 2 occupied
+      // here (office counted, archived tenant's unit not).
+      expect(counts.totalUnits, 5);
+      expect(counts.occupiedUnits, 2);
+    });
+
+    test('an archived tenant id missing from the set means the unit reads vacant', () {
+      // Why callers must pass every tenant doc id, not only active ones.
+      final counts = FacilityStatsService.countUnits(
+        _mixedFacility(),
+        {'active-t'},
+      );
+      expect(counts.occupiedUnits, 1);
+    });
+
+    test('a facility of only staff-only units has a rentable total of zero', () {
+      final counts = FacilityStatsService.countUnits(
+        [_unit('office', publicListingEnabled: false)],
+        const {},
+      );
+      expect(counts.totalUnits, 0);
+      expect(counts.occupiedUnits, 0);
+    });
+  });
+
+  group('cachedUnitTotalDrifted', () {
+    test('a cache holding the rentable count is not stale when a staff-only unit exists', () {
+      final units = [
+        ...List.generate(79, (i) => _unit('u$i')),
+        _unit('office', publicListingEnabled: false),
+      ];
+      // Before: compared against all 80 units, so this recomputed on every
+      // load forever.
+      expect(FacilityStatsService.cachedUnitTotalDrifted(79, units), isFalse);
+      expect(FacilityStatsService.cachedUnitTotalDrifted(80, units), isTrue);
+    });
+  });
+
+  group('Sync counts', () {
+    test('tallies failures per facility instead of stopping at the first', () async {
+      final seen = <String>[];
+      final result = await FacilityStatsService.runForEachFacility(
+        ['a', 'b', 'c'],
+        (id) async {
+          seen.add(id);
+          if (id == 'b') throw Exception('permission-denied');
+        },
+      );
+      expect(seen, unorderedEquals(['a', 'b', 'c']));
+      expect(result.synced, 2);
+      expect(result.failed, 1);
+    });
+
+    test('never reports success when any facility failed', () {
+      // Before: both buttons always said "Counts synced" while every stats
+      // write behind them was denied.
+      final partial =
+          FacilityStatsService.syncCountsMessage((synced: 2, failed: 1));
+      expect(partial.isError, isTrue);
+      expect(partial.message, contains('1 of 3'));
+
+      final none = FacilityStatsService.syncCountsMessage((synced: 0, failed: 1));
+      expect(none.isError, isTrue);
+      expect(none.message.toLowerCase(), isNot(contains('updated')));
+
+      final ok = FacilityStatsService.syncCountsMessage((synced: 3, failed: 0));
+      expect(ok.isError, isFalse);
     });
   });
 }

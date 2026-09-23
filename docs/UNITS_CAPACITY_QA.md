@@ -2,9 +2,10 @@
 
 ## Summary of changes
 
-- **Reconcile:** `FacilityStatsService.reconcileUnitsToCapacity(facilityId)` heals orphan occupancy and refreshes stats. It does **not** create placeholder unit documents up to `facility.totalUnits` (that was removed so new sites are not filled with empty rows). Optional: `materializeMissingUnitDocumentsUpToCapacity` creates 001…N rows to match capacity (e.g. legacy / special imports).
-- **Sync counts:** "Sync counts" on the dashboard runs heal + stats for each facility (no mass unit creation).
-- **Facility edit:** Saving a new `totalUnits` still calls reconcile (heal + stats only); change capacity on the facility doc without auto-creating unit rows.
+- **Reconcile:** removed. Orphan occupancy is healed only by the `functions-facility-ops` Cloud Function (see `docs/OCCUPANCY_SYNC_VERIFICATION.md`). Nothing creates placeholder unit documents up to `facility.totalUnits`.
+- **Sync counts:** "Sync counts" on the dashboard calls the `updateFacilityStatsManual` Cloud Function for each facility (server heal + stats, no mass unit creation).
+- **Facility edit:** Saving a new `totalUnits` only changes capacity on the facility doc; no unit rows are created and no stats step runs.
+- **Counts today:** Total/Occupied exclude staff-only units and use unit docs, not capacity; the checklist below predates that and is kept for history.
 - **Unit List:** Denominator is always facility capacity (`totalUnits`). Occupied = canonical (unit.status==occupied and tenant exists). Display: `occupied / totalCapacity units`.
 - **Edit Unit:** Unit List and Unit Detail "Edit" open `/units/edit` with unit as extra → `UnitCreationScreen(facilityId, unit)`.
 - **View Details:** Unchanged → `/units/detail?facilityId=&unitId=`.

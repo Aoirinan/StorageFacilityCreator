@@ -5,7 +5,6 @@ import '../models/unit_model.dart';
 import 'audit_service.dart';
 import 'facility_limits_service.dart';
 import 'facility_map_v2_service.dart';
-import 'facility_stats_service.dart';
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -446,8 +445,9 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Tenant assigned to unit successfully');
       }
-      // force: occupancy just changed and the operator is looking at it.
-      await FacilityStatsService.updateFacilityStats(facilityId, force: true);
+      // No client stats refresh: the unit write above fires the onUnitWrite
+      // Cloud Function, which recomputes. The awaited client recompute here
+      // cost ~6 reads per save and its stats write was always denied.
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error assigning tenant to unit: $e');
@@ -495,7 +495,7 @@ class UnitService {
       if (kDebugMode) {
         print('✅ Tenant removed from unit successfully');
       }
-      await FacilityStatsService.updateFacilityStats(facilityId);
+      // Stats: recomputed by the onUnitWrite Cloud Function, as above.
       _schedulePublicMapInventorySync(facilityId);
     } catch (e) {
       if (kDebugMode) {
@@ -503,39 +503,6 @@ class UnitService {
       }
       rethrow;
     }
-  }
-
-  /// Batch-clear tenant link and set status to available for multiple units.
-  /// Used by occupancy healing; does NOT call FacilityStatsService (caller must recompute).
-  /// Firestore batch limit 500; chunks if needed.
-  static Future<void> clearTenantFromUnitsBatch({
-    required String facilityId,
-    required List<String> unitIds,
-  }) async {
-    if (unitIds.isEmpty) return;
-    final user = _auth.currentUser;
-    if (user == null) throw Exception('Not signed in');
-
-    const batchLimit = 500;
-    final ref = _firestore.collection('facilities').doc(facilityId).collection('units');
-    for (var i = 0; i < unitIds.length; i += batchLimit) {
-      final chunk = unitIds.sublist(i, (i + batchLimit).clamp(0, unitIds.length));
-      final batch = _firestore.batch();
-      for (final unitId in chunk) {
-        batch.update(ref.doc(unitId), {
-          'status': UnitStatus.available.name,
-          'tenantId': FieldValue.delete(),
-          'tenantName': FieldValue.delete(),
-          'updatedAt': FieldValue.serverTimestamp(),
-          'updatedBy': user.uid,
-        });
-      }
-      await batch.commit();
-    }
-    if (kDebugMode) {
-      print('✅ [UnitService] Cleared tenant from ${unitIds.length} unit(s) (heal batch)');
-    }
-    _schedulePublicMapInventorySync(facilityId);
   }
 
   // Archive unit (soft delete)

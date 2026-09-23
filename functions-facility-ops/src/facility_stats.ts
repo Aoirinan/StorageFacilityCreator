@@ -1,6 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { getFirestore } from '@sfc/functions-shared/firestoreLazy';
+import { getFacilityDataForUserOrThrow } from '@sfc/functions-shared/auth/facilityAccess';
 
 /**
  * Delinquency Rules (consistent with Flutter app):
@@ -28,6 +29,7 @@ interface UnitInput {
   status: string;
   tenantId?: string | null;
   publicListingEnabled?: boolean;
+  archived?: boolean;
 }
 
 /**
@@ -35,12 +37,18 @@ interface UnitInput {
  * Available Units). Excludes staff-only spaces (manager residence, office,
  * personal-use) that have `publicListingEnabled === false` — the same flag
  * that already keeps them off the public map/website (mirrors Flutter
- * FacilityStatsService._rentableUnits), so an operator's internal-use
+ * FacilityStatsService.countUnits), so an operator's internal-use
  * tracking entries don't inflate their own dashboard numbers. Orphan healing
  * below deliberately still scans every unit, rentable or not.
+ *
+ * Archived units are excluded too. They were counted here but not in the app,
+ * so the facility-doc mirror (facility cards, search, super admin) ran higher
+ * than every screen that counts units itself. `(archived ?? false) === false`
+ * is the exact test Flutter's UnitService applies, so a stray non-boolean
+ * value is dropped by both sides rather than by one.
  */
 function isRentableUnit(unit: UnitInput): boolean {
-  return unit.publicListingEnabled !== false;
+  return unit.publicListingEnabled !== false && (unit.archived ?? false) === false;
 }
 
 function countCanonicalOccupied(
@@ -118,52 +126,148 @@ function calculateDaysLate(
   return difference < 0 ? 0 : difference;
 }
 
-export const facilityStatsTestUtils = {
-  tenantAutopayOn,
-  isTenantLate,
-  calculateDaysLate,
-  countCanonicalOccupied,
-  isRentableUnit,
-};
+/** Everything a stats pass needs from Firestore, read before anything is written. */
+interface FacilityStatsInputs {
+  gracePeriodDays: number;
+  units: UnitInput[];
+  /** Every tenant doc id, active or archived: archiving a tenant does not free the unit. */
+  allTenantIds: Set<string>;
+  activeTenants: TenantData[];
+}
+
+/** Seams for tests; production passes the Firestore-backed implementations below. */
+export interface FacilityStatsDeps {
+  load: (facilityId: string) => Promise<FacilityStatsInputs>;
+  healOrphans: (facilityId: string, orphanIds: string[]) => Promise<void>;
+}
 
 /**
- * Canonical occupancy: unit is occupied ONLY if status===occupied AND tenantId exists in facility.
- * Heals orphan units (status=occupied but tenant missing) by setting available and clearing tenantId.
+ * Counts and delinquency for one facility from inputs already in hand. Units
+ * are limited to rentable ones (see isRentableUnit); revenue and past due come
+ * from active tenants only.
  */
-async function getCanonicalOccupiedCountAndHeal(
-  facilityId: string,
-  unitsSnapshot: admin.firestore.QuerySnapshot,
-  tenantIds: Set<string>,
-): Promise<{ occupiedUnits: number; orphanIds: string[] }> {
+function summarizeFacilityStats(
+  inputs: FacilityStatsInputs,
+  now: Date = new Date(),
+): Record<string, number> {
+  const rentable = inputs.units.filter(isRentableUnit);
+  const { occupiedUnits } = countCanonicalOccupied(rentable, inputs.allTenantIds);
+  const totalUnits = rentable.length;
+  const availableUnits = Math.max(0, totalUnits - occupiedUnits);
+
+  let scheduledMonthlyRevenue = 0;
+  let autopayMonthlyRevenue = 0;
+  let tenantsLate = 0; // 1-9 days
+  let tenantsOverdue = 0; // 10-29 days
+  let tenantsSeverelyOverdue = 0; // 30+ days
+
+  for (const tenant of inputs.activeTenants) {
+    const rate = tenant.monthlyRate || 0;
+    scheduledMonthlyRevenue += rate;
+    if (tenantAutopayOn(tenant)) {
+      autopayMonthlyRevenue += rate;
+    }
+
+    const daysLate = calculateDaysLate(tenant, inputs.gracePeriodDays, now);
+    if (daysLate >= 30) {
+      tenantsSeverelyOverdue++;
+    } else if (daysLate >= 10) {
+      tenantsOverdue++;
+    } else if (daysLate >= 1) {
+      tenantsLate++;
+    }
+  }
+
+  return {
+    totalUnits,
+    occupiedUnits,
+    availableUnits,
+    totalTenantsActive: inputs.activeTenants.length,
+    scheduledMonthlyRevenue,
+    autopayMonthlyRevenue,
+    tenantsLate,
+    tenantsOverdue,
+    tenantsSeverelyOverdue,
+    totalPastDue: tenantsLate + tenantsOverdue + tenantsSeverelyOverdue,
+  };
+}
+
+async function loadFacilityStatsInputs(facilityId: string): Promise<FacilityStatsInputs> {
+  const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
+  const billingSettings = facilityDoc.data()?.billingSettings as
+    | { gracePeriodDays?: number | string }
+    | undefined;
+  const rawGrace = billingSettings?.gracePeriodDays;
+  const gracePeriodDays =
+    typeof rawGrace === 'number'
+      ? rawGrace
+      : parseInt(String(rawGrace ?? ''), 10) || 3;
+
+  // Units strictly before tenants, never in parallel. A unit is linked to its
+  // tenant in the same write as the tenant doc or after it, so a tenant read
+  // taken after the unit read contains that tenant. Read the other way round
+  // (or concurrently), a move-in landing between the two reads looks like an
+  // orphan and the heal frees a unit that was just rented.
+  const unitsSnapshot = await getFirestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units')
+    .get();
   const units = unitsSnapshot.docs.map((doc) => ({
     id: doc.id,
-    ...(doc.data() as { status: string; tenantId?: string | null; publicListingEnabled?: boolean }),
+    ...(doc.data() as {
+      status: string;
+      tenantId?: string | null;
+      publicListingEnabled?: boolean;
+      archived?: boolean;
+    }),
   }));
-  // Healing scans every unit (rentable or not) so a stale tenantId on an
-  // office/staff unit still gets cleared; only the returned occupiedUnits
-  // count (a dashboard metric) excludes non-rentable units.
-  const { orphanIds } = countCanonicalOccupied(units, tenantIds);
-  const { occupiedUnits } = countCanonicalOccupied(units.filter(isRentableUnit), tenantIds);
-  const BATCH_LIMIT = 500;
-  if (orphanIds.length > 0) {
-    const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
-    for (let i = 0; i < orphanIds.length; i += BATCH_LIMIT) {
-      const chunk = orphanIds.slice(i, i + BATCH_LIMIT);
-      const batch = getFirestore().batch();
-      for (const unitId of chunk) {
-        batch.update(unitsRef.doc(unitId), {
-          status: 'available',
-          tenantId: admin.firestore.FieldValue.delete(),
-          tenantName: admin.firestore.FieldValue.delete(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-      await batch.commit();
-    }
-    console.log(`🔧 [facility_stats] Healed ${orphanIds.length} orphan unit(s) for ${facilityId}`);
-  }
-  return { occupiedUnits, orphanIds };
+
+  const allTenantsSnapshot = await getFirestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('tenants')
+    .get();
+
+  const activeTenantsSnapshot = await getFirestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('tenants')
+    .where('isActive', '==', true)
+    .get();
+
+  return {
+    gracePeriodDays,
+    units,
+    allTenantIds: new Set(allTenantsSnapshot.docs.map((d) => d.id)),
+    activeTenants: activeTenantsSnapshot.docs.map((d) => d.data() as TenantData),
+  };
 }
+
+/** Orphan units (status=occupied, tenant missing) become available with no tenant. */
+async function healOrphanUnits(facilityId: string, orphanIds: string[]): Promise<void> {
+  const BATCH_LIMIT = 500;
+  const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
+  for (let i = 0; i < orphanIds.length; i += BATCH_LIMIT) {
+    const chunk = orphanIds.slice(i, i + BATCH_LIMIT);
+    const batch = getFirestore().batch();
+    for (const unitId of chunk) {
+      batch.update(unitsRef.doc(unitId), {
+        status: 'available',
+        tenantId: admin.firestore.FieldValue.delete(),
+        tenantName: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  }
+  console.log(`🔧 [facility_stats] Healed ${orphanIds.length} orphan unit(s) for ${facilityId}`);
+}
+
+const firestoreFacilityStatsDeps: FacilityStatsDeps = {
+  load: loadFacilityStatsInputs,
+  healOrphans: healOrphanUnits,
+};
 
 /** Write stats doc and mirror occupied + unit-doc count onto the facility root doc. */
 async function persistFacilityStats(facilityId: string, stats: Record<string, unknown>): Promise<void> {
@@ -185,110 +289,53 @@ async function persistFacilityStats(facilityId: string, stats: Record<string, un
 /**
  * Compute comprehensive facility statistics.
  * Uses canonical occupancy (only count occupied if tenant exists). Heals orphan units.
+ *
+ * Throws when a read fails. It used to return all-zero stats instead, which
+ * every caller then persisted: one transient read error blanked the facility
+ * mirror that search, the super-admin totals and the facility cards show,
+ * until the next unit or tenant write. Healing runs only after every read has
+ * succeeded, so a partial tenant list can never free a rented unit.
  */
-async function computeFacilityStats(facilityId: string): Promise<Record<string, any>> {
-  try {
-    const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
-    const billingSettings = facilityDoc.data()?.billingSettings as
-      | { gracePeriodDays?: number | string }
-      | undefined;
-    const rawGrace = billingSettings?.gracePeriodDays;
-    const gracePeriodDays =
-      typeof rawGrace === 'number'
-        ? rawGrace
-        : parseInt(String(rawGrace ?? ''), 10) || 3;
+async function computeFacilityStats(
+  facilityId: string,
+  deps: FacilityStatsDeps = firestoreFacilityStatsDeps,
+): Promise<Record<string, unknown>> {
+  const inputs = await deps.load(facilityId);
 
-    const unitsSnapshot = await getFirestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('units')
-      .get();
-    const rentableUnitCount = unitsSnapshot.docs.filter((doc) =>
-      isRentableUnit(doc.data() as UnitInput),
-    ).length;
-
-    const allTenantsSnapshot = await getFirestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('tenants')
-      .get();
-
-    const activeTenantsSnapshot = await getFirestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('tenants')
-      .where('isActive', '==', true)
-      .get();
-
-    // Occupancy/healing: include archived tenants so their units are not freed incorrectly.
-    const tenantIds = new Set(allTenantsSnapshot.docs.map((d) => d.id));
-    const { occupiedUnits } = await getCanonicalOccupiedCountAndHeal(
-      facilityId,
-      unitsSnapshot,
-      tenantIds,
-    );
-
-    const totalUnits = rentableUnitCount;
-    const availableUnits = Math.max(0, totalUnits - occupiedUnits);
-    const totalTenantsActive = activeTenantsSnapshot.size;
-
-    // Calculate revenue and delinquency (active tenants only)
-    let scheduledMonthlyRevenue = 0;
-    let autopayMonthlyRevenue = 0;
-    let tenantsLate = 0; // 1-9 days
-    let tenantsOverdue = 0; // 10-29 days
-    let tenantsSeverelyOverdue = 0; // 30+ days
-
-    for (const doc of activeTenantsSnapshot.docs) {
-      const tenant = doc.data() as TenantData;
-      const rate = tenant.monthlyRate || 0;
-      scheduledMonthlyRevenue += rate;
-      if (tenantAutopayOn(tenant)) {
-        autopayMonthlyRevenue += rate;
-      }
-
-      const daysLate = calculateDaysLate(tenant, gracePeriodDays);
-      if (daysLate >= 30) {
-        tenantsSeverelyOverdue++;
-      } else if (daysLate >= 10) {
-        tenantsOverdue++;
-      } else if (daysLate >= 1) {
-        tenantsLate++;
-      }
-    }
-
-    const totalPastDue = tenantsLate + tenantsOverdue + tenantsSeverelyOverdue;
-
-    return {
-      totalUnits,
-      occupiedUnits,
-      availableUnits,
-      totalTenantsActive,
-      scheduledMonthlyRevenue,
-      autopayMonthlyRevenue,
-      tenantsLate,
-      tenantsOverdue,
-      tenantsSeverelyOverdue,
-      totalPastDue,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-  } catch (error) {
-    console.error(`❌ Error computing stats for facility ${facilityId}:`, error);
-    return {
-      totalUnits: 0,
-      occupiedUnits: 0,
-      availableUnits: 0,
-      totalTenantsActive: 0,
-      scheduledMonthlyRevenue: 0,
-      autopayMonthlyRevenue: 0,
-      tenantsLate: 0,
-      tenantsOverdue: 0,
-      tenantsSeverelyOverdue: 0,
-      totalPastDue: 0,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
+  // Healing scans every unit (archived and staff-only too) so a stale tenantId
+  // anywhere still gets cleared; only the counts are limited to rentable units.
+  const { orphanIds } = countCanonicalOccupied(inputs.units, inputs.allTenantIds);
+  if (orphanIds.length > 0) {
+    await deps.healOrphans(facilityId, orphanIds);
   }
+
+  return {
+    ...summarizeFacilityStats(inputs),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
 }
+
+/** Compute, then persist. A failed compute throws before anything is written. */
+async function recomputeAndPersistFacilityStats(
+  facilityId: string,
+  compute: (facilityId: string) => Promise<Record<string, unknown>> = computeFacilityStats,
+  persist: (facilityId: string, stats: Record<string, unknown>) => Promise<void> = persistFacilityStats,
+): Promise<Record<string, unknown>> {
+  const stats = await compute(facilityId);
+  await persist(facilityId, stats);
+  return stats;
+}
+
+export const facilityStatsTestUtils = {
+  tenantAutopayOn,
+  isTenantLate,
+  calculateDaysLate,
+  countCanonicalOccupied,
+  isRentableUnit,
+  summarizeFacilityStats,
+  computeFacilityStats,
+  recomputeAndPersistFacilityStats,
+};
 
 /**
  * Recomputing stats is O(facility size): computeFacilityStats() reads the facility
@@ -371,8 +418,7 @@ const firestoreStatsCoalesceHooks: StatsCoalesceHooks = {
   claim: claimStatsRecompute,
   consumeDirty: consumeStatsDirtyFlag,
   recompute: async (facilityId: string) => {
-    const stats = await computeFacilityStats(facilityId);
-    await persistFacilityStats(facilityId, stats);
+    await recomputeAndPersistFacilityStats(facilityId);
   },
 };
 
@@ -439,42 +485,69 @@ export const updateAllFacilityStatsNightly = functions.pubsub
       console.log('🕐 Starting nightly facility stats update');
       
       const facilitiesSnapshot = await getFirestore().collection('facilities').get();
-      const updatePromises = [];
+      const facilityIds = facilitiesSnapshot.docs.map((doc) => doc.id);
 
-      for (const facilityDoc of facilitiesSnapshot.docs) {
-        const facilityId = facilityDoc.id;
-        const promise = computeFacilityStats(facilityId).then((stats) =>
-          persistFacilityStats(facilityId, stats),
-        );
-        updatePromises.push(promise);
-      }
-
-      await Promise.all(updatePromises);
-      console.log(`✅ Nightly stats update complete for ${facilitiesSnapshot.size} facilities`);
+      // allSettled, not all: a compute failure now throws instead of writing
+      // zeros, and Promise.all would return on the first one while the other
+      // facilities' passes were still running.
+      const results = await Promise.allSettled(
+        facilityIds.map((facilityId) => recomputeAndPersistFacilityStats(facilityId)),
+      );
+      let failed = 0;
+      results.forEach((result, i) => {
+        if (result.status === 'rejected') {
+          failed++;
+          console.error(`❌ Nightly stats update failed for facility ${facilityIds[i]}:`, result.reason);
+        }
+      });
+      console.log(
+        `✅ Nightly stats update complete for ${facilityIds.length - failed} of ${facilityIds.length} facilities`,
+      );
     } catch (error) {
       console.error('❌ Error in nightly stats update:', error);
     }
   });
 
-/**
- * Callable function: Manually trigger stats update for a specific facility
- * Can be called from the app when needed
- */
-export const updateFacilityStatsManual = functions.https.onCall(async (data, context) => {
-  // Verify authentication
+/** Seams for tests; production passes the real access check and recompute. */
+export interface ManualStatsDeps {
+  assertFacilityAccess: (uid: string, facilityId: string) => Promise<unknown>;
+  recompute: (facilityId: string) => Promise<Record<string, unknown>>;
+}
+
+const firestoreManualStatsDeps: ManualStatsDeps = {
+  assertFacilityAccess: getFacilityDataForUserOrThrow,
+  recompute: (facilityId: string) => recomputeAndPersistFacilityStats(facilityId),
+};
+
+type ManualStatsContext = {
+  auth?: { uid: string; token?: Record<string, unknown> };
+};
+
+async function handleUpdateFacilityStatsManual(
+  data: unknown,
+  context: ManualStatsContext,
+  deps: ManualStatsDeps = firestoreManualStatsDeps,
+): Promise<{ success: true; stats: Record<string, unknown> }> {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
   }
 
-  const facilityId = data.facilityId;
+  const facilityId = (data as { facilityId?: unknown } | null | undefined)?.facilityId;
   if (!facilityId || typeof facilityId !== 'string') {
     throw new functions.https.HttpsError('invalid-argument', 'facilityId is required');
   }
 
+  // Before any read or heal. This used to accept any signed-in user, so anyone
+  // could read another operator's revenue and past-due counts and trigger unit
+  // writes on their facility. Super admins pass by the server-set claim only,
+  // the same rule firestore.rules applies.
+  if (context.auth.token?.superadmin !== true) {
+    await deps.assertFacilityAccess(context.auth.uid, facilityId);
+  }
+
   try {
     console.log(`📊 Manual stats update requested for facility ${facilityId}`);
-    const stats = await computeFacilityStats(facilityId);
-    await persistFacilityStats(facilityId, stats);
+    const stats = await deps.recompute(facilityId);
 
     console.log(`✅ Manual stats update complete for facility ${facilityId}`);
     return { success: true, stats };
@@ -482,7 +555,21 @@ export const updateFacilityStatsManual = functions.https.onCall(async (data, con
     console.error(`❌ Error in manual stats update for facility ${facilityId}:`, error);
     throw new functions.https.HttpsError('internal', 'Failed to update stats');
   }
-});
+}
+
+/**
+ * Callable function: Manually trigger stats update for a specific facility.
+ * The app's "Sync counts" buttons call this; the caller must have access to
+ * the facility (owner, roles map, managers map, active user_roles row) or be
+ * a super admin.
+ */
+export const updateFacilityStatsManual = functions.https.onCall((data, context) =>
+  handleUpdateFacilityStatsManual(data, context),
+);
+
+export const manualStatsTestUtils = {
+  handleUpdateFacilityStatsManual,
+};
 
 /**
  * Coalescing seams for tests. Kept separate from facilityStatsTestUtils, which is

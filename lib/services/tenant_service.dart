@@ -558,6 +558,10 @@ class TenantService {
       );
 
       // Keep facilities/{id}/units in sync when unit number changes (createTenant already does this).
+      // Stats need no client refresh: each unit write here fires the
+      // onUnitWrite Cloud Function, which recomputes. The awaited client
+      // recompute this block used to run cost ~6 reads per save and its
+      // stats write was always denied.
       if (unitNumber != null && beforeData != null) {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
         final newNum = unitNumber.trim();
@@ -577,11 +581,9 @@ class TenantService {
             await _updateUnitOccupancy(
                 facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
           }
-          await FacilityStatsService.updateFacilityStats(facilityId);
         } else if (newNum.isNotEmpty && isActive == false && wasActive) {
           await _updateUnitOccupancy(
               facilityId, newNum, tenantId, resolvedName, false, resolvedRate);
-          await FacilityStatsService.updateFacilityStats(facilityId);
         } else if (newNum.isNotEmpty && nowActive) {
           final unitsSnap = await _firestore
               .collection('facilities')
@@ -603,12 +605,10 @@ class TenantService {
             if (needsHeal) {
               await _updateUnitOccupancy(facilityId, newNum, tenantId,
                   resolvedName, true, resolvedRate);
-              await FacilityStatsService.updateFacilityStats(facilityId);
             }
           } else {
             await _updateUnitOccupancy(
                 facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
-            await FacilityStatsService.updateFacilityStats(facilityId);
           }
         }
       }

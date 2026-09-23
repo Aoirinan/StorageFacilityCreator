@@ -15,6 +15,7 @@ import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/chunked_parallel.dart';
 
 class ReportData {
   final double totalRevenue;
@@ -1073,11 +1074,20 @@ class ReportsService {
         bucketCounts[range] = 0;
       }
 
-      for (final tenant in activeTenants) {
-        final balance = await LedgerService.getLedgerBalance(
+      // Ten at a time instead of one round trip per tenant in series. Still the
+      // uncapped server sum, and one failure still fails the report rather
+      // than quietly leaving a tenant's balance out of AR.
+      final balances = await mapInChunks(
+        activeTenants,
+        (tenant) => LedgerService.getLedgerBalance(
           tenantId: tenant.id,
           facilityId: facilityId,
-        );
+        ),
+      );
+
+      for (var i = 0; i < activeTenants.length; i++) {
+        final tenant = activeTenants[i];
+        final balance = balances[i];
 
         if (balance <= 0) continue; // Skip tenants with no balance
 

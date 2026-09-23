@@ -10,7 +10,6 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_service.dart';
-import '../services/facility_stats_service.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
 import '../theme/app_theme.dart';
@@ -431,7 +430,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         totalUnits: totalUnits,
       );
 
-      await FacilityStatsService.reconcileUnitsToCapacity(widget.facility.id);
+      // No stats step on save. It used to await a client-side orphan heal
+      // and recompute here (reads plus a stats write that was always
+      // denied); nothing on this form changes unit counts, and the Cloud
+      // Function keeps them current on every unit and tenant write.
 
       if (kDebugMode) {
         print('✅ Facility updated successfully');

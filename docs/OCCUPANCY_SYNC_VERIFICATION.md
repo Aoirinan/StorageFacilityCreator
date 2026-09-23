@@ -1,59 +1,48 @@
 # Occupancy Sync – Verification & Tests
 
-## Canonical rule
+## Canonical rule (one definition, every screen)
 
-- **A unit is "occupied" only if:** `unit.tenantId` is set **and** that tenant exists in the same facility (`tenant.facilityId` matches).
-- If `unit.status == 'occupied'` but `tenantId` is null or the tenant doc does not exist → treat as **not occupied** and **auto-heal** (set unit to available, clear `tenantId` / `tenantName`).
+`FacilityStatsService.countUnits(nonArchivedUnits, allTenantIds)` in Flutter and `isRentableUnit` + `countCanonicalOccupied` in `functions-facility-ops/src/facility_stats.ts`:
 
-## Data sources (before fix)
+- **Total** = unit docs that are not archived and not staff-only (`publicListingEnabled != false`, the "List on public website" switch). Office, manager-residence and personal-use units are left out.
+- **Occupied** = of those, `status == 'occupied'` **and** `tenantId` is the id of a tenant doc that exists in the facility, **active or archived**. Archiving a tenant does not free the unit.
+- **Vacant** = Total − Occupied (reserved and maintenance count as vacant).
+- An occupied unit whose tenant doc is missing is an **orphan**: not counted, and healed (set to `available`, `tenantId` / `tenantName` cleared) by the Cloud Function only.
 
-- **Dashboard** "Total Units (occupied/available)": from `FacilityStatsService.getFacilityStats()` → `facilities/{id}/stats/current` (cached). Fallback: live query with `units.where(status==occupied)` (no tenant check).
-- **Facilities card** "X/Y units occupied": from `FacilityStatsService.computeUnitCounts(facility.id)` + fallback `facility.occupiedUnits`.
-- **Root cause of "173 occupied, 0 tenants"**: Cached `stats/current` and `facility.occupiedUnits` were not updated after tenant deletes; occupancy was computed as `unit.status == occupied` without verifying tenant existence.
+## Where each screen gets its numbers
 
-## What was implemented
+- **Dashboard** (`dashboardStatsProvider`, autoDispose, reloads on each visit and after returning from tenant/contract detail): computed live from the facility's unit and tenant lists with `countUnits`. The "Total Units" card notes how many staff-only units exist and are not counted. The cached `facilities/{id}/stats/current` doc is not read: no Firestore rule lets clients read it.
+- **Units list header**: `countUnits` over the unit and tenant streams already on screen, e.g. `72 / 78 rentable units occupied (4 staff-only not counted)`. The table rows include staff-only units.
+- **Facilities card**: `FacilityStatsService.computeUnitCounts` (same rule), memoized per facility on the mirrored counts; falls back to the facility-doc mirror while loading.
+- **Facility-doc mirror** (`facility.occupiedUnits`, `facility.unitDocCount`; used by search, super admin, the card fallback): written only by the Cloud Function, same rule.
 
-1. **Canonical occupancy** in Flutter and Cloud Functions: occupied count = units where `status==occupied` **and** `tenantId` in the set of existing tenant IDs for the facility.
-2. **Healing**: Orphan units (occupied but tenant missing) are set to `available` and `tenantId`/`tenantName` cleared. Healing runs when recomputing stats (e.g. `updateFacilityStats`, Cloud Function triggers).
-3. **Stale cache fix**: `getFacilityStats()` forces recompute when cache has `totalTenantsActive == 0` and `occupiedUnits > 0`.
-4. **Tenant delete cascade**: Already in place – unlink units, then `updateFacilityStats`. Counts stay correct after delete.
-5. **Recompute entry points**:
-   - **Flutter**: `FacilityStatsService.recomputeFacilityStats(facilityId)`, `recomputeAllFacilitiesStats()`. Facilities screen: "Sync counts" button.
-   - **Cloud Functions**: `updateFacilityStatsManual` (single facility), `updateAllFacilityStatsNightly` (all facilities). Both now use canonical occupancy + heal and update `facility.occupiedUnits`.
+## Who writes stats and heals orphans
+
+Only the Cloud Function (`functions-facility-ops`):
+
+- `onUnitWrite` / `onTenantWrite` (coalesced, 15 s window) and `updateAllFacilityStatsNightly`.
+- `updateFacilityStatsManual`, called by the app's **Sync counts** buttons (`FacilityStatsService.recomputeAllFacilitiesStats`). The caller must have access to the facility (owner, `roles` map, `managers` map, active `user_roles` row) or carry the `superadmin` claim.
+- A pass reads units, then all tenants, then active tenants, and heals only after every read has succeeded. A failed read throws; nothing (not even zeros) is written.
+
+The client never heals or writes stats. `FacilityStatsService.updateFacilityStats` is a no-op kept for existing callers: its writes were always denied, and its client-side heal could free rented units from a capped, name-ordered tenant list that returns `[]` on error.
 
 ## Acceptance checklist
 
-- [ ] **Zero tenants** → Facilities card shows `0 / total` occupied; Dashboard shows `0 occupied, N available`.
-- [ ] **After importing tenants and assigning units** → Counts match (occupied = number of units with valid tenant).
-- [ ] **After deleting all tenants** → Counts drop to 0; no ghost occupancy.
-- [ ] **No legacy collection** is used for occupancy (only units + tenants for this facility).
-- [ ] **Sidebar / Unit list** use stats from `getFacilityStats` or `computeUnitCounts` (canonical).
+- [ ] Dashboard, Units list header and Facilities card show the same Total and Occupied for a facility.
+- [ ] A facility with staff-only units shows them in the Units table, not in the totals, with the "staff-only not counted" note.
+- [ ] A unit held by an archived tenant counts as occupied everywhere.
+- [ ] **Zero tenants** → Facilities card shows `0 / total` occupied; Dashboard shows `0 occupied, N vacant`.
+- [ ] **After deleting a tenant** → occupied drops by one on the next dashboard visit; the Cloud Function frees the unit if it was left linked.
+- [ ] **Sync counts** reports failure (red) if any facility's server recompute fails, never "updated".
 
 ## Manual tests
 
-1. **Zero tenants, stale cache**
-   - Ensure facility has 0 tenants and some units still have `status: occupied` and `tenantId` set (orphans).
-   - Open Dashboard → should show 0 occupied after load (getFacilityStats triggers recompute + heal).
-   - Open Facilities → card should show `0 / total` (computeUnitCounts is canonical).
-   - Optionally: Facilities → "Sync counts" → then re-open Dashboard/Facilities to confirm.
+1. **Orphan unit**: set a unit to `occupied` with a `tenantId` that does not exist. Dashboard and Units header do not count it. Within seconds of the write (or after Sync counts) the unit is `available`.
+2. **Tenant delete**: assign a tenant to a unit, note occupied count, delete the tenant, return to the dashboard: occupied is one lower.
+3. **Sync counts**: click it on the dashboard or Facilities page; the facility cards and the dashboard refresh.
 
-2. **Tenant delete**
-   - Assign a tenant to a unit, note occupied count.
-   - Delete that tenant → occupied should decrease by 1; unit should show available.
+## Automated tests
 
-3. **Recompute all**
-   - Go to Facilities → click "Sync counts". Dashboard and facility cards should refresh with correct numbers.
-
-## Automated tests (if added)
-
-- Given facility with 0 tenants and N units with `status==occupied` and `tenantId` set: after `recomputeFacilityStats`, `getFacilityStats` returns `occupiedUnits: 0` and those units are updated to `available` with `tenantId` cleared.
-- Given unit with `tenantId` pointing to missing tenant: recompute clears the unit and occupied count excludes it.
-- Deleting a tenant clears linked unit(s) and recompute shows updated counts.
-
-## Files touched
-
-- `lib/services/facility_stats_service.dart` – canonical counts, heal, `getFacilityStats` stale check, `recomputeFacilityStats` / `recomputeAllFacilitiesStats`.
-- `lib/services/unit_service.dart` – `clearTenantFromUnitsBatch`.
-- `lib/providers/dashboard_provider.dart` – fallback path uses canonical occupancy.
-- `lib/screens/facility_management_screen.dart` – "Sync counts" button.
-- `functions/src/facility_stats.ts` – canonical occupancy, heal, update `facility.occupiedUnits` when writing stats.
+- `test/facility_stats_logic_test.dart`: `countUnits`, `cachedUnitTotalDrifted`, Sync counts messages and failure tally.
+- `test/unit_counts_header_test.dart`, `test/dashboard_load_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
+- `functions-facility-ops/src/test/facility_stats.test.ts` (archived exclusion, heal scope, no zeros on read failure) and `facility_stats_manual.test.ts` (access check).

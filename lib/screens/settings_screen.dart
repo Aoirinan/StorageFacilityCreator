@@ -857,7 +857,9 @@ class _SettingsOnboardingTab extends ConsumerWidget {
           data: (stats) => _buildChecklist(
             context,
             hasFacility: hasFacility,
-            totalUnits: stats.totalUnits,
+            // Unit docs, not the rentable total: a facility whose units are
+            // all staff-only has still added units.
+            totalUnits: stats.totalUnitDocs,
             totalTenants: stats.totalTenants,
             facilitySubscribed: facilitySubscribed,
             stripeComplete: stripeComplete,

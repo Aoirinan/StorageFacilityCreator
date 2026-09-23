@@ -48,8 +48,11 @@ class _DashboardOwnerTipsDialogState extends State<DashboardOwnerTipsDialog> {
       icon: Icons.refresh,
       title: 'Sync counts',
       body:
-          'If occupancy or tenant totals look off, use the refresh icon next to the facility switcher '
-          'to recompute stats for all facilities you manage.',
+          'The dashboard counts your units each time you open it. Units with “List on public website” '
+          'turned off are staff-only and are not counted. If a unit still shows as rented to a tenant '
+          'who was deleted, use the refresh icon next to the facility switcher: the server rechecks '
+          'every unit, frees any left pointing at a deleted tenant, and updates the counts on your '
+          'facility cards.',
     ),
     _OwnerTip(
       icon: Icons.people_outline,
