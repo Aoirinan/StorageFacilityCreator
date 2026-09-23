@@ -11,7 +11,7 @@ Counts follow the one rule in [OCCUPANCY_SYNC_VERIFICATION.md](OCCUPANCY_SYNC_VE
 
 Safe to run more than once. It is not read-only: a pass also **heals orphan units** (an `occupied` unit whose tenant doc is missing is set to `available`, and its `tenantId` and `tenantName` are cleared). Each heal is conditional on the unit not having changed since the pass read it, so a move-in that lands mid-pass is left alone.
 
-Only the Cloud Functions in `functions-facility-ops` write these. The client cannot: no Firestore rule allows it, and `FacilityStatsService.updateFacilityStats` is a no-op. Calling it backfills nothing.
+Only the Cloud Functions in `functions-facility-ops` write these; the app does not. No Firestore rule lets a client write `stats/current`. An owner's client could write `occupiedUnits` and `unitDocCount` on the facility doc (the rules do not forbid those keys), but no app code does, and `FacilityStatsService.updateFacilityStats` is a no-op. Calling it backfills nothing.
 
 ## Option 1: Wait for it (no action)
 

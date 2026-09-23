@@ -147,7 +147,8 @@ interface FacilityStatsInputs {
 
 /** Seams for tests; production passes the Firestore-backed implementations below. */
 export interface FacilityStatsDeps {
-  load: (facilityId: string) => Promise<FacilityStatsInputs>;
+  /** Null when the facility doc does not exist. */
+  load: (facilityId: string) => Promise<FacilityStatsInputs | null>;
   healOrphans: (facilityId: string, orphans: OrphanUnit[]) => Promise<void>;
 }
 
@@ -220,8 +221,18 @@ function summarizeFacilityStats(
   };
 }
 
-async function loadFacilityStatsInputs(facilityId: string): Promise<FacilityStatsInputs> {
-  const facilityDoc = await getFirestore().collection('facilities').doc(facilityId).get();
+/**
+ * Null when the facility doc does not exist, with nothing else read. A
+ * deleted facility's subcollection writes (a recursive delete fires one per
+ * doc) used to run full passes that wrote stats/current under the deleted
+ * facility and then failed with NOT_FOUND on the facility update.
+ */
+async function loadFacilityStatsInputs(
+  facilityId: string,
+  db: admin.firestore.Firestore = getFirestore(),
+): Promise<FacilityStatsInputs | null> {
+  const facilityDoc = await db.collection('facilities').doc(facilityId).get();
+  if (!facilityDoc.exists) return null;
   const billingSettings = facilityDoc.data()?.billingSettings as
     | { gracePeriodDays?: number | string }
     | undefined;
@@ -236,7 +247,7 @@ async function loadFacilityStatsInputs(facilityId: string): Promise<FacilityStat
   // taken after the unit read contains that tenant. Read the other way round
   // (or concurrently), a move-in landing between the two reads looks like an
   // orphan and the heal frees a unit that was just rented.
-  const unitsSnapshot = await getFirestore()
+  const unitsSnapshot = await db
     .collection('facilities')
     .doc(facilityId)
     .collection('units')
@@ -252,13 +263,13 @@ async function loadFacilityStatsInputs(facilityId: string): Promise<FacilityStat
     updateTime: doc.updateTime,
   }));
 
-  const allTenantsSnapshot = await getFirestore()
+  const allTenantsSnapshot = await db
     .collection('facilities')
     .doc(facilityId)
     .collection('tenants')
     .get();
 
-  const activeTenantsSnapshot = await getFirestore()
+  const activeTenantsSnapshot = await db
     .collection('facilities')
     .doc(facilityId)
     .collection('tenants')
@@ -341,8 +352,14 @@ async function healOrphanUnitsWith(
   return { healed, skipped };
 }
 
-async function healOrphanUnits(facilityId: string, orphans: OrphanUnit[]): Promise<void> {
-  const unitsRef = getFirestore().collection('facilities').doc(facilityId).collection('units');
+async function healOrphanUnits(
+  facilityId: string,
+  orphans: OrphanUnit[],
+  unitsRef: admin.firestore.CollectionReference = getFirestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('units'),
+): Promise<void> {
   await healOrphanUnitsWith(facilityId, orphans, (unitId, updateTime) =>
     unitsRef.doc(unitId).update(
       {
@@ -361,21 +378,26 @@ const firestoreFacilityStatsDeps: FacilityStatsDeps = {
   healOrphans: healOrphanUnits,
 };
 
-/** Write stats doc and mirror occupied + unit-doc count onto the facility root doc. */
-async function persistFacilityStats(facilityId: string, stats: Record<string, unknown>): Promise<void> {
+/**
+ * Mirror occupied + unit-doc count onto the facility root doc, then write the
+ * stats doc. The facility update goes first: it fails with NOT_FOUND for a
+ * facility deleted since the pass read it, before stats/current is recreated
+ * under it.
+ */
+async function persistFacilityStats(
+  facilityId: string,
+  stats: Record<string, unknown>,
+  db: admin.firestore.Firestore = getFirestore(),
+): Promise<void> {
   const occupied = Number(stats.occupiedUnits ?? 0);
   const unitDocCount = Number(stats.totalUnits ?? 0);
-  await getFirestore()
-    .collection('facilities')
-    .doc(facilityId)
-    .collection('stats')
-    .doc('current')
-    .set(stats, { merge: true });
-  await getFirestore().collection('facilities').doc(facilityId).update({
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  await facilityRef.update({
     occupiedUnits: occupied,
     unitDocCount,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+  await facilityRef.collection('stats').doc('current').set(stats, { merge: true });
 }
 
 /**
@@ -391,8 +413,13 @@ async function persistFacilityStats(facilityId: string, stats: Record<string, un
 async function computeFacilityStats(
   facilityId: string,
   deps: FacilityStatsDeps = firestoreFacilityStatsDeps,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | null> {
   const inputs = await deps.load(facilityId);
+  if (inputs === null) {
+    // Deleted facility: nothing to heal or count.
+    console.log(`⏭️ [facility_stats] Facility ${facilityId} no longer exists; nothing recomputed`);
+    return null;
+  }
 
   // Healing scans every unit (archived and staff-only too) so a stale tenantId
   // anywhere still gets cleared; only the counts are limited to rentable units.
@@ -413,13 +440,17 @@ async function computeFacilityStats(
   };
 }
 
-/** Compute, then persist. A failed compute throws before anything is written. */
+/**
+ * Compute, then persist. A failed compute throws before anything is written;
+ * a deleted facility (null stats) writes nothing and returns null.
+ */
 async function recomputeAndPersistFacilityStats(
   facilityId: string,
-  compute: (facilityId: string) => Promise<Record<string, unknown>> = computeFacilityStats,
+  compute: (facilityId: string) => Promise<Record<string, unknown> | null> = computeFacilityStats,
   persist: (facilityId: string, stats: Record<string, unknown>) => Promise<void> = persistFacilityStats,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | null> {
   const stats = await compute(facilityId);
+  if (stats === null) return null;
   await persist(facilityId, stats);
   return stats;
 }
@@ -434,6 +465,9 @@ export const facilityStatsTestUtils = {
   computeFacilityStats,
   recomputeAndPersistFacilityStats,
   healOrphanUnitsWith,
+  healOrphanUnits,
+  loadFacilityStatsInputs,
+  persistFacilityStats,
 };
 
 /**
@@ -458,6 +492,19 @@ const STATS_COALESCE_WINDOW_MS = 15_000;
 const STATS_MAX_DRAIN_PASSES = 3;
 
 /**
+ * How soon after a failed pass the next write may claim again. Releasing to
+ * zero let a failure that keeps happening (reads timing out on a very large
+ * facility, say) run passes back to back through a burst, each with its
+ * retry, instead of one per window.
+ */
+const STATS_FAILED_PASS_BACKOFF_MS = 5_000;
+
+/** The claimedAt a failed pass releases to: claimable again after the backoff. */
+function releasedStatsClaimAtMs(nowMs: number): number {
+  return nowMs - STATS_COALESCE_WINDOW_MS + STATS_FAILED_PASS_BACKOFF_MS;
+}
+
+/**
  * Pure claim decision, split out so the window logic is testable without Firestore.
  * A facility whose last claim has aged out is recomputed immediately; one inside a
  * live window is left to the claim holder.
@@ -474,39 +521,61 @@ function statsClaimRef(facilityId: string) {
     .doc('recompute');
 }
 
-/** Claim the recompute window, or mark dirty and let the holder cover us. */
-async function claimStatsRecompute(facilityId: string): Promise<boolean> {
-  const ref = statsClaimRef(facilityId);
-  return getFirestore().runTransaction(async (tx) => {
+/** claimed: we recompute. coalesced: a live claim holder covers us. */
+export type StatsClaimOutcome = 'claimed' | 'coalesced' | 'facility-missing';
+
+/**
+ * Claim the recompute window, or mark dirty and let the holder cover us.
+ *
+ * A deleted facility is never claimed: the claim writes stats/recompute, and
+ * a recursive delete fires one trigger per subcollection doc, which used to
+ * recreate it under the deleted facility. The existence read sits outside
+ * the transaction so claims do not lock the facility doc, which every pass
+ * updates.
+ */
+async function claimStatsRecompute(
+  facilityId: string,
+  db: admin.firestore.Firestore = getFirestore(),
+): Promise<StatsClaimOutcome> {
+  const facilityRef = db.collection('facilities').doc(facilityId);
+  if (!(await facilityRef.get()).exists) return 'facility-missing';
+
+  const ref = facilityRef.collection('stats').doc('recompute');
+  return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const now = Date.now();
     const claimedAt: number = snap.data()?.claimedAt?.toMillis?.() ?? 0;
 
     if (!shouldClaimStatsRecompute(claimedAt, now)) {
       tx.set(ref, { dirty: true }, { merge: true });
-      return false;
+      return 'coalesced';
     }
     tx.set(
       ref,
       { claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: false },
       { merge: true },
     );
-    return true;
+    return 'claimed';
   });
 }
 
 /**
- * End our claim early, after a failed pass, so the next write recomputes at
- * once instead of being folded into a pass that did not finish. The dirty
- * flag is kept for that next claim holder. If our pass outlived the window
- * and another writer has claimed since, this clears their claim too; the
- * worst case is one extra concurrent pass.
+ * End our claim early, after a failed pass, so a write after a short backoff
+ * (STATS_FAILED_PASS_BACKOFF_MS) recomputes instead of waiting out the window
+ * behind a pass that did not finish. The dirty flag is kept for that next
+ * claim holder. If our pass outlived the window and another writer has
+ * claimed since, this shortens their claim too; the worst case is one extra
+ * concurrent pass. An update, not a merge-set, so a claim doc deleted with
+ * its facility is not recreated (the update fails and is logged).
  */
-async function releaseStatsClaim(facilityId: string): Promise<void> {
-  await statsClaimRef(facilityId).set(
-    { claimedAt: admin.firestore.Timestamp.fromMillis(0) },
-    { merge: true },
-  );
+async function releaseStatsClaim(
+  facilityId: string,
+  ref: admin.firestore.DocumentReference = statsClaimRef(facilityId),
+  nowMs: number = Date.now(),
+): Promise<void> {
+  await ref.update({
+    claimedAt: admin.firestore.Timestamp.fromMillis(releasedStatsClaimAtMs(nowMs)),
+  });
 }
 
 /** Consume the dirty flag set by writers that arrived during our recompute. */
@@ -522,16 +591,16 @@ async function consumeStatsDirtyFlag(facilityId: string): Promise<boolean> {
 
 /** Seams for tests; production passes the real Firestore-backed implementations. */
 export interface StatsCoalesceHooks {
-  claim: (facilityId: string) => Promise<boolean>;
+  claim: (facilityId: string) => Promise<StatsClaimOutcome>;
   consumeDirty: (facilityId: string) => Promise<boolean>;
   recompute: (facilityId: string) => Promise<void>;
   release: (facilityId: string) => Promise<void>;
 }
 
 const firestoreStatsCoalesceHooks: StatsCoalesceHooks = {
-  claim: claimStatsRecompute,
+  claim: (facilityId: string) => claimStatsRecompute(facilityId),
   consumeDirty: consumeStatsDirtyFlag,
-  release: releaseStatsClaim,
+  release: (facilityId: string) => releaseStatsClaim(facilityId),
   recompute: async (facilityId: string) => {
     await recomputeAndPersistFacilityStats(facilityId);
   },
@@ -555,7 +624,12 @@ async function recomputeFacilityStatsCoalesced(
 ): Promise<void> {
   let claimed = false;
   try {
-    if (!(await hooks.claim(facilityId))) {
+    const outcome = await hooks.claim(facilityId);
+    if (outcome === 'facility-missing') {
+      console.log(`⏭️ Stats recompute for ${facilityId} skipped: the facility no longer exists (${reason})`);
+      return;
+    }
+    if (outcome === 'coalesced') {
       console.log(`⏭️ Stats recompute for ${facilityId} coalesced into an in-flight pass (${reason})`);
       return;
     }
@@ -651,7 +725,7 @@ export const updateAllFacilityStatsNightly = functions.pubsub
 /** Seams for tests; production passes the real access check and recompute. */
 export interface ManualStatsDeps {
   assertFacilityAccess: (uid: string, facilityId: string) => Promise<unknown>;
-  recompute: (facilityId: string) => Promise<Record<string, unknown>>;
+  recompute: (facilityId: string) => Promise<Record<string, unknown> | null>;
 }
 
 const firestoreManualStatsDeps: ManualStatsDeps = {
@@ -721,6 +795,9 @@ export const manualStatsTestUtils = {
 export const statsCoalesceTestUtils = {
   shouldClaimStatsRecompute,
   recomputeFacilityStatsCoalesced,
+  claimStatsRecompute,
+  releaseStatsClaim,
   STATS_COALESCE_WINDOW_MS,
   STATS_MAX_DRAIN_PASSES,
+  STATS_FAILED_PASS_BACKOFF_MS,
 };

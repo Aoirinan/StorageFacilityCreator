@@ -12,6 +12,9 @@ const {
   computeFacilityStats,
   recomputeAndPersistFacilityStats,
   healOrphanUnitsWith,
+  healOrphanUnits,
+  loadFacilityStatsInputs,
+  persistFacilityStats,
 } = facilityStatsTestUtils;
 
 function ts(date: Date): admin.firestore.Timestamp {
@@ -137,8 +140,8 @@ test('computeFacilityStats still heals an archived orphan unit', async () => {
     },
   });
   assert.deepEqual(healed, [['archived-orphan', 'staff-orphan']]);
-  assert.equal(stats.totalUnits, 1);
-  assert.equal(stats.occupiedUnits, 1);
+  assert.equal(stats?.totalUnits, 1);
+  assert.equal(stats?.occupiedUnits, 1);
 });
 
 test('a failed read throws instead of returning zeros, and heals nothing', async () => {
@@ -266,4 +269,142 @@ test('one tenant with unreadable dates does not fail the facility', () => {
   assert.equal(stats.tenantsSeverelyOverdue, 1);
   assert.equal(stats.totalPastDue, 1);
   assert.equal(stats.scheduledMonthlyRevenue, 175);
+});
+
+test('the production heal sends each unit its read version as a lastUpdateTime precondition', async () => {
+  const readAt = ts(new Date('2026-09-23T12:00:00.000Z'));
+  const updates: Array<{ id: string; data: Record<string, unknown>; precondition: unknown }> = [];
+  const unitsRef = {
+    doc: (id: string) => ({
+      update: async (data: Record<string, unknown>, precondition?: unknown) => {
+        updates.push({ id, data, precondition });
+      },
+    }),
+  } as unknown as admin.firestore.CollectionReference;
+
+  await healOrphanUnits('fac-1', [{ id: 'orphan', updateTime: readAt }], unitsRef);
+
+  // Without the precondition the heal is a blind write again, and can set a
+  // unit a move-in just relinked back to available.
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].id, 'orphan');
+  assert.deepEqual(updates[0].precondition, { lastUpdateTime: readAt });
+  assert.equal(updates[0].data.status, 'available');
+});
+
+type FakeDocInput = { id: string; data: Record<string, unknown>; updateTime?: admin.firestore.Timestamp };
+
+/** A Firestore stand-in for one facility's stats read. */
+function statsReadDb(opts: {
+  facility?: Record<string, unknown>;
+  units?: FakeDocInput[];
+  tenants?: FakeDocInput[];
+}) {
+  const reads: string[] = [];
+  const snapshot = (docs: FakeDocInput[]) => ({
+    docs: docs.map((d) => ({ id: d.id, data: () => d.data, updateTime: d.updateTime })),
+  });
+  const db = {
+    collection: (name: string) => {
+      assert.equal(name, 'facilities');
+      return {
+        doc: (facilityId: string) => ({
+          get: async () => {
+            reads.push(`facilities/${facilityId}`);
+            return { exists: opts.facility !== undefined, data: () => opts.facility };
+          },
+          collection: (sub: string) => {
+            const docs = sub === 'units' ? opts.units ?? [] : opts.tenants ?? [];
+            return {
+              get: async () => {
+                reads.push(sub);
+                return snapshot(docs);
+              },
+              where: (field: string, op: string, value: unknown) => ({
+                get: async () => {
+                  reads.push(`${sub} where ${field} ${op} ${String(value)}`);
+                  return snapshot(docs.filter((d) => d.data[field] === value));
+                },
+              }),
+            };
+          },
+        }),
+      };
+    },
+  };
+  return { db: db as unknown as admin.firestore.Firestore, reads };
+}
+
+test('loadFacilityStatsInputs carries the updateTime each unit was read at', async () => {
+  const readAt = ts(new Date('2026-09-23T12:00:00.000Z'));
+  const { db } = statsReadDb({
+    facility: { billingSettings: { gracePeriodDays: 5 } },
+    units: [{ id: 'u1', data: { status: 'occupied', tenantId: 'gone' }, updateTime: readAt }],
+    tenants: [
+      { id: 't1', data: { isActive: true, monthlyRate: 10 } },
+      { id: 't2', data: { isActive: false } },
+    ],
+  });
+
+  const inputs = await loadFacilityStatsInputs('fac-1', db);
+
+  // Without it every heal is skipped as "changed since the read" and no
+  // test notices.
+  assert.equal(inputs?.units[0].updateTime, readAt);
+  assert.equal(inputs?.gracePeriodDays, 5);
+  assert.deepEqual([...(inputs?.allTenantIds ?? [])], ['t1', 't2']);
+  assert.deepEqual(inputs?.activeTenants.map((t) => t.id), ['t1']);
+});
+
+test('a deleted facility reads nothing past its own doc, heals nothing and persists nothing', async () => {
+  const { db, reads } = statsReadDb({
+    units: [{ id: 'u1', data: { status: 'occupied', tenantId: 'gone' }, updateTime: ts(new Date()) }],
+  });
+  assert.equal(await loadFacilityStatsInputs('fac-gone', db), null);
+  assert.deepEqual(reads, ['facilities/fac-gone']);
+
+  let healCalls = 0;
+  const stats = await computeFacilityStats('fac-gone', {
+    load: async () => null,
+    healOrphans: async () => {
+      healCalls++;
+    },
+  });
+  assert.equal(stats, null);
+  assert.equal(healCalls, 0);
+
+  let persisted = 0;
+  const result = await recomputeAndPersistFacilityStats(
+    'fac-gone',
+    async () => null,
+    async () => {
+      persisted++;
+    },
+  );
+  // Before: every pass for a deleted facility wrote stats/current, then
+  // threw NOT_FOUND on the facility update.
+  assert.equal(result, null);
+  assert.equal(persisted, 0);
+});
+
+test('persisting updates the facility doc before writing stats/current', async () => {
+  const writes: string[] = [];
+  const facilityRef = {
+    update: async () => {
+      writes.push('facility');
+      throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+    },
+    collection: () => ({
+      doc: () => ({
+        set: async () => {
+          writes.push('stats/current');
+        },
+      }),
+    }),
+  };
+  const db = { collection: () => ({ doc: () => facilityRef }) } as unknown as admin.firestore.Firestore;
+
+  await assert.rejects(persistFacilityStats('fac-gone', { occupiedUnits: 1, totalUnits: 2 }, db), /NOT_FOUND/);
+  // A facility deleted mid-pass no longer gets stats/current recreated.
+  assert.deepEqual(writes, ['facility']);
 });
