@@ -145,6 +145,9 @@ class _LedgerEntryCreationDialogState extends State<LedgerEntryCreationDialog> {
   }
 
   Future<void> _createEntry() async {
+    // A second tap in the same frame, before the rebuild disables Create,
+    // would post the entry twice.
+    if (_isLoading) return;
     if (!_formKey.currentState!.validate()) return;
 
     _formKey.currentState!.save();

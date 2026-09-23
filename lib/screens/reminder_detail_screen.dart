@@ -1,12 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import '../models/permission_model.dart';
 import '../models/reminder_model.dart';
 import '../providers/reminder_provider.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 class ReminderDetailScreen extends ConsumerStatefulWidget {
   final ReminderModel reminder;
@@ -25,6 +26,9 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   bool _canDeleteReminder = false;
   bool _canMutateReminder = false;
   String _creatorLabel = '…';
+
+  /// A confirmed action is running (send, mark, cancel, delete).
+  bool _acting = false;
 
   @override
   void initState() {
@@ -257,6 +261,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
 
     return PopupMenuButton<String>(
       icon: Icon(Icons.more_vert, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      enabled: !_acting,
       onSelected: _handleMenuAction,
       itemBuilder: (context) => items,
     );
@@ -483,6 +488,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   }
 
   void _handleMenuAction(String action) {
+    if (_acting) return;
     switch (action) {
       case 'send':
         _sendReminder();
@@ -502,6 +508,33 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
     }
   }
 
+  /// Runs an action confirmed in a dialog (the dialog already closed), then
+  /// says so and leaves.
+  ///
+  /// This used the dialog's context after the await. It is dead once the
+  /// dialog has closed, so the SnackBar and the pop never ran: the page
+  /// stayed on the reminder as it was, and Send could be tapped again, which
+  /// messaged the tenant twice. The page's context, and popOrGo rather than
+  /// a bare pop, which throws when nothing is underneath.
+  Future<void> _runConfirmed(
+    Future<void> Function() action,
+    String doneMessage,
+  ) async {
+    if (_acting) return;
+    setState(() => _acting = true);
+    try {
+      await action();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(doneMessage)),
+      );
+      popOrGo(context, AppRoute.reminders);
+    } catch (e) {
+      if (mounted) setState(() => _acting = false);
+      _showError(e);
+    }
+  }
+
   void _showError(Object e) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -515,34 +548,28 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   void _sendReminder() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Send Reminder'),
         content: Text('Send reminder "${widget.reminder.title}"?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              try {
-                await ref.read(reminderOperationsProvider.notifier).sendReminder(
-                      facilityId: widget.reminder.facilityId,
-                      reminderId: widget.reminder.id,
-                      tenantEmail: widget.reminder.tenantEmail ?? '',
-                      tenantPhone: widget.reminder.tenantPhone ?? '',
-                      message: widget.reminder.message,
-                      channels: widget.reminder.channels,
-                    );
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Reminder sent successfully')),
-                );
-                context.pop();
-              } catch (e) {
-                _showError(e);
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _runConfirmed(
+                () => ref.read(reminderOperationsProvider.notifier).sendReminder(
+                    facilityId: widget.reminder.facilityId,
+                    reminderId: widget.reminder.id,
+                    tenantEmail: widget.reminder.tenantEmail ?? '',
+                    tenantPhone: widget.reminder.tenantPhone ?? '',
+                    message: widget.reminder.message,
+                    channels: widget.reminder.channels,
+                ),
+                'Reminder sent successfully',
+              );
             },
             child: const Text('Send'),
           ),
@@ -554,30 +581,24 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   void _markAsSent() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Mark as Sent'),
         content: const Text('Mark this reminder as sent?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              try {
-                await ref.read(reminderOperationsProvider.notifier).markAsSent(
-                      widget.reminder.facilityId,
-                      widget.reminder.id,
-                    );
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Reminder marked as sent')),
-                );
-                context.pop();
-              } catch (e) {
-                _showError(e);
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _runConfirmed(
+                () => ref.read(reminderOperationsProvider.notifier).markAsSent(
+                    widget.reminder.facilityId,
+                    widget.reminder.id,
+                ),
+                'Reminder marked as sent',
+              );
             },
             child: const Text('Mark as Sent'),
           ),
@@ -589,30 +610,24 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   void _markAsRead() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Mark as Read'),
         content: const Text('Mark this reminder as read?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              try {
-                await ref.read(reminderOperationsProvider.notifier).markAsRead(
-                      widget.reminder.facilityId,
-                      widget.reminder.id,
-                    );
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Reminder marked as read')),
-                );
-                context.pop();
-              } catch (e) {
-                _showError(e);
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _runConfirmed(
+                () => ref.read(reminderOperationsProvider.notifier).markAsRead(
+                    widget.reminder.facilityId,
+                    widget.reminder.id,
+                ),
+                'Reminder marked as read',
+              );
             },
             child: const Text('Mark as Read'),
           ),
@@ -624,30 +639,24 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   void _cancelReminder() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Cancel Reminder'),
         content: const Text('Are you sure you want to cancel this reminder?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('No'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              try {
-                await ref.read(reminderOperationsProvider.notifier).cancelReminder(
-                      widget.reminder.facilityId,
-                      widget.reminder.id,
-                    );
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Reminder cancelled')),
-                );
-                context.pop();
-              } catch (e) {
-                _showError(e);
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _runConfirmed(
+                () => ref.read(reminderOperationsProvider.notifier).cancelReminder(
+                    widget.reminder.facilityId,
+                    widget.reminder.id,
+                ),
+                'Reminder cancelled',
+              );
             },
             child: const Text('Yes'),
           ),
@@ -659,30 +668,24 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   void _deleteReminder() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Reminder'),
         content: const Text('Are you sure you want to delete this reminder? This action cannot be undone.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              try {
-                await ref.read(reminderOperationsProvider.notifier).deleteReminder(
-                      widget.reminder.facilityId,
-                      widget.reminder.id,
-                    );
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Reminder deleted')),
-                );
-                context.pop();
-              } catch (e) {
-                _showError(e);
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _runConfirmed(
+                () => ref.read(reminderOperationsProvider.notifier).deleteReminder(
+                    widget.reminder.facilityId,
+                    widget.reminder.id,
+                ),
+                'Reminder deleted',
+              );
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
             child: const Text('Delete'),

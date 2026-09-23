@@ -94,6 +94,9 @@ class _DepositCreationScreenState extends ConsumerState<DepositCreationScreen> {
   }
 
   Future<void> _createDeposit() async {
+    // A second tap in the same frame, before the rebuild disables Create,
+    // would make a second deposit.
+    if (_isCreating) return;
     if (!_formKey.currentState!.validate()) return;
 
     if (_calculatedTotal <= 0) {

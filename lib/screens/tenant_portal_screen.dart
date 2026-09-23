@@ -260,6 +260,9 @@ class _TenantPortalScreenState extends ConsumerState<TenantPortalScreen> {
     double amount, {
     String? tenantId,
   }) async {
+    // A second tap in the same frame, before the rebuild disables the
+    // button, would open a second checkout.
+    if (_isProcessingPayment) return;
     setState(() {
       _isProcessingPayment = true;
     });

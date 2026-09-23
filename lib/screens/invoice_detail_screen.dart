@@ -34,6 +34,10 @@ class InvoiceDetailScreen extends ConsumerStatefulWidget {
 class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   bool _isGeneratingPDF = false;
   bool _isSending = false;
+  // Send, mark paid or void in flight. The action buttons stayed live while
+  // one ran, so a second tap emailed the tenant twice, or ran mark paid a
+  // second time before the first had written.
+  bool _isRunningAction = false;
   bool _isPreparingPrint = false;
   bool _isSavingEdits = false;
   late InvoiceModel _invoice = widget.invoice;
@@ -877,14 +881,18 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                 for (final action in actions)
                   action.isDestructive
                       ? OutlinedButton(
-                          onPressed: () => _runInvoiceAction(action),
+                          onPressed: _isRunningAction
+                              ? null
+                              : () => _runInvoiceAction(action),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppTheme.error,
                           ),
                           child: Text(action.label),
                         )
                       : ElevatedButton(
-                          onPressed: () => _runInvoiceAction(action),
+                          onPressed: _isRunningAction
+                              ? null
+                              : () => _runInvoiceAction(action),
                           child: Text(
                             action == InvoiceAction.send &&
                                     _invoice.status != InvoiceStatus.draft
@@ -904,17 +912,23 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     );
   }
 
-  void _runInvoiceAction(InvoiceAction action) {
-    switch (action) {
-      case InvoiceAction.send:
-        _sendInvoice();
-        break;
-      case InvoiceAction.markPaid:
-        _markAsPaid();
-        break;
-      case InvoiceAction.voidInvoice:
-        _voidInvoice();
-        break;
+  Future<void> _runInvoiceAction(InvoiceAction action) async {
+    if (_isRunningAction) return;
+    setState(() => _isRunningAction = true);
+    try {
+      switch (action) {
+        case InvoiceAction.send:
+          await _sendInvoice();
+          break;
+        case InvoiceAction.markPaid:
+          await _markAsPaid();
+          break;
+        case InvoiceAction.voidInvoice:
+          await _voidInvoice();
+          break;
+      }
+    } finally {
+      if (mounted) setState(() => _isRunningAction = false);
     }
   }
 

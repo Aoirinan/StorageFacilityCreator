@@ -24,6 +24,12 @@ class PaymentDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
+  // True from the dialog's Process tap until the processing fails. The
+  // page's Process button stayed live while one ran, and the payment still
+  // read pending, so tapping it again processed it twice: paidThrough moved
+  // on a second month and a second receipt went out.
+  bool _processing = false;
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -109,7 +115,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           if (widget.payment.status == PaymentStatus.pending)
             IconButton(
               icon: const Icon(Icons.payment),
-              onPressed: _processPayment,
+              onPressed: _processing ? null : _processPayment,
               tooltip: 'Process payment',
               color: cs.primary,
             ),
@@ -593,6 +599,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   void _processPayment() {
+    if (_processing) return;
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -605,6 +612,8 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
+              if (_processing) return;
+              setState(() => _processing = true);
               Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).processPayment(
@@ -624,6 +633,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                 popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
+                setState(() => _processing = false);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),

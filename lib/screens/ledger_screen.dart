@@ -52,6 +52,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   DateTime? _endDate;
   double _runningBalance = 0.0;
 
+  // In flight. Generate Invoice and Email statement stayed live while one
+  // ran, so using them again made a second invoice for the same charges
+  // (neither run saw the other's) or sent the statement twice.
+  bool _generatingInvoice = false;
+  bool _sendingStatement = false;
+
   @override
   Widget build(BuildContext context) {
     final ledgerParams = LedgerParams(
@@ -234,7 +240,8 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                         ),
                         PopupMenuItem(
                           value: 'send',
-                          enabled: widget.tenant.email.isNotEmpty,
+                          enabled: widget.tenant.email.isNotEmpty &&
+                              !_sendingStatement,
                           child: ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
@@ -261,7 +268,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     FilledButton.icon(
                       icon: const Icon(Icons.receipt_long, size: 18),
                       label: const Text('Generate Invoice'),
-                      onPressed: () => _showGenerateInvoiceDialog(context),
+                      onPressed: _generatingInvoice
+                          ? null
+                          : () => _showGenerateInvoiceDialog(context),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppTheme.primaryBlue,
                         foregroundColor: AppTheme.textOnDark,
@@ -577,6 +586,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   }
 
   Future<void> _showGenerateInvoiceDialog(BuildContext context) async {
+    if (_generatingInvoice) return;
     final ledgerParams = LedgerParams(
       tenantId: widget.tenant.id,
       facilityId: widget.tenant.facilityId,
@@ -702,6 +712,8 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             ),
             ElevatedButton(
               onPressed: () async {
+                if (_generatingInvoice) return;
+                setState(() => _generatingInvoice = true);
                 Navigator.pop(context);
                 await _generateInvoice(unpaidCharges, dueDate);
               },
@@ -743,6 +755,10 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           ),
         );
       }
+    } finally {
+      // Generation leaves out charges already on a live invoice, so another
+      // one afterwards cannot bill them twice.
+      if (mounted) setState(() => _generatingInvoice = false);
     }
   }
 
@@ -837,6 +853,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   }
 
   Future<void> _showSendStatementDialog(BuildContext context) async {
+    if (_sendingStatement) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -882,6 +899,8 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   }
 
   Future<void> _sendStatement(BuildContext context) async {
+    if (_sendingStatement || !mounted) return;
+    setState(() => _sendingStatement = true);
     // Show loading
     ScaffoldMessengerState? messenger;
     if (mounted) {
@@ -962,6 +981,8 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _sendingStatement = false);
     }
   }
 }
