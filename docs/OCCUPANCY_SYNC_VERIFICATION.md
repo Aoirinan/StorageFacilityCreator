@@ -17,6 +17,7 @@
 - **Dashboard per facility**: `facilityUnitCounts` in `dashboard_provider.dart`, which is `countUnits` over every unit and every tenant doc.
 - **Settings → Onboarding** checklist: `onboardingProgressProvider`, one `limit(1)` unit probe and one active-tenant probe per facility. It does not load the dashboard.
 - **Facility-doc mirror** (`facility.occupiedUnits`, `facility.unitDocCount`; used by search, super admin, the card fallback): written only by the Cloud Function, same rule.
+- **Tenant lists behind the client counts** (`TenantService.getTenantsForFacility` and its streams): unordered reads of up to 5,000 tenant docs, sorted by name client-side with unnamed tenants last. They used to be capped at 250 and ordered by `name`, which dropped the rest and every doc with no name, so those tenants' units counted as empty. A facility that reaches 5,000 is reported (debug log and Sentry via `FlutterError.onError`).
 
 ## Who writes stats and heals orphans
 
@@ -46,5 +47,5 @@ The client never heals or writes stats. `FacilityStatsService.updateFacilityStat
 ## Automated tests
 
 - `test/facility_stats_logic_test.dart`: `countUnits`, `cachedUnitTotalDrifted`, `countsMatchFacilityMirror`, Sync counts messages (an empty facility list is an error) and failure tally.
-- `test/dashboard_load_test.dart` (`facilityUnitCounts`), `test/unit_counts_header_test.dart` (header and rows keep the last tenant list through a stream error), `test/keyed_memo_test.dart` (`callKeeping`), `test/settings_onboarding_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
+- `test/tenant_facility_read_test.dart` (no 250 cap, no name ordering, unnamed tenants kept, bound reported), `test/dashboard_load_test.dart` (`facilityUnitCounts`), `test/unit_counts_header_test.dart` (header and rows keep the last tenant list through a stream error), `test/keyed_memo_test.dart` (`callKeeping`), `test/settings_onboarding_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
 - `functions-facility-ops/src/test/facility_stats.test.ts` (archived exclusion, heal scope, no zeros on read failure) and `facility_stats_manual.test.ts` (access check).

@@ -175,10 +175,11 @@ class FacilityStatsService {
   /// It used to heal orphan units and then write the stats doc and the
   /// facility-doc mirror from the client. The writes were always denied (no
   /// rule covers `facilities/{id}/stats`), so its only effect was the heal —
-  /// and that heal trusted [TenantService.getTenantsForFacility], which is
-  /// capped at 250, drops tenant docs with no `name`, and returns `[]` on any
-  /// error. One failed or truncated tenant read marked every occupied unit
-  /// available. Callers awaited all of that on tenant and unit saves.
+  /// and that heal trusted [TenantService.getTenantsForFacility], which was
+  /// then capped at 250 and dropped tenant docs with no `name`, and still
+  /// returns `[]` on any error. One failed or truncated tenant read marked
+  /// every occupied unit available. Callers awaited all of that on tenant and
+  /// unit saves.
   ///
   /// The Cloud Function already recomputes and heals on every unit and tenant
   /// write (and nightly), from uncapped reads that must all succeed before it

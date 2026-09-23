@@ -148,6 +148,83 @@ class TenantService {
     }
   }
 
+  /// Most tenant docs one facility read returns.
+  ///
+  /// It was 250, ordered by name. That silently dropped every tenant past
+  /// the 250th by name, and every doc with no `name` (Firestore leaves those
+  /// out of a name-ordered query). The dashboard, the Units list and the
+  /// facility cards treat a missing tenant's unit as empty, so a large
+  /// facility read as emptier than it is. This bound only guards against a
+  /// runaway facility (a load test once wrote ~30,000 tenant docs to one),
+  /// and reaching it is reported, not silent.
+  static const int facilityTenantReadLimit = 5000;
+
+  static final Set<String> _tenantReadLimitReported = <String>{};
+
+  /// One read of [tenants] (a facility's tenants collection, or a filter of
+  /// it) for [facilityId]: unordered, so docs with no name are included, and
+  /// sorted with [compareTenantsByName]. Takes the query so tests can pass a
+  /// fake one.
+  @visibleForTesting
+  static Future<List<TenantModel>> readFacilityTenants(
+    Query<Map<String, dynamic>> tenants,
+    String facilityId,
+  ) async {
+    final snapshot = await tenants.limit(facilityTenantReadLimit).get();
+    return _tenantsFromRead(facilityId, snapshot.docs);
+  }
+
+  /// [readFacilityTenants] as a live stream.
+  @visibleForTesting
+  static Stream<List<TenantModel>> watchFacilityTenants(
+    Query<Map<String, dynamic>> tenants,
+    String facilityId,
+  ) {
+    return tenants
+        .limit(facilityTenantReadLimit)
+        .snapshots()
+        .map((snapshot) => _tenantsFromRead(facilityId, snapshot.docs));
+  }
+
+  /// By name, as the name-ordered query returned them, with nameless tenants
+  /// last rather than dropped.
+  static int compareTenantsByName(TenantModel a, TenantModel b) {
+    final aNameless = a.name.trim().isEmpty;
+    final bNameless = b.name.trim().isEmpty;
+    if (aNameless != bNameless) return aNameless ? 1 : -1;
+    return a.name.compareTo(b.name);
+  }
+
+  static List<TenantModel> _tenantsFromRead(
+    String facilityId,
+    List<DocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    if (docs.length >= facilityTenantReadLimit &&
+        _tenantReadLimitReported.add(facilityId)) {
+      final message = 'Facility $facilityId has at least '
+          '$facilityTenantReadLimit tenant docs; the tenant list, occupancy '
+          'and dashboard counts only see the first $facilityTenantReadLimit.';
+      debugPrint('⚠️ [TenantService] $message');
+      // Reaches Sentry through main.dart's FlutterError.onError.
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: StateError(message),
+        stack: StackTrace.current,
+        library: 'tenant_service',
+      ));
+    }
+    return docs.map(TenantModel.fromFirestore).toList()
+      ..sort(compareTenantsByName);
+  }
+
+  static CollectionReference<Map<String, dynamic>> _tenantsCollection(
+    String facilityId,
+  ) {
+    return _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('tenants');
+  }
+
   // Get all tenants for a facility (real-time stream)
   static Stream<List<TenantModel>> getTenantsForFacilityStream(String facilityId) {
     try {
@@ -160,33 +237,11 @@ class TenantService {
         print('🔄 Setting up tenants stream for facility: $facilityId');
       }
 
-      Query query = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .limit(250); // Hard cap: 250 tenants per facility
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('name');
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final tenants = snapshot.docs.map((doc) {
-          return TenantModel.fromFirestore(doc);
-        }).toList();
-
-        // Sort in memory if we used fallback query
-        tenants.sort((a, b) => a.name.compareTo(b.name));
-
+      return watchFacilityTenants(_tenantsCollection(facilityId), facilityId)
+          .map((tenants) {
         if (kDebugMode) {
           print('📡 Stream update: ${tenants.length} tenants for facility: $facilityId');
         }
-
         return tenants;
       });
     } catch (e) {
@@ -209,34 +264,14 @@ class TenantService {
         print('🔄 Setting up active tenants stream for facility: $facilityId');
       }
 
-      Query query = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .where('isActive', isEqualTo: true)
-          .limit(250); // Hard cap: 250 tenants per facility
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('name');
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final tenants = snapshot.docs.map((doc) {
-          return TenantModel.fromFirestore(doc);
-        }).toList();
-
-        // Sort in memory if we used fallback query
-        tenants.sort((a, b) => a.name.compareTo(b.name));
-
+      // Same read as the full list: it had the same 250 cap and name order.
+      return watchFacilityTenants(
+        _tenantsCollection(facilityId).where('isActive', isEqualTo: true),
+        facilityId,
+      ).map((tenants) {
         if (kDebugMode) {
           print('📡 Stream update: ${tenants.length} active tenants for facility: $facilityId');
         }
-
         return tenants;
       });
     } catch (e) {
@@ -259,44 +294,13 @@ class TenantService {
         print('🔄 Getting tenants for facility: $facilityId');
       }
 
-      // Try ordered query first, fall back to unordered if index is building
-      QuerySnapshot snapshot;
-      try {
-        snapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('tenants')
-            .orderBy('name')
-            .limit(250) // Hard cap: 250 tenants per facility
-            .get();
-      } catch (orderingError) {
-        if (orderingError.toString().contains('failed-precondition') && orderingError.toString().contains('index')) {
-          if (kDebugMode) {
-            print('📋 INDEX BUILDING: Using fallback unordered query for tenants...');
-          }
-          // Fallback to unordered query
-          snapshot = await _firestore
-              .collection('facilities')
-              .doc(facilityId)
-              .collection('tenants')
-              .limit(250) // Hard cap: 250 tenants per facility
-              .get();
-        } else {
-          rethrow;
-        }
-      }
+      final tenants =
+          await readFacilityTenants(_tenantsCollection(facilityId), facilityId);
 
       if (kDebugMode) {
-        print('✅ Successfully retrieved ${snapshot.docs.length} tenants');
+        print('✅ Successfully retrieved ${tenants.length} tenants');
       }
 
-      final tenants = snapshot.docs
-          .map((doc) => TenantModel.fromFirestore(doc))
-          .toList();
-          
-      // Sort in memory (needed for fallback queries)
-      tenants.sort((a, b) => a.name.compareTo(b.name));
-      
       return tenants;
     } catch (e) {
       if (kDebugMode) {
