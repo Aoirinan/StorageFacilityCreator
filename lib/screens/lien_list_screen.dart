@@ -41,7 +41,7 @@ class _LienListScreenState extends ConsumerState<LienListScreen> {
         final user = authState.value!;
         
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
         } catch (accountError) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

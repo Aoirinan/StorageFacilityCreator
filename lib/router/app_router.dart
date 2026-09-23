@@ -13,6 +13,7 @@ import '../providers/feature_flag_provider.dart';
 import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
+import 'facility_edit_route.dart';
 import 'public_auth_entry_routes.dart';
 import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
@@ -40,7 +41,6 @@ import '../screens/yield_management_screen.dart';
 import '../screens/dnr_list_screen.dart';
 import '../screens/facility_creation_wizard.dart';
 import '../screens/facility_edit_screen.dart';
-import '../services/facility_service.dart';
 import '../widgets/global_home_overlay.dart';
 import '../screens/subscription_test_screen.dart';
 import '../screens/billing_and_payments_screen.dart';
@@ -260,19 +260,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               if (facilityId == null || facilityId.isEmpty) {
                 return NotFoundPage(state: state);
               }
-              return FutureBuilder<FacilityModel?>(
-                future: FacilityService.getFacility(facilityId),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError ||
-                      !snapshot.hasData ||
-                      snapshot.data == null) {
-                    return NotFoundPage(state: state);
-                  }
-                  return FacilityEditScreen(facility: snapshot.data!);
-                },
+              // Resolved once per facility id; a FutureBuilder created here
+              // refetched and re-showed the spinner on every router rebuild.
+              return FacilityEditRoute(
+                key: ValueKey('facility-edit-$facilityId'),
+                facilityId: facilityId,
+                notFound: NotFoundPage(state: state),
               );
             },
           ),

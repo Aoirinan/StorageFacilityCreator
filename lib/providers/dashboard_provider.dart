@@ -166,7 +166,8 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
   }
 
   // Get all facilities for user
-  final allFacilities = await FacilityService.getUserFacilities();
+  final allFacilities =
+      await FacilityService.getUserFacilities(throwOnError: true);
 
   // null = "All Facilities" (aggregate across all). Non-null = single facility.
   final facilities = activeFacilityId == null

@@ -1,10 +1,25 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_creator_account_model.dart';
 import '../models/facility_model.dart';
+import 'package:sfcapp/services/permission_service.dart';
 import 'referral_program_service.dart';
+
+/// Thrown by [FacilityCreatorAccountService.getOrCreateAccountForCurrentUser]
+/// for invited staff, who work in the owner's account and have none of their
+/// own.
+class InvitedStaffAccountException implements Exception {
+  const InvitedStaffAccountException();
+
+  @override
+  String toString() =>
+      "This login is a team member at another owner's facility, so it has no "
+      'owner account of its own.';
+}
 
 /// Service for managing Facility Creator Accounts
 class FacilityCreatorAccountService {
@@ -28,8 +43,9 @@ class FacilityCreatorAccountService {
         print('🔄 Creating Facility Creator Account for: $ownerEmail');
       }
 
-      // Check if account already exists
-      final existingAccount = await getAccountByOwnerUid(ownerUid);
+      // Check if account already exists. The throwing read: a failed read
+      // came back as "none" and this wrote a duplicate account.
+      final existingAccount = await getAccountByOwnerUidOrThrow(ownerUid);
       if (existingAccount != null) {
         if (kDebugMode) {
           print('⚠️ Account already exists for user: $ownerUid');
@@ -73,26 +89,67 @@ class FacilityCreatorAccountService {
     }
   }
 
-  /// Get account by owner UID
+  /// Get account by owner UID. Null when there is no account, and also when
+  /// the read fails; use [getAccountByOwnerUidOrThrow] where those differ.
   static Future<FacilityCreatorAccountModel?> getAccountByOwnerUid(String ownerUid) async {
     try {
-      final snapshot = await _firestore
-          .collection('facilityCreatorAccounts')
-          .where('ownerUid', isEqualTo: ownerUid)
-          .limit(1)
-          .get();
-
-      if (snapshot.docs.isEmpty) {
-        return null;
-      }
-
-      return FacilityCreatorAccountModel.fromFirestore(snapshot.docs.first);
+      return await getAccountByOwnerUidOrThrow(ownerUid);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting account by owner UID: $e');
       }
       return null;
     }
+  }
+
+  /// [getAccountByOwnerUid] that lets a failed read throw, so null only ever
+  /// means "no account". The access check needs the difference: it lets an
+  /// owner with no account yet through, and must not do that on a failed read.
+  ///
+  /// When the owner has more than one account, [preferredOwnerAccount] picks.
+  /// [readOwnerAccounts] replaces the Firestore read, for tests only.
+  static Future<FacilityCreatorAccountModel?> getAccountByOwnerUidOrThrow(
+    String ownerUid, {
+    Future<List<FacilityCreatorAccountModel>> Function(String ownerUid)? readOwnerAccounts,
+  }) async {
+    final accounts = await (readOwnerAccounts ?? _readOwnerAccounts)(ownerUid);
+    return preferredOwnerAccount(accounts);
+  }
+
+  static Future<List<FacilityCreatorAccountModel>> _readOwnerAccounts(
+      String ownerUid) async {
+    // Not limit(1): which of several docs that returned was up to Firestore.
+    // The bound only stops a runaway read; one per owner is the intent.
+    final snapshot = await _firestore
+        .collection('facilityCreatorAccounts')
+        .where('ownerUid', isEqualTo: ownerUid)
+        .limit(20)
+        .get();
+    return snapshot.docs.map(FacilityCreatorAccountModel.fromFirestore).toList();
+  }
+
+  /// The account to use for an owner with [accounts]: any that is not
+  /// pendingApproval before one that is, then the oldest (the original, which
+  /// is the one a super admin approved, billed or suspended), then by id so
+  /// the answer never depends on read order. Null when there are none.
+  ///
+  /// There should only ever be one, but getOrCreateAccountForCurrentUser used
+  /// to create a second, pendingApproval account whenever its read failed,
+  /// and the lookup took whichever doc Firestore returned first: a paying
+  /// owner could be sent to /pending-approval on that duplicate.
+  @visibleForTesting
+  static FacilityCreatorAccountModel? preferredOwnerAccount(
+      List<FacilityCreatorAccountModel> accounts) {
+    if (accounts.isEmpty) return null;
+    final sorted = [...accounts]..sort((a, b) {
+        final byPending =
+            (a.isPendingApproval ? 1 : 0).compareTo(b.isPendingApproval ? 1 : 0);
+        if (byPending != 0) return byPending;
+        final byAge = a.createdAt.compareTo(b.createdAt);
+        if (byAge != 0) return byAge;
+        return a.accountId.compareTo(b.accountId);
+      });
+    return sorted.first;
   }
 
   /// Get account by account ID
@@ -352,6 +409,32 @@ class FacilityCreatorAccountService {
     }
   }
 
+  /// The platform-access rule for an account already in hand: a billing-exempt
+  /// account, account-level access, or any facility linked to the account that
+  /// has an active per-facility platform subscription or is billing-exempt.
+  /// [facilities] null means "account only".
+  ///
+  /// billingExempt is set only by a super admin (the rules refuse it from
+  /// owners) and means "never locked out", which is how the route guard and
+  /// the subscription banner already treat it; the sidebar lock and the lock
+  /// overlay ignored it, and every check ignored it on a facility.
+  ///
+  /// A suspended account gets nothing from its facilities: suspension is a
+  /// super admin's decision about the account, and a linked facility's own
+  /// subscription or exemption used to let it straight back in. Only an
+  /// exempt account (also a super admin's decision) overrides it.
+  static bool accountGrantsPlatformAccess(
+    FacilityCreatorAccountModel account, {
+    List<FacilityModel>? facilities,
+  }) {
+    if (account.billingExempt) return true;
+    if (account.suspended) return false;
+    if (account.canAccessPlatform) return true;
+    if (facilities == null) return false;
+    final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
+    return linked.any((f) => f.billingExempt || f.hasActivePlatformSubscription);
+  }
+
   /// Check if user has active subscription (account-level OR any per-facility platform sub)
   /// Pass [facilities] to avoid circular import with FacilityService; if null, only checks account.
   static Future<bool> hasActiveSubscription(
@@ -363,12 +446,7 @@ class FacilityCreatorAccountService {
       if (account == null) {
         return false;
       }
-      if (account.canAccessPlatform) {
-        return true;
-      }
-      if (facilities == null) return false;
-      final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
-      return linked.any((f) => f.hasActivePlatformSubscription);
+      return accountGrantsPlatformAccess(account, facilities: facilities);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error checking subscription: $e');
@@ -379,29 +457,106 @@ class FacilityCreatorAccountService {
 
   /// Get or create account for current user
   /// This is a convenience method that creates an account if it doesn't exist
-  static Future<FacilityCreatorAccountModel> getOrCreateAccountForCurrentUser() async {
+  ///
+  /// Throws [InvitedStaffAccountException] instead of creating one for invited
+  /// staff (see [ensureAccountFor]), unless [createForInvitedStaff]: pass it
+  /// only where the user is creating a facility of their own.
+  static Future<FacilityCreatorAccountModel> getOrCreateAccountForCurrentUser({
+    bool createForInvitedStaff = false,
+  }) async {
     final user = _auth.currentUser;
     if (user == null) {
       throw Exception('Not authenticated');
     }
 
-    var account = await getAccountByOwnerUid(user.uid);
-    
+    final account = await ensureAccountFor(
+      user,
+      createForInvitedStaff: createForInvitedStaff,
+    );
     if (account == null) {
-      // Create new account
-      final accountId = await createAccount(
-        ownerUid: user.uid,
-        ownerEmail: user.email ?? '',
-        ownerName: user.displayName ?? 'Facility Creator',
-      );
-      account = await getAccount(accountId);
-      if (account == null) {
-        throw Exception('Failed to create account');
-      }
+      throw const InvitedStaffAccountException();
     }
 
     Future.microtask(() => ReferralProgramService.syncForCurrentUser());
 
+    return account;
+  }
+
+  /// [getOrCreateAccountForCurrentUser] for screens that only make sure an
+  /// owner has an account before loading: null for invited staff, who have
+  /// none and must not be given one.
+  static Future<FacilityCreatorAccountModel?> ensureAccountForCurrentUser() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('Not authenticated');
+    }
+    final account = await ensureAccountFor(user);
+    if (account != null) {
+      unawaited(Future.microtask(() => ReferralProgramService.syncForCurrentUser()));
+    }
+    return account;
+  }
+
+  /// [user]'s account, created when they have none, or null for invited staff
+  /// unless [createForInvitedStaff].
+  ///
+  /// Every read throws on failure, so a failed read never creates anything:
+  /// the old lookup turned a failed read into "no account" and created a
+  /// second, pendingApproval account for owners who already had one.
+  ///
+  /// Invited staff (active roles, no facility of their own) were given a
+  /// pendingApproval account by the first screen that called this, and the
+  /// route guard then held them on /pending-approval.
+  ///
+  /// The optional arguments replace the Firestore reads and the create, for
+  /// tests only.
+  @visibleForTesting
+  static Future<FacilityCreatorAccountModel?> ensureAccountFor(
+    User user, {
+    bool createForInvitedStaff = false,
+    Future<FacilityCreatorAccountModel?> Function(String uid)? readAccount,
+    Future<bool> Function(String uid)? isInvitedStaffOnly,
+    Future<FacilityCreatorAccountModel> Function(User user)? create,
+  }) async {
+    final existing = await (readAccount ?? getAccountByOwnerUidOrThrow)(user.uid);
+    if (existing != null) return existing;
+
+    if (!createForInvitedStaff &&
+        await (isInvitedStaffOnly ?? _isInvitedStaffOnly)(user.uid)) {
+      return null;
+    }
+    return (create ?? _createAccountFor)(user);
+  }
+
+  /// Whether [uid] has an active role at a facility and owns none. Owners can
+  /// have role rows too (an owner row per facility), hence the second read.
+  static Future<bool> _isInvitedStaffOnly(String uid) async {
+    final results = await Future.wait([
+      _firestore
+          .collection(PermissionService.userRolesCollection)
+          .where('userId', isEqualTo: uid)
+          .where('isActive', isEqualTo: true)
+          .limit(1)
+          .get(),
+      _firestore
+          .collection('facilities')
+          .where('ownerUid', isEqualTo: uid)
+          .limit(1)
+          .get(),
+    ]);
+    return results[0].docs.isNotEmpty && results[1].docs.isEmpty;
+  }
+
+  static Future<FacilityCreatorAccountModel> _createAccountFor(User user) async {
+    final accountId = await createAccount(
+      ownerUid: user.uid,
+      ownerEmail: user.email ?? '',
+      ownerName: user.displayName ?? 'Facility Creator',
+    );
+    final account = await getAccount(accountId);
+    if (account == null) {
+      throw Exception('Failed to create account');
+    }
     return account;
   }
 

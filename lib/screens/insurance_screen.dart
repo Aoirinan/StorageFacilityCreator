@@ -55,7 +55,7 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
 
   Future<void> _loadFacilities() async {
     try {
-      await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+      await FacilityCreatorAccountService.ensureAccountForCurrentUser();
       final uid = FirebaseAuth.instance.currentUser?.uid;
       final facilities = uid == null
           ? await FacilityService.getUserFacilities()

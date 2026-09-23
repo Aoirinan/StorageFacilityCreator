@@ -40,7 +40,7 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
         final user = authState.value!;
         
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
           if (kDebugMode) {
             print('✅ Account verified/created for user: ${user.uid}');
           }

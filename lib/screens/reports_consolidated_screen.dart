@@ -71,7 +71,7 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
         final user = authState.value!;
 
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
         } catch (accountError) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

@@ -34,7 +34,7 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
     final authState = ref.read(authStateProvider);
     if (authState.hasValue && authState.value != null) {
       try {
-        await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+        await FacilityCreatorAccountService.ensureAccountForCurrentUser();
         ref.invalidate(userFacilitiesProvider(authState.value!.uid));
         final facilitiesAsync =
             await ref.read(userFacilitiesProvider(authState.value!.uid).future);

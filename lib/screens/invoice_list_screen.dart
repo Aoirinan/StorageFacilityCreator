@@ -44,7 +44,7 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
         final user = authState.value!;
         
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
         } catch (accountError) {
           if (mounted) {
             if (kDebugMode) {
