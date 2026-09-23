@@ -6,6 +6,7 @@ import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/app_check_service.dart';
 import 'package:sfcapp/services/ai_debug_logger.dart';
 import 'package:sfcapp/services/debug_logger.dart';
+import 'package:sfcapp/services/user_session_caches.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -431,6 +432,8 @@ class AuthService {
   Future<void> signOut() async {
     try {
       await _auth.signOut();
+      // Otherwise the next account on this tab inherits these caches.
+      UserSessionCaches.clearAll();
       if (kDebugMode) {
         print('✅ User signed out');
       }

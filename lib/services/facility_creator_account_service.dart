@@ -352,6 +352,21 @@ class FacilityCreatorAccountService {
     }
   }
 
+  /// The platform-access rule for an account already in hand: account-level
+  /// access, or any facility linked to the account with an active per-facility
+  /// platform subscription. [facilities] null means "account only".
+  static bool accountGrantsPlatformAccess(
+    FacilityCreatorAccountModel account, {
+    List<FacilityModel>? facilities,
+  }) {
+    if (account.canAccessPlatform) {
+      return true;
+    }
+    if (facilities == null) return false;
+    final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
+    return linked.any((f) => f.hasActivePlatformSubscription);
+  }
+
   /// Check if user has active subscription (account-level OR any per-facility platform sub)
   /// Pass [facilities] to avoid circular import with FacilityService; if null, only checks account.
   static Future<bool> hasActiveSubscription(
@@ -363,12 +378,7 @@ class FacilityCreatorAccountService {
       if (account == null) {
         return false;
       }
-      if (account.canAccessPlatform) {
-        return true;
-      }
-      if (facilities == null) return false;
-      final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
-      return linked.any((f) => f.hasActivePlatformSubscription);
+      return accountGrantsPlatformAccess(account, facilities: facilities);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error checking subscription: $e');

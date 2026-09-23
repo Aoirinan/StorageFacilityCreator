@@ -10,6 +10,7 @@ import 'superadmin_service.dart';
 import 'debug_logger.dart';
 import 'facility_creation_policy.dart';
 import '../constants/facility_capacity.dart';
+import 'package:sfcapp/utils/single_flight.dart';
 
 void _facilityServiceDebugLog(String message) {
   if (kDebugMode) {
@@ -34,21 +35,87 @@ class FacilityService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static List<FacilityModel>? _cachedFacilities;
+  // The uid the cached list belongs to. Without it a second account signing in
+  // on the same tab was served the first account's facilities for 2 minutes.
+  static String? _cachedFacilitiesUid;
   static DateTime? _lastFacilitiesFetch;
   static const Duration _facilityCacheTtl = Duration(minutes: 2);
+  static final SingleFlight<String, List<FacilityModel>> _facilitiesFlight =
+      SingleFlight<String, List<FacilityModel>>();
 
-  /// Clears in-memory facility list cache (e.g. after accepting an invite).
+  /// Clears in-memory facility list cache (e.g. after accepting an invite, or
+  /// on sign-out).
   static void clearFacilitiesCache() {
     _cachedFacilities = null;
+    _cachedFacilitiesUid = null;
     _lastFacilitiesFetch = null;
+    _facilitiesFlight.clear();
+    _backfillCompletedForUid = null;
   }
 
-  /// Facilities the user can access via `user_roles` (invited staff), excluding pure duplicates of [ownedIds].
-  static Future<List<FacilityModel>> _facilitiesFromActiveUserRoles(
-    String uid, {
+  /// The cached active-facility list for [uid], or null when there is none or
+  /// it belongs to another account. Exposed for tests.
+  @visibleForTesting
+  static List<FacilityModel>? cachedFacilitiesFor(String uid) =>
+      _cachedFacilitiesUid == uid ? _cachedFacilities : null;
+
+  /// Seeds the cache as a finished fetch would. Exposed for tests.
+  @visibleForTesting
+  static void debugSeedFacilitiesCache(String uid, List<FacilityModel> facilities) {
+    _cachedFacilities = facilities;
+    _cachedFacilitiesUid = uid;
+    _lastFacilitiesFetch = DateTime.now();
+  }
+
+  /// Field updates the one-time facility backfill makes, keyed by facility id.
+  ///
+  /// Only facilities [uid] owns are touched; a missing `active` becomes true,
+  /// and the owner gets `roles.{uid} = 'owner'` (the security rules read that
+  /// map). Facilities that need nothing are left out.
+  static Map<String, Map<String, dynamic>> facilityBackfillUpdates(
+    String uid,
+    Map<String, Map<String, dynamic>> docsById,
+  ) {
+    final out = <String, Map<String, dynamic>>{};
+    docsById.forEach((id, data) {
+      final updates = <String, dynamic>{};
+      if (data['active'] == null) {
+        updates['active'] = true;
+      }
+      // Never write to a facility someone else owns.
+      if (data['ownerUid'] == null || data['ownerUid'] != uid) return;
+      final roles = (data['roles'] as Map<String, dynamic>?) ?? const {};
+      if (roles[uid] != 'owner') {
+        updates['roles.$uid'] = 'owner';
+      }
+      if (updates.isNotEmpty) out[id] = updates;
+    });
+    return out;
+  }
+
+  /// Combines owned and role-based facilities into the list the UI shows:
+  /// owned wins over a duplicate role entry, archived facilities are dropped
+  /// unless [includeArchived], and the result is sorted by name.
+  static List<FacilityModel> mergeUserFacilities({
+    required List<FacilityModel> owned,
+    required List<FacilityModel> fromRoles,
     required bool includeArchived,
-    Set<String>? ownedIds,
-  }) async {
+  }) {
+    final byId = <String, FacilityModel>{};
+    for (final f in owned) {
+      if (!includeArchived && !f.active) continue;
+      byId[f.id] = f.copyWith(currentUserOwnsFacility: true);
+    }
+    for (final f in fromRoles) {
+      if (!includeArchived && !f.active) continue;
+      byId.putIfAbsent(f.id, () => f.copyWith(currentUserOwnsFacility: false));
+    }
+    return byId.values.toList()..sort((a, b) => a.name.compareTo(b.name));
+  }
+
+  /// Ids of the facilities [uid] reaches through an active `user_roles` entry
+  /// (invited staff). Empty on error, as before.
+  static Future<Set<String>> _activeRoleFacilityIds(String uid) async {
     try {
       final snap = await _firestore
           .collection(PermissionService.userRolesCollection)
@@ -60,25 +127,62 @@ class FacilityService {
       for (final doc in snap.docs) {
         final fid = doc.data()['facilityId'] as String?;
         if (fid == null || fid.isEmpty) continue;
-        if (ownedIds != null && ownedIds.contains(fid)) continue;
         ids.add(fid);
       }
-      if (ids.isEmpty) return [];
-
-      final out = <FacilityModel>[];
-      for (final id in ids) {
-        final d = await _firestore.collection('facilities').doc(id).get();
-        if (!d.exists) continue;
-        final f = FacilityModel.fromFirestore(d);
-        if (!includeArchived && !f.active) continue;
-        out.add(f);
+      return ids;
+    } catch (e) {
+      if (kDebugMode) {
+        _facilityServiceDebugLog('❌ [FacilityService] Error loading role-based facilities: $e');
       }
-      return out;
+      return <String>{};
+    }
+  }
+
+  /// Reads the facility docs for [ids] in parallel; they used to be read one
+  /// after another. Empty on error, as before.
+  static Future<List<FacilityModel>> _facilitiesByIds(Iterable<String> ids) async {
+    if (ids.isEmpty) return [];
+    try {
+      final docs = await Future.wait(
+        ids.map((id) => _firestore.collection('facilities').doc(id).get()),
+      );
+      return docs.where((d) => d.exists).map(FacilityModel.fromFirestore).toList();
     } catch (e) {
       if (kDebugMode) {
         _facilityServiceDebugLog('❌ [FacilityService] Error loading role-based facilities: $e');
       }
       return [];
+    }
+  }
+
+  /// Applies [facilityBackfillUpdates] for [docs], awaiting the commit only
+  /// when something needs writing. Non-critical: errors are logged, not thrown.
+  static Future<void> _backfillOwnedFacilities(
+    String uid,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) async {
+    try {
+      final updates = facilityBackfillUpdates(
+        uid,
+        {for (final d in docs) d.id: d.data()},
+      );
+      if (updates.isEmpty) {
+        _backfillCompletedForUid = uid;
+        return;
+      }
+      final batch = _firestore.batch();
+      final refs = {for (final d in docs) d.id: d.reference};
+      updates.forEach((id, fields) => batch.update(refs[id]!, fields));
+      await batch.commit();
+      _backfillCompletedForUid = uid;
+      if (kDebugMode) {
+        _facilityServiceDebugLog('✅ Facility backfill completed (${updates.length} facilities)');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        _facilityServiceDebugLog('⚠️ Error during facility backfill: $e');
+      }
+      // Don't rethrow - backfill is non-critical
     }
   }
 
@@ -112,83 +216,29 @@ class FacilityService {
     return false;
   }
   
-  // Track if backfill has been run to avoid multiple runs
-  static bool _backfillCompleted = false;
+  // The uid whose backfill has run. Was a bare bool, so after one account's
+  // backfill a second account in the same tab never got its own.
+  static String? _backfillCompletedForUid;
 
-  // One-time backfill utility for existing facilities missing required fields
+  // One-time backfill utility for existing facilities missing required fields.
+  // getUserFacilities now backfills from its own owner query, so this only
+  // matters to callers that want the backfill without the list.
   static Future<void> runBackfillIfNeeded() async {
-    if (_backfillCompleted) return;
-    
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        if (kDebugMode) {
-          _facilityServiceDebugLog('⚠️ No user signed in, skipping backfill');
-        }
-        return;
-      }
-
+    final user = _auth.currentUser;
+    if (user == null) {
       if (kDebugMode) {
-        _facilityServiceDebugLog('🔄 Running facility backfill for user: ${user.uid}');
+        _facilityServiceDebugLog('⚠️ No user signed in, skipping backfill');
       }
+      return;
+    }
+    if (_backfillCompletedForUid == user.uid) return;
 
+    try {
       final snapshot = await _firestore
           .collection('facilities')
           .where('ownerUid', isEqualTo: user.uid)
           .get();
-
-      final batch = _firestore.batch();
-      bool needsUpdate = false;
-
-      for (final doc in snapshot.docs) {
-        final data = doc.data();
-        bool docNeedsUpdate = false;
-        final updates = <String, dynamic>{};
-
-        // Fix missing active field
-        if (data['active'] == null) {
-          updates['active'] = true;
-          docNeedsUpdate = true;
-          if (kDebugMode) {
-            _facilityServiceDebugLog('🔧 Fixing facility: ${data['name']} - setting active: true');
-          }
-        }
-
-        // Fix missing ownerUid (shouldn't happen but be safe)
-        if (data['ownerUid'] == null || data['ownerUid'] != user.uid) {
-          if (kDebugMode) {
-            _facilityServiceDebugLog('❌ ERROR: Facility ${data['name']} has invalid ownerUid, blocking unsafe update');
-          }
-          continue; // Skip this doc to prevent security issues
-        }
-
-        final roles = (data['roles'] as Map<String, dynamic>?) ?? const {};
-        if (roles[user.uid] != 'owner') {
-          updates['roles.${user.uid}'] = 'owner';
-          docNeedsUpdate = true;
-          if (kDebugMode) {
-            _facilityServiceDebugLog('🔧 Ensuring owner role entry for facility: ${data['name']}');
-          }
-        }
-
-        if (docNeedsUpdate) {
-          batch.update(doc.reference, updates);
-          needsUpdate = true;
-        }
-      }
-
-      if (needsUpdate) {
-        await batch.commit();
-        if (kDebugMode) {
-          _facilityServiceDebugLog('✅ Facility backfill completed');
-        }
-      } else {
-        if (kDebugMode) {
-          _facilityServiceDebugLog('✅ No facilities need backfill');
-        }
-      }
-
-      _backfillCompleted = true;
+      await _backfillOwnedFacilities(user.uid, snapshot.docs);
     } catch (e) {
       if (kDebugMode) {
         _facilityServiceDebugLog('⚠️ Error during facility backfill: $e');
@@ -402,7 +452,8 @@ class FacilityService {
         throw Exception('Not signed in');
       }
 
-      final cacheFresh = _cachedFacilities != null &&
+      final cacheFresh = _cachedFacilitiesUid == user.uid &&
+          _cachedFacilities != null &&
           _lastFacilitiesFetch != null &&
           DateTime.now().difference(_lastFacilitiesFetch!) < _facilityCacheTtl;
 
@@ -418,81 +469,18 @@ class FacilityService {
         return _cachedFacilities!;
       }
 
-      if (kDebugMode) {
-        _facilityServiceDebugLog('🔄 Getting facilities for owner: ${user.uid}');
-      }
-
-      // Fix existing facilities that might be missing the active field
-      await fixExistingFacilities();
-
-      // Try ordered query first, fall back to unordered if index is building
-      QuerySnapshot snapshot;
-      try {
-        Query query = _firestore
-            .collection('facilities')
-            .where('ownerUid', isEqualTo: user.uid);  // ✅ REQUIRED by Firestore rules
-        
-        if (!includeArchived) {
-          query = query.where('active', isEqualTo: true);
-        }
-        
-        query = query.orderBy('active').orderBy('name');
-        
-        snapshot = await query.get();
-      } catch (orderingError) {
-        if (orderingError.toString().contains('failed-precondition') && orderingError.toString().contains('index')) {
-          if (kDebugMode) {
-            _facilityServiceDebugLog('📋 INDEX BUILDING: Using fallback unordered query...');
-          }
-          // Fallback to unordered query
-          Query fallbackQuery = _firestore
-              .collection('facilities')
-              .where('ownerUid', isEqualTo: user.uid);
-          
-          if (!includeArchived) {
-            fallbackQuery = fallbackQuery.where('active', isEqualTo: true);
-          }
-          
-          snapshot = await fallbackQuery.get();
-        } else {
-          rethrow;
-        }
-      }
-
-      if (kDebugMode) {
-        _facilityServiceDebugLog('✅ Successfully retrieved ${snapshot.docs.length} facilities');
-      }
-
-      final owned = snapshot.docs
-          .map(
-            (doc) => FacilityModel.fromFirestore(doc)
-                .copyWith(currentUserOwnsFacility: true),
-          )
-          .toList();
-
-      final ownedIds = owned.map((f) => f.id).toSet();
-      final fromRoles = await _facilitiesFromActiveUserRoles(
-        user.uid,
-        includeArchived: includeArchived,
-        ownedIds: ownedIds,
-      );
-
-      final byId = <String, FacilityModel>{};
-      for (final f in owned) {
-        byId[f.id] = f;
-      }
-      for (final f in fromRoles) {
-        byId.putIfAbsent(
-          f.id,
-          () => f.copyWith(currentUserOwnsFacility: false),
+      final List<FacilityModel> facilities;
+      if (forceRefresh) {
+        // Not joined to a call already running: that one may have started
+        // before the write the caller is refreshing to see.
+        facilities = await _loadUserFacilities(user.uid, includeArchived: includeArchived);
+      } else {
+        // On a cold load the dashboard, sidebar, banner and route guard each
+        // ran this whole chain at once; now they share one.
+        facilities = await _facilitiesFlight.run(
+          '${user.uid}|$includeArchived',
+          () => _loadUserFacilities(user.uid, includeArchived: includeArchived),
         );
-      }
-      final facilities = byId.values.toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
-
-      if (!includeArchived) {
-        _cachedFacilities = facilities;
-        _lastFacilitiesFetch = DateTime.now();
       }
       // #region agent log
       DebugLogger.log(
@@ -502,7 +490,7 @@ class FacilityService {
         data: {'count': facilities.length, 'includeArchived': includeArchived, 'forceRefresh': forceRefresh},
       );
       // #endregion
-      
+
       return facilities;
     } catch (e) {
       if (kDebugMode) {
@@ -514,6 +502,59 @@ class FacilityService {
       
       return [];
     }
+  }
+
+  /// One cold fetch of [uid]'s facilities: the owner query and the user_roles
+  /// query run together, then the role facilities are read in parallel.
+  ///
+  /// This used to be three to four round trips in series: a backfill query,
+  /// then an `active == true` query ordered by (active, name) that needs a
+  /// composite index firestore.indexes.json never declared (so it usually
+  /// failed and was re-run unordered), then the user_roles query. The owner
+  /// query below has no active filter and no orderBy, so it needs no composite
+  /// index; archived facilities are dropped in memory and the list is sorted by
+  /// name, which is all the ordered query was ever used for.
+  static Future<List<FacilityModel>> _loadUserFacilities(
+    String uid, {
+    required bool includeArchived,
+  }) async {
+    if (kDebugMode) {
+      _facilityServiceDebugLog('🔄 Getting facilities for owner: $uid');
+    }
+
+    final ownedFuture = _firestore
+        .collection('facilities')
+        .where('ownerUid', isEqualTo: uid) // ✅ REQUIRED by Firestore rules
+        .get();
+    // Never throws, so it cannot go unhandled if the owner query fails first.
+    final roleIdsFuture = _activeRoleFacilityIds(uid);
+    final snapshot = await ownedFuture;
+    final roleIds = await roleIdsFuture;
+
+    // The security rules read `roles.{uid}`, so a needed backfill must land
+    // before anyone relies on it, exactly as when it ran as its own query.
+    await _backfillOwnedFacilities(uid, snapshot.docs);
+
+    if (kDebugMode) {
+      _facilityServiceDebugLog('✅ Successfully retrieved ${snapshot.docs.length} facilities');
+    }
+
+    final owned = snapshot.docs.map(FacilityModel.fromFirestore).toList();
+    final ownedIds = owned.map((f) => f.id).toSet();
+    final fromRoles = await _facilitiesByIds(roleIds.difference(ownedIds));
+
+    final facilities = mergeUserFacilities(
+      owned: owned,
+      fromRoles: fromRoles,
+      includeArchived: includeArchived,
+    );
+
+    if (!includeArchived) {
+      _cachedFacilities = facilities;
+      _cachedFacilitiesUid = uid;
+      _lastFacilitiesFetch = DateTime.now();
+    }
+    return facilities;
   }
 
   // Real-time stream for ACTIVE facilities only

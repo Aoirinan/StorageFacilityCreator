@@ -10,7 +10,9 @@ import '../services/debug_session_logger.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/two_factor_service.dart';
+import 'package:sfcapp/services/user_session_caches.dart';
 import '../config/web_host_config.dart';
+import 'package:sfcapp/utils/single_flight.dart';
 import '../utils/browser_location_stub.dart'
     if (dart.library.html) '../utils/browser_location_web.dart' as browser_location;
 import 'app_route.dart';
@@ -30,18 +32,16 @@ const Duration _twoFactorLookupTimeout = Duration(seconds: 6);
 /// destination it already uses when the lookup throws.
 const Duration _accessCheckTimeout = Duration(seconds: 8);
 
-/// Cache for subscription check results to avoid repeated calls
-class _SubscriptionCheckCache {
-  SubscriptionAccessResult? result;
-  DateTime? fetchedAt;
+/// Shares one in-flight subscription check per uid. On a hard reload the
+/// initial redirect and the auth-state refresh run the guard at the same time,
+/// and each used to run its own account + facilities lookups.
+final _subscriptionCheckFlight = SingleFlight<String, SubscriptionAccessResult>();
 
-  bool get isFresh =>
-      result != null &&
-      fetchedAt != null &&
-      DateTime.now().difference(fetchedAt!) < const Duration(minutes: 2);
-}
-
-final _subscriptionCheckCache = _SubscriptionCheckCache();
+/// Whether the guard must refresh [user] from Firebase Auth before checking
+/// email verification. Only an unverified account can change here (the link
+/// was clicked in another tab); a verified one paid an Auth round trip on
+/// every single navigation for nothing.
+bool needsVerificationReload(User user) => !user.emailVerified;
 
 /// Main redirect guard function for GoRouter
 ///
@@ -54,25 +54,58 @@ Future<String?> routeGuard(
   BuildContext context,
   GoRouterState state,
   Ref ref,
-) async {
+) {
+  return evaluateRouteGuard(
+    matchedLocation: state.matchedLocation,
+    uri: state.uri,
+    ref: ref,
+  );
+}
+
+/// [routeGuard] without the GoRouter types, with seams for tests. Production
+/// passes none of the optional arguments and gets the real Firebase user,
+/// super-admin list, 2FA lookup and subscription check.
+@visibleForTesting
+Future<String?> evaluateRouteGuard({
+  required String matchedLocation,
+  required Uri uri,
+  required Ref ref,
+  User? Function()? currentUser,
+  bool Function(User? user)? isSuperAdmin,
+  Future<bool> Function()? isTwoFactorEnabled,
+  Future<SubscriptionAccessResult> Function(String path)? checkAccess,
+}) async {
+  final User? Function() readCurrentUser =
+      currentUser ?? () => FirebaseAuth.instance.currentUser;
+  final bool Function(User? user) superAdmin =
+      isSuperAdmin ?? (User? user) => SuperAdminService.isSuperAdmin(user);
+  final Future<bool> Function() twoFactorEnabled =
+      isTwoFactorEnabled ?? TwoFactorService.is2FAEnabledStrict;
+  final Future<SubscriptionAccessResult> Function(String path) accessCheck =
+      checkAccess ??
+          (String path) => SubscriptionGuardService.checkAccess(
+                currentRoute: path,
+                allowSubscriptionRoutes: true,
+              );
+
   // Use Firebase currentUser directly so we stay in sync with refreshListenable.
   // Riverpod's auth stream can lag; redirect was seeing "loading"/null right after
   // sign-in and leaving user on landing until refresh.
-  final firebaseUser = FirebaseAuth.instance.currentUser;
+  final firebaseUser = readCurrentUser();
   final isAuthenticated = firebaseUser != null;
   User? effectiveUser = firebaseUser;
 
-  final loc = state.matchedLocation;
-  final path = state.uri.path;
+  final loc = matchedLocation;
+  final path = uri.path;
 
   // Legacy tenant move-in links used /move-in?token=...; redirect to the public flow.
   if (loc == AppRoute.moveInWizard || path == AppRoute.moveInWizard) {
-    final token = state.uri.queryParameters['token'];
-    final facilityId = state.uri.queryParameters['facilityId'] ?? '';
+    final token = uri.queryParameters['token'];
+    final facilityId = uri.queryParameters['facilityId'] ?? '';
     if (token != null && token.isNotEmpty && facilityId.isEmpty) {
       return Uri(
         path: AppRoute.publicMoveIn,
-        queryParameters: state.uri.queryParameters,
+        queryParameters: uri.queryParameters,
       ).toString();
     }
   }
@@ -166,10 +199,13 @@ Future<String?> routeGuard(
     // #endregion
     // Reset 2FA verification state when logged out
     ref.read(twoFactorVerifiedProvider.notifier).state = false;
+    // Most sign-out buttons call FirebaseAuth.signOut directly rather than
+    // AuthService.signOut, so drop the per-account caches here as well.
+    UserSessionCaches.clearAll();
     // Always allow the root/login entry point for signed-out users
     if (isLanding) return null;
     if (isPublicRoute) return null;
-    final intended = state.uri.toString();
+    final intended = uri.toString();
     final encodedIntended = Uri.encodeComponent(intended);
     return '${AppRoute.login}?redirect=$encodedIntended';
   }
@@ -180,22 +216,24 @@ Future<String?> routeGuard(
       loc == AppRoute.signup ||
       loc == AppRoute.verifyEmail ||
       loc == AppRoute.forgotPassword;
-  if (!SuperAdminService.isSuperAdmin(firebaseUser)) {
+  if (!superAdmin(firebaseUser)) {
     final verifiedUser = firebaseUser;
     if (verifiedUser == null) {
       return AppRoute.login;
     }
-    try {
-      // Bounded: this runs on every guarded navigation. Without a timeout a slow
-      // or stalled network freezes the router mid-redirect, leaving the previous
-      // screen painted with no spinner and no error.
-      await verifiedUser.reload().timeout(_authRefreshTimeout);
-      effectiveUser = FirebaseAuth.instance.currentUser;
-    } catch (_) {
-      // If refresh fails or times out, fall back to the current auth snapshot.
-      // An unverified snapshot still routes to verify-email below, so this
-      // degrades closed rather than letting an unverified user through.
-      effectiveUser = verifiedUser;
+    if (needsVerificationReload(verifiedUser)) {
+      try {
+        // Bounded: without a timeout a slow or stalled network freezes the
+        // router mid-redirect, leaving the previous screen painted with no
+        // spinner and no error.
+        await verifiedUser.reload().timeout(_authRefreshTimeout);
+        effectiveUser = readCurrentUser();
+      } catch (_) {
+        // If refresh fails or times out, fall back to the current auth snapshot.
+        // An unverified snapshot still routes to verify-email below, so this
+        // degrades closed rather than letting an unverified user through.
+        effectiveUser = verifiedUser;
+      }
     }
 
     if (effectiveUser != null &&
@@ -213,8 +251,8 @@ Future<String?> routeGuard(
 
     if (!is2FAVerified) {
       try {
-        final is2FAEnabled = await TwoFactorService.is2FAEnabledStrict()
-            .timeout(_twoFactorLookupTimeout);
+        final is2FAEnabled =
+            await twoFactorEnabled().timeout(_twoFactorLookupTimeout);
 
         if (is2FAEnabled) {
           if (loggingIn) {
@@ -246,12 +284,18 @@ Future<String?> routeGuard(
           debugSessionLog(
               hypothesisId: 'H3',
               location: 'route_guards.dart:routeGuard',
-              message: '2FA not enabled, mark verified, return null',
+              message: '2FA not enabled, mark verified',
               data: {'loc': loc});
           // #endregion
           ref.read(twoFactorVerifiedProvider.notifier).state = true;
           ref.invalidate(twoFactorEnabledProvider);
-          return null;
+          // This used to return null for every route, so the first navigation
+          // after each reload skipped the maintenance, super-admin and
+          // subscription checks below: an expired trial could use whatever
+          // page it reloaded. Those checks only ever apply to non-public
+          // routes, so public ones still stop here, exactly as before (a fresh
+          // load of the tenant portal is not bounced to the dashboard).
+          if (isPublicRoute || isLanding) return null;
         }
       } catch (e) {
         // Fail closed. We could not determine whether this account requires a
@@ -286,8 +330,7 @@ Future<String?> routeGuard(
   Future<String> redirectToDashboardOrLoginIf2FA() async {
     if (!ref.read(twoFactorVerifiedProvider)) {
       try {
-        final en = await TwoFactorService.is2FAEnabledStrict()
-            .timeout(_twoFactorLookupTimeout);
+        final en = await twoFactorEnabled().timeout(_twoFactorLookupTimeout);
         if (en) return AppRoute.login;
       } catch (_) {
         // Fail closed: an undetermined second factor must not land on dashboard.
@@ -366,14 +409,12 @@ Future<String?> routeGuard(
       !isPublicRoute &&
       !path.startsWith('/subscription') &&
       !path.startsWith(AppRoute.superAdmin) &&
-      !SuperAdminService.isSuperAdmin(firebaseUser)) {
+      !superAdmin(firebaseUser)) {
     final isMaintenanceMode = ref.read(maintenanceModeProvider);
     if (isMaintenanceMode && !path.startsWith('/maintenance')) {
       try {
-        final maintenanceGate = await SubscriptionGuardService.checkAccess(
-          currentRoute: path,
-          allowSubscriptionRoutes: true,
-        ).timeout(_accessCheckTimeout);
+        final maintenanceGate =
+            await accessCheck(path).timeout(_accessCheckTimeout);
         if (!maintenanceGate.canAccess) {
           return '/subscription?maintenance=1';
         }
@@ -389,7 +430,7 @@ Future<String?> routeGuard(
   // Super admin route guard: only superadmin can access /super-admin
   if (path.startsWith(AppRoute.superAdmin)) {
     if (!isAuthenticated) return AppRoute.login;
-    if (!SuperAdminService.isSuperAdmin(firebaseUser)) {
+    if (!superAdmin(firebaseUser)) {
       return AppRoute.dashboard;
     }
     return null; // Allow superadmin through
@@ -397,25 +438,23 @@ Future<String?> routeGuard(
 
   // Check subscription status for authenticated users (skip for subscription routes)
   if (isAuthenticated && !isPublicRoute && !path.startsWith('/subscription')) {
-    SubscriptionAccessResult? subscriptionCheck;
-    final cacheIsFresh = _subscriptionCheckCache.isFresh;
+    final uid = firebaseUser.uid;
+    // Keyed by uid: the cache used to be shared by whoever signed in next.
+    var subscriptionCheck = SubscriptionGuardService.routeGuardCache.freshFor(uid);
 
-    if (cacheIsFresh) {
-      subscriptionCheck = _subscriptionCheckCache.result;
-    } else {
+    if (subscriptionCheck == null) {
       try {
-        subscriptionCheck = await SubscriptionGuardService.checkAccess(
-          currentRoute: path,
-          allowSubscriptionRoutes: true,
-        ).timeout(_accessCheckTimeout);
+        final result = await _subscriptionCheckFlight.run(
+          uid,
+          () => accessCheck(path).timeout(_accessCheckTimeout),
+        );
+        subscriptionCheck = result;
         // Don't cache trialing/pending results: status can change quickly.
-        final status = subscriptionCheck.subscriptionStatus;
+        final status = result.subscriptionStatus;
         final shouldBypassCache = status == SubscriptionStatus.trialing ||
             status == SubscriptionStatus.pendingApproval;
         if (!shouldBypassCache) {
-          _subscriptionCheckCache
-            ..result = subscriptionCheck
-            ..fetchedAt = DateTime.now();
+          SubscriptionGuardService.routeGuardCache.store(uid, result);
         }
       } catch (e) {
         // Fail closed to avoid bypassing access control on errors
@@ -426,8 +465,7 @@ Future<String?> routeGuard(
       }
     }
 
-    if (subscriptionCheck != null &&
-        !subscriptionCheck.canAccess &&
+    if (!subscriptionCheck.canAccess &&
         subscriptionCheck.redirectRoute != null) {
       if (kDebugMode) {
         print(

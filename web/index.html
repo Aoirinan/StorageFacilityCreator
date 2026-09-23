@@ -152,7 +152,21 @@
   <!-- Manifest removed - PWA installability disabled for web-only SaaS -->
   <!-- Canonical domain -->
   <link rel="canonical" href="https://www.storagefacilitycreator.com">
-  
+
+  <!-- Open the connections the first Firebase requests need while Flutter boots,
+       so auth restore, the App Check token and the first Firestore read don't each
+       pay DNS + TLS setup in series. crossorigin: these are CORS fetches/XHRs, which
+       use a separate connection pool. www.google.com serves the reCAPTCHA script and
+       frame (no-cors); www.gstatic.com serves both the reCAPTCHA script (no-cors) and
+       the Firebase JS SDK modules (CORS), hence both entries. -->
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://content-firebaseappcheck.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://www.google.com">
+  <link rel="preconnect" href="https://www.gstatic.com">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+
   <!-- Noto Sans - reduces "Could not find a set of Noto fonts" warning on Flutter web -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

@@ -139,12 +139,18 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       _publicSettingsError = null;
     });
     try {
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facility.id);
+      // Both reads always run and neither needs the other, so run them
+      // together instead of paying two round trips in series. Future.wait
+      // also listens to both, so a failure in either lands in the catch below.
+      final settingsFuture =
+          FacilityPublicService.getPublicSettings(widget.facility.id);
+      final mapSlugFuture =
+          FacilityMapV2Service.getPublicSlugForFacility(widget.facility.id);
+      await Future.wait([settingsFuture, mapSlugFuture]);
+      final settings = await settingsFuture;
       final slug = settings?.publicRentalSlug?.trim();
-      final fallbackSlug = await FacilityMapV2Service.getPublicSlugForFacility(
-              widget.facility.id) ??
-          widget.facility.id.toLowerCase();
+      final fallbackSlug =
+          await mapSlugFuture ?? widget.facility.id.toLowerCase();
       final safeSlug = (slug == null || slug.isEmpty) ? fallbackSlug : slug;
 
       if (!mounted) return;
@@ -431,7 +437,12 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         totalUnits: totalUnits,
       );
 
-      await FacilityStatsService.reconcileUnitsToCapacity(widget.facility.id);
+      // Not awaited: it only re-heals orphaned occupancy and recomputes stats
+      // (it creates and removes no units), and the stats write it ends with is
+      // refused by the rules. Awaiting it held the Save spinner for about ten
+      // round trips in series. It catches its own errors.
+      unawaited(
+          FacilityStatsService.reconcileUnitsToCapacity(widget.facility.id));
 
       if (kDebugMode) {
         print('✅ Facility updated successfully');

@@ -23,9 +23,46 @@ class SubscriptionAccessResult {
   });
 }
 
+/// The route guard's last access result, for one uid.
+///
+/// Used to be a single unkeyed global, so a second account signing in on the
+/// same tab was let through (or locked out) on the first account's result for
+/// up to 2 minutes.
+class SubscriptionAccessCache {
+  SubscriptionAccessCache({this.ttl = const Duration(minutes: 2)});
+
+  final Duration ttl;
+  String? _uid;
+  SubscriptionAccessResult? _result;
+  DateTime? _fetchedAt;
+
+  /// The stored result if it belongs to [uid] and is younger than [ttl].
+  SubscriptionAccessResult? freshFor(String uid, {DateTime? now}) {
+    final fetchedAt = _fetchedAt;
+    if (_uid != uid || _result == null || fetchedAt == null) return null;
+    if ((now ?? DateTime.now()).difference(fetchedAt) >= ttl) return null;
+    return _result;
+  }
+
+  void store(String uid, SubscriptionAccessResult result, {DateTime? now}) {
+    _uid = uid;
+    _result = result;
+    _fetchedAt = now ?? DateTime.now();
+  }
+
+  void clear() {
+    _uid = null;
+    _result = null;
+    _fetchedAt = null;
+  }
+}
+
 /// Service for checking subscription status and access permissions
 /// Used by route guards to restrict access based on subscription status
 class SubscriptionGuardService {
+  /// Cache the route guard reads before calling [checkAccess].
+  static final SubscriptionAccessCache routeGuardCache = SubscriptionAccessCache();
+
   /// Check if current user can access a route
   /// Returns access result with redirect route if access is denied
   static Future<SubscriptionAccessResult> checkAccess({
@@ -111,12 +148,22 @@ class SubscriptionGuardService {
       final facilitiesFetcher =
           facilitiesProvider ??
           () => FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      final facilities = await facilitiesFetcher();
-      final accessChecker =
-          activeSubscriptionChecker ??
-          (String uid, List<FacilityModel> f) =>
-              FacilityCreatorAccountService.hasActiveSubscription(uid, facilities: f);
-      final hasAccess = await accessChecker(user.uid, facilities);
+      final bool hasAccess;
+      if (activeSubscriptionChecker != null) {
+        hasAccess = await activeSubscriptionChecker(user.uid, await facilitiesFetcher());
+      } else if (account.canAccessPlatform) {
+        // Account-level access never depended on the facilities, so don't
+        // fetch them just to ignore them.
+        hasAccess = true;
+      } else {
+        // The rule hasActiveSubscription applies, run against the account
+        // fetched above. hasActiveSubscription fetched the account a second
+        // time on every guarded navigation.
+        hasAccess = FacilityCreatorAccountService.accountGrantsPlatformAccess(
+          account,
+          facilities: await facilitiesFetcher(),
+        );
+      }
       if (!hasAccess) {
         if (kDebugMode) {
           print('❌ [SubscriptionGuard] Access denied - subscription status: ${status.name}');
