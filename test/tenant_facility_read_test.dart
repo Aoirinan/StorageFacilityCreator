@@ -1,3 +1,6 @@
+// ignore_for_file: subtype_of_sealed_class
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,6 +35,19 @@ FakeQueryLog _serveTenants(List<FakeDoc> docs) {
   return log;
 }
 
+/// Serves only the top-level `facilities` collection.
+class _FakeFirestore extends Fake implements FirebaseFirestore {
+  _FakeFirestore(this.facilities);
+
+  final FakeCollection facilities;
+
+  @override
+  CollectionReference<Map<String, dynamic>> collection(String collectionPath) {
+    expect(collectionPath, 'facilities');
+    return facilities;
+  }
+}
+
 void main() {
   setUp(() {
     TenantService.authForTesting =
@@ -39,6 +55,7 @@ void main() {
   });
   tearDown(() {
     TenantService.authForTesting = null;
+    TenantService.firestoreForTesting = null;
     FacilitySubcollections.overrideForTesting(null);
   });
 
@@ -106,6 +123,30 @@ void main() {
     expect(tenants, hasLength(bound));
     expect(reported, hasLength(1));
     expect(reported.single.exception.toString(), contains('fac-huge'));
+  });
+
+  test('getAllTenants reads every tenant of each owned facility, not 250 per facility', () async {
+    TenantService.firestoreForTesting = _FakeFirestore(FakeCollection([
+      FakeDoc('fac1', {'ownerUid': 'owner-1'}),
+      FakeDoc('fac2', {'ownerUid': 'owner-1'}),
+      FakeDoc('not-mine', {'ownerUid': 'someone-else'}),
+    ]));
+    final tenantsByFacility = {
+      'fac1': _bigFacility(),
+      'fac2': [for (var i = 0; i < 5; i++) _tenant('f2-$i', name: 'Other $i')],
+      'not-mine': [_tenant('stranger', name: 'Stranger')],
+    };
+    FacilitySubcollections.overrideForTesting((facilityId, name) {
+      expect(name, 'tenants');
+      return FakeCollection(tenantsByFacility[facilityId]!);
+    });
+
+    final tenants = await TenantService.getAllTenants();
+
+    // Before: limit(250) per facility. The tenant limit now counts only
+    // active tenants, so a facility can hold more tenant docs than that.
+    expect(tenants, hasLength(307));
+    expect(tenants.map((t) => t.id), isNot(contains('stranger')));
   });
 
   group('the active tenant rule', () {

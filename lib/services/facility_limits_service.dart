@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 
 /// Service for enforcing facility resource limits (hard caps)
 /// Prevents abuse and controls costs
@@ -7,12 +8,16 @@ class FacilityLimitsService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   // Hard caps (enforced limits)
+  /// Active tenants per facility (archived tenants do not count). The online
+  /// move-in applies the same cap server-side (MAX_ACTIVE_TENANTS_PER_FACILITY
+  /// in functions-public-website/src/tenantCapacity.ts; a test there keeps
+  /// the two equal).
   static const int maxTenantsPerFacility = 250;
   static const int maxUnitsPerFacility = 200;
   static const int maxMapShapesPerFacility = 300;
   static const int maxContractsPerFacility = 250;
 
-  /// Check if facility can add more tenants
+  /// Check if facility can add more active tenants
   static Future<bool> canAddTenant(String facilityId) async {
     try {
       final count = await _getTenantCount(facilityId);
@@ -26,18 +31,17 @@ class FacilityLimitsService {
     }
   }
 
-  /// Get current tenant count for a facility
+  /// Get current active tenant count for a facility
   static Future<int> getTenantCount(String facilityId) async {
     return await _getTenantCount(facilityId);
   }
 
+  /// Active tenants only. This counted every tenant doc, archived included,
+  /// so a facility was refused its 251st tenant ever, however many had moved
+  /// out.
   static Future<int> _getTenantCount(String facilityId) async {
-    final snapshot = await _firestore
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('tenants')
-        .count()
-        .get();
+    final snapshot =
+        await FacilitySubcollections.activeTenants(facilityId).count().get();
     return snapshot.count ?? 0;
   }
 

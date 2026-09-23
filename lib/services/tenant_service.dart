@@ -13,11 +13,17 @@ import 'unit_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 
 class TenantService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  // A getter, not a final field, so tests can sign a fake user in and run
-  // the real read code (see authForTesting).
+  // Getters, not final fields, so tests can run the real read code against a
+  // fake Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
   static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
   static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
 
   @visibleForTesting
   static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
@@ -52,13 +58,13 @@ class TenantService {
         throw Exception('Not signed in');
       }
 
-      // Check facility tenant limit (hard cap: 250)
+      // Check facility tenant limit (hard cap on active tenants)
       final canAdd = await FacilityLimitsService.canAddTenant(facilityId);
       if (!canAdd) {
         final currentCount = await FacilityLimitsService.getTenantCount(facilityId);
         throw Exception(
-          'Tenant limit reached. This facility has reached the maximum of ${FacilityLimitsService.maxTenantsPerFacility} tenants. '
-          'Current count: $currentCount. Please contact support if you need to increase your limit.'
+          'Tenant limit reached. This facility has reached the maximum of ${FacilityLimitsService.maxTenantsPerFacility} active tenants. '
+          'Current active tenants: $currentCount. Please contact support if you need to increase your limit.'
         );
       }
 
@@ -320,16 +326,12 @@ class TenantService {
       final List<TenantModel> allTenants = [];
       
       for (final facilityDoc in facilitiesSnapshot.docs) {
-        final tenantsSnapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityDoc.id)
-            .collection('tenants')
-            .limit(250) // Hard cap: 250 tenants per facility
-            .get();
-
-        allTenants.addAll(
-          tenantsSnapshot.docs.map((doc) => TenantModel.fromFirestore(doc)),
-        );
+        // The per-facility read, not a 250 cap: the tenant limit counts only
+        // active tenants, so a facility can hold more than 250 tenant docs.
+        allTenants.addAll(await _readFacilityTenants(
+          FacilitySubcollections.tenants(facilityDoc.id),
+          facilityDoc.id,
+        ));
       }
 
       // Sort by name
