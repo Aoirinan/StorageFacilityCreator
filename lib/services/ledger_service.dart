@@ -248,10 +248,28 @@ class LedgerService {
           .where('tenantId', isEqualTo: tenantId)
           .where('status', isEqualTo: 'posted');
 
-      final aggregate = await query.aggregate(sum('amount')).get();
+      double total;
+      try {
+        final aggregate = await query.aggregate(sum('amount')).get();
+        total = (aggregate.getSum('amount') ?? 0).toDouble();
+      } on FirebaseException catch (e) {
+        // The server sum needs the (status, tenantId, amount) composite
+        // index. Until 2026-09 that index was never deployed, every sum
+        // failed with failed-precondition, and every caller either showed
+        // $0.00 or aborted (move-out, liens, delinquency). If the index is
+        // ever missing again, add up the same uncapped set of posted
+        // entries here instead of failing: equality-only filters need no
+        // composite index.
+        if (e.code != 'failed-precondition') rethrow;
+        final snapshot = await query.get();
+        total = 0.0;
+        for (final doc in snapshot.docs) {
+          final amount = doc.data()['amount'];
+          if (amount is num) total += amount;
+        }
+      }
       // Guard against float drift accumulated across many entries.
-      final balance =
-          double.parse((aggregate.getSum('amount') ?? 0).toStringAsFixed(2));
+      final balance = double.parse(total.toStringAsFixed(2));
 
       if (kDebugMode) {
         print('💰 [Ledger] Balance for tenant $tenantId: \$${balance.toStringAsFixed(2)}');

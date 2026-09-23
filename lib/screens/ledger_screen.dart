@@ -128,6 +128,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             data: (balance) => balance,
             orElse: () => 0.0,
           );
+          // A failed or pending balance must not read as "$0.00": that told
+          // owners every tenant was paid up while the sum was failing.
+          final balanceKnown = balanceAsync.hasValue && !balanceAsync.hasError;
 
           // Apply filters
           var filteredEntries = entries;
@@ -282,7 +285,11 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                _formatLedgerBalance(_runningBalance),
+                                balanceKnown
+                                    ? _formatLedgerBalance(_runningBalance)
+                                    : balanceAsync.hasError
+                                        ? 'Unavailable'
+                                        : '…',
                                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                                   color: _runningBalance >= 0 ? AppTheme.error : AppTheme.success,
                                   fontWeight: FontWeight.bold,
