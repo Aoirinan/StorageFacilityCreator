@@ -252,7 +252,7 @@ class LedgerService {
       try {
         final aggregate = await query.aggregate(sum('amount')).get();
         total = (aggregate.getSum('amount') ?? 0).toDouble();
-      } on FirebaseException catch (e) {
+      } catch (e) {
         // The server sum needs the (status, tenantId, amount) composite
         // index. Until 2026-09 that index was never deployed, every sum
         // failed with failed-precondition, and every caller either showed
@@ -260,7 +260,14 @@ class LedgerService {
         // ever missing again, add up the same uncapped set of posted
         // entries here instead of failing: equality-only filters need no
         // composite index.
-        if (e.code != 'failed-precondition') rethrow;
+        //
+        // Catches everything, not just FirebaseException: on web the
+        // failure did not arrive as that type (verified in the live app),
+        // so a typed catch let it through. A real problem, such as a
+        // permission error, still surfaces from the query below.
+        if (kDebugMode) {
+          print('⚠️ [Ledger] Server sum failed, summing on client: $e');
+        }
         final snapshot = await query.get();
         total = 0.0;
         for (final doc in snapshot.docs) {
