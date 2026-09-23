@@ -306,7 +306,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
               height: 64,
               decoration: BoxDecoration(
                 border: Border.all(
-                    color: AppTheme.textSecondary.withOpacity(0.3)),
+                    color: AppTheme.textSecondary.withValues(alpha: 0.3)),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.all(6),

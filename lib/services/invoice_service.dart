@@ -16,7 +16,7 @@ import 'facility_service.dart';
 import 'audit_service.dart';
 import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'email_service.dart';
-import 'pdf_letterhead.dart';
+import 'package:sfcapp/services/pdf_letterhead.dart';
 
 /// Service for managing invoices
 class InvoiceService {

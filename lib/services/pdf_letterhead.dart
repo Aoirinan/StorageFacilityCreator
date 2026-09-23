@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-import '../models/facility_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
 
 /// The facility's letterhead for tenant-facing PDFs (statements, invoices):
 /// logo, business name, addresses and phone on the left, the document title

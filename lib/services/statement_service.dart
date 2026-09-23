@@ -11,7 +11,7 @@ import 'ledger_service.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 import 'email_service.dart';
-import 'pdf_letterhead.dart';
+import 'package:sfcapp/services/pdf_letterhead.dart';
 import 'package:intl/intl.dart';
 
 /// Service for generating and sending account statements
@@ -360,8 +360,8 @@ class StatementService {
 <body style="font-family: Arial, sans-serif;">
   <h2>Account Statement</h2>
   <p>Dear ${tenant.name},</p>
-  <p>Your account statement for ${periodText} is ready.</p>
-  <p><a href="${pdfUrl}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Statement PDF</a></p>
+  <p>Your account statement for $periodText is ready.</p>
+  <p><a href="$pdfUrl" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Statement PDF</a></p>
   <p><strong>Current Balance:</strong> ${_formatCurrency(_calculateCurrentBalance(ledgerEntries))}</p>
   <p>Please review the statement and contact us if you have any questions.</p>
   <p>Thank you for your business!</p>
@@ -379,9 +379,9 @@ Account Statement
 
 Dear ${tenant.name},
 
-Your account statement for ${periodText} is ready.
+Your account statement for $periodText is ready.
 
-Download it here: ${pdfUrl}
+Download it here: $pdfUrl
 
 Current Balance: ${_formatCurrency(_calculateCurrentBalance(ledgerEntries))}
 
