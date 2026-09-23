@@ -727,6 +727,15 @@ class FacilityService {
   }
 
   // Update facility
+  /// Firestore field paths that set only the given billing settings, leaving
+  /// every other key in the facility's billingSettings map as it was.
+  static Map<String, dynamic> billingSettingsFieldUpdates(
+          Map<String, dynamic> settings) =>
+      {
+        for (final entry in settings.entries)
+          'billingSettings.${entry.key}': entry.value,
+      };
+
   static Future<void> updateFacility({
     required String facilityId,
     String? name,
@@ -782,7 +791,13 @@ class FacilityService {
       if (timeZone != null) updateData['timeZone'] = timeZone;
       if (businessHours != null) updateData['businessHours'] = businessHours;
       if (gateHours != null) updateData['gateHours'] = gateHours;
-      if (billingSettings != null) updateData['billingSettings'] = billingSettings;
+      // Merged key by key: billingSettings is shared by several screens
+      // (Edit Facility, delinquency rules) and by server settings such as
+      // admin/move-in fees and payment reminders. Writing the map whole let
+      // each screen silently erase every key it did not know about.
+      if (billingSettings != null) {
+        updateData.addAll(billingSettingsFieldUpdates(billingSettings));
+      }
       if (insuranceSettings != null) updateData['insuranceSettings'] = insuranceSettings;
       if (paymentProcessor != null) updateData['paymentProcessor'] = paymentProcessor;
       if (totalUnits != null) {

@@ -438,7 +438,7 @@ class InvoiceService {
                             pw.SizedBox(
                               width: 100,
                               child: pw.Text(
-                                invoice.formattedTax!,
+                                invoice.formattedTax,
                                 textAlign: pw.TextAlign.right,
                               ),
                             ),
