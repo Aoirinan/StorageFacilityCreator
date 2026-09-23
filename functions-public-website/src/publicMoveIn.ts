@@ -21,6 +21,7 @@ import { createAutopayNotificationAndEvent } from './autopayNotification';
 import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
+import { assertFacilityHasTenantCapacity } from './tenantCapacity';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -288,6 +289,9 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     phone: phone ? String(phone).trim() : '',
   });
 
+  // Before the unit is held, so a renter at a full facility finds out first.
+  await assertFacilityHasTenantCapacity(admin.firestore(), String(facilityId));
+
   const now = new Date();
   // Capped at 15 minutes, not 60. A hold makes the unit unavailable to everyone
   // else, so a long window is a cheap way to keep inventory off the market.
@@ -550,6 +554,10 @@ export const createPublicMoveInCheckout = functions
       'Facility owner must complete Stripe setup before online payments are enabled',
     );
   }
+
+  // Checked again before any payment is taken: the hold may be up to 15
+  // minutes old, and tenant-portal holds are created in another codebase.
+  await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
 
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: reservation.name ? String(reservation.name).trim() : '',
@@ -1030,7 +1038,8 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       ? expectedFromReservation
       : requiredPaymentCents;
 
-  if (paymentRequired || (!skipPayment && paymentIntentId)) {
+  const paymentVerified = paymentRequired || (!skipPayment && Boolean(paymentIntentId));
+  if (paymentVerified) {
     if (requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents) {
       throw new functions.https.HttpsError(
         'failed-precondition',
@@ -1078,6 +1087,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       'failed-precondition',
       'Payment is required to complete this move-in.',
     );
+  }
+
+  // A renter who has paid is never turned away for capacity: that was
+  // checked when checkout was created. A move-in with nothing to pay has no
+  // checkout, so it is checked here.
+  if (!paymentVerified) {
+    await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
   }
 
   const verifiedTotalAmount = chargeQuote.totalAmount;

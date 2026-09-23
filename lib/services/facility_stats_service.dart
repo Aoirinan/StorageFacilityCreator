@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import '../models/unit_model.dart';
 import '../services/unit_service.dart';
 import '../services/tenant_service.dart';
@@ -10,12 +13,16 @@ import '../models/tenant_model.dart';
 /// Delinquency Rules (consistent across app):
 /// - "current": no unpaid invoices past due date (or all invoices paid on time)
 /// - "late": tenant has unpaid balance 1-9 days past due
-/// - "overdue": tenant has unpaid balance 10-29 days past due  
+/// - "overdue": tenant has unpaid balance 10-29 days past due
 /// - "severely_overdue": tenant has unpaid balance 30+ days past due
 ///
 /// Occupancy (canonical rule): A unit is "occupied" ONLY if unit.tenantId is set AND that
 /// tenant exists in this facility. If unit.status says occupied but tenant missing → not occupied.
-import '../utils/count_helpers.dart' as count_helpers;
+///
+/// Stats docs and the facility-doc mirror (`occupiedUnits`, `unitDocCount`) are
+/// written only by the Cloud Function (functions-facility-ops facility_stats.ts)
+/// on every unit and tenant write, nightly, and on "Sync counts". The client
+/// never frees units: see [updateFacilityStats].
 import 'late_logic_service.dart';
 
 class FacilityStatsService {
@@ -33,12 +40,8 @@ class FacilityStatsService {
   /// True if the facility has at least one unit document (cheap `limit(1)` probe).
   static Future<bool> facilityHasAnyUnitDoc(String facilityId) async {
     try {
-      final snap = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .limit(1)
-          .get();
+      final snap =
+          await FacilitySubcollections.units(facilityId).limit(1).get();
       return snap.docs.isNotEmpty;
     } catch (e) {
       if (kDebugMode) {
@@ -46,6 +49,37 @@ class FacilityStatsService {
       }
       return false;
     }
+  }
+
+  /// True if the facility has at least one active tenant (cheap `limit(1)`
+  /// probe). For the onboarding checklist, which only needs yes or no.
+  static Future<bool> facilityHasAnyActiveTenant(String facilityId) async {
+    try {
+      final snap = await FacilitySubcollections.activeTenants(facilityId)
+          .limit(1)
+          .get();
+      return snap.docs.isNotEmpty;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [FacilityStatsService] facilityHasAnyActiveTenant failed: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Whether counts read for a facility agree with the counts the Cloud
+  /// Function mirrors onto its doc (`unitDocCount`, `occupiedUnits`), which
+  /// use the same rule as [countUnits].
+  ///
+  /// [computeUnitCounts] turns a failed read into (0, 0), and a failed tenant
+  /// read into 0 occupied. A facility card that kept such a result until the
+  /// mirror changed showed it long after the read recovered.
+  static bool countsMatchFacilityMirror(
+    ({int totalUnits, int occupiedUnits}) counts,
+    FacilityModel facility,
+  ) {
+    return counts.totalUnits == facility.unitDocCount &&
+        counts.occupiedUnits == facility.occupiedUnits;
   }
 
   /// Set of tenant IDs that exist for the facility (used for canonical occupancy).
@@ -72,25 +106,55 @@ class FacilityStatsService {
     return units.where((u) => u.publicListingEnabled).toList();
   }
 
-  /// Orphan units: status==occupied but tenantId null or tenant does not exist. These are healed.
-  static List<UnitModel> _orphanOccupiedUnits(List<UnitModel> units, Set<String> tenantIds) {
-    return units.where((u) =>
-      u.status == UnitStatus.occupied &&
-      (u.tenantId == null || !tenantIds.contains(u.tenantId!)),
-    ).toList();
+  /// The one definition of Total and Occupied units, used by every screen.
+  ///
+  /// - TOTAL: [nonArchivedUnits] that are not staff-only
+  ///   (`publicListingEnabled != false`, see [_rentableUnits]).
+  /// - OCCUPIED: of those, status occupied with a tenantId in [allTenantIds].
+  ///   Pass every tenant doc id, active or archived: archiving a tenant does
+  ///   not free their unit, so the unit still reads Occupied in the list.
+  /// - VACANT is TOTAL − OCCUPIED (reserved and maintenance count as vacant).
+  ///
+  /// The dashboard used to count staff-only units and only active tenants, so
+  /// it disagreed with the Units list and the facility cards (82/74 against
+  /// 78/72 at one facility). The Cloud Function applies the same rule to the
+  /// facility-doc mirror (`isRentableUnit` in facility_stats.ts).
+  static ({int totalUnits, int occupiedUnits}) countUnits(
+    List<UnitModel> nonArchivedUnits,
+    Set<String> allTenantIds,
+  ) {
+    final rentable = _rentableUnits(nonArchivedUnits);
+    return (
+      totalUnits: rentable.length,
+      occupiedUnits: _canonicalOccupiedCount(rentable, allTenantIds),
+    );
   }
 
-  /// Compute total and occupied unit counts using canonical rule (no heal).
-  /// Returns (totalUnits, occupiedUnits). `totalUnits` is the count of unit
-  /// documents that actually exist for the facility (excluding staff-only
-  /// spaces — see [_rentableUnits]) — the user-set capacity max is never used here.
+  /// Whether a cached stats `totalUnits` disagrees with the live unit list.
+  ///
+  /// Compares against the rentable count, which is what the writer stores.
+  /// Comparing with every unit meant any facility with a staff-only unit
+  /// looked stale on every read and recomputed forever.
+  static bool cachedUnitTotalDrifted(
+    int cachedTotalUnits,
+    List<UnitModel> nonArchivedUnits,
+  ) {
+    return cachedTotalUnits != _rentableUnits(nonArchivedUnits).length;
+  }
+
+  /// Compute total and occupied unit counts with [countUnits] (no heal).
+  /// `totalUnits` is the count of rentable unit documents that actually exist
+  /// for the facility — the user-set capacity max is never used here.
   static Future<({int totalUnits, int occupiedUnits})> computeUnitCounts(String facilityId) async {
     try {
-      final units = _rentableUnits(await UnitService.getUnitsForFacility(facilityId));
-      final tenantIds = await _getTenantIdsForFacility(facilityId);
-      final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
-      final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
-      return (totalUnits: totalUnits, occupiedUnits: occupiedUnits);
+      final results = await Future.wait<Object>([
+        UnitService.getUnitsForFacility(facilityId),
+        _getTenantIdsForFacility(facilityId),
+      ]);
+      return countUnits(
+        results[0] as List<UnitModel>,
+        results[1] as Set<String>,
+      );
     } catch (e) {
       if (kDebugMode) {
         print('❌ [FacilityStatsService] Error computing unit counts: $e');
@@ -99,215 +163,117 @@ class FacilityStatsService {
     }
   }
 
-  /// Heal orphaned occupancy: units with status==occupied but missing tenant → available, clear tenantId.
-  /// Idempotent; safe to run multiple times. Call before recompute when doing backfill.
-  static Future<int> healOrphanedOccupancy(String facilityId) async {
-    try {
-      final units = await UnitService.getUnitsForFacility(facilityId);
-      final tenantIds = await _getTenantIdsForFacility(facilityId);
-      final orphans = _orphanOccupiedUnits(units, tenantIds);
-      if (orphans.isEmpty) return 0;
-      await UnitService.clearTenantFromUnitsBatch(
-        facilityId: facilityId,
-        unitIds: orphans.map((u) => u.id).toList(),
-      );
-      if (kDebugMode) {
-        print('🔧 [FacilityStatsService] Healed ${orphans.length} orphan unit(s) for $facilityId');
-      }
-      return orphans.length;
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [FacilityStatsService] Error healing orphans: $e');
-      }
-      return 0;
-    }
-  }
-
-  /// Compute comprehensive facility statistics including tenants, revenue, and delinquency.
-  /// Uses canonical occupancy. If [healFirst] is true (default when called from updateFacilityStats),
-  /// heals orphan units before counting so stored stats and DB stay in sync.
-  static Future<Map<String, dynamic>> computeFacilityStats(String facilityId, {bool healFirst = false}) async {
-    try {
-      if (healFirst) {
-        await healOrphanedOccupancy(facilityId);
-      }
-
-      final facility = await FacilityService.getFacility(facilityId);
-      final units = _rentableUnits(await UnitService.getUnitsForFacility(facilityId));
-      final tenantIds = await _getTenantIdsForFacility(facilityId);
-      final occupiedUnits = _canonicalOccupiedCount(units, tenantIds);
-      final totalUnits = count_helpers.effectiveTotalUnits(0, units.length);
-      final availableUnits = (totalUnits - occupiedUnits).clamp(0, totalUnits);
-
-      final tenants = await TenantService.getTenantsForFacility(facilityId);
-      final activeTenants = tenants.where((t) => t.isActive == true).toList();
-      final totalTenantsActive = activeTenants.length;
-      
-      // Scheduled revenue = all active tenants; autopay subset uses Firestore `autopay.status` (ON).
-      double scheduledMonthlyRevenue = 0.0;
-      for (final tenant in activeTenants) {
-        scheduledMonthlyRevenue += tenant.monthlyRate;
-      }
-      final autopayMonthlyRevenue = sumAutopayMonthlyRevenue(activeTenants);
-      
-      // Count delinquent tenants using facility's grace period (Billing Settings)
-      final grace = facility?.billingSettings?['gracePeriodDays'];
-      final graceDays = (grace is int) ? grace : (grace != null ? int.tryParse(grace.toString()) : null) ?? 3;
-      int tenantsLate = 0;
-      int tenantsOverdue = 0;
-      int tenantsSeverelyOverdue = 0;
-
-      for (final tenant in activeTenants) {
-        if (!LateLogicService.isTenantLate(tenant, gracePeriodDays: graceDays)) {
-          continue;
-        }
-        final daysLate =
-            LateLogicService.getTenantDaysLate(tenant, gracePeriodDays: graceDays);
-        if (daysLate >= 30) {
-          tenantsSeverelyOverdue++;
-        } else if (daysLate >= 10) {
-          tenantsOverdue++;
-        } else {
-          tenantsLate++;
-        }
-      }
-      
-      final totalPastDue = tenantsLate + tenantsOverdue + tenantsSeverelyOverdue;
-      
-      if (kDebugMode) {
-        print('✅ [FacilityStatsService] Computed stats for $facilityId:');
-        print('   - Total units: $totalUnits (occupied: $occupiedUnits, available: $availableUnits)');
-        print('   - Active tenants: $totalTenantsActive');
-        print('   - Scheduled monthly revenue: \$${scheduledMonthlyRevenue.toStringAsFixed(2)} '
-            '(autopay: \$${autopayMonthlyRevenue.toStringAsFixed(2)})');
-        print('   - Past due: $totalPastDue (late: $tenantsLate, overdue: $tenantsOverdue, severe: $tenantsSeverelyOverdue)');
-      }
-      
-      return {
-        'totalUnits': totalUnits,
-        'occupiedUnits': occupiedUnits,
-        'availableUnits': availableUnits,
-        'totalTenantsActive': totalTenantsActive,
-        'scheduledMonthlyRevenue': scheduledMonthlyRevenue,
-        'autopayMonthlyRevenue': autopayMonthlyRevenue,
-        'tenantsLate': tenantsLate,
-        'tenantsOverdue': tenantsOverdue,
-        'tenantsSeverelyOverdue': tenantsSeverelyOverdue,
-        'totalPastDue': totalPastDue,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [FacilityStatsService] Error computing facility stats: $e');
-      }
-      return {
-        'totalUnits': 0,
-        'occupiedUnits': 0,
-        'availableUnits': 0,
-        'totalTenantsActive': 0,
-        'scheduledMonthlyRevenue': 0.0,
-        'autopayMonthlyRevenue': 0.0,
-        'tenantsLate': 0,
-        'tenantsOverdue': 0,
-        'tenantsSeverelyOverdue': 0,
-        'totalPastDue': 0,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-    }
-  }
-
-  /// Update facilityStats document with computed statistics (heals orphans first, then recomputes).
-  /// Also mirrors the canonical unit counts (`occupiedUnits`, `unitDocCount`) onto the
-  /// facility document so the super admin metrics stream and other consumers can read
-  /// the actual unit-doc total without a sub-collection query.
-  /// In-process cooldown, keyed by facility.
+  /// Kept so existing callers compile; does nothing, on purpose.
   ///
-  /// A recompute reads every unit and every tenant for the facility and then
-  /// writes both the stats doc and the facility doc. Callers fire it from a lot
-  /// of places — tenant edits, unit assignment, and the dashboard whenever its
-  /// live past-due count disagrees with the cached one — so without a guard a
-  /// dashboard that keeps disagreeing will recompute on every single load, and
-  /// several staff on one facility can push it past Firestore's ~1 sustained
-  /// write/sec per document.
-  static final Map<String, DateTime> _lastStatsRefresh = {};
-  static const Duration _statsRefreshCooldown = Duration(seconds: 30);
-
-  /// Drops the cooldown so the next call recomputes immediately. Use after a
-  /// change the user must see reflected right away.
-  static void invalidateStatsCooldown(String facilityId) {
-    _lastStatsRefresh.remove(facilityId);
-  }
-
+  /// It used to heal orphan units and then write the stats doc and the
+  /// facility-doc mirror from the client. The writes were always denied (no
+  /// rule covers `facilities/{id}/stats`), so its only effect was the heal —
+  /// and that heal trusted [TenantService.getTenantsForFacility], which was
+  /// then capped at 250 and dropped tenant docs with no `name`, and still
+  /// returns `[]` on any error. One failed or truncated tenant read marked
+  /// every occupied unit available. Callers awaited all of that on tenant and
+  /// unit saves.
+  ///
+  /// The Cloud Function already recomputes and heals on every unit and tenant
+  /// write (and nightly), from uncapped reads that must all succeed before it
+  /// touches a unit, so the write that prompted this call has already queued
+  /// that. For an explicit refresh use [recomputeFacilityStats].
   static Future<void> updateFacilityStats(
     String facilityId, {
-    /// Skip the cooldown. For deliberate, user-visible refreshes.
+    /// Ignored; kept for source compatibility.
     bool force = false,
-  }) async {
-    try {
-      if (!force) {
-        final last = _lastStatsRefresh[facilityId];
-        if (last != null &&
-            DateTime.now().difference(last) < _statsRefreshCooldown) {
-          if (kDebugMode) {
-            print('⏭️ [FacilityStatsService] Skipping recompute for $facilityId (cooldown)');
-          }
-          return;
+  }) async {}
+
+  /// Ask the server to heal and recompute one facility's stats
+  /// (`updateFacilityStatsManual` in functions-facility-ops). The server
+  /// checks the caller's access to the facility, reads every unit and tenant
+  /// with no cap, heals only after every read succeeds, and writes the stats
+  /// doc and the facility-doc mirror.
+  ///
+  /// Throws if the server did not finish, so a caller can never report a sync
+  /// that did not happen.
+  static Future<void> recomputeFacilityStats(String facilityId) async {
+    await FirebaseFunctions.instance
+        .httpsCallable('updateFacilityStatsManual')
+        .call(<String, dynamic>{'facilityId': facilityId});
+  }
+
+  /// [recomputeFacilityStats] for every facility the user can see, in
+  /// parallel. Counts failures instead of stopping at the first, so "Sync
+  /// counts" can say exactly how many facilities were not updated.
+  static Future<({int synced, int failed})> recomputeAllFacilitiesStats() async {
+    final facilities = await FacilityService.getUserFacilities();
+    return runForEachFacility(
+      facilities.map((f) => f.id).toList(),
+      recomputeFacilityStats,
+    );
+  }
+
+  /// Runs [task] for every id at once and tallies how many threw. Split out
+  /// of [recomputeAllFacilitiesStats] so the tally is testable.
+  static Future<({int synced, int failed})> runForEachFacility(
+    List<String> facilityIds,
+    Future<void> Function(String facilityId) task,
+  ) async {
+    var failed = 0;
+    await Future.wait(facilityIds.map((id) async {
+      try {
+        await task(id);
+      } catch (e) {
+        failed++;
+        if (kDebugMode) {
+          print('❌ [FacilityStatsService] Stats sync failed for $id: $e');
         }
       }
-      _lastStatsRefresh[facilityId] = DateTime.now();
-
-      final stats = await computeFacilityStats(facilityId, healFirst: true);
-      final occupied = (stats['occupiedUnits'] as int?) ?? 0;
-      final unitDocCount = (stats['totalUnits'] as int?) ?? 0;
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('stats')
-          .doc('current')
-          .set(stats, SetOptions(merge: true));
-
-      await _firestore.collection('facilities').doc(facilityId).update({
-        'occupiedUnits': occupied,
-        'unitDocCount': unitDocCount,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      if (kDebugMode) {
-        print('✅ [FacilityStatsService] Updated facility stats + occupied=$occupied unitDocCount=$unitDocCount for $facilityId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [FacilityStatsService] Error updating facility stats: $e');
-      }
-      // Don't throw - this is a background sync operation
-    }
+    }));
+    return (synced: facilityIds.length - failed, failed: failed);
   }
 
-  /// Update facility document with canonical occupied + unit-doc count mirrors.
-  /// Does not change `totalUnits` on the facility doc — that field remains the
-  /// user-set capacity max. Mirrors actual unit-document totals to `unitDocCount`.
-  static Future<void> refreshFacilityCounts(String facilityId) async {
+  /// The message "Sync counts" shows for a result, and whether it is an error.
+  ///
+  /// Both buttons used to report "Counts synced" unconditionally, even though
+  /// every stats write behind them was denied.
+  static ({String message, bool isError}) syncCountsMessage(
+    ({int synced, int failed}) result,
+  ) {
+    final total = result.synced + result.failed;
+    if (total == 0) {
+      // The button only shows for an owner with facilities, and
+      // getUserFacilities returns [] when its read fails, so an empty list
+      // here is a failed load. It used to read as a green "nothing to do".
+      return (
+        message: 'Could not load your facilities to sync. Try again in a moment.',
+        isError: true,
+      );
+    }
+    if (result.failed > 0) {
+      // "Could not finish", not "nothing was changed": the server can heal
+      // units before a later step of the same pass fails.
+      return (
+        message: result.failed == total
+            ? 'Could not finish syncing counts. Try again in a moment.'
+            : 'Could not finish syncing counts for ${result.failed} of $total facilities. Try again in a moment.',
+        isError: true,
+      );
+    }
+    return (
+      message: total == 1
+          ? 'Counts rechecked and updated.'
+          : 'Counts rechecked and updated for all $total facilities.',
+      isError: false,
+    );
+  }
+
+  static Future<void> _tryServerRecompute(String facilityId) async {
     try {
-      final counts = await computeUnitCounts(facilityId);
-      
-      await _firestore.collection('facilities').doc(facilityId).update({
-        'occupiedUnits': counts.occupiedUnits,
-        'unitDocCount': counts.totalUnits,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      
-      if (kDebugMode) {
-        print('✅ [FacilityStatsService] Updated facility occupied: ${counts.occupiedUnits}');
-      }
+      await recomputeFacilityStats(facilityId);
     } catch (e) {
       if (kDebugMode) {
-        print('❌ [FacilityStatsService] Error refreshing facility counts: $e');
+        print('❌ [FacilityStatsService] Server recompute failed for $facilityId: $e');
       }
-      // Don't throw - this is a background sync operation
     }
   }
-  
+
   /// Get facility stats from Firestore (fast read from cached document).
   /// Forces recompute when cache is inconsistent: 0 tenants but occupied > 0 (ghost occupancy).
   static Future<Map<String, dynamic>?> getFacilityStats(String facilityId) async {
@@ -339,7 +305,7 @@ class FacilityStatsService {
                 '🔄 [FacilityStatsService] Stale cache (0 tenants/occupied in stats but tenant docs exist), recomputing...',
               );
             }
-            await updateFacilityStats(facilityId);
+            await _tryServerRecompute(facilityId);
             return (await _firestore
                     .collection('facilities')
                     .doc(facilityId)
@@ -355,7 +321,7 @@ class FacilityStatsService {
           if (kDebugMode) {
             print('🔄 [FacilityStatsService] Stale cache (0 tenants but $cachedOccupied occupied), recomputing + healing...');
           }
-          await updateFacilityStats(facilityId);
+          await _tryServerRecompute(facilityId);
           return (await _firestore
                   .collection('facilities')
                   .doc(facilityId)
@@ -365,18 +331,18 @@ class FacilityStatsService {
               .data();
         }
 
-        // Cached `totalUnits` now reflects the actual count of unit documents.
-        // Compare against the live count and refresh if the cache drifted (e.g.
-        // unit docs were added/removed without triggering a recompute yet).
+        // Cached `totalUnits` is the rentable unit-document count. Compare
+        // against the live count and refresh if the cache drifted (e.g. unit
+        // docs were added/removed without triggering a recompute yet).
         final cachedTotalUnits = (cached['totalUnits'] as int?) ?? 0;
         final units = await UnitService.getUnitsForFacility(facilityId);
-        if (cachedTotalUnits != units.length) {
+        if (cachedUnitTotalDrifted(cachedTotalUnits, units)) {
           if (kDebugMode) {
             print(
-              '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != ${units.length} unit docs, recomputing...',
+              '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != live rentable count, recomputing...',
             );
           }
-          await updateFacilityStats(facilityId);
+          await _tryServerRecompute(facilityId);
           return (await _firestore
                   .collection('facilities')
                   .doc(facilityId)
@@ -390,10 +356,9 @@ class FacilityStatsService {
         final cachedPastDue = (cached['totalPastDue'] as int?) ?? 0;
         if (cachedPastDue > 0) {
           final facility = await FacilityService.getFacility(facilityId);
-          final grace = facility?.billingSettings?['gracePeriodDays'];
-          final graceDays = (grace is int)
-              ? grace
-              : (grace != null ? int.tryParse(grace.toString()) : null) ?? 3;
+          final graceDays = LateLogicService.gracePeriodDaysFromBillingSettings(
+            facility?.billingSettings,
+          );
           final tenants = await TenantService.getTenantsForFacility(facilityId);
           final livePastDue = LateLogicService.countLateTenants(
             tenants.where((t) => t.isActive == true),
@@ -405,7 +370,7 @@ class FacilityStatsService {
                 '🔄 [FacilityStatsService] Stale past due ($cachedPastDue cached, $livePastDue live), recomputing...',
               );
             }
-            await updateFacilityStats(facilityId);
+            await _tryServerRecompute(facilityId);
             return (await _firestore
                     .collection('facilities')
                     .doc(facilityId)
@@ -421,7 +386,7 @@ class FacilityStatsService {
       if (kDebugMode) {
         print('⚠️ [FacilityStatsService] Stats not found, computing on-the-fly for $facilityId');
       }
-      await updateFacilityStats(facilityId);
+      await _tryServerRecompute(facilityId);
       return (await _firestore
               .collection('facilities')
               .doc(facilityId)
@@ -435,87 +400,5 @@ class FacilityStatsService {
       }
       return null;
     }
-  }
-
-  /// Idempotent recompute for one facility: heal orphans, recompute stats, write stats + facility.occupiedUnits.
-  static Future<void> recomputeFacilityStats(String facilityId) async {
-    await updateFacilityStats(facilityId);
-  }
-
-  /// Recompute stats for all facilities: heal orphan occupancy, then refresh stats. Does not create placeholder units.
-  static Future<void> recomputeAllFacilitiesStats() async {
-    final facilities = await FacilityService.getUserFacilities();
-    for (final f in facilities) {
-      try {
-        await reconcileUnitsToCapacity(f.id);
-      } catch (e) {
-        if (kDebugMode) {
-          print('❌ [FacilityStatsService] recomputeAll: failed for ${f.id}: $e');
-        }
-        try {
-          await updateFacilityStats(f.id);
-        } catch (_) {}
-      }
-    }
-    if (kDebugMode) {
-      print('✅ [FacilityStatsService] recomputeAllFacilitiesStats done for ${facilities.length} facilities');
-    }
-  }
-
-  /// Heal orphan occupancy and refresh stats. **Does not** create empty unit documents up to [FacilityModel.totalUnits].
-  /// Capacity stays on the facility document; add units explicitly in the unit list / map as you build or rent.
-  static Future<({int created, int healed})> reconcileUnitsToCapacity(String facilityId) async {
-    final healed = await healOrphanedOccupancy(facilityId);
-    await updateFacilityStats(facilityId);
-    if (kDebugMode) {
-      print('✅ [FacilityStatsService] reconcileUnitsToCapacity: heal-only, healed=$healed for $facilityId');
-    }
-    return (created: 0, healed: healed);
-  }
-
-  /// Optional: create empty `units` documents (001, 002, …) until document count matches [FacilityModel.totalUnits].
-  /// Use after CSV import or when you intentionally want one row per slot. Not run from Sync counts or facility save.
-  static Future<({int created, int healed})> materializeMissingUnitDocumentsUpToCapacity(
-    String facilityId,
-  ) async {
-    int created = 0;
-    final healed = await healOrphanedOccupancy(facilityId);
-    final facility = await FacilityService.getFacility(facilityId);
-    final capacity = facility?.totalUnits ?? 0;
-    if (capacity <= 0) return (created: 0, healed: healed);
-    var units = await UnitService.getUnitsForFacility(facilityId);
-    if (units.length >= capacity) {
-      await updateFacilityStats(facilityId);
-      return (created: 0, healed: healed);
-    }
-    final existingNumbers = units.map((u) => u.unitNumber).toSet();
-    final useThreeDigit = existingNumbers.any((s) => s.length >= 3);
-    int nextNum = 1;
-    for (var k = 0; k < capacity - units.length; k++) {
-      String unitNumber;
-      do {
-        unitNumber = useThreeDigit ? nextNum.toString().padLeft(3, '0') : nextNum.toString();
-        nextNum++;
-      } while (existingNumbers.contains(unitNumber));
-      existingNumbers.add(unitNumber);
-      try {
-        await UnitService.createUnit(
-          facilityId: facilityId,
-          unitNumber: unitNumber,
-          unitType: 'standard',
-          monthlyRate: 0,
-        );
-        created++;
-      } catch (e) {
-        if (kDebugMode) {
-          print('❌ [FacilityStatsService] materialize: failed to create unit $unitNumber: $e');
-        }
-      }
-    }
-    await updateFacilityStats(facilityId);
-    if (kDebugMode) {
-      print('✅ [FacilityStatsService] materializeMissingUnitDocumentsUpToCapacity: created=$created, healed=$healed');
-    }
-    return (created: created, healed: healed);
   }
 }

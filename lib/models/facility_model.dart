@@ -35,10 +35,10 @@ class FacilityModel {
   final int totalUnits;
   final int occupiedUnits;
 
-  /// Number of unit documents that actually exist under this facility.
-  /// Synced by `FacilityStatsService.updateFacilityStats` whenever stats refresh.
-  /// This is what dashboards display as "Total Units"; [totalUnits] is only
-  /// the editable capacity max.
+  /// Number of rentable unit documents under this facility (not archived, not
+  /// staff-only; see `FacilityStatsService.countUnits`). Written only by the
+  /// functions-facility-ops Cloud Function whenever it recomputes stats.
+  /// [totalUnits] is only the editable capacity max.
   final int unitDocCount;
   final bool active; // Added for soft delete
   final DateTime? archivedAt; // Added for soft delete

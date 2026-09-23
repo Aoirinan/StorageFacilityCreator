@@ -9,7 +9,7 @@ import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/providers/dashboard_provider.dart';
+import 'package:sfcapp/providers/onboarding_progress_provider.dart';
 import 'package:sfcapp/services/two_factor_service.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
 import 'package:sfcapp/models/facility_model.dart';
@@ -826,7 +826,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ],
                 ),
               ),
-              _SettingsOnboardingTab(),
+              const SettingsOnboardingTab(),
             ],
           ),
         ),
@@ -836,13 +836,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 }
 
 /// Onboarding tab: startup checklist for new users (things to do to use the software).
-class _SettingsOnboardingTab extends ConsumerWidget {
+class SettingsOnboardingTab extends ConsumerWidget {
+  const SettingsOnboardingTab({super.key});
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final userId =
         ref.watch(authStateProvider).whenOrNull(data: (d) => d)?.uid ?? '';
     final facilitiesAsync = ref.watch(userFacilitiesProvider(userId));
-    final dashboardAsync = ref.watch(dashboardStatsProvider);
+    // Two yes-or-no probes per facility, not the dashboard: watching the
+    // dashboard ran its whole load on every visit to this tab.
+    final progressAsync = ref.watch(onboardingProgressProvider(userId));
 
     return facilitiesAsync.when(
       data: (facilities) {
@@ -853,12 +857,14 @@ class _SettingsOnboardingTab extends ConsumerWidget {
 
         final firstFacilityId =
             facilities.isNotEmpty ? facilities.first.id : null;
-        return dashboardAsync.when(
-          data: (stats) => _buildChecklist(
+        return progressAsync.when(
+          data: (progress) => _buildChecklist(
             context,
             hasFacility: hasFacility,
-            totalUnits: stats.totalUnits,
-            totalTenants: stats.totalTenants,
+            // Any unit doc, staff-only included: a facility whose units are
+            // all staff-only has still added units.
+            hasUnits: progress.hasUnits,
+            hasTenants: progress.hasTenants,
             facilitySubscribed: facilitySubscribed,
             stripeComplete: stripeComplete,
             hasFacilities: hasFacility,
@@ -868,8 +874,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
           error: (_, __) => _buildChecklist(
             context,
             hasFacility: hasFacility,
-            totalUnits: 0,
-            totalTenants: 0,
+            hasUnits: false,
+            hasTenants: false,
             facilitySubscribed: facilitySubscribed,
             stripeComplete: stripeComplete,
             hasFacilities: hasFacility,
@@ -881,8 +887,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
       error: (_, __) => _buildChecklist(
         context,
         hasFacility: false,
-        totalUnits: 0,
-        totalTenants: 0,
+        hasUnits: false,
+        hasTenants: false,
         facilitySubscribed: false,
         stripeComplete: false,
         hasFacilities: false,
@@ -894,8 +900,8 @@ class _SettingsOnboardingTab extends ConsumerWidget {
   Widget _buildChecklist(
     BuildContext context, {
     required bool hasFacility,
-    required int totalUnits,
-    required int totalTenants,
+    required bool hasUnits,
+    required bool hasTenants,
     required bool facilitySubscribed,
     required bool stripeComplete,
     required bool hasFacilities,
@@ -934,7 +940,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
           number: 2,
           title: 'Add units',
           subtitle: 'Use Unit Map or Unit List from the sidebar.',
-          done: totalUnits > 0,
+          done: hasUnits,
           onTap: hasFacilities
               ? () => context.go(AppRoute.units)
               : () => _showCreateFacilityFirst(context),
@@ -944,7 +950,7 @@ class _SettingsOnboardingTab extends ConsumerWidget {
           number: 3,
           title: 'Add a tenant',
           subtitle: 'Use Move-In Wizard or Tenants → Create Tenant.',
-          done: totalTenants > 0,
+          done: hasTenants,
           onTap: hasFacilities
               ? () => context.go(AppRoute.tenants)
               : () => _showCreateFacilityFirst(context),

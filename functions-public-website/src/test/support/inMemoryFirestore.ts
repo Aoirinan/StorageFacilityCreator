@@ -102,19 +102,26 @@ export class InMemoryFirestore {
       }
     }
 
-    class CollectionRef {
-      constructor(readonly path: string) {}
+    /**
+     * A collection query. Equality (`==`) filters are applied; other
+     * operators, ordering and limits are ignored.
+     */
+    class Query {
+      constructor(
+        readonly path: string,
+        private readonly equals: Array<[string, unknown]> = [],
+      ) {}
 
-      doc(id?: string): DocRef {
-        const docId = id || `auto_${store.size + 1}`;
-        return new DocRef(joinPath(this.path, docId));
+      where(field?: string, op?: string, value?: unknown): Query {
+        if (field === undefined || op !== '==') return this;
+        return new Query(this.path, [...this.equals, [field, value]]);
       }
 
-      where(): CollectionRef {
+      limit(): Query {
         return this;
       }
 
-      limit(): CollectionRef {
+      orderBy(): Query {
         return this;
       }
 
@@ -122,8 +129,32 @@ export class InMemoryFirestore {
         const prefix = `${this.path}/`;
         const docs = [...store.keys()]
           .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
+          .filter((key) => {
+            const data = store.get(key) || {};
+            return this.equals.every(([field, value]) => field in data && data[field] === value);
+          })
           .map((key) => new DocSnapshot(new DocRef(key), key));
         return { empty: docs.length === 0, docs };
+      }
+
+      count(): { get: () => Promise<{ data: () => { count: number } }> } {
+        return {
+          get: async () => {
+            const { docs } = await this.get();
+            return { data: () => ({ count: docs.length }) };
+          },
+        };
+      }
+    }
+
+    class CollectionRef extends Query {
+      constructor(path: string) {
+        super(path);
+      }
+
+      doc(id?: string): DocRef {
+        const docId = id || `auto_${store.size + 1}`;
+        return new DocRef(joinPath(this.path, docId));
       }
     }
 

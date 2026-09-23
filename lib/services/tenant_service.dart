@@ -10,10 +10,23 @@ import 'facility_stats_service.dart';
 import 'facility_service.dart';
 import 'superadmin_service.dart';
 import 'unit_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 
 class TenantService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so tests can run the real read code against a
+  // fake Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   // Create a new tenant
   static Future<String> createTenant({
@@ -45,13 +58,13 @@ class TenantService {
         throw Exception('Not signed in');
       }
 
-      // Check facility tenant limit (hard cap: 250)
+      // Check facility tenant limit (hard cap on active tenants)
       final canAdd = await FacilityLimitsService.canAddTenant(facilityId);
       if (!canAdd) {
         final currentCount = await FacilityLimitsService.getTenantCount(facilityId);
         throw Exception(
-          'Tenant limit reached. This facility has reached the maximum of ${FacilityLimitsService.maxTenantsPerFacility} tenants. '
-          'Current count: $currentCount. Please contact support if you need to increase your limit.'
+          'Tenant limit reached. This facility has reached the maximum of ${FacilityLimitsService.maxTenantsPerFacility} active tenants. '
+          'Current active tenants: $currentCount. Please contact support if you need to increase your limit.'
         );
       }
 
@@ -148,6 +161,56 @@ class TenantService {
     }
   }
 
+  /// Most tenant docs one facility read returns; see
+  /// [FacilitySubcollections.readLimit]. It was 250, ordered by name, which
+  /// silently dropped every tenant past the 250th by name and every doc with
+  /// no `name`, so their units counted as empty.
+  static const int facilityTenantReadLimit = FacilitySubcollections.readLimit;
+
+  /// One read of [tenants] (a facility's tenants collection, or a filter of
+  /// it) for [facilityId]: unordered, so docs with no name are included, and
+  /// sorted with [compareTenantsByName].
+  static Future<List<TenantModel>> _readFacilityTenants(
+    Query<Map<String, dynamic>> tenants,
+    String facilityId,
+  ) async {
+    final snapshot = await tenants.limit(facilityTenantReadLimit).get();
+    return _tenantsFromRead(facilityId, snapshot.docs);
+  }
+
+  /// [_readFacilityTenants] as a live stream.
+  static Stream<List<TenantModel>> _watchFacilityTenants(
+    Query<Map<String, dynamic>> tenants,
+    String facilityId,
+  ) {
+    return tenants
+        .limit(facilityTenantReadLimit)
+        .snapshots()
+        .map((snapshot) => _tenantsFromRead(facilityId, snapshot.docs));
+  }
+
+  /// By name, as the name-ordered query returned them, with nameless tenants
+  /// last rather than dropped.
+  static int compareTenantsByName(TenantModel a, TenantModel b) {
+    final aNameless = a.name.trim().isEmpty;
+    final bNameless = b.name.trim().isEmpty;
+    if (aNameless != bNameless) return aNameless ? 1 : -1;
+    return a.name.compareTo(b.name);
+  }
+
+  static List<TenantModel> _tenantsFromRead(
+    String facilityId,
+    List<DocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    FacilitySubcollections.reportIfReadLimitReached(
+      facilityId,
+      'tenant',
+      docs.length,
+    );
+    return docs.map(TenantModel.fromFirestore).toList()
+      ..sort(compareTenantsByName);
+  }
+
   // Get all tenants for a facility (real-time stream)
   static Stream<List<TenantModel>> getTenantsForFacilityStream(String facilityId) {
     try {
@@ -160,33 +223,13 @@ class TenantService {
         print('🔄 Setting up tenants stream for facility: $facilityId');
       }
 
-      Query query = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .limit(250); // Hard cap: 250 tenants per facility
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('name');
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final tenants = snapshot.docs.map((doc) {
-          return TenantModel.fromFirestore(doc);
-        }).toList();
-
-        // Sort in memory if we used fallback query
-        tenants.sort((a, b) => a.name.compareTo(b.name));
-
+      return _watchFacilityTenants(
+        FacilitySubcollections.tenants(facilityId),
+        facilityId,
+      ).map((tenants) {
         if (kDebugMode) {
           print('📡 Stream update: ${tenants.length} tenants for facility: $facilityId');
         }
-
         return tenants;
       });
     } catch (e) {
@@ -209,34 +252,14 @@ class TenantService {
         print('🔄 Setting up active tenants stream for facility: $facilityId');
       }
 
-      Query query = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .where('isActive', isEqualTo: true)
-          .limit(250); // Hard cap: 250 tenants per facility
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('name');
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final tenants = snapshot.docs.map((doc) {
-          return TenantModel.fromFirestore(doc);
-        }).toList();
-
-        // Sort in memory if we used fallback query
-        tenants.sort((a, b) => a.name.compareTo(b.name));
-
+      // Same read as the full list: it had the same 250 cap and name order.
+      return _watchFacilityTenants(
+        FacilitySubcollections.activeTenants(facilityId),
+        facilityId,
+      ).map((tenants) {
         if (kDebugMode) {
           print('📡 Stream update: ${tenants.length} active tenants for facility: $facilityId');
         }
-
         return tenants;
       });
     } catch (e) {
@@ -259,44 +282,15 @@ class TenantService {
         print('🔄 Getting tenants for facility: $facilityId');
       }
 
-      // Try ordered query first, fall back to unordered if index is building
-      QuerySnapshot snapshot;
-      try {
-        snapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('tenants')
-            .orderBy('name')
-            .limit(250) // Hard cap: 250 tenants per facility
-            .get();
-      } catch (orderingError) {
-        if (orderingError.toString().contains('failed-precondition') && orderingError.toString().contains('index')) {
-          if (kDebugMode) {
-            print('📋 INDEX BUILDING: Using fallback unordered query for tenants...');
-          }
-          // Fallback to unordered query
-          snapshot = await _firestore
-              .collection('facilities')
-              .doc(facilityId)
-              .collection('tenants')
-              .limit(250) // Hard cap: 250 tenants per facility
-              .get();
-        } else {
-          rethrow;
-        }
-      }
+      final tenants = await _readFacilityTenants(
+        FacilitySubcollections.tenants(facilityId),
+        facilityId,
+      );
 
       if (kDebugMode) {
-        print('✅ Successfully retrieved ${snapshot.docs.length} tenants');
+        print('✅ Successfully retrieved ${tenants.length} tenants');
       }
 
-      final tenants = snapshot.docs
-          .map((doc) => TenantModel.fromFirestore(doc))
-          .toList();
-          
-      // Sort in memory (needed for fallback queries)
-      tenants.sort((a, b) => a.name.compareTo(b.name));
-      
       return tenants;
     } catch (e) {
       if (kDebugMode) {
@@ -332,16 +326,12 @@ class TenantService {
       final List<TenantModel> allTenants = [];
       
       for (final facilityDoc in facilitiesSnapshot.docs) {
-        final tenantsSnapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityDoc.id)
-            .collection('tenants')
-            .limit(250) // Hard cap: 250 tenants per facility
-            .get();
-
-        allTenants.addAll(
-          tenantsSnapshot.docs.map((doc) => TenantModel.fromFirestore(doc)),
-        );
+        // The per-facility read, not a 250 cap: the tenant limit counts only
+        // active tenants, so a facility can hold more than 250 tenant docs.
+        allTenants.addAll(await _readFacilityTenants(
+          FacilitySubcollections.tenants(facilityDoc.id),
+          facilityDoc.id,
+        ));
       }
 
       // Sort by name
@@ -558,6 +548,10 @@ class TenantService {
       );
 
       // Keep facilities/{id}/units in sync when unit number changes (createTenant already does this).
+      // Stats need no client refresh: each unit write here fires the
+      // onUnitWrite Cloud Function, which recomputes. The awaited client
+      // recompute this block used to run cost ~6 reads per save and its
+      // stats write was always denied.
       if (unitNumber != null && beforeData != null) {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
         final newNum = unitNumber.trim();
@@ -577,11 +571,9 @@ class TenantService {
             await _updateUnitOccupancy(
                 facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
           }
-          await FacilityStatsService.updateFacilityStats(facilityId);
         } else if (newNum.isNotEmpty && isActive == false && wasActive) {
           await _updateUnitOccupancy(
               facilityId, newNum, tenantId, resolvedName, false, resolvedRate);
-          await FacilityStatsService.updateFacilityStats(facilityId);
         } else if (newNum.isNotEmpty && nowActive) {
           final unitsSnap = await _firestore
               .collection('facilities')
@@ -603,12 +595,10 @@ class TenantService {
             if (needsHeal) {
               await _updateUnitOccupancy(facilityId, newNum, tenantId,
                   resolvedName, true, resolvedRate);
-              await FacilityStatsService.updateFacilityStats(facilityId);
             }
           } else {
             await _updateUnitOccupancy(
                 facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
-            await FacilityStatsService.updateFacilityStats(facilityId);
           }
         }
       }

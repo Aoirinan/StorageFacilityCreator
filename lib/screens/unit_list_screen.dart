@@ -14,8 +14,31 @@ import '../services/facility_stats_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
-import '../utils/keyed_memo.dart';
 import '../widgets/modern_page_wrapper.dart';
+
+/// "72 / 78 rentable units occupied (4 staff-only not counted)".
+///
+/// Counts come from [FacilityStatsService.countUnits], the same numbers as the
+/// dashboard and facility cards. The table below lists staff-only units too,
+/// so the note says why there are more rows than the total.
+String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantIds) {
+  final counts = FacilityStatsService.countUnits(nonArchivedUnits, allTenantIds);
+  final staffOnly = nonArchivedUnits.length - counts.totalUnits;
+  final label =
+      '${counts.occupiedUnits} / ${counts.totalUnits} rentable units occupied';
+  return staffOnly > 0 ? '$label ($staffOnly staff-only not counted)' : label;
+}
+
+/// The tenants the Units list matches units against: the latest list the
+/// stream delivered, kept through a later stream error.
+///
+/// `whenOrNull(data:)` gave null for an error that still holds the previous
+/// list, while the header is shown whenever a list exists, so after an
+/// auto-retried stream error it read "0 / 78 rentable units occupied" and
+/// every rented unit was hidden as a ghost.
+List<TenantModel> unitListTenants(AsyncValue<List<TenantModel>> tenantsAsync) =>
+    tenantsAsync.value ?? const <TenantModel>[];
+
 /// Unit List Screen - Table/List view of all units for selected facility
 class UnitListScreen extends ConsumerStatefulWidget {
   const UnitListScreen({super.key});
@@ -29,10 +52,6 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   String _searchQuery = '';
   Set<UnitStatus> _statusFilters = UnitStatus.values.toSet();
   final Set<String> _selectedUnitIds = {};
-
-  /// Keeps the occupancy count query off the rebuild path; see its use below.
-  final KeyedMemo<Future<({int totalCapacity, int occupied})>> _unitCountsMemo =
-      KeyedMemo<Future<({int totalCapacity, int occupied})>>();
 
   @override
   void initState() {
@@ -52,21 +71,6 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ? activeId
           : facilities.first.id;
       setState(() => _selectedFacilityId = id);
-    }
-  }
-
-  /// Denominator = actual unit-document count from [FacilityStatsService.computeUnitCounts];
-  /// occupied = canonical count. (Facility `totalUnits` is the editable capacity cap only.)
-  Future<({int totalCapacity, int occupied})> _getUnitCountsForFacility(
-    String facilityId,
-    int fallbackTotal,
-    int fallbackOccupied,
-  ) async {
-    try {
-      final counts = await FacilityStatsService.computeUnitCounts(facilityId);
-      return (totalCapacity: counts.totalUnits, occupied: counts.occupiedUnits);
-    } catch (_) {
-      return (totalCapacity: fallbackTotal, occupied: fallbackOccupied);
     }
   }
 
@@ -401,8 +405,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
 
     return unitsAsync.when(
       data: (units) {
-        final tenants =
-            tenantsAsync.whenOrNull(data: (d) => d) ?? <TenantModel>[];
+        final tenants = unitListTenants(tenantsAsync);
         final tenantMap = {for (final t in tenants) t.id: t};
         bool isGhostUnit(unit) =>
             unit.tenantId != null &&
@@ -447,15 +450,6 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           );
         }
 
-        final tenantIds = tenantMap.keys.toSet();
-        final occupiedCount = filteredUnits
-            .where(
-              (u) =>
-                  u.status == UnitStatus.occupied &&
-                  u.tenantId != null &&
-                  tenantIds.contains(u.tenantId),
-            )
-            .length;
         final selectedCountInFiltered =
             filteredUnits.where((u) => _selectedUnitIds.contains(u.id)).length;
         final allFilteredSelected = filteredUnits.isEmpty
@@ -475,33 +469,23 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
               child: _buildSelectionBar(
                   _selectedUnitIds.length, filteredUnits, tenantMap),
             ),
-            FutureBuilder<({int totalCapacity, int occupied})>(
-              // Keyed so the two collection reads behind this run when the
-              // facility or its counts change, not on every rebuild. Built
-              // inline, it re-read every unit and every tenant on each
-              // keystroke in the search box above.
-              future: _unitCountsMemo(
-                '$_selectedFacilityId|${unitsWithoutGhosts.length}|$occupiedCount',
-                () => _getUnitCountsForFacility(_selectedFacilityId!,
-                    unitsWithoutGhosts.length, occupiedCount),
-              ),
-              builder: (context, snap) {
-                final total =
-                    snap.data?.totalCapacity ?? unitsWithoutGhosts.length;
-                final occupied = snap.data?.occupied ?? occupiedCount;
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                  child: Text(
-                    '$occupied / $total units occupied',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w500,
-                    ),
+            // From the unit and tenant streams already on screen, so it is
+            // current with the rows below. It used to run its own unit and
+            // tenant reads, keyed on the filtered counts: it re-read on every
+            // search or filter change yet missed a unit's staff-only toggle.
+            // Shown once tenants load: before that every unit reads as vacant.
+            if (tenantsAsync.hasValue)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Text(
+                  unitCountsHeader(units, tenantMap.keys.toSet()),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
-                );
-              },
-            ),
+                ),
+              ),
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
