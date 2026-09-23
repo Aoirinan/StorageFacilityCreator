@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
 import '../models/facility_model.dart';
 import '../models/facility_creator_account_model.dart';
 import 'permission_service.dart';
@@ -11,7 +12,6 @@ import 'superadmin_service.dart';
 import 'debug_logger.dart';
 import 'facility_creation_policy.dart';
 import '../constants/facility_capacity.dart';
-import 'package:sfcapp/utils/callable_failure.dart';
 
 void _facilityServiceDebugLog(String message) {
   if (kDebugMode) {

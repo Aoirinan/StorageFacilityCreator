@@ -8,6 +8,7 @@ import { releasePlatformOutgoing, reservePlatformOutgoing } from '@sfc/functions
 import { resolveReferralPendingItemForSuperAdmin } from '@sfc/functions-shared/referral/referralRewards';
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
 import { getOrCreateAddOnPriceId, getOrCreateBasePriceId } from '@sfc/functions-shared/stripe/subscriptionPricing';
+import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
 import {
   anyCancelFailed,
   cancelSubscriptions,
@@ -15,7 +16,6 @@ import {
   summarizeCancelOutcomes,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
-import { FacilityBillingNotStoppedError, purgeFacility, stripeFacilityPurgeDeps } from './facilityPurge';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
 const USER_ROLES_COLLECTION = 'user_roles';
