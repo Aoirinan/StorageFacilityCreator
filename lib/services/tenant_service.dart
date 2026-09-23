@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/invoice_model.dart';
@@ -229,16 +230,15 @@ class TenantStillAssignedToUnitException implements Exception {
   String toString() => message;
 }
 
-/// What permanently deleting one tenant would do, read before any write.
+/// The app's pre-check of one tenant for permanent delete. The
+/// deleteTenantsPermanently callable repeats it with admin reads and is the
+/// one that counts.
 class TenantDeletePlan {
   const TenantDeletePlan({
     required this.tenantId,
     required this.tenantName,
     this.blockers = const [],
-    this.before,
-    this.unitIds = const [],
     this.heldUnits = const [],
-    this.activeGateAccessIds = const [],
   });
 
   final String tenantId;
@@ -246,21 +246,12 @@ class TenantDeletePlan {
 
   /// Billing or legal history that rules the delete out.
   final List<String> blockers;
-  final Map<String, dynamic>? before;
-
-  /// Every unit linked to the tenant at the check. The commit unlinks those
-  /// that still are.
-  final List<String> unitIds;
 
   /// The linked units the tenant actually occupies; any one rules the
   /// delete out too.
   final List<HeldUnit> heldUnits;
-  final List<String> activeGateAccessIds;
 
   bool get isBlocked => blockers.isNotEmpty || heldUnits.isNotEmpty;
-
-  /// Writes the commit makes for this tenant, at most.
-  int get writeCount => unitIds.length + activeGateAccessIds.length + 1;
 
   TenantDeleteBlock toBlock() => TenantDeleteBlock(
         tenantId: tenantId,
@@ -274,7 +265,6 @@ class TenantDeletePlan {
 /// facility subcollection: tenants, units or gateAccess.
 abstract class TenantRecordsWriter {
   void update(String collection, String docId, Map<String, dynamic> fields);
-  void delete(String collection, String docId);
 }
 
 /// A [TenantRecordsWriter] inside a transaction, which can also re-read a
@@ -285,9 +275,9 @@ abstract class TenantRecordsTransaction implements TenantRecordsWriter {
   Future<String?> unitTenantId(String unitId);
 }
 
-/// The reads and writes behind permanent delete, archive and switching a
-/// tenant inactive, for one facility. A seam: the guards, and what they
-/// write, are tested against a fake without Firebase.
+/// The reads and writes behind the permanent delete pre-check, archive and
+/// switching a tenant inactive, for one facility. A seam: the guards, and
+/// what they write, are tested against a fake without Firebase.
 abstract class TenantRecordsStore {
   /// The tenant doc's data, or null if it doesn't exist.
   Future<Map<String, dynamic>?> tenant(String tenantId);
@@ -406,11 +396,6 @@ class _FirestoreTenantTransaction implements TenantRecordsTransaction {
   @override
   void update(String collection, String docId, Map<String, dynamic> fields) {
     _txn.update(_ref(collection, docId), fields);
-  }
-
-  @override
-  void delete(String collection, String docId) {
-    _txn.delete(_ref(collection, docId));
   }
 }
 
@@ -1200,6 +1185,8 @@ class TenantService {
   }
 
   /// Paid active or non-expired trial at account or per-facility platform sub. Superadmins bypass.
+  /// A fast pre-check: the deleteTenantsPermanently callable enforces the
+  /// same gate (facilityAllowsPermanentTenantDelete in functions-shared).
   static Future<void> _assertFacilityAllowsPermanentTenantDeletion(String facilityId) async {
     final user = _auth.currentUser;
     if (user == null) {
@@ -1238,16 +1225,27 @@ class TenantService {
   // deleting the tenant doc orphaned their ledger, invoices and payments: the
   // balance vanished from AR and the history could no longer be opened.
   // Archive keeps it.
+  //
+  // The deleteTenantsPermanently callable (functions-tenant-lifecycle)
+  // enforces this and does the delete; the rules no longer let owners or
+  // managers delete a tenant doc, so an old tab or a direct API call can't
+  // skip the check. The copy here is a fast pre-check that refuses without a
+  // round trip.
+  //
+  // PARITY: isLiveLedgerRow, isLiveInvoiceRow, isLivePaymentRow,
+  // isLiveCardPaymentRow, hasAutopaySubscription, isActiveFlagSet,
+  // scanLiveRows, permanentDeleteBlockers, unitsHeldByTenant and
+  // loadDeletePlan mirror functions-shared/src/tenants/permanentDeleteRules.ts,
+  // and the callable's refusals are shown with these same strings. Both test
+  // suites run functions-shared/src/test/fixtures/tenantDeleteParity.json;
+  // change a rule on one side, change the other and add a case there.
 
-  /// Rows read per collection when checking a tenant for history.
+  /// Rows read per collection when checking a tenant for history
+  /// (TENANT_DELETE_SCAN_LIMIT on the server).
   static const int _deleteCheckScanLimit = 10;
 
-  /// Tenants checked (or audit-logged) at once in a bulk delete; each check
-  /// is ~11 reads.
+  /// Tenants checked at once in a bulk delete; each check is ~10 reads.
   static const int _deleteCheckConcurrency = 8;
-
-  /// Writes per transaction, under Firestore's 500 cap.
-  static const int _maxWritesPerBatch = 450;
 
   static TenantRecordsStore _records(String facilityId) =>
       _FirestoreTenantRecords(_firestore.collection('facilities').doc(facilityId));
@@ -1449,33 +1447,6 @@ class TenantService {
     return plans;
   }
 
-  /// Packs [items] into chunks of at most [maxPerChunk] writes, never
-  /// splitting one item: each tenant is then either fully deleted or
-  /// untouched. An item over the cap goes alone, and its transaction is
-  /// refused whole rather than half-written.
-  @visibleForTesting
-  static List<List<T>> packByWrites<T>(
-    List<T> items,
-    int Function(T item) writes, {
-    int maxPerChunk = _maxWritesPerBatch,
-  }) {
-    final chunks = <List<T>>[];
-    var current = <T>[];
-    var size = 0;
-    for (final item in items) {
-      final n = writes(item);
-      if (current.isNotEmpty && size + n > maxPerChunk) {
-        chunks.add(current);
-        current = <T>[];
-        size = 0;
-      }
-      current.add(item);
-      size += n;
-    }
-    if (current.isNotEmpty) chunks.add(current);
-    return chunks;
-  }
-
   static String _displayName(Map<String, dynamic>? data, String tenantId) {
     final name = (data?['name'] as String?)?.trim() ?? '';
     return name.isEmpty ? tenantId : name;
@@ -1586,7 +1557,7 @@ class TenantService {
     );
   }
 
-  /// Reads everything a permanent delete of [tenantId] needs to know. Every
+  /// Reads what the permanent delete pre-check of [tenantId] needs. Every
   /// query is equality on tenantId only, so the single-field indexes serve
   /// them and no composite index is needed.
   @visibleForTesting
@@ -1607,7 +1578,6 @@ class TenantService {
     final cardPaymentsRead = store.tenantRows(tenantId, 'payments', limit);
     final billingRead = store.tenantSubdoc(tenantId, 'billing', 'default');
     final unitsRead = store.linkedUnits(tenantId);
-    final gateIdsRead = store.activeGateAccessIds(tenantId);
     // Future.wait fails on the first error and handles the others, so a
     // second failed read can't surface as an uncaught error.
     await Future.wait<Object?>([
@@ -1621,7 +1591,6 @@ class TenantService {
       cardPaymentsRead,
       billingRead,
       unitsRead,
-      gateIdsRead,
     ]);
 
     var moreThanChecked = false;
@@ -1645,12 +1614,9 @@ class TenantService {
     final liens = live(await liensRead, anyRow);
     final cards = live(await cardsRead, isActiveFlagSet);
     final cardPayments = live(await cardPaymentsRead, isLiveCardPaymentRow);
-    final before = await tenantRead;
-    final units = await unitsRead;
     return TenantDeletePlan(
       tenantId: tenantId,
-      tenantName: _displayName(before, tenantId),
-      before: before == null ? null : Map<String, dynamic>.from(before),
+      tenantName: _displayName(await tenantRead, tenantId),
       blockers: permanentDeleteBlockers(
         liveLedgerEntries: ledger,
         liveInvoices: invoices,
@@ -1662,141 +1628,120 @@ class TenantService {
         hasAutopaySubscription: hasAutopaySubscription(await billingRead),
         moreThanChecked: moreThanChecked,
       ),
-      unitIds: [for (final u in units) u.id],
       // An occupant is refused too: deleting them freed their unit and
       // listed it as rentable, even with no billing history yet.
-      heldUnits: unitsHeldByTenant(tenantId, units),
-      activeGateAccessIds: await gateIdsRead,
+      heldUnits: unitsHeldByTenant(tenantId, await unitsRead),
     );
   }
 
-  /// Unit unlinks, gate-code shutoff and the tenant delete, one transaction
-  /// per chunk of tenants, so a rules refusal of the delete frees no unit.
-  /// [onCommitted] hears about each chunk once it is committed, with the
-  /// units actually unlinked.
+  static int _countIn(Object? value) => value is num ? value.toInt() : 0;
+
+  /// A held unit as the callable reports it. It never reports an available
+  /// unit as held, so an unknown status falls back to the plain
+  /// Unassign Tenant step.
+  static HeldUnit _heldUnitFromServer(Map<Object?, Object?> unit) => HeldUnit(
+        '${unit['unitNumber'] ?? ''}',
+        UnitStatus.values.firstWhere(
+          (s) => s.name == unit['status'],
+          orElse: () => UnitStatus.occupied,
+        ),
+      );
+
+  /// Reads the deleteTenantsPermanently response: the units freed and gate
+  /// codes turned off, or a [TenantDeleteRefusedException] naming each
+  /// blocked tenant with the same reasons and steps as the pre-check.
   @visibleForTesting
-  static Future<void> commitDeletePlans(
-    TenantRecordsStore store,
-    List<TenantDeletePlan> plans, {
-    required String uid,
-    DateTime? now,
-    int maxWritesPerTransaction = _maxWritesPerBatch,
-    Future<void> Function(
-            List<TenantDeletePlan> committed, Set<String> unlinkedUnitIds)?
-        onCommitted,
-  }) async {
-    final unitOff = UnitService.tenantUnlinkFields(
-        updatedBy: uid, moveOutDate: now ?? DateTime.now());
-    final gateOff = _gateAccessOffFields(uid);
-    final chunks = packByWrites(plans, (p) => p.writeCount,
-        maxPerChunk: maxWritesPerTransaction);
-    for (final chunk in chunks) {
-      final unlinked = <String>{};
-      await store.transaction((txn) async {
-        unlinked.clear(); // the body runs again on contention
-        // Re-read every unit inside the transaction. One reassigned since
-        // the check belongs to someone else now: unlinking it freed that
-        // tenant's unit and listed it as rentable.
-        final unitIds = [for (final p in chunk) ...p.unitIds];
-        final holders = await Future.wait(unitIds.map(txn.unitTenantId));
-        final holderOf = Map.fromIterables(unitIds, holders);
-        for (final plan in chunk) {
-          for (final unitId in plan.unitIds) {
-            if (holderOf[unitId] != plan.tenantId) continue;
-            txn.update('units', unitId, unitOff);
-            unlinked.add(unitId);
-          }
-          for (final accessId in plan.activeGateAccessIds) {
-            txn.update('gateAccess', accessId, gateOff);
-          }
-          txn.delete('tenants', plan.tenantId);
-        }
-      });
-      if (onCommitted != null) await onCommitted(chunk, unlinked);
+  static ({int unitsUnlinked, int gateCodesOff}) parseServerDeleteResult(
+      Object? data) {
+    final result = data is Map ? data : const <Object?, Object?>{};
+    switch (result['status']) {
+      case 'deleted':
+        return (
+          unitsUnlinked: _countIn(result['unitsUnlinked']),
+          gateCodesOff: _countIn(result['gateAccessDeactivated']),
+        );
+      case 'refused':
+        final blocked = [
+          for (final b in result['blocked'] as List? ?? const [])
+            if (b is Map)
+              TenantDeleteBlock(
+                tenantId: '${b['tenantId'] ?? ''}',
+                tenantName: '${b['tenantName'] ?? b['tenantId'] ?? ''}',
+                reasons: [
+                  for (final r in b['reasons'] as List? ?? const [])
+                    if (r is String) r,
+                ],
+                heldUnits: [
+                  for (final u in b['heldUnits'] as List? ?? const [])
+                    if (u is Map) _heldUnitFromServer(u),
+                ],
+              ),
+        ];
+        if (blocked.isNotEmpty) throw TenantDeleteRefusedException(blocked);
     }
+    // Neither answer: don't report a delete that may not have happened.
+    throw Exception("Couldn't confirm the delete. Refresh the tenant list to "
+        'see what changed.');
   }
 
-  /// Checks, then deletes, every tenant in [tenantIds], or none. Calls
-  /// [logDeleted] once per deleted tenant, as its transaction commits, so a
-  /// bulk delete leaves the same per-tenant record (with the before
-  /// snapshot) as a single one.
+  /// Checks, then deletes, every tenant in [tenantIds], or none. The
+  /// pre-check refuses without a round trip when this user can already see
+  /// a blocker (or can't read the records); otherwise [deleteOnServer] sends
+  /// the ids to the deleteTenantsPermanently callable, which checks again
+  /// inside the transaction that deletes, and its answer is final. The
+  /// callable also unlinks the units, turns the gate codes off and writes
+  /// the audit rows.
   @visibleForTesting
-  static Future<List<TenantDeletePlan>> permanentlyDelete(
+  static Future<({int unitsUnlinked, int gateCodesOff})> permanentlyDelete(
     TenantRecordsStore store,
     List<String> tenantIds, {
-    required String uid,
-    required Future<void> Function(TenantDeletePlan plan, int unitsUnlinked)
-        logDeleted,
-  }) {
-    return runPermanentDelete(
+    required Future<Object?> Function(List<String> tenantIds) deleteOnServer,
+  }) async {
+    ({int unitsUnlinked, int gateCodesOff})? result;
+    await runPermanentDelete(
       tenantIds: tenantIds,
       loadPlan: (id) => loadDeletePlan(store, id),
-      commit: (plans) => commitDeletePlans(
-        store,
-        plans,
-        uid: uid,
-        onCommitted: (chunk, unlinked) => _inGroups(
-          chunk,
-          (plan) => logDeleted(
-              plan, plan.unitIds.where(unlinked.contains).length),
-        ),
-      ),
+      commit: (_) async =>
+          result = parseServerDeleteResult(await deleteOnServer(tenantIds)),
     );
+    return result!;
   }
 
-  static Future<void> _logTenantDeleted(
-    String facilityId,
-    TenantDeletePlan plan, {
-    required int unitsUnlinked,
-    String? bulkId,
-  }) {
-    return AuditService.logEvent(
-      facilityId: facilityId,
-      eventType: 'tenant.deleted',
-      targetType: 'tenant',
-      targetId: plan.tenantId,
-      tenantId: plan.tenantId,
-      before: plan.before,
-      metadata: {
-        'unitsUnlinked': unitsUnlinked,
-        'gateAccessDeactivated': plan.activeGateAccessIds.length,
-        if (bulkId != null) 'bulkDeleteId': bulkId,
-      },
-    );
+  static Future<Object?> _deleteOnServer(
+      String facilityId, List<String> tenantIds) async {
+    final result = await FirebaseFunctions.instance
+        .httpsCallable(
+          'deleteTenantsPermanently',
+          options: HttpsCallableOptions(timeout: const Duration(seconds: 120)),
+        )
+        .call<dynamic>({'facilityId': facilityId, 'tenantIds': tenantIds});
+    return result.data;
   }
 
-  /// [permanentlyDelete] in Firestore, audit-logged, then the public map
-  /// resynced if any unit was freed. Returns the plans and the units freed.
-  static Future<({List<TenantDeletePlan> plans, int unitsUnlinked})>
+  /// [permanentlyDelete] for a facility, then the public map resynced if a
+  /// unit was freed, as before the delete moved to the server (the unit
+  /// write trigger resyncs it too).
+  static Future<({int unitsUnlinked, int gateCodesOff})>
       _permanentlyDeleteInFacility(
     String facilityId,
     List<String> tenantIds,
-    String uid, {
-    String? bulkId,
-  }) async {
-    var unlinked = 0;
-    try {
-      final plans = await permanentlyDelete(
-        _records(facilityId),
-        tenantIds,
-        uid: uid,
-        logDeleted: (plan, unitsUnlinked) {
-          unlinked += unitsUnlinked;
-          return _logTenantDeleted(facilityId, plan,
-              unitsUnlinked: unitsUnlinked, bulkId: bulkId);
-        },
-      );
-      return (plans: plans, unitsUnlinked: unlinked);
-    } finally {
-      // Also after a later chunk fails: earlier chunks did free their units.
-      if (unlinked > 0) UnitService.schedulePublicMapInventorySync(facilityId);
+  ) async {
+    final result = await permanentlyDelete(
+      _records(facilityId),
+      tenantIds,
+      deleteOnServer: (ids) => _deleteOnServer(facilityId, ids),
+    );
+    if (result.unitsUnlinked > 0) {
+      UnitService.schedulePublicMapInventorySync(facilityId);
     }
+    return result;
   }
 
   // Delete tenant permanently. Refused (TenantDeleteRefusedException) when
-  // the tenant has billing or legal history or still holds a unit. Otherwise
-  // unlinks their units, turns off their gate codes and deletes the doc in
-  // one transaction, then refreshes facility counts.
+  // the tenant has billing or legal history or still holds a unit. The
+  // deleteTenantsPermanently callable unlinks their units, turns off their
+  // gate codes, deletes the doc and audit-logs it in one transaction; then
+  // facility counts are refreshed.
   static Future<void> deleteTenant({
     required String facilityId,
     required String tenantId,
@@ -1813,8 +1758,7 @@ class TenantService {
         print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
       }
 
-      final result =
-          await _permanentlyDeleteInFacility(facilityId, [tenantId], user.uid);
+      final result = await _permanentlyDeleteInFacility(facilityId, [tenantId]);
 
       if (kDebugMode) {
         print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${result.unitsUnlinked} unit(s)');
@@ -1832,7 +1776,9 @@ class TenantService {
   }
 
   // Delete multiple tenants permanently, all or nothing: if any selected
-  // tenant is blocked, none are deleted. Then refresh facility counts once.
+  // tenant is blocked, none are deleted. The callable logs a tenant.deleted
+  // event per tenant (with its before snapshot) and one tenant.bulkDeleted
+  // event. Then refresh facility counts once.
   static Future<void> deleteTenants({
     required String facilityId,
     required List<String> tenantIds,
@@ -1852,30 +1798,7 @@ class TenantService {
 
       await _assertFacilityAllowsPermanentTenantDeletion(facilityId);
 
-      final bulkId = 'bulk_${ids.length}_${DateTime.now().millisecondsSinceEpoch}';
-      // Each tenant also gets its own tenant.deleted event with its before
-      // snapshot; the bulk event alone left bulk-deleted tenants
-      // unrecoverable from the audit log.
-      final result = await _permanentlyDeleteInFacility(
-          facilityId, ids, user.uid,
-          bulkId: bulkId);
-      final plans = result.plans;
-
-      await AuditService.logEvent(
-        facilityId: facilityId,
-        eventType: 'tenant.bulkDeleted',
-        targetType: 'tenant',
-        targetId: bulkId,
-        metadata: {
-          'tenantIds': ids,
-          'count': ids.length,
-          'unitsUnlinked': result.unitsUnlinked,
-          'gateAccessDeactivated':
-              plans.fold<int>(0, (n, p) => n + p.activeGateAccessIds.length),
-          // Same order as tenantIds (a missing doc falls back to its id).
-          'tenantNames': plans.map((p) => p.tenantName).toList(),
-        },
-      );
+      final result = await _permanentlyDeleteInFacility(facilityId, ids);
 
       if (kDebugMode) {
         print('✅ [TenantService] Deleted ${ids.length} tenants, unlinked ${result.unitsUnlinked} unit(s)');

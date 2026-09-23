@@ -202,6 +202,9 @@ jobs:
           - functions-outbound-email
           - functions-public-website
           - functions-tenant-lifecycle
+          # Not deployed, but its own tests (the permanent tenant delete
+          # rules and their Dart parity table among them) ran nowhere else.
+          - functions-shared
     defaults:
       run:
         working-directory: ${{ matrix.package }}

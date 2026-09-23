@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -123,10 +125,6 @@ class _FakeTransaction implements TenantRecordsTransaction {
   @override
   void update(String collection, String docId, Map<String, dynamic> fields) =>
       writes.add(_Write('update', collection, docId, fields));
-
-  @override
-  void delete(String collection, String docId) =>
-      writes.add(_Write('delete', collection, docId));
 }
 
 /// Permanent tenant delete used to remove the tenant doc and leave their
@@ -420,129 +418,57 @@ void main() {
       expect(p.blockers, isEmpty);
       expect(p.heldUnits, [const HeldUnit('101', UnitStatus.occupied)]);
       expect(p.isBlocked, isTrue);
-      expect(p.unitIds, ['u101', 'u103']);
     });
 
-    test('carries the before snapshot, units and gate codes to the commit', () async {
+    test('names the tenant from its doc, trimmed', () async {
       final store = _FakeRecords();
       store['t1']
         ..doc = {'name': ' Bo Diaz ', 'phone': '555'}
-        ..units = [unit('9', UnitStatus.available, 't1')]
-        ..gateIds = ['g1', 'g2'];
+        ..units = [unit('9', UnitStatus.available, 't1')];
       final p = await TenantService.loadDeletePlan(store, 't1');
       expect(p.tenantName, 'Bo Diaz');
-      expect(p.before, {'name': ' Bo Diaz ', 'phone': '555'});
-      expect(p.unitIds, ['u9']);
-      expect(p.activeGateAccessIds, ['g1', 'g2']);
       expect(p.isBlocked, isFalse);
     });
   });
 
-  group('commitDeletePlans', () {
-    test('unlinks only units still pointing at the tenant, in one transaction', () async {
-      final store = _FakeRecords();
-      store.unitHolders.addAll({
-        'u101': 't1',
-        // Reassigned to someone else between the check and the commit:
-        // unlinking it would free their unit and list it as rentable.
-        'u102': 't2',
-        // Deleted since the check.
-        'u103': null,
-      });
-      Set<String>? unlinked;
-      await TenantService.commitDeletePlans(
-        store,
-        [
-          const TenantDeletePlan(
-            tenantId: 't1',
-            tenantName: 'Ada Park',
-            unitIds: ['u101', 'u102', 'u103'],
-            activeGateAccessIds: ['g1'],
-          ),
-        ],
-        uid: 'owner',
-        now: day,
-        onCommitted: (_, ids) async => unlinked = ids,
-      );
+  group('permanentlyDelete: the pre-check, then the server decides', () {
+    const deletedNothing = {
+      'status': 'deleted',
+      'unitsUnlinked': 0,
+      'gateAccessDeactivated': 0,
+    };
 
-      expect(store.transactions, hasLength(1));
-      expect(store.writtenPaths, [
-        'update units/u101',
-        'update gateAccess/g1',
-        'delete tenants/t1',
-      ]);
-      expect(unlinked, {'u101'});
-
-      final unitFields = store.transactions.single.first.fields!;
-      expect(unitFields['status'], UnitStatus.available.name);
-      expect(unitFields['tenantId'], isA<FieldValue>());
-      expect(unitFields['updatedBy'], 'owner');
-      expect(unitFields['moveOutDate'], Timestamp.fromDate(day));
-      final gateFields = store.transactions.single[1].fields!;
-      expect(gateFields['isActive'], isFalse);
-      expect(gateFields['updatedBy'], 'owner');
-    });
-
-    test('never splits a tenant across transactions', () async {
-      final store = _FakeRecords();
-      final plans = [
-        for (final id in ['a', 'b', 'c'])
-          TenantDeletePlan(
-            tenantId: id,
-            tenantName: id,
-            unitIds: ['${id}1', '${id}2'],
-          ),
-      ];
-      for (final p in plans) {
-        for (final u in p.unitIds) {
-          store.unitHolders[u] = p.tenantId;
-        }
-      }
-      final committed = <List<String>>[];
-      await TenantService.commitDeletePlans(
-        store,
-        plans,
-        uid: 'owner',
-        maxWritesPerTransaction: 7,
-        onCommitted: (chunk, _) async =>
-            committed.add([for (final p in chunk) p.tenantId]),
-      );
-      expect(committed, [
-        ['a', 'b'],
-        ['c'],
-      ]);
-      expect(store.transactions.map((t) => t.length), [6, 3]);
-    });
-  });
-
-  group('permanentlyDelete', () {
-    Future<List<TenantDeletePlan>> run(
+    Future<({int unitsUnlinked, int gateCodesOff})> run(
       _FakeRecords store,
       List<String> ids, {
-      List<(String, Map<String, dynamic>?, int)>? logs,
+      Object? answer = deletedNothing,
+      List<List<String>>? calls,
     }) {
       return TenantService.permanentlyDelete(
         store,
         ids,
-        uid: 'owner',
-        logDeleted: (p, unlinked) async => logs?.add((p.tenantId, p.before, unlinked)),
+        deleteOnServer: (sent) async {
+          calls?.add(sent);
+          return answer;
+        },
       );
     }
 
-    test('a blocked tenant refuses the delete and nothing is written', () async {
+    test('a blocked tenant is refused without calling the server', () async {
       final store = _FakeRecords();
       store['t1'].facilityRows['ledgers'] = [ledgerRow(LedgerEntryStatus.posted)];
-      final logs = <(String, Map<String, dynamic>?, int)>[];
-      await expectLater(
-          run(store, ['t1'], logs: logs), throwsA(isA<TenantDeleteRefusedException>()));
+      final calls = <List<String>>[];
+      await expectLater(run(store, ['t1'], calls: calls),
+          throwsA(isA<TenantDeleteRefusedException>()));
+      expect(calls, isEmpty);
       expect(store.transactions, isEmpty);
-      expect(logs, isEmpty);
     });
 
     test('an occupant with no history is told to unassign the unit first', () async {
       final store = _FakeRecords();
       store['t1'].units = [unit('101', UnitStatus.occupied, 't1')];
-      final error = await run(store, ['t1'])
+      final calls = <List<String>>[];
+      final error = await run(store, ['t1'], calls: calls)
           .then<Object?>((_) => null, onError: (Object e) => e);
       expect(error, isA<TenantDeleteRefusedException>());
       final refusal = error! as TenantDeleteRefusedException;
@@ -550,36 +476,16 @@ void main() {
       expect(refusal.message, 'Nothing was deleted. Ada Park is still assigned to unit 101.');
       expect(refusal.details,
           contains('Unassign the unit first (Units > unit 101 > Unassign Tenant). Then you can delete them.'));
-      expect(store.transactions, isEmpty);
+      expect(calls, isEmpty);
     });
 
-    test('bulk logs one tenant.deleted per tenant, with its before snapshot', () async {
-      final store = _FakeRecords();
-      store['t1']
-        ..doc = {'name': 'Ada Park', 'phone': '1'}
-        ..units = [unit('9', UnitStatus.available, 't1')];
-      store['t2'].doc = {'name': 'Bo Diaz', 'phone': '2'};
-      store.unitHolders['u9'] = 't1';
-      final logs = <(String, Map<String, dynamic>?, int)>[];
-      await run(store, ['t1', 't2'], logs: logs);
-      expect(logs.map((l) => (l.$1, l.$3)), [('t1', 1), ('t2', 0)]);
-      expect(logs.map((l) => l.$2), [
-        {'name': 'Ada Park', 'phone': '1'},
-        {'name': 'Bo Diaz', 'phone': '2'},
-      ]);
-      expect(store.writtenPaths, [
-        'update units/u9',
-        'delete tenants/t1',
-        'delete tenants/t2',
-      ]);
-    });
-
-    test('an unreadable record refuses the whole bulk delete', () async {
+    test('an unreadable record refuses the whole bulk delete before the server', () async {
       final store = _FakeRecords();
       store.failing['tenant/billing/default'] = FirebaseException(
           plugin: 'cloud_firestore', code: 'permission-denied');
+      final calls = <List<String>>[];
       await expectLater(
-        run(store, ['t1', 't2']),
+        run(store, ['t1', 't2'], calls: calls),
         throwsA(isA<TenantDeleteCheckFailedException>().having(
           (e) => e.message,
           'message',
@@ -589,7 +495,206 @@ void main() {
           ),
         )),
       );
+      expect(calls, isEmpty);
+    });
+
+    test('a clean pre-check sends every id to the server once; the app writes nothing itself', () async {
+      // The rules no longer let the app delete a tenant doc: the callable
+      // unlinks the units, turns the gate codes off, deletes and audits.
+      final store = _FakeRecords();
+      store['t1'].units = [unit('9', UnitStatus.available, 't1')];
+      store['t2'].doc = {'name': 'Bo Diaz'};
+      final calls = <List<String>>[];
+      final result = await run(
+        store,
+        ['t1', 't2'],
+        calls: calls,
+        answer: {'status': 'deleted', 'unitsUnlinked': 1, 'gateAccessDeactivated': 2},
+      );
+      expect(calls, [
+        ['t1', 't2']
+      ]);
+      expect(result.unitsUnlinked, 1);
+      expect(result.gateCodesOff, 2);
       expect(store.transactions, isEmpty);
+    });
+
+    test("the server's refusal reads like the pre-check's", () async {
+      // A charge or unit assignment made after the pre-check: the callable
+      // reads again inside the transaction that deletes, and refuses.
+      final store = _FakeRecords();
+      final error = await run(store, ['t1', 't2'], answer: {
+        'status': 'refused',
+        'blocked': [
+          {
+            'tenantId': 't2',
+            'tenantName': 'Bo Diaz',
+            'reasons': ['an invoice'],
+            'heldUnits': [
+              {'unitNumber': '7', 'status': 'lockout'}
+            ],
+          },
+        ],
+      }).then<Object?>((_) => null, onError: (Object e) => e);
+      expect(error, isA<TenantDeleteRefusedException>());
+      final refusal = error! as TenantDeleteRefusedException;
+      expect(refusal.blocked.single.tenantId, 't2');
+      expect(refusal.blocked.single.heldUnits, [const HeldUnit('7', UnitStatus.lockout)]);
+      expect(refusal.message,
+          'Nothing was deleted. Bo Diaz has an invoice and is still assigned to unit 7.');
+      expect(refusal.details, contains('Units > unit 7 > Remove Lockout, then Unassign Tenant'));
+    });
+  });
+
+  group('parseServerDeleteResult', () {
+    test('reads the counts of a delete', () {
+      final result = TenantService.parseServerDeleteResult(
+          {'status': 'deleted', 'unitsUnlinked': 2, 'gateAccessDeactivated': 3});
+      expect(result.unitsUnlinked, 2);
+      expect(result.gateCodesOff, 3);
+    });
+
+    test('reads maps as the platform channel delivers them', () {
+      final data = <Object?, Object?>{
+        'status': 'refused',
+        'blocked': <Object?>[
+          <Object?, Object?>{
+            'tenantId': 't1',
+            'tenantName': 'Ada Park',
+            'reasons': <Object?>['a saved card'],
+            'heldUnits': <Object?>[
+              <Object?, Object?>{'unitNumber': '101', 'status': 'occupied'},
+              // Not a status the app knows: the plain Unassign step.
+              <Object?, Object?>{'unitNumber': '102', 'status': 'somethingNew'},
+            ],
+          },
+        ],
+      };
+      final refusal = (() {
+        try {
+          TenantService.parseServerDeleteResult(data);
+        } on TenantDeleteRefusedException catch (e) {
+          return e;
+        }
+        return null;
+      })();
+      expect(refusal, isNotNull);
+      expect(refusal!.blockersByTenantName, {
+        'Ada Park': ['a saved card']
+      });
+      expect(refusal.blocked.single.heldUnits, const [
+        HeldUnit('101', UnitStatus.occupied),
+        HeldUnit('102', UnitStatus.occupied),
+      ]);
+    });
+
+    test('anything else is not taken as a delete', () {
+      for (final data in <Object?>[
+        null,
+        'ok',
+        const <String, Object?>{},
+        const {'status': 'refused', 'blocked': <Object?>[]},
+        const {'status': 'maybe'},
+      ]) {
+        expect(
+          () => TenantService.parseServerDeleteResult(data),
+          throwsA(isA<Exception>()
+              .having((e) => '$e', 'text', contains("Couldn't confirm the delete"))),
+          reason: '$data',
+        );
+      }
+    });
+  });
+
+  group('parity with the deleteTenantsPermanently callable', () {
+    // The same table functions-shared runs against the server's rules.
+    final parity = jsonDecode(File(
+            'functions-shared/src/test/fixtures/tenantDeleteParity.json')
+        .readAsStringSync()) as Map<String, dynamic>;
+    List<Map<String, dynamic>> maps(Object? list) => [
+          for (final m in list as List? ?? const []) Map<String, dynamic>.from(m as Map)
+        ];
+
+    test('each row predicate matches the shared table', () {
+      final predicates = <String, bool Function(Map<String, dynamic>)>{
+        'ledger': TenantService.isLiveLedgerRow,
+        'invoice': TenantService.isLiveInvoiceRow,
+        'payment': TenantService.isLivePaymentRow,
+        'cardPayment': TenantService.isLiveCardPaymentRow,
+        'activeFlag': TenantService.isActiveFlagSet,
+      };
+      for (final c in maps(parity['rows'])) {
+        final row = Map<String, dynamic>.from(c['row'] as Map);
+        expect(predicates[c['kind']]!(row), c['live'], reason: '${c['kind']} $row');
+      }
+    });
+
+    test('autopay subscription matches the shared table', () {
+      for (final c in maps(parity['autopay'])) {
+        final billing = c['billing'] == null
+            ? null
+            : Map<String, dynamic>.from(c['billing'] as Map);
+        expect(TenantService.hasAutopaySubscription(billing), c['has'], reason: '$billing');
+      }
+    });
+
+    test('blocker wording matches the shared table word for word', () {
+      for (final c in maps(parity['blockers'])) {
+        final n = Map<String, dynamic>.from(c['counts'] as Map);
+        final reasons = TenantService.permanentDeleteBlockers(
+          liveLedgerEntries: n['liveLedgerEntries'] as int? ?? 0,
+          liveInvoices: n['liveInvoices'] as int? ?? 0,
+          livePayments: n['livePayments'] as int? ?? 0,
+          liveCardPayments: n['liveCardPayments'] as int? ?? 0,
+          contracts: n['contracts'] as int? ?? 0,
+          liens: n['liens'] as int? ?? 0,
+          activeSavedCards: n['activeSavedCards'] as int? ?? 0,
+          hasAutopaySubscription: n['hasAutopaySubscription'] as bool? ?? false,
+          moreThanChecked: n['moreThanChecked'] as bool? ?? false,
+        );
+        expect(reasons, c['reasons'], reason: '$n');
+      }
+    });
+
+    test('plans give the same reasons and held units as the server', () async {
+      expect(parity['scanLimit'], 10, reason: 'TenantService._deleteCheckScanLimit');
+      for (final c in maps(parity['plans'])) {
+        final records = Map<String, dynamic>.from(c['records'] as Map);
+        final store = _FakeRecords();
+        final t = store['t1'];
+        if (records['tenant'] != null) {
+          t.doc = Map<String, dynamic>.from(records['tenant'] as Map);
+        }
+        for (final name in ['ledgers', 'invoices', 'payments', 'contracts', 'liens']) {
+          t.facilityRows[name] = maps(records[name]);
+        }
+        t.ownRows['paymentMethods'] = maps(records['paymentMethods']);
+        t.ownRows['payments'] = maps(records['tenantPayments']);
+        if (records['billing'] != null) {
+          t.subdocs['billing/default'] = Map<String, dynamic>.from(records['billing'] as Map);
+        }
+        t.units = [
+          for (final u in maps(records['units']))
+            // As UnitModel.fromFirestore reads the status: unknown is available.
+            unit(
+              '${u['unitNumber']}',
+              UnitStatus.values.firstWhere((s) => s.name == u['status'],
+                  orElse: () => UnitStatus.available),
+              u['tenantId'] as String? ?? 't1',
+            ),
+        ];
+
+        final p = await TenantService.loadDeletePlan(store, 't1');
+        expect(p.blockers, c['reasons'], reason: '${c['name']}');
+        expect(
+          [
+            for (final h in p.heldUnits)
+              {'unitNumber': h.unitNumber, 'status': h.status.name}
+          ],
+          c['heldUnits'],
+          reason: '${c['name']}',
+        );
+      }
     });
   });
 
@@ -895,25 +1000,6 @@ void main() {
       expect(bug, contains('contact support'));
       // Tests run in debug mode, where the cause is shown.
       expect(bug, contains('bad cast'));
-    });
-  });
-
-  group('packByWrites', () {
-    test("keeps one tenant's writes in one chunk and stays under the cap", () {
-      final chunks = TenantService.packByWrites([3, 3, 2], (n) => n, maxPerChunk: 5);
-      expect(chunks, [
-        [3],
-        [3, 2],
-      ]);
-    });
-
-    test('an item over the cap goes alone rather than being split', () {
-      final chunks = TenantService.packByWrites([1, 7, 1], (n) => n, maxPerChunk: 3);
-      expect(chunks, [
-        [1],
-        [7],
-        [1],
-      ]);
     });
   });
 

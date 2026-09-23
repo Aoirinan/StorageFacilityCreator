@@ -1,0 +1,203 @@
+{
+  "_about": "Permanent tenant delete rules, one table for both implementations. Run by functions-shared/src/test/tenantPermanentDeleteRules.test.ts (the deleteTenantsPermanently callable's rules) and test/tenant_delete_guard_test.dart (TenantService's client pre-check). If one side changes, change the other and add a case here. Every plan is for tenant t1; units carry tenantId t1 unless they say otherwise.",
+  "scanLimit": 10,
+  "rows": [
+    { "kind": "ledger", "row": { "status": "posted" }, "live": true },
+    { "kind": "ledger", "row": { "status": "pending" }, "live": true },
+    { "kind": "ledger", "row": { "status": "voided" }, "live": false },
+    { "kind": "ledger", "row": { "status": " Voided " }, "live": false },
+    { "kind": "ledger", "row": {}, "live": true },
+    { "kind": "invoice", "row": { "status": "draft" }, "live": true },
+    { "kind": "invoice", "row": { "status": "sent" }, "live": true },
+    { "kind": "invoice", "row": { "status": "paid" }, "live": true },
+    { "kind": "invoice", "row": { "status": "overdue" }, "live": true },
+    { "kind": "invoice", "row": { "status": "voided" }, "live": false },
+    { "kind": "payment", "row": { "status": "completed" }, "live": true },
+    { "kind": "payment", "row": { "status": "paid" }, "live": true },
+    { "kind": "payment", "row": { "status": "pending" }, "live": true },
+    { "kind": "payment", "row": { "status": "refunded" }, "live": true },
+    { "kind": "payment", "row": { "status": "disputed" }, "live": true },
+    { "kind": "payment", "row": { "status": "failed" }, "live": false },
+    { "kind": "payment", "row": { "status": "cancelled" }, "live": false },
+    { "kind": "payment", "row": { "status": "canceled" }, "live": false },
+    { "kind": "payment", "row": { "status": "completed", "isActive": false }, "live": false },
+    { "kind": "cardPayment", "row": { "status": "processing" }, "live": true },
+    { "kind": "cardPayment", "row": { "status": "succeeded" }, "live": true },
+    { "kind": "cardPayment", "row": {}, "live": true },
+    { "kind": "cardPayment", "row": { "status": "failed" }, "live": false },
+    { "kind": "cardPayment", "row": { "status": "canceled" }, "live": false },
+    { "kind": "cardPayment", "row": { "status": "cancelled" }, "live": false },
+    { "kind": "cardPayment", "row": { "status": "succeeded", "isActive": false }, "live": true },
+    { "kind": "activeFlag", "row": { "isActive": true }, "live": true },
+    { "kind": "activeFlag", "row": {}, "live": true },
+    { "kind": "activeFlag", "row": { "isActive": false }, "live": false }
+  ],
+  "autopay": [
+    { "billing": { "stripeSubscriptionId": "sub_1" }, "has": true },
+    { "billing": { "stripeSubscriptionId": null }, "has": false },
+    { "billing": { "stripeSubscriptionId": " " }, "has": false },
+    { "billing": { "autopayEnabled": false }, "has": false },
+    { "billing": null, "has": false }
+  ],
+  "blockers": [
+    { "counts": {}, "reasons": [] },
+    { "counts": { "liveLedgerEntries": 2 }, "reasons": ["charges or payments on the ledger"] },
+    { "counts": { "liveInvoices": 1 }, "reasons": ["an invoice"] },
+    { "counts": { "liveInvoices": 2 }, "reasons": ["invoices"] },
+    { "counts": { "livePayments": 1 }, "reasons": ["a payment record"] },
+    { "counts": { "livePayments": 3 }, "reasons": ["payment records"] },
+    { "counts": { "liveCardPayments": 2 }, "reasons": ["a card payment in progress or payment history"] },
+    { "counts": { "contracts": 1 }, "reasons": ["a contract"] },
+    { "counts": { "contracts": 2 }, "reasons": ["contracts"] },
+    { "counts": { "liens": 1 }, "reasons": ["a lien"] },
+    { "counts": { "liens": 2 }, "reasons": ["liens"] },
+    { "counts": { "activeSavedCards": 1 }, "reasons": ["a saved card"] },
+    { "counts": { "activeSavedCards": 2 }, "reasons": ["saved cards"] },
+    { "counts": { "hasAutopaySubscription": true }, "reasons": ["an autopay subscription"] },
+    { "counts": { "moreThanChecked": true }, "reasons": ["more records than could be checked here"] },
+    { "counts": { "liveInvoices": 1, "moreThanChecked": true }, "reasons": ["an invoice"] },
+    {
+      "counts": {
+        "liveLedgerEntries": 1,
+        "liveInvoices": 1,
+        "livePayments": 1,
+        "liveCardPayments": 1,
+        "contracts": 1,
+        "liens": 1,
+        "activeSavedCards": 1,
+        "hasAutopaySubscription": true
+      },
+      "reasons": [
+        "charges or payments on the ledger",
+        "an invoice",
+        "a payment record",
+        "a card payment in progress or payment history",
+        "a contract",
+        "a lien",
+        "a saved card",
+        "an autopay subscription"
+      ]
+    }
+  ],
+  "plans": [
+    { "name": "no records at all", "records": {}, "reasons": [], "heldUnits": [] },
+    {
+      "name": "a posted ledger row",
+      "records": { "ledgers": [{ "status": "posted" }] },
+      "reasons": ["charges or payments on the ledger"],
+      "heldUnits": []
+    },
+    {
+      "name": "a sent invoice",
+      "records": { "invoices": [{ "status": "sent" }] },
+      "reasons": ["an invoice"],
+      "heldUnits": []
+    },
+    {
+      "name": "a completed facility payment",
+      "records": { "payments": [{ "status": "completed" }] },
+      "reasons": ["a payment record"],
+      "heldUnits": []
+    },
+    {
+      "name": "an ended contract",
+      "records": { "contracts": [{ "isActive": false, "status": "terminated" }] },
+      "reasons": ["a contract"],
+      "heldUnits": []
+    },
+    {
+      "name": "a released lien",
+      "records": { "liens": [{ "isActive": false, "status": "released" }] },
+      "reasons": ["a lien"],
+      "heldUnits": []
+    },
+    {
+      "name": "an active saved card",
+      "records": { "paymentMethods": [{ "isActive": true }] },
+      "reasons": ["a saved card"],
+      "heldUnits": []
+    },
+    {
+      "name": "a card payment the webhook has not recorded yet",
+      "records": { "tenantPayments": [{ "status": "processing" }] },
+      "reasons": ["a card payment in progress or payment history"],
+      "heldUnits": []
+    },
+    {
+      "name": "an armed autopay subscription",
+      "records": { "billing": { "stripeSubscriptionId": "sub_1" } },
+      "reasons": ["an autopay subscription"],
+      "heldUnits": []
+    },
+    {
+      "name": "rows that never became history",
+      "records": {
+        "ledgers": [{ "status": "voided" }],
+        "invoices": [{ "status": "voided" }],
+        "payments": [{ "status": "failed" }],
+        "paymentMethods": [{ "isActive": false }],
+        "tenantPayments": [{ "status": "canceled" }],
+        "billing": { "stripeSubscriptionId": null }
+      },
+      "reasons": [],
+      "heldUnits": []
+    },
+    {
+      "name": "a full page of voided ledger rows",
+      "records": {
+        "ledgers": [
+          { "status": "voided" }, { "status": "voided" }, { "status": "voided" }, { "status": "voided" },
+          { "status": "voided" }, { "status": "voided" }, { "status": "voided" }, { "status": "voided" },
+          { "status": "voided" }, { "status": "voided" }
+        ]
+      },
+      "reasons": ["more records than could be checked here"],
+      "heldUnits": []
+    },
+    {
+      "name": "units: occupied and locked out are held; a stale link on an available unit and an unknown status are not",
+      "records": {
+        "units": [
+          { "id": "u101", "unitNumber": "101", "status": "occupied" },
+          { "id": "u102", "unitNumber": "102", "status": "lockout" },
+          { "id": "u103", "unitNumber": "103", "status": "available" },
+          { "id": "u104", "unitNumber": "104", "status": "not-a-status" }
+        ]
+      },
+      "reasons": [],
+      "heldUnits": [
+        { "unitNumber": "101", "status": "occupied" },
+        { "unitNumber": "102", "status": "lockout" }
+      ]
+    },
+    {
+      "name": "every non-available status holds",
+      "records": {
+        "units": [
+          { "id": "u1", "unitNumber": "1", "status": "reserved" },
+          { "id": "u2", "unitNumber": "2", "status": "maintenance" },
+          { "id": "u3", "unitNumber": "3", "status": "outOfOrder" },
+          { "id": "u4", "unitNumber": "4", "status": "overlocked" },
+          { "id": "u5", "unitNumber": "5", "status": "auction" }
+        ]
+      },
+      "reasons": [],
+      "heldUnits": [
+        { "unitNumber": "1", "status": "reserved" },
+        { "unitNumber": "2", "status": "maintenance" },
+        { "unitNumber": "3", "status": "outOfOrder" },
+        { "unitNumber": "4", "status": "overlocked" },
+        { "unitNumber": "5", "status": "auction" }
+      ]
+    },
+    {
+      "name": "history and a held unit together",
+      "records": {
+        "invoices": [{ "status": "paid" }, { "status": "draft" }],
+        "units": [{ "id": "u7", "unitNumber": "7", "status": "occupied" }]
+      },
+      "reasons": ["invoices"],
+      "heldUnits": [{ "unitNumber": "7", "status": "occupied" }]
+    }
+  ]
+}

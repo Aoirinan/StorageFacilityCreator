@@ -59,6 +59,26 @@ export async function getFacilityDataForUserOrThrow(
 }
 
 /**
+ * Firestore rules' isFacilityOwnerOrManager on a facility doc: the owner, a
+ * `managers` entry of true, or a roles entry of owner, manager or admin.
+ * Employees and user_roles rows do not count, unlike
+ * getFacilityDataForUserOrThrow. For callables that take over a write the
+ * rules used to allow only owners and managers.
+ */
+export function isFacilityOwnerOrManager(facilityData: Record<string, unknown>, uid: string): boolean {
+  const roles = (facilityData.roles as Record<string, unknown> | undefined) || {};
+  const managers = (facilityData.managers as Record<string, unknown> | undefined) || {};
+  const role = roles[uid];
+  return (
+    facilityData.ownerUid === uid ||
+    managers[uid] === true ||
+    role === 'owner' ||
+    role === 'manager' ||
+    role === 'admin'
+  );
+}
+
+/**
  * Same access as Firestore isFacilityStaff + tenant portal occupants (for legacy checks).
  * Prefer getFacilityDataForUserOrThrow for staff-only flows.
  */
