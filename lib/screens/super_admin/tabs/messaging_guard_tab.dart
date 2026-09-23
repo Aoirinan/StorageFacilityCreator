@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sfcapp/screens/super_admin/widgets/texting_registrations_section.dart';
 import 'package:sfcapp/services/super_admin_data_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
@@ -131,6 +132,8 @@ class MessagingGuardTab extends StatelessWidget {
                   ),
                   const SizedBox(height: 20),
                   const FacilityOwnerBroadcastSection(),
+                  const SizedBox(height: 28),
+                  const TextingRegistrationsSection(),
                   const SizedBox(height: 28),
                   Text(
                     'Messaging guard',
