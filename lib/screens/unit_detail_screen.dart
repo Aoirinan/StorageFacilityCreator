@@ -28,6 +28,34 @@ bool unitOffersRemoveLockout(UnitModel unit) =>
     unit.status == UnitStatus.lockout ||
     unit.status == UnitStatus.overlocked;
 
+/// The status Remove Lockout leaves: occupied while a tenant holds the unit,
+/// available when none does. It always said occupied, and Remove Lockout is
+/// now offered on any locked-out unit, so a unit with no tenant was counted
+/// as rented.
+@visibleForTesting
+UnitStatus statusAfterRemovingLockout(UnitModel unit) =>
+    (unit.tenantId ?? '').trim().isEmpty
+        ? UnitStatus.available
+        : UnitStatus.occupied;
+
+/// What the unit screen reads for its tenant and writes for Remove Lockout.
+/// A provider so widget tests can open the real menu without Firebase.
+class UnitDetailActions {
+  const UnitDetailActions();
+
+  Future<TenantModel?> tenant(String facilityId, String tenantId) =>
+      TenantService.getTenantById(facilityId, tenantId);
+
+  Future<double> balance(String facilityId, String tenantId) =>
+      LedgerService.getLedgerBalance(tenantId: tenantId, facilityId: facilityId);
+
+  Future<void> setStatus(String facilityId, String unitId, UnitStatus status) =>
+      UnitService.updateUnit(facilityId: facilityId, unitId: unitId, status: status);
+}
+
+final unitDetailActionsProvider =
+    Provider<UnitDetailActions>((ref) => const UnitDetailActions());
+
 class UnitDetailScreen extends ConsumerStatefulWidget {
   final String facilityId;
   final String unitId;
@@ -90,7 +118,8 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
       // Load tenant if unit is occupied
       if (_unit!.tenantId != null && _unit!.tenantId!.isNotEmpty) {
-        final tenant = await TenantService.getTenantById(widget.facilityId, _unit!.tenantId!);
+        final actions = ref.read(unitDetailActionsProvider);
+        final tenant = await actions.tenant(widget.facilityId, _unit!.tenantId!);
         setState(() {
           _tenant = tenant;
         });
@@ -98,10 +127,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         // Load balance for occupied units
         if (tenant != null) {
           try {
-            final balance = await LedgerService.getLedgerBalance(
-              tenantId: tenant.id,
-              facilityId: widget.facilityId,
-            );
+            final balance = await actions.balance(widget.facilityId, tenant.id);
             setState(() {
               _balance = balance;
             });
@@ -1048,11 +1074,11 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
   Future<void> _removeLockout() async {
     try {
-      await UnitService.updateUnit(
-        facilityId: widget.facilityId,
-        unitId: widget.unitId,
-        status: UnitStatus.occupied,
-      );
+      await ref.read(unitDetailActionsProvider).setStatus(
+            widget.facilityId,
+            widget.unitId,
+            statusAfterRemovingLockout(_unit!),
+          );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
