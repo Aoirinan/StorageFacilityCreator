@@ -1,34 +1,53 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sfcapp/models/contract_model.dart';
+import 'package:sfcapp/models/lien_model.dart';
+import 'package:sfcapp/models/payment_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/router/load_by_id.dart';
+import 'package:sfcapp/router/detail_routes.dart';
 
-/// Stands in for a lien, payment or contract.
-class _Doc {
-  const _Doc(this.id, this.facilityId);
+LienModel _lien(String id, String facilityId) => LienModel(
+      id: id,
+      facilityId: facilityId,
+      tenantId: 't1',
+      unitId: 'u1',
+      contractId: 'c1',
+      currentStage: LienStage.noticeSent,
+      status: LienStatus.active,
+      totalAmount: 100,
+      principalAmount: 100,
+      lateFees: 0,
+      createdAt: DateTime(2026, 1, 1),
+      createdBy: 'owner',
+    );
 
-  final String id;
-  final String facilityId;
-}
-
-/// Reads by id, as LienService.getLien and PaymentService.getPayment.
+/// Lien reads by id, as LienService.getLien.
 final _loads = <String>[];
 
-Future<_Doc?> _load(String facilityId, String id) async {
+/// How many more reads of 'flaky' fail before one succeeds.
+int _flakyFailures = 0;
+
+Future<LienModel?> _loadLien(String facilityId, String id) async {
   _loads.add('$facilityId/$id');
   if (id == 'boom') throw StateError('read failed');
-  return id == 'missing' ? null : _Doc(id, facilityId);
+  if (id == 'flaky' && _flakyFailures > 0) {
+    _flakyFailures--;
+    throw StateError('offline');
+  }
+  return id == 'missing' ? null : _lien(id, facilityId);
 }
 
 /// Times a detail page was built from scratch.
 int _pageInits = 0;
 
 class _DetailPage extends StatefulWidget {
-  const _DetailPage(this.doc, this.facilityId);
+  const _DetailPage(this.label);
 
-  final _Doc doc;
-  final String facilityId;
+  final String label;
 
   @override
   State<_DetailPage> createState() => _DetailPageState();
@@ -45,7 +64,7 @@ class _DetailPageState extends State<_DetailPage> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text('DOC ${widget.doc.id} IN ${widget.facilityId}'),
+        Text(widget.label),
         TextButton(
           onPressed: () => context.push('/other'),
           child: const Text('Open other'),
@@ -55,6 +74,45 @@ class _DetailPageState extends State<_DetailPage> {
   }
 }
 
+// Documents written without a facilityId field read back with ''.
+final _paymentWithoutFacility = PaymentModel(
+  id: 'p1',
+  tenantId: 't1',
+  facilityId: '',
+  contractId: 'c1',
+  amount: 100,
+  status: PaymentStatus.pending,
+  method: PaymentMethod.cash,
+  dueDate: DateTime(2026, 1, 1),
+  createdAt: DateTime(2026, 1, 1),
+  updatedAt: DateTime(2026, 1, 1),
+  createdBy: 'owner',
+);
+
+final _contractWithoutFacility = ContractModel(
+  id: 'c1',
+  facilityId: '',
+  facilityOwnerUid: 'owner',
+  tenantId: 't1',
+  title: 'Lease',
+  description: '',
+  type: ContractType.lease,
+  status: ContractStatus.signed,
+  createdAt: DateTime(2026, 1, 1),
+  createdBy: 'owner',
+);
+
+final _tenantWithoutFacility = TenantModel(
+  id: 't1',
+  facilityId: '',
+  name: 'Pat Renter',
+  email: 'pat@example.com',
+  phone: '5550100',
+  unitNumber: 'A1',
+  monthlyRate: 100,
+  createdAt: DateTime(2026, 1, 1),
+);
+
 GoRouter _router(String initialLocation) {
   return GoRouter(
     initialLocation: initialLocation,
@@ -62,26 +120,33 @@ GoRouter _router(String initialLocation) {
       ShellRoute(
         builder: (context, state, child) => Scaffold(body: child),
         routes: [
-          // As app_router.dart's lien-detail route: the lien as `extra` from
-          // the lien list, or by id from a calendar event.
-          GoRoute(
-            path: AppRoute.lienDetail,
-            builder: (_, state) {
-              final extra = state.extra;
-              if (extra is Map<String, dynamic>) {
-                final lien = extra['lien'];
-                final facilityId = extra['facilityId'];
-                if (lien is _Doc && facilityId is String) {
-                  return _DetailPage(lien, facilityId);
-                }
-              }
-              return loadByIdPage<_Doc>(
-                state,
-                idParam: 'lienId',
-                load: _load,
-                page: (lien, facilityId) => _DetailPage(lien, facilityId),
-              );
-            },
+          // The app's own routes (detail_routes.dart), with the reads and
+          // the pages swapped for stand-ins.
+          lienDetailRoute(
+            load: _loadLien,
+            page: (lien, facilityId) =>
+                _DetailPage('LIEN ${lien.id} IN $facilityId'),
+          ),
+          paymentDetailRoute(
+            load: (_, __) async => _paymentWithoutFacility,
+            page: (payment) =>
+                _DetailPage('PAYMENT ${payment.id} IN ${payment.facilityId}'),
+          ),
+          contractDetailRoute(
+            load: (_, __) async => _contractWithoutFacility,
+            page: (contract) => _DetailPage(
+              'CONTRACT ${contract.id} IN ${contract.facilityId}',
+            ),
+          ),
+          tenantDetailRoute(
+            load: (_, __) async => _tenantWithoutFacility,
+            page: (tenant) =>
+                _DetailPage('TENANT ${tenant.id} IN ${tenant.facilityId}'),
+          ),
+          tenantLedgerRoute(
+            load: (_, __) async => _tenantWithoutFacility,
+            page: (tenant) =>
+                _DetailPage('LEDGER ${tenant.id} IN ${tenant.facilityId}'),
           ),
           GoRoute(
             path: '/other',
@@ -96,6 +161,7 @@ GoRouter _router(String initialLocation) {
 void main() {
   setUp(() {
     _loads.clear();
+    _flakyFailures = 0;
     _pageInits = 0;
   });
 
@@ -116,7 +182,7 @@ void main() {
   // routes needed `extra` and showed "Page not found".
   testWidgets('a link by id opens the page', (tester) async {
     await pumpApp(tester, lienAt('l1'));
-    expect(find.text('DOC l1 IN f1'), findsOneWidget);
+    expect(find.text('LIEN l1 IN f1'), findsOneWidget);
     expect(_loads, ['f1/l1']);
   });
 
@@ -125,10 +191,10 @@ void main() {
     final router = await pumpApp(tester, '/other');
     router.go(
       AppRoute.lienDetail,
-      extra: <String, dynamic>{'lien': const _Doc('l1', 'f1'), 'facilityId': 'f1'},
+      extra: <String, dynamic>{'lien': _lien('l1', 'f1'), 'facilityId': 'f1'},
     );
     await tester.pumpAndSettle();
-    expect(find.text('DOC l1 IN f1'), findsOneWidget);
+    expect(find.text('LIEN l1 IN f1'), findsOneWidget);
     expect(_loads, isEmpty);
   });
 
@@ -141,7 +207,7 @@ void main() {
       expect(find.text('OTHER'), findsOneWidget);
       router.pop();
       await tester.pumpAndSettle();
-      expect(find.text('DOC l1 IN f1'), findsOneWidget);
+      expect(find.text('LIEN l1 IN f1'), findsOneWidget);
     }
     // go_router re-runs the route builder on every navigation; a load
     // started there ran again each time and rebuilt the page.
@@ -155,8 +221,8 @@ void main() {
     // Only the query string differs, so go_router keeps the same page.
     router.go(lienAt('l2'));
     await tester.pumpAndSettle();
-    expect(find.text('DOC l2 IN f1'), findsOneWidget);
-    expect(find.text('DOC l1 IN f1'), findsNothing);
+    expect(find.text('LIEN l2 IN f1'), findsOneWidget);
+    expect(find.text('LIEN l1 IN f1'), findsNothing);
     expect(_loads, ['f1/l1', 'f1/l2']);
     expect(_pageInits, 2);
   });
@@ -170,10 +236,89 @@ void main() {
   testWidgets('shows Page not found when nothing is there', (tester) async {
     await pumpApp(tester, lienAt('missing'));
     expect(find.text('Page not found'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
   });
 
-  testWidgets('shows Page not found when the read fails', (tester) async {
-    await pumpApp(tester, lienAt('boom'));
-    expect(find.text('Page not found'), findsOneWidget);
+  group('a failed read', () {
+    // It used to show "Page not found", as if the lien were gone, with no
+    // way to try again but reloading the app.
+    testWidgets('is not shown as Page not found', (tester) async {
+      await pumpApp(tester, lienAt('boom'));
+      expect(find.text('Page not found'), findsNothing);
+      expect(find.text("Couldn't load this page"), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+    });
+
+    testWidgets('Retry reads again and opens the page', (tester) async {
+      _flakyFailures = 1;
+      await pumpApp(tester, lienAt('flaky'));
+      expect(find.text('Retry'), findsOneWidget);
+
+      await tester.tap(find.text('Retry'));
+      await tester.pumpAndSettle();
+      expect(find.text('LIEN flaky IN f1'), findsOneWidget);
+      expect(_loads, ['f1/flaky', 'f1/flaky']);
+    });
+  });
+
+  group('a page opened by id takes the facility from the link', () {
+    // The pages act through model.facilityId, which is '' on documents
+    // written without one.
+    testWidgets('payment', (tester) async {
+      await pumpApp(
+        tester,
+        AppRoute.paymentDetailFor(paymentId: 'p1', facilityId: 'f1'),
+      );
+      expect(find.text('PAYMENT p1 IN f1'), findsOneWidget);
+    });
+
+    testWidgets('contract', (tester) async {
+      await pumpApp(tester, '${AppRoute.contractDetail}?contractId=c1&facilityId=f1');
+      expect(find.text('CONTRACT c1 IN f1'), findsOneWidget);
+    });
+
+    testWidgets('tenant and ledger', (tester) async {
+      final router = await pumpApp(
+        tester,
+        AppRoute.tenantDetailFor(tenantId: 't1', facilityId: 'f1'),
+      );
+      expect(find.text('TENANT t1 IN f1'), findsOneWidget);
+
+      router.go('/tenants/t1/ledger?facilityId=f1');
+      await tester.pumpAndSettle();
+      expect(find.text('LEDGER t1 IN f1'), findsOneWidget);
+    });
+
+    testWidgets('but a model passed as extra is used as it is',
+        (tester) async {
+      final router = await pumpApp(tester, '/other');
+      router.go(AppRoute.paymentDetail, extra: _paymentWithoutFacility);
+      await tester.pumpAndSettle();
+      expect(find.text('PAYMENT p1 IN '), findsOneWidget);
+    });
+  });
+
+  // The tests above run detail_routes.dart. An inline copy of one of these
+  // routes in app_router.dart would go untested, as the by-id loads did.
+  test('app_router uses the shared detail routes', () {
+    final router = File('lib/router/app_router.dart').readAsStringSync();
+    for (final route in [
+      'tenantDetailRoute()',
+      'tenantLedgerRoute()',
+      'contractDetailRoute()',
+      'paymentDetailRoute()',
+      'lienDetailRoute()',
+    ]) {
+      expect(router, contains(route));
+    }
+    for (final path in [
+      'path: AppRoute.tenantDetail,',
+      "path: '/tenants/:tenantId/ledger',",
+      'path: AppRoute.contractDetail,',
+      'path: AppRoute.paymentDetail,',
+      'path: AppRoute.lienDetail,',
+    ]) {
+      expect(router, isNot(contains(path)));
+    }
   });
 }

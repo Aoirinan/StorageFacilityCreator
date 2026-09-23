@@ -793,38 +793,30 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     });
 
     try {
-      final matches = await DNRService.findDNRMatches(
-        facilityId: widget.tenant.facilityId,
-        name: widget.tenant.name,
-        email: widget.tenant.email,
-        phone: widget.tenant.phone,
-      );
-
-      if (mounted) {
-        setState(() {
+      await runTenantDnrCheck(
+        context,
+        findMatches: () => DNRService.findDNRMatches(
+          facilityId: widget.tenant.facilityId,
+          name: widget.tenant.name,
+          email: widget.tenant.email,
+          phone: widget.tenant.phone,
+        ),
+        onMatches: (matches) => setState(() {
           _dnrMatches = matches;
           _isCheckingDNR = false;
-        });
-
-        // Show blocking dialog if matches found
-        if (matches.isNotEmpty) {
-          await showDnrBlockingDialog(
-            context,
-            matches: matches,
-            onOverride: () {
-              // The page can be gone while the alert is open (the trial
-              // check sends the owner to /subscription); setState would
-              // throw there, but the override still gets its audit record.
-              if (mounted) {
-                setState(() {
-                  _dnrOverride = true;
-                });
-              }
-              _logDNROverride(matches);
-            },
-          );
-        }
-      }
+        }),
+        onOverride: (matches) {
+          // The page can be gone while the alert is open (the trial check
+          // sends the owner to /subscription); setState would throw there,
+          // but the override still gets its audit record.
+          if (mounted) {
+            setState(() {
+              _dnrOverride = true;
+            });
+          }
+          _logDNROverride(matches);
+        },
+      );
     } catch (e) {
       if (kDebugMode) {
         print('Error checking DNR matches: $e');

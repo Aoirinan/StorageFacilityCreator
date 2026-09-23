@@ -7,7 +7,7 @@ import 'package:sfcapp/models/dnr_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
-import 'package:sfcapp/router/load_by_id.dart';
+import 'package:sfcapp/router/detail_routes.dart';
 import 'package:sfcapp/screens/ledger_screen.dart';
 import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 
@@ -53,7 +53,8 @@ Future<TenantModel?> _loadTenant(String facilityId, String tenantId) async {
       : null;
 }
 
-/// What the tenant page does once it is on screen; set per test.
+/// What the tenant page does once it is on screen; set per test. The DNR
+/// tests run the real page's check, runTenantDnrCheck.
 void Function(BuildContext pageContext)? _onDetailOpened;
 
 GoRouter _router(
@@ -95,33 +96,15 @@ GoRouter _router(
             path: AppRoute.tenants,
             builder: (_, __) => const Text('LIST'),
           ),
-          // As app_router.dart's tenant-detail and tenant-ledger routes.
-          GoRoute(
-            path: AppRoute.tenantDetail,
-            builder: (_, state) {
-              final extra = state.extra;
-              if (extra is TenantModel) return const _TenantPage();
-              return loadByIdPage<TenantModel>(
-                state,
-                idParam: 'tenantId',
-                load: _loadTenant,
-                page: (tenant, _) => const _TenantPage(),
-              );
-            },
+          // The app's tenant-detail and tenant-ledger routes, with the read
+          // and the pages swapped for stand-ins.
+          tenantDetailRoute(
+            load: _loadTenant,
+            page: (_) => const _TenantPage(),
           ),
-          GoRoute(
-            path: '/tenants/:tenantId/ledger',
-            builder: (_, state) {
-              final extra = state.extra;
-              if (extra is TenantModel) return _LedgerPage(extra);
-              return loadByIdPage<TenantModel>(
-                state,
-                idParam: 'tenantId',
-                id: state.pathParameters['tenantId'],
-                load: _loadTenant,
-                page: (tenant, _) => _LedgerPage(tenant),
-              );
-            },
+          tenantLedgerRoute(
+            load: _loadTenant,
+            page: (tenant) => _LedgerPage(tenant),
           ),
         ],
       ),
@@ -291,10 +274,11 @@ void main() {
     testWidgets('does not show the DNR alert again after an Override',
         (tester) async {
       var overrides = 0;
-      _onDetailOpened = (pageContext) => showDnrBlockingDialog(
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
             pageContext,
-            matches: [_dnrMatch],
-            onOverride: () => overrides++,
+            findMatches: () async => [_dnrMatch],
+            onMatches: (_) {},
+            onOverride: (_) => overrides++,
           );
       await pumpApp(tester, initialLocation: byIdLocation);
       await tapAndSettle(tester, find.text('Override & Continue'));
@@ -322,11 +306,56 @@ void main() {
 
     setUp(() {
       overrides = 0;
-      _onDetailOpened = (pageContext) => showDnrBlockingDialog(
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
             pageContext,
-            matches: [_dnrMatch],
-            onOverride: () => overrides++,
+            findMatches: () async => [_dnrMatch],
+            onMatches: (_) {},
+            onOverride: (_) => overrides++,
           );
+    });
+
+    testWidgets('no alert for a tenant who is not on the list',
+        (tester) async {
+      List<DNRModel>? banner;
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
+            pageContext,
+            findMatches: () async => [],
+            onMatches: (matches) => banner = matches,
+            onOverride: (_) => overrides++,
+          );
+      final router = await pumpApp(tester);
+      unawaited(router.push(AppRoute.tenantDetail, extra: _tenant));
+      await tester.pumpAndSettle();
+      expect(banner, isEmpty);
+      expect(find.text('DNR Alert'), findsNothing);
+      expect(find.text('DETAIL'), findsOneWidget);
+    });
+
+    testWidgets('a lookup that ends after the page has gone shows nothing',
+        (tester) async {
+      final lookup = Completer<void>();
+      var bannerUpdates = 0;
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
+            pageContext,
+            findMatches: () async {
+              await lookup.future;
+              return [_dnrMatch];
+            },
+            // The page's setState, which throws once it is gone.
+            onMatches: (_) => bannerUpdates++,
+            onOverride: (_) => overrides++,
+          );
+      final router = await pumpApp(tester);
+      unawaited(router.push(AppRoute.tenantDetail, extra: _tenant));
+      await tester.pumpAndSettle();
+      router.pop();
+      await tester.pumpAndSettle();
+
+      lookup.complete();
+      await tester.pumpAndSettle();
+      expect(bannerUpdates, 0);
+      expect(find.text('DNR Alert'), findsNothing);
+      expect(find.text('LIST'), findsOneWidget);
     });
 
     testWidgets('Cancel goes back to the list and keeps the app shell',
@@ -361,15 +390,15 @@ void main() {
       // The owner taps View Ledger before the DNR lookup comes back, so the
       // alert comes up over the ledger.
       final lookup = Completer<void>();
-      _onDetailOpened = (pageContext) async {
-        await lookup.future;
-        if (!pageContext.mounted) return;
-        await showDnrBlockingDialog(
-          pageContext,
-          matches: [_dnrMatch],
-          onOverride: () => overrides++,
-        );
-      };
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
+            pageContext,
+            findMatches: () async {
+              await lookup.future;
+              return [_dnrMatch];
+            },
+            onMatches: (_) {},
+            onOverride: (_) => overrides++,
+          );
       final router = await pumpApp(tester);
       unawaited(router.push(AppRoute.tenantDetail, extra: _tenant));
       await tester.pumpAndSettle();
@@ -425,10 +454,11 @@ void main() {
     testWidgets('the alert closes even when onOverride throws',
         (tester) async {
       // As the tenant page's setState once the page is gone.
-      _onDetailOpened = (pageContext) => showDnrBlockingDialog(
+      _onDetailOpened = (pageContext) => runTenantDnrCheck(
             pageContext,
-            matches: [_dnrMatch],
-            onOverride: () => throw StateError('page gone'),
+            findMatches: () async => [_dnrMatch],
+            onMatches: (_) {},
+            onOverride: (_) => throw StateError('page gone'),
           );
       final router = await pumpApp(tester);
       unawaited(router.push(AppRoute.tenantDetail, extra: _tenant));

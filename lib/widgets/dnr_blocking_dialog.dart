@@ -6,6 +6,30 @@ import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
+/// The tenant page's DNR check, run once when the page opens: looks the
+/// tenant up with [findMatches], hands the result to [onMatches] (the page's
+/// banner) and, on a match, shows [showDnrBlockingDialog] over the page.
+/// [onOverride] runs once per Override and may run after the page is gone.
+///
+/// Shared so the tests run the page's own wiring: the real page needs
+/// Firebase to build.
+Future<void> runTenantDnrCheck(
+  BuildContext context, {
+  required Future<List<DNRModel>> Function() findMatches,
+  required void Function(List<DNRModel> matches) onMatches,
+  required void Function(List<DNRModel> matches) onOverride,
+}) async {
+  final matches = await findMatches();
+  if (!context.mounted) return;
+  onMatches(matches);
+  if (matches.isEmpty) return;
+  await showDnrBlockingDialog(
+    context,
+    matches: matches,
+    onOverride: () => onOverride(matches),
+  );
+}
+
 /// Shows the DNR alert over a tenant's page. "Override & Continue" closes
 /// the alert, calls [onOverride] once and keeps the page open; Cancel closes
 /// the alert and then leaves the tenant's page.

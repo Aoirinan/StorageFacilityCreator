@@ -13,7 +13,7 @@ typedef LoadInFacility<T> = Future<T?> Function(String facilityId, String id);
 /// Reads `facilityId` and [idParam] from the query string ([id] overrides the
 /// latter, for ids in the path), loads the model with [load] and shows
 /// [page]. Shows "Page not found" when an id is missing or the load finds
-/// nothing.
+/// nothing, and [LoadByIdError] with Retry when the load fails.
 Widget loadByIdPage<T extends Object>(
   GoRouterState state, {
   required String idParam,
@@ -58,7 +58,7 @@ class LoadById<T extends Object> extends StatefulWidget {
   final Future<T?> Function() load;
   final Widget Function(BuildContext context, T model) builder;
 
-  /// Shown when the load fails or finds nothing.
+  /// Shown when the load finds nothing. A failed load shows [LoadByIdError].
   final WidgetBuilder notFound;
 
   @override
@@ -82,6 +82,12 @@ class _LoadByIdState<T extends Object> extends State<LoadById<T>> {
     }
   }
 
+  void _retry() {
+    setState(() {
+      _future = widget.load();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<T?>(
@@ -94,15 +100,58 @@ class _LoadByIdState<T extends Object> extends State<LoadById<T>> {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        final model = snapshot.data;
-        if (snapshot.hasError || model == null) {
-          if (snapshot.hasError) {
-            debugPrint('LoadById(${widget.ids.join('/')}): ${snapshot.error}');
-          }
-          return widget.notFound(context);
+        // A failed read (offline, a permission blip) is not a missing page:
+        // "Page not found" told the owner a real payment or tenant was gone,
+        // with no way to try again but reloading the app.
+        if (snapshot.hasError) {
+          debugPrint('LoadById(${widget.ids.join('/')}): ${snapshot.error}');
+          return LoadByIdError(onRetry: _retry);
         }
+        final model = snapshot.data;
+        if (model == null) return widget.notFound(context);
         return widget.builder(context, model);
       },
+    );
+  }
+}
+
+/// Shown when a page opened by id could not be loaded.
+class LoadByIdError extends StatelessWidget {
+  const LoadByIdError({super.key, required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.cloud_off, size: 72, color: Colors.grey),
+              const SizedBox(height: 12),
+              const Text(
+                "Couldn't load this page",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Check your connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
