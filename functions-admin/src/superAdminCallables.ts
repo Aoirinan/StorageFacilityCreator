@@ -15,6 +15,7 @@ import {
   summarizeCancelOutcomes,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { adminDeleteDocumentTree } from './admin_delete_document_tree';
+import { disableUserHandler } from './disableUser';
 import { SENDGRID_SECRETS, STRIPE_SECRETS, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } from './secrets';
 
 const USER_ROLES_COLLECTION = 'user_roles';
@@ -455,30 +456,14 @@ export const superAdminDeleteFacility = functions
 /**
  * Super admin only: disable a user in Firebase Auth (they cannot sign in).
  */
-export const superAdminDisableUser = functions.https.onCall(async (data: { uid: string }, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
-  }
-  const callerEmail = context.auth.token?.email as string | undefined;
-  if (!isSuperAdmin(callerEmail)) {
-    throw new functions.https.HttpsError('permission-denied', 'Only super admins can disable users');
-  }
-  const uid = (data?.uid || '').toString().trim();
-  if (!uid) {
-    throw new functions.https.HttpsError('invalid-argument', 'uid is required');
-  }
-  const targetUser = await admin.auth().getUser(uid);
-  if (isSuperAdmin(targetUser.email)) {
-    throw new functions.https.HttpsError('permission-denied', 'Cannot disable a super admin account');
-  }
-  await admin.auth().updateUser(uid, { disabled: true });
-  await admin.firestore().collection('users').doc(uid).set(
-    { authDisabled: true, authDisabledAt: admin.firestore.FieldValue.serverTimestamp() },
-    { merge: true },
-  );
-  functions.logger.info('superAdminDisableUser', { uid, disabledBy: callerEmail });
-  return { success: true };
-});
+export const superAdminDisableUser = functions.https.onCall(async (data: { uid: string }, context) =>
+  disableUserHandler(data, context, {
+    auth: admin.auth(),
+    mergeUserDoc: (uid, fields) =>
+      admin.firestore().collection('users').doc(uid).set(fields, { merge: true }),
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
 
 /**
  * Super admin only: re-enable a disabled user in Firebase Auth.

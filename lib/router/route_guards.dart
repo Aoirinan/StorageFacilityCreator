@@ -80,9 +80,10 @@ bool needsVerificationReload(User user) => !user.emailVerified;
 
 /// Throttles the background [User.reload] the guard fires for verified users.
 ///
-/// That reload is the only client-side check that ends a session a super
-/// admin disabled (superAdminDisableUser revokes nothing) or whose password
-/// was changed elsewhere: Auth answers USER_DISABLED or TOKEN_EXPIRED, the SDK
+/// That reload is what ends, within a minute, a session a super admin
+/// disabled or whose password was changed elsewhere (superAdminDisableUser
+/// also revokes the refresh tokens, but that alone only stops the next hourly
+/// token refresh): Auth answers USER_DISABLED or TOKEN_EXPIRED, the SDK
 /// signs the user out, and the router's refreshListenable re-runs this guard,
 /// which sends them to /login. Awaiting it on every navigation cost a round
 /// trip each click; once a minute, in the background, keeps the check without
