@@ -163,7 +163,7 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
         // CRITICAL: Ensure account exists BEFORE trying to load facilities
         // Permission errors often occur because account doesn't exist yet
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
           if (kDebugMode) {
             debugPrint('✅ Account verified/created for user: ${user.uid}');
           }

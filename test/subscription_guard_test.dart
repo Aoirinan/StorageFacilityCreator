@@ -318,6 +318,254 @@ void main() {
     });
   });
 
+  group("checkAccess's own reads (production defaults)", () {
+    // No Firebase app is initialised in tests, so the real Firestore and Auth
+    // lookups fail: exactly the failed read the defaults must not turn into
+    // "no account, allow" or "no facilities, lapsed".
+    test('a failed account read is refused as unverified', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        facilitiesProvider: () async => const [],
+      );
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isFalse);
+    });
+
+    test('a failed facilities read is refused as unverified, not as a lapse', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+        ),
+      );
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isFalse);
+    });
+  });
+
+  group('a suspended account gets nothing from its facilities', () {
+    // Suspension is a super admin's decision about the account. A linked
+    // facility's own subscription, or its exemption, used to let it back in.
+    final suspended = _account(status: SubscriptionStatus.active, suspended: true);
+
+    test('accountGrantsPlatformAccess', () {
+      bool grants(FacilityCreatorAccountModel a, FacilityModel f) =>
+          FacilityCreatorAccountService.accountGrantsPlatformAccess(a, facilities: [f]);
+
+      expect(grants(suspended, _facility(platformStatus: 'active')), isFalse);
+      expect(grants(suspended, _facility(billingExempt: true)), isFalse);
+      // Only an exempt account, also a super admin's decision, overrides it.
+      expect(
+        grants(
+          _account(status: SubscriptionStatus.active, suspended: true, billingExempt: true),
+          _facility(),
+        ),
+        isTrue,
+      );
+    });
+
+    for (final (name, facility) in [
+      ('an active platform subscription', _facility(platformStatus: 'active')),
+      ('a billing exemption', _facility(billingExempt: true)),
+    ]) {
+      test('checkAccess, with a linked facility that has $name', () async {
+        final result = await SubscriptionGuardService.checkAccess(
+          authOverride: mockAuth,
+          userOverride: mockUser,
+          currentRoute: '/dashboard',
+          superAdminResolver: () => false,
+          accountProvider: (_) async => suspended,
+          facilitiesProvider: () async => [facility],
+        );
+        expect(result.canAccess, isFalse);
+        expect(result.verified, isTrue);
+      });
+    }
+  });
+
+  group("the shell's 1-minute re-check (backgroundRecheckRedirect)", () {
+    test('an unverified denial leaves the page alone', () {
+      // A read failed; that is not a lapse. It used to be able to pull a
+      // working page to /subscription.
+      expect(
+        SubscriptionGuardService.backgroundRecheckRedirect(const SubscriptionAccessResult(
+          canAccess: false,
+          redirectRoute: '/subscription',
+          verified: false,
+        )),
+        isNull,
+      );
+    });
+
+    test('a verified denial sends the user where checkAccess says', () {
+      expect(
+        SubscriptionGuardService.backgroundRecheckRedirect(const SubscriptionAccessResult(
+          canAccess: false,
+          redirectRoute: '/subscription?trialExpired=1',
+        )),
+        '/subscription?trialExpired=1',
+      );
+      expect(
+        SubscriptionGuardService.backgroundRecheckRedirect(
+            const SubscriptionAccessResult(canAccess: true)),
+        isNull,
+      );
+    });
+  });
+
+  group('shellLock (sidebar lock and lock overlay)', () {
+    Future<bool?> locked(
+      FacilityCreatorAccountModel? account, {
+      List<FacilityModel> facilities = const [],
+    }) async {
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => account,
+        facilitiesProvider: () async => facilities,
+      );
+      return lock.locked;
+    }
+
+    test('invited staff (no account of their own) are not locked out', () async {
+      // checkAccess lets them in; the lock widgets locked everyone without an
+      // account, so staff reached pages they could not use.
+      expect(await locked(null), isFalse);
+    });
+
+    test('a cancelled account inside its paid period is not locked', () async {
+      expect(
+        await locked(_account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().add(const Duration(days: 5)),
+        )),
+        isFalse,
+      );
+    });
+
+    test('pending approval is left to its own page', () async {
+      expect(await locked(_account(status: SubscriptionStatus.pendingApproval)), isFalse);
+    });
+
+    test('a lapsed account, and a suspended one with a paying facility, are locked', () async {
+      expect(
+        await locked(_account(
+          status: SubscriptionStatus.trialing,
+          trialEnd: DateTime.now().subtract(const Duration(days: 1)),
+        )),
+        isTrue,
+      );
+      expect(
+        await locked(
+          _account(status: SubscriptionStatus.active, suspended: true),
+          facilities: [_facility(platformStatus: 'active')],
+        ),
+        isTrue,
+      );
+    });
+
+    test('a failed read is "unknown", not "locked"', () async {
+      // The widgets keep what they show; the route guard fails closed.
+      final accountFails = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => throw StateError('offline'),
+        facilitiesProvider: () async => const [],
+      );
+      expect(accountFails.locked, isNull);
+
+      // The production facilities read (no Firebase app here, so it fails).
+      // The non-throwing read returned [], which locked per-facility owners.
+      final facilitiesFail = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+        ),
+      );
+      expect(facilitiesFail.locked, isNull);
+
+      // And the production account read.
+      final defaults = await SubscriptionGuardService.shellLock(
+        'user_1',
+        facilitiesProvider: () async => const [],
+      );
+      expect(defaults.locked, isNull);
+    });
+
+    test('shellLockFor: an unverified answer never changes the lock', () {
+      // e.g. checkAccess's fail-closed guess after a failed read.
+      expect(
+        SubscriptionGuardService.shellLockFor(const SubscriptionAccessResult(
+          canAccess: false,
+          redirectRoute: '/subscription',
+          verified: false,
+        )),
+        isNull,
+      );
+    });
+
+    test('locks exactly when checkAccess denies (pending approval aside)', () async {
+      final now = DateTime.now();
+      final cases = <(FacilityCreatorAccountModel?, List<FacilityModel>)>[
+        (null, const []),
+        (_account(status: SubscriptionStatus.active), const []),
+        (
+          _account(status: SubscriptionStatus.trialing, trialEnd: now.add(const Duration(days: 3))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.trialing, trialEnd: now.subtract(const Duration(days: 3))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.pastDue, periodEnd: now.subtract(const Duration(days: 2))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.pastDue, periodEnd: now.subtract(const Duration(days: 20))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.cancelled, periodEnd: now.add(const Duration(days: 2))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.cancelled, periodEnd: now.subtract(const Duration(days: 40))),
+          const [],
+        ),
+        (
+          _account(status: SubscriptionStatus.cancelled, periodEnd: now.subtract(const Duration(days: 40))),
+          [_facility(platformStatus: 'active')],
+        ),
+        (_account(status: SubscriptionStatus.unpaid), [_facility(billingExempt: true)]),
+        (_account(status: SubscriptionStatus.unpaid, billingExempt: true), const []),
+        (_account(status: SubscriptionStatus.active, suspended: true), const []),
+      ];
+      for (final (account, facilities) in cases) {
+        final access = await SubscriptionGuardService.checkAccess(
+          authOverride: mockAuth,
+          userOverride: mockUser,
+          currentRoute: '/dashboard',
+          superAdminResolver: () => false,
+          accountProvider: (_) async => account,
+          facilitiesProvider: () async => facilities,
+        );
+        expect(
+          await locked(account, facilities: facilities),
+          !access.canAccess,
+          reason: '${account?.subscriptionStatus} suspended=${account?.suspended} '
+              'exempt=${account?.billingExempt} facilities=${facilities.length}',
+        );
+      }
+    });
+  });
+
   group('SubscriptionAccessCache', () {
     const allowed = SubscriptionAccessResult(canAccess: true);
 

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/feature_flag_model.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
 import 'package:sfcapp/router/route_guards.dart';
@@ -59,15 +60,23 @@ FacilityCreatorAccountModel _account(
   );
 }
 
+/// The feature flags doc with maintenance mode on or off.
+List<FeatureFlagModel> _flags({required bool maintenance}) => [
+      for (final flag in kDefaultFeatureFlags)
+        flag.key == 'maintenanceMode' ? flag.copyWith(enabled: maintenance) : flag,
+    ];
+
 /// One simulated browser tab: the 2FA-verified flag lives in [container] and
-/// starts false, exactly as after a hard reload.
+/// starts false, exactly as after a hard reload. [flags] is the feature flags
+/// doc as it arrives from Firestore; by default it is there at once.
 class _Tab {
-  _Tab({this.maintenance = false})
+  _Tab({bool maintenance = false, Stream<List<FeatureFlagModel>>? flags})
       : container = ProviderContainer(overrides: [
-          maintenanceModeProvider.overrideWithValue(maintenance),
+          featureFlagsProvider.overrideWith(
+            (ref) => flags ?? Stream.value(_flags(maintenance: maintenance)),
+          ),
         ]);
 
-  final bool maintenance;
   final ProviderContainer container;
   int accessChecks = 0;
 
@@ -318,9 +327,11 @@ void main() {
       });
     });
 
-    test('maintenance mode is enforced on the first navigation too', () async {
-      final tab = _Tab(maintenance: true);
-      addTearDown(tab.dispose);
+    group('maintenance mode on the first navigation waits for the flags doc', () {
+      // On a reload the guard runs before the flags doc has loaded, and until
+      // it does featureFlagEnabledProvider reads every flag as on, maintenance
+      // included: pending, lapsed and past-due users were sent to the
+      // maintenance notice instead of their own page.
       final user = MockUser(uid: 'owner', email: 'owner@example.com');
       final lapsed = _account(
         'owner',
@@ -328,8 +339,47 @@ void main() {
         trialEnd: DateTime.now().subtract(const Duration(days: 2)),
       );
 
-      expect(await tab.go('/dashboard', user: user, account: lapsed),
-          '/subscription?maintenance=1');
+      Future<String?> firstNavigation({required bool maintenance}) async {
+        final flags = StreamController<List<FeatureFlagModel>>();
+        addTearDown(flags.close);
+        final tab = _Tab(flags: flags.stream);
+        addTearDown(tab.dispose);
+
+        final result = tab.go('/dashboard', user: user, account: lapsed);
+        await pumpEventQueue();
+        flags.add(_flags(maintenance: maintenance));
+        return result;
+      }
+
+      test('flag off: the user gets their own page, not the maintenance notice', () async {
+        expect(await firstNavigation(maintenance: false), '/subscription?trialExpired=1');
+      });
+
+      test('flag on: maintenance is enforced on the first navigation too', () async {
+        expect(await firstNavigation(maintenance: true), '/subscription?maintenance=1');
+      });
+
+      test('flags that cannot be read count as off', () async {
+        // Maintenance only changes which page explains a denial; the
+        // subscription check applies the same rule without it.
+        final hung = _Tab(flags: const Stream.empty());
+        addTearDown(hung.dispose);
+        expect(
+          await maintenanceModeForGuard(
+            hung.container.read(_refProvider),
+            wait: const Duration(milliseconds: 20),
+          ),
+          isFalse,
+        );
+
+        final failing = _Tab(flags: Stream.error(StateError('permission-denied')));
+        addTearDown(failing.dispose);
+        expect(await maintenanceModeForGuard(failing.container.read(_refProvider)), isFalse);
+        expect(
+          await failing.go('/dashboard', user: user, account: lapsed),
+          '/subscription?trialExpired=1',
+        );
+      });
     });
 
     test('a failed access check fails closed on the first navigation', () async {

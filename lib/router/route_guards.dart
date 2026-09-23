@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../models/facility_creator_account_model.dart';
+import 'package:sfcapp/models/feature_flag_model.dart';
 import '../providers/feature_flag_provider.dart';
 import '../providers/two_factor_provider.dart';
 import '../services/debug_session_logger.dart';
@@ -33,6 +34,38 @@ const Duration _twoFactorLookupTimeout = Duration(seconds: 6);
 /// On timeout the guard sends the user to /subscription, the same fail-closed
 /// destination it already uses when the lookup throws.
 const Duration _accessCheckTimeout = Duration(seconds: 8);
+
+/// Upper bound on waiting for the feature flags doc during a redirect, for the
+/// maintenance check. On timeout maintenance counts as off (see
+/// [maintenanceModeForGuard]).
+const Duration _featureFlagsWait = Duration(seconds: 3);
+
+/// Whether maintenance mode is on, for the guard: waits (bounded) for the
+/// feature flags doc instead of reading whatever has loaded.
+///
+/// Until that doc arrives, featureFlagEnabledProvider reads every flag as on,
+/// maintenance included. The first navigation after a reload reaches the
+/// maintenance check before the doc has loaded, so pending, lapsed and
+/// past-due users were sent to /subscription?maintenance=1 and a maintenance
+/// notice instead of their own page. When the flags cannot be read at all,
+/// maintenance counts as off: its gate applies the same access rule as the
+/// subscription check below and only changes which page explains a denial.
+@visibleForTesting
+Future<bool> maintenanceModeForGuard(Ref ref, {Duration wait = _featureFlagsWait}) async {
+  // Listened to, not just read: Riverpod pauses a provider nobody listens to,
+  // and on a cold load no widget watches the flags yet, so a plain read of
+  // its future would only ever time out.
+  ProviderSubscription<Future<List<FeatureFlagModel>>>? flags;
+  try {
+    flags = ref.listen(featureFlagsProvider.future, (_, __) {});
+    await flags.read().timeout(wait);
+    return ref.read(maintenanceModeProvider);
+  } catch (_) {
+    return false;
+  } finally {
+    flags?.close();
+  }
+}
 
 /// Shares one in-flight subscription check per uid. On a hard reload the
 /// initial redirect and the auth-state refresh run the guard at the same time,
@@ -251,6 +284,10 @@ Future<String?> evaluateRouteGuard({
     final encodedIntended = Uri.encodeComponent(intended);
     return '${AppRoute.login}?redirect=$encodedIntended';
   }
+
+  // Loads alongside the lookups below rather than after them; only the
+  // maintenance check waits for it, and it never throws.
+  final maintenanceMode = maintenanceModeForGuard(ref);
 
   // Enforce email verification before allowing access to authenticated app routes.
   // Keep users on login/signup/verify while they complete verification.
@@ -508,8 +545,7 @@ Future<String?> evaluateRouteGuard({
       !path.startsWith('/subscription') &&
       !path.startsWith(AppRoute.superAdmin) &&
       !superAdmin(firebaseUser)) {
-    final isMaintenanceMode = ref.read(maintenanceModeProvider);
-    if (isMaintenanceMode && !path.startsWith('/maintenance')) {
+    if (!path.startsWith('/maintenance') && await maintenanceMode) {
       try {
         final maintenanceGate =
             await accessCheck(path).timeout(_accessCheckTimeout);

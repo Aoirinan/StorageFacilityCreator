@@ -272,7 +272,11 @@ class FacilityService {
           // ✅ Phase 7: Check subscription status before creating facility
           // Superadmins bypass this check
           if (!skipSubscriptionCheck && !SuperAdminService.isSuperAdmin(user)) {
-            final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+            // Creating a facility makes the user an owner, so invited staff
+            // get an account here (and nowhere else).
+            final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser(
+              createForInvitedStaff: true,
+            );
             final currentFacilityCount = account.facilityIds.length;
 
             // Per-facility billing: each facility gets its own subscription

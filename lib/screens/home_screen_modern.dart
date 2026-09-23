@@ -258,13 +258,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   void _handleNewFacilityPressed(BuildContext context) async {
     // Check subscription status before allowing facility creation
     try {
-      final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+      // Null for invited staff, who get an account only once they create a facility.
+      final account = await FacilityCreatorAccountService.ensureAccountForCurrentUser();
       ref.invalidate(userFacilitiesProvider(widget.user.uid));
       // Check if user has facilities
       final facilities = await ref.read(userFacilitiesProvider(widget.user.uid).future);
 
       // Check if user is on trial and already has a facility
-      if (account.subscriptionStatus == SubscriptionStatus.trialing && facilities.length >= 1) {
+      if (account?.subscriptionStatus == SubscriptionStatus.trialing && facilities.length >= 1) {
         // Show upgrade dialog for trial users
         showDialog(
           context: context,

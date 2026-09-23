@@ -4,8 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/router/app_route.dart';
-import 'package:sfcapp/services/facility_creator_account_service.dart';
-import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/subscription_guard_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
@@ -79,24 +78,28 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
         return;
       }
 
-      final account = await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
-      final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      // Against the account above: hasActiveSubscription fetched it again.
-      final hasAccess = account != null &&
-          FacilityCreatorAccountService.accountGrantsPlatformAccess(account, facilities: facilities);
+      // The route guard's rule: an invited staff member (no account of their
+      // own) and a cancelled account still inside its paid period are let
+      // in, and were locked out here. Pending approval is handled by its own
+      // route guard/screen, not this overlay.
+      final lock = await SubscriptionGuardService.shellLock(user.uid);
 
       if (mounted) {
-        // hasAccess = account.canAccessPlatform (legacy) OR any facility has per-facility platform sub
-        // Pending approval is handled by dedicated route guard/screen, not this overlay.
-        bool isLocked = (account?.isPendingApproval ?? false) ? false : !hasAccess;
+        final locked = lock.locked;
         if (kDebugMode) {
-          print(isLocked
-              ? '🔒 [SubscriptionLock] LOCKED: no active subscription'
-              : '✅ [SubscriptionLock] UNLOCKED: has access');
+          print(locked == null
+              ? '🔒 [SubscriptionLock] check failed, keeping current state'
+              : locked
+                  ? '🔒 [SubscriptionLock] LOCKED: no active subscription'
+                  : '✅ [SubscriptionLock] UNLOCKED: has access');
         }
         setState(() {
-          _account = account;
-          _isLocked = isLocked;
+          // Null: a read failed (e.g. a slow connection). Keep what is shown
+          // rather than locking a paying owner out; the guard fails closed.
+          if (locked != null) {
+            _account = lock.account;
+            _isLocked = locked;
+          }
           _isLoading = false;
         });
 

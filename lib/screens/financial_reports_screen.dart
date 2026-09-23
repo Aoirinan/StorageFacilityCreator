@@ -49,7 +49,7 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
         try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
           if (kDebugMode) {
             debugPrint('✅ Account verified/created for user: ${user.uid}');
           }
