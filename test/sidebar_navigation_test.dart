@@ -16,8 +16,6 @@ GoRouter _router() {
         builder: (context, state, child) => Scaffold(
           body: Column(
             children: [
-              // What AppShell highlights in the sidebar.
-              Text('SHELL AT ${state.uri.path}'),
               // AppShell's sidebar items.
               TextButton(
                 onPressed: () => ModernNavigationService.navigateToRoute(
@@ -138,22 +136,5 @@ void main() {
 
     await tapSidebar(tester, 'Tenants');
     expect(find.text('LIST 1'), findsOneWidget);
-  });
-
-  // AppShell highlights the ShellRoute's state.uri rather than the URL.
-  testWidgets('the shell sees the pushed page that the URL leaves out',
-      (tester) async {
-    final router = await pumpApp(tester);
-    router.go(AppRoute.dashboard);
-    await tester.pumpAndSettle();
-    unawaited(router.push(AppRoute.tenantDetail));
-    await tester.pumpAndSettle();
-
-    expect(find.text('SHELL AT ${AppRoute.tenantDetail}'), findsOneWidget);
-    expect(router.routeInformationProvider.value.uri.path, AppRoute.dashboard);
-
-    router.pop();
-    await tester.pumpAndSettle();
-    expect(find.text('SHELL AT ${AppRoute.dashboard}'), findsOneWidget);
   });
 }

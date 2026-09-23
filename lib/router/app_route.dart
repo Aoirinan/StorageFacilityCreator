@@ -62,6 +62,18 @@ class AppRoute {
   static const paymentsReminders = '/payments?tab=reminders';
   static const paymentsCollect = '/payments?tab=collect';
   static const paymentDetail = '/payments/detail';
+
+  /// A payment's detail page by id, for when there is no payment to pass
+  /// as `extra`. The page needs both ids to load it.
+  static String paymentDetailFor({
+    required String paymentId,
+    required String facilityId,
+  }) =>
+      Uri(path: paymentDetail, queryParameters: {
+        'paymentId': paymentId,
+        'facilityId': facilityId,
+      }).toString();
+
   static const paymentCreate = '/payments/create';
   static const paymentReconciliation = '/payments/reconciliation';
   static const invoices = '/invoices';

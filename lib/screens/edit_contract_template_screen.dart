@@ -1,13 +1,14 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/contract_template_model.dart';
 import '../models/contract_model.dart';
 import '../providers/contract_provider.dart';
 import '../services/contract_service.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../widgets/signature_field_configurator.dart';
 
 /// Full-page screen for editing an existing contract template.
@@ -133,7 +134,9 @@ class _EditContractTemplateScreenState
           backgroundColor: AppTheme.success,
         ),
       );
-      context.pop();
+      // popOrGo, not a bare pop: that throws when nothing is underneath,
+      // and the catch below would then report the saved template as failed.
+      popOrGo(context, _templatesLocation);
     } catch (e) {
       setState(() => _isSaving = false);
       if (mounted) {
@@ -146,6 +149,11 @@ class _EditContractTemplateScreenState
       }
     }
   }
+
+  String get _templatesLocation => Uri(
+        path: AppRoute.contractTemplates,
+        queryParameters: {'facilityId': widget.template.facilityId},
+      ).toString();
 
   @override
   Widget build(BuildContext context) {
@@ -165,7 +173,7 @@ class _EditContractTemplateScreenState
         ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
+          onPressed: () => popOrGo(context, _templatesLocation),
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),

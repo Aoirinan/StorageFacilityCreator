@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,8 +30,12 @@ class ModernNavigationService {
       // tenant's detail or ledger pushed over /tenants it still read
       // '/tenants' and the sidebar's Tenants item did nothing.
       currentLocation = router.state.uri.toString();
-    } catch (_) {
-      // state throws on an empty match list; fall back to the URL.
+    } catch (e) {
+      // state throws on an empty match list; fall back to the URL, and say
+      // so, since the URL misses pushed pages.
+      if (kDebugMode) {
+        debugPrint('navigateToRoute: GoRouter.state failed ($e); using the URL');
+      }
       currentLocation = router.routeInformationProvider.value.uri.toString();
     }
 

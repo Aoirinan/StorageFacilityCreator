@@ -1,7 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,17 +27,13 @@ import '../providers/ledger_provider.dart';
 import '../providers/facility_provider.dart';
 import '../providers/unit_provider.dart';
 import '../models/ledger_entry_model.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
 import '../services/autopay_service.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
-import '../widgets/keyboard_scrollable.dart';
 import '../widgets/tenant_facility_unit_picker.dart';
 import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 import '../constants/location_options.dart';
-import 'ledger_screen.dart';
 import '../ui/payments/tenant_billing_panel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
@@ -817,9 +812,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
             context,
             matches: matches,
             onOverride: () {
-              setState(() {
-                _dnrOverride = true;
-              });
+              // The page can be gone while the alert is open (the trial
+              // check sends the owner to /subscription); setState would
+              // throw there, but the override still gets its audit record.
+              if (mounted) {
+                setState(() {
+                  _dnrOverride = true;
+                });
+              }
               _logDNROverride(matches);
             },
           );

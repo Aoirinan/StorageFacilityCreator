@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../models/deposit_model.dart';
 import '../models/payment_model.dart';
 import '../services/deposit_service.dart';
-import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 class DepositCreationScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -136,7 +133,9 @@ class _DepositCreationScreenState extends ConsumerState<DepositCreationScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        context.pop(true);
+        // A bare pop threw after the save when this page was opened by a
+        // link or a reload, and the catch reported the save as failed.
+        popOrGo(context, AppRoute.deposits, true);
       }
     } catch (e) {
       if (mounted) {

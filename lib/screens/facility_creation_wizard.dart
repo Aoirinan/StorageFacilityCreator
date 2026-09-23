@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
 import '../services/facility_service.dart';
 import '../services/permission_service.dart';
 import '../services/facility_creator_account_service.dart';
@@ -16,7 +15,6 @@ import 'package:sfcapp/constants/email_monthly_limits.dart';
 import 'package:sfcapp/constants/facility_capacity.dart';
 import '../theme/app_theme.dart';
 import '../screens/subscription_test_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
@@ -725,26 +723,12 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
           _errorMessage = ErrorMessageHelper.getUserFriendlyMessage(e);
         });
         
-        if (kDebugMode) {
-          print('🔄 Error occurred, navigating back to home screen...');
-        }
-        
-        // Pop the facility creation wizard
-        if (Navigator.of(context).canPop()) {
-          Navigator.of(context).pop();
-        }
-        
-        // If no callback provided, pop again to reach home screen
-        if (widget.onFacilityCreated == null) {
-          if (kDebugMode) {
-            print('🔄 No callback provided, popping again to reach home screen');
-          }
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (mounted) {
-              Navigator.of(context).pop(); // Pop facility management screen to reach home
-            }
-          });
-        }
+        // Stay on the wizard so the owner sees the error above the Create
+        // button and can retry. It used to pop the wizard and, 100 ms later,
+        // pop again "to reach home". With the wizard opened by go (Billing,
+        // Settings, Invoices...) or pushed over /facilities, that second pop
+        // took the last page: go_router threw, the screen went blank and the
+        // error was never seen.
       }
     }
   }

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
@@ -596,17 +595,17 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   void _processPayment() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Process Payment'),
         content: Text('Process payment of ${widget.payment.formattedAmount}?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).processPayment(
                   facilityId: widget.payment.facilityId,
@@ -614,13 +613,15 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                   method: widget.payment.method,
                 );
                 if (!mounted) return;
-                context.go(AppRoute.payments);
+                // The page's own context: the dialog's is dead after the
+                // await, so the go and the SnackBars threw instead of running.
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment processed successfully'),
                     backgroundColor: AppTheme.success,
                   ),
                 );
+                popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -793,19 +794,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   void _cancelPayment() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Cancel Payment'),
         content: const Text(
           'Are you sure you want to cancel this payment?',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('No'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               try {
                 await PaymentService.updatePayment(
                   facilityId: widget.payment.facilityId,
@@ -813,13 +814,14 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                   status: PaymentStatus.cancelled,
                 );
                 if (mounted) {
-                  context.go(AppRoute.payments);
+                  // The page's own context, as in _processPayment.
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('Payment cancelled'),
                       backgroundColor: AppTheme.success,
                     ),
                   );
+                  popOrGo(context, AppRoute.payments);
                 }
               } catch (e) {
                 if (mounted) {
@@ -846,32 +848,33 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   void _deletePayment() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Payment'),
         content: const Text(
           'Are you sure you want to delete this payment? This action cannot be undone.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).deletePayment(
                   widget.payment.facilityId,
                   widget.payment.id,
                 );
                 if (!mounted) return;
-                context.go(AppRoute.payments);
+                // The page's own context, as in _processPayment.
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Payment deleted'),
                     backgroundColor: AppTheme.success,
                   ),
                 );
+                popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(

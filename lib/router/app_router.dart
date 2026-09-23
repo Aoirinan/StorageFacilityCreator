@@ -13,6 +13,7 @@ import '../providers/feature_flag_provider.dart';
 import 'app_route.dart';
 import 'route_guards.dart';
 import 'route_helpers.dart';
+import 'package:sfcapp/router/load_by_id.dart';
 import 'public_auth_entry_routes.dart';
 import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
@@ -103,6 +104,9 @@ import '../screens/facility_website_setup_screen.dart';
 import '../screens/bulk_messaging_screen.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/tenant_service.dart';
+import 'package:sfcapp/services/contract_service.dart';
+import 'package:sfcapp/services/payment_service.dart';
+import 'package:sfcapp/services/lien_service.dart';
 import '../widgets/subscription_warning_banner.dart';
 import '../widgets/messaging_facility_selector.dart';
 import '../screens/email_template_management_screen.dart';
@@ -225,13 +229,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       ShellRoute(
-        builder: (context, state, child) => AppShell(
-          showSubscriptionBanner: true,
-          // state.uri is the page on screen, including pushed pages the URL
-          // leaves out, so the sidebar highlights the right section.
-          visibleLocation: state.uri.toString(),
-          child: child,
-        ),
+        builder: (context, state, child) =>
+            AppShell(showSubscriptionBanner: true, child: child),
         routes: [
           GoRoute(
             path: AppRoute.dashboard,
@@ -312,29 +311,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 return ClientDetailScreen(tenant: tenantExtra);
               }
               // Load from query params when navigating from dashboard etc.
-              final tenantId = state.uri.queryParameters['tenantId'];
-              final facilityId = state.uri.queryParameters['facilityId'];
-              if (tenantId == null ||
-                  tenantId.isEmpty ||
-                  facilityId == null ||
-                  facilityId.isEmpty) {
-                return NotFoundPage(state: state);
-              }
-              return FutureBuilder<TenantModel?>(
-                future: TenantService.getTenantById(facilityId, tenantId),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Scaffold(
-                      body: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  if (snapshot.hasError ||
-                      !snapshot.hasData ||
-                      snapshot.data == null) {
-                    return NotFoundPage(state: state);
-                  }
-                  return ClientDetailScreen(tenant: snapshot.data!);
-                },
+              return loadByIdPage<TenantModel>(
+                state,
+                idParam: 'tenantId',
+                load: TenantService.getTenantById,
+                page: (tenant, _) => ClientDetailScreen(tenant: tenant),
               );
             },
           ),
@@ -353,30 +334,15 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 return LedgerScreen(tenant: tenantExtra);
               }
 
-              // Otherwise, try to load from facilityId query parameter
-              final facilityId = state.uri.queryParameters['facilityId'];
-              if (facilityId != null && facilityId.isNotEmpty) {
-                // Return a FutureBuilder to load the tenant
-                return FutureBuilder<TenantModel?>(
-                  future: TenantService.getTenantById(facilityId, tenantId),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Scaffold(
-                        body: Center(child: CircularProgressIndicator()),
-                      );
-                    }
-                    if (snapshot.hasError ||
-                        !snapshot.hasData ||
-                        snapshot.data == null) {
-                      return NotFoundPage(state: state);
-                    }
-                    return LedgerScreen(tenant: snapshot.data!);
-                  },
-                );
-              }
-
-              // If no facilityId provided and no tenant in extra, show not found
-              return NotFoundPage(state: state);
+              // Otherwise, load it by the facilityId query parameter (not
+              // found without one).
+              return loadByIdPage<TenantModel>(
+                state,
+                idParam: 'tenantId',
+                id: tenantId,
+                load: TenantService.getTenantById,
+                page: (tenant, _) => LedgerScreen(tenant: tenant),
+              );
             },
           ),
           GoRoute(
@@ -572,10 +538,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'contract-detail',
             builder: (context, state) {
               final contract = state.extra;
-              if (contract is! ContractModel) {
-                return NotFoundPage(state: state);
+              if (contract is ContractModel) {
+                return ContractDetailScreen(contract: contract);
               }
-              return ContractDetailScreen(contract: contract);
+              // The calendar's contract events and the Dashboard's move-outs
+              // link here by id, which used to show "Page not found".
+              return loadByIdPage<ContractModel>(
+                state,
+                idParam: 'contractId',
+                load: ContractService.getContract,
+                page: (contract, _) => ContractDetailScreen(contract: contract),
+              );
             },
           ),
           GoRoute(
@@ -598,10 +571,20 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'payment-detail',
             builder: (context, state) {
               final payment = state.extra;
-              if (payment is! PaymentModel) {
-                return NotFoundPage(state: state);
+              if (payment is PaymentModel) {
+                return PaymentDetailScreen(payment: payment);
               }
-              return PaymentDetailScreen(payment: payment);
+              // Invoice and deposit pages link here by id, which used to show
+              // "Page not found".
+              return loadByIdPage<PaymentModel>(
+                state,
+                idParam: 'paymentId',
+                load: (facilityId, paymentId) => PaymentService.getPayment(
+                  facilityId: facilityId,
+                  paymentId: paymentId,
+                ),
+                page: (payment, _) => PaymentDetailScreen(payment: payment),
+              );
             },
           ),
           GoRoute(
@@ -1348,7 +1331,20 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                   );
                 }
               }
-              return NotFoundPage(state: state);
+              // The calendar's lien and auction events link here by id,
+              // which used to show "Page not found".
+              return loadByIdPage<LienModel>(
+                state,
+                idParam: 'lienId',
+                load: (facilityId, lienId) => LienService.getLien(
+                  facilityId: facilityId,
+                  lienId: lienId,
+                ),
+                page: (lien, facilityId) => LienDetailScreen(
+                  lien: lien,
+                  facilityId: facilityId,
+                ),
+              );
             },
           ),
           GoRoute(

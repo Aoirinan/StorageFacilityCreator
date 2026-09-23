@@ -8,11 +8,11 @@ import '../models/invoice_status_actions.dart';
 import '../providers/invoice_provider.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../services/invoice_service.dart';
 import '../services/tenant_service.dart';
 import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
 import 'package:sfcapp/utils/invoice_edit_rules.dart';
 import 'package:sfcapp/utils/print_util.dart';
 import '../widgets/invoice_pdf_viewer.dart';
@@ -436,7 +436,12 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                   icon: const Icon(Icons.open_in_new),
                   onPressed: () {
                     // Navigate to payment detail
-                    context.push('${AppRoute.paymentDetail}?paymentId=$paymentId');
+                    // With the facility: the payment page loads by both ids
+                    // and showed "Page not found" without it.
+                    context.push(AppRoute.paymentDetailFor(
+                      paymentId: paymentId,
+                      facilityId: widget.facilityId,
+                    ));
                   },
                 ),
               );
@@ -950,8 +955,10 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        // Refresh the screen by popping and pushing again
-        context.pop();
+        // Leave for the refreshed list. popOrGo, not a bare pop: that throws
+        // when nothing is underneath, and the catch below would then report
+        // the finished change as failed.
+        popOrGo(context, AppRoute.paymentsInvoices);
       }
     } catch (e) {
       if (mounted) {
@@ -1026,8 +1033,10 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             backgroundColor: AppTheme.warning,
           ),
         );
-        // Refresh the screen by popping and pushing again
-        context.pop();
+        // Leave for the refreshed list. popOrGo, not a bare pop: that throws
+        // when nothing is underneath, and the catch below would then report
+        // the finished change as failed.
+        popOrGo(context, AppRoute.paymentsInvoices);
       }
     } catch (e) {
       if (mounted) {

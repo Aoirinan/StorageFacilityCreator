@@ -1,23 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/foundation.dart';
 import '../models/tenant_model.dart';
 import '../models/unit_model.dart';
 import '../models/contract_model.dart';
 import '../models/invoice_line_item_model.dart';
 import '../services/move_in_service.dart';
-import '../services/prorate_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../services/contract_service.dart';
 import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
 import '../providers/auth_provider.dart';
-import '../providers/tenant_provider.dart';
-import '../providers/unit_provider.dart';
 import '../models/facility_model.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 class MoveInWizardScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -278,6 +276,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       _errorMessage = null;
     });
 
+    MoveInResult? completed;
     try {
       // Create contract if not already created
       if (_contract == null) {
@@ -370,15 +369,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       );
 
       if (result.success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Move-in completed successfully!'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
-          context.pop(true); // Return success
-        }
+        completed = result;
       } else {
         setState(() {
           _errorMessage = result.error ?? 'Failed to complete move-in';
@@ -394,6 +385,30 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         _isLoading = false;
       });
     }
+
+    // Leave outside the try. The wizard is opened with go (the calendar), so
+    // context.pop threw "There is nothing to pop" after the move-in had
+    // already written the contract, charges and payment; the catch showed
+    // that as a failed move-in and re-enabled the button, inviting a retry
+    // that duplicated them. _isLoading stays true so it cannot run again.
+    if (completed == null || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Move-in completed successfully!'),
+        backgroundColor: AppTheme.success,
+      ),
+    );
+    final tenantId = completed.tenantId ?? _selectedTenant?.id;
+    popOrGo(
+      context,
+      tenantId == null || tenantId.isEmpty
+          ? AppRoute.tenants
+          : AppRoute.tenantDetailFor(
+              tenantId: tenantId,
+              facilityId: widget.facilityId,
+            ),
+      true, // Return success
+    );
   }
 
   @override
@@ -442,7 +457,8 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                 _currentStep -= 1;
               });
             } else {
-              context.pop();
+              // A bare pop threw here: the calendar opens the wizard with go.
+              popOrGo(context, AppRoute.calendar);
             }
           },
           onStepTapped: (step) {

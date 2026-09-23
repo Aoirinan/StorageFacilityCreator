@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/webhook_model.dart';
 import 'package:sfcapp/providers/search_provider.dart';
 import 'package:sfcapp/services/webhook_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 /// Screen for creating/editing webhook subscriptions
 class WebhookEditorScreen extends ConsumerStatefulWidget {
@@ -146,7 +147,9 @@ class _WebhookEditorScreenState extends ConsumerState<WebhookEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Webhook saved successfully')),
         );
-        context.pop();
+        // A bare pop threw after the save when this page was opened by a
+        // link or a reload, and the catch reported the save as failed.
+        popOrGo(context, AppRoute.webhooks);
       }
     } catch (e) {
       setState(() {
