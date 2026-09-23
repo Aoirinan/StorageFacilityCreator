@@ -34,6 +34,15 @@ if (!match) {
 const current = parseInt(match[1], 10);
 console.log(`flutter analyze: ${current} issues (baseline: ${baseline})`);
 
+// Errors fail whatever the count: a screen no test imports can stop
+// compiling and `flutter test` still passes (a removed argument did).
+const errors = output.split(/\r?\n/).filter((line) => /^\s*error - /.test(line));
+if (errors.length > 0) {
+  console.error(`FAIL: flutter analyze reports ${errors.length} error(s):`);
+  console.error(errors.join('\n'));
+  process.exit(1);
+}
+
 if (current > baseline) {
   console.error(`FAIL: issue count increased (${current} > ${baseline}). Fix the new issue(s) or, if this is a false positive, understand why before touching the baseline.`);
   process.exit(1);

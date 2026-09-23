@@ -42,6 +42,7 @@ import '../ui/payments/tenant_billing_panel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
+import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -1586,6 +1587,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   }
 
   static void _showDeleteDialog(BuildContext context, TenantModel tenant) {
+    // The dialog below is closed before the delete; units are confirmed here.
+    final screenContext = context;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1601,12 +1604,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               Navigator.of(context).pop();
 
               try {
-                await TenantService.deleteTenant(
+                final deleted = await TenantService.deleteTenant(
                   facilityId: tenant.facilityId,
                   tenantId: tenant.id!,
+                  confirmUnitsFreed: (freeing) =>
+                      confirmUnitsFreedDialog(screenContext, freeing),
                 );
 
-                if (context.mounted) {
+                if (deleted && context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('Tenant deleted successfully'),

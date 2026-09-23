@@ -24,6 +24,7 @@ import 'package:sfcapp/screens/tenant_edit_screen.dart';
 import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
 final _facilityGracePeriodProvider = FutureProvider.family<int, String>((ref, facilityId) async {
@@ -1334,35 +1335,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       'anything is deleted. For someone who has left: unassign their unit, '
       'then Archive. Their history is kept.';
 
-  /// Asked once the check has passed and the delete would free units the
-  /// tenants still hold; names each one.
-  Future<bool> _confirmUnitsFreed(List<TenantDeletePlan> freeing) async {
-    if (!mounted) return false;
-    final count = freeing.fold<int>(0, (n, p) => n + p.heldUnits.length);
-    final go = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(count == 1 ? 'Free this unit?' : 'Free these $count units?'),
-        content: SingleChildScrollView(
-          child: Text(TenantService.unitsFreedMessage(freeing)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(
-              count == 1 ? 'Delete and free unit' : 'Delete and free units',
-              style: const TextStyle(color: AppTheme.error),
-            ),
-          ),
-        ],
-      ),
-    );
-    return go == true;
-  }
+  Future<bool> _confirmUnitsFreed(List<TenantDeletePlan> freeing) =>
+      confirmUnitsFreedDialog(context, freeing);
 
   void _showDeleteFailed(String message) {
     if (!mounted) return;
