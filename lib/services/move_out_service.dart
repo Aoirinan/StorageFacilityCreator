@@ -8,7 +8,6 @@ import 'package:sfcapp/models/ledger_entry_model.dart'
     show LedgerEntry, LedgerEntryStatus, LedgerEntryType;
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
-import 'package:sfcapp/services/gate_access_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
@@ -352,60 +351,52 @@ class MoveOutService {
         }
       }
 
+      // From here the charges and refund above are posted, so a failed step
+      // is a warning on a completed move-out, never "Error completing
+      // move-out": a retry would post them again.
+      final warnings = <String>[];
+
       // Step 3: Update contract with move-out status
       // Note: ContractService.updateContract may need to be enhanced to support move-out fields
       // For now, we'll update directly via Firestore
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('contracts')
-          .doc(contractId)
-          .update({
-        'moveOutStatus': MoveOutStatus.completed.name,
-        'moveOutDate': Timestamp.fromDate(moveOutDate),
-        'moveOutCharges': calculation.newCharges,
-        'moveOutRefund': calculation.refundAmount,
-        if (moveOutNotes != null && moveOutNotes!.isNotEmpty) 'moveOutNotes': moveOutNotes,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Step 4: Update unit status to available
-      await UnitService.updateUnit(
-        unitId: unitId,
-        facilityId: facilityId,
-        status: UnitStatus.available,
-        moveOutDate: moveOutDate,
-      );
-
-      // Step 5: Deactivate gate access
       try {
-        // Get all gate access codes for this tenant
-        final gateAccessStream = GateAccessService.getGateAccessStream(facilityId);
-        await for (final accessList in gateAccessStream) {
-          final tenantAccess = accessList.where((a) => a.tenantId == tenantId);
-          for (final access in tenantAccess) {
-            await GateAccessService.updateGateAccess(
-              facilityId: facilityId,
-              accessId: access.id,
-              isActive: false,
-            );
-          }
-          break; // Only need first batch
-        }
+        await _firestore
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('contracts')
+            .doc(contractId)
+            .update({
+          'moveOutStatus': MoveOutStatus.completed.name,
+          'moveOutDate': Timestamp.fromDate(moveOutDate),
+          'moveOutCharges': calculation.newCharges,
+          'moveOutRefund': calculation.refundAmount,
+          if (moveOutNotes != null && moveOutNotes.isNotEmpty) 'moveOutNotes': moveOutNotes,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
       } catch (e) {
-        if (kDebugMode) {
-          print('⚠️ [MoveOut] Could not deactivate gate access: $e');
-        }
-        // Don't fail move-out if gate access fails
+        warnings.add("The contract wasn't marked as moved out ($e).");
       }
 
-      // Step 6: Update tenant (clear unit assignment, mark as inactive if needed)
-      await TenantService.updateTenant(
-        tenantId: tenantId,
+      // Step 4: Update unit status to available
+      try {
+        await UnitService.updateUnit(
+          unitId: unitId,
+          facilityId: facilityId,
+          status: UnitStatus.available,
+          moveOutDate: moveOutDate,
+        );
+      } catch (e) {
+        warnings.add("The unit wasn't set to available ($e).");
+      }
+
+      // Steps 5 and 6: the tenant's own record and gate codes. A tenant who
+      // still rents another unit stays active with their gate codes on.
+      final tenantWarning = await settleTenantAfterMoveOut(
         facilityId: facilityId,
-        unitNumber: '', // Clear unit assignment
-        isActive: false, // Mark tenant as inactive
+        tenantId: tenantId,
+        unitId: unitId,
       );
+      if (tenantWarning != null) warnings.add(tenantWarning);
 
       // Audit log
       await AuditService.logMoveOutCompleted(
@@ -429,6 +420,7 @@ class MoveOutService {
         ledgerEntryIds: ledgerEntryIds,
         charges: calculation.newCharges,
         refund: calculation.refundAmount,
+        warning: warnings.isEmpty ? null : warnings.join(' '),
       );
     } catch (e) {
       if (kDebugMode) {
@@ -438,6 +430,42 @@ class MoveOutService {
         success: false,
         error: e.toString(),
       );
+    }
+  }
+
+  /// Steps 5 and 6 of [completeMoveOut]: [TenantService.recordMoveOut],
+  /// which switches the tenant (and their gate codes) off only when they
+  /// hold no other unit. Returns a warning instead of throwing: it runs
+  /// after fees and refunds are posted. The old step set every tenant
+  /// inactive and turned every gate code off, even for one still renting
+  /// another unit, and its failure read as "Error completing move-out".
+  /// [records], [effects] and [actingUid] are for tests.
+  @visibleForTesting
+  static Future<String?> settleTenantAfterMoveOut({
+    required String facilityId,
+    required String tenantId,
+    required String unitId,
+    TenantRecordsStore? records,
+    TenantUpdateEffects? effects,
+    String? actingUid,
+  }) async {
+    try {
+      await TenantService.recordMoveOut(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        movedOutUnitId: unitId,
+        records: records,
+        effects: effects,
+        actingUid: actingUid,
+      );
+      return null;
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [MoveOut] Tenant record not updated after move-out: $e');
+      }
+      return 'The move-out, charges and refund are recorded, but the '
+          "tenant's own record was not updated ($e). Open the tenant to "
+          'check whether they should still be active and have gate access.';
     }
   }
 
@@ -559,12 +587,16 @@ class MoveOutResult {
   final double? refund;
   final String? error;
 
+  /// The move-out went through but a later step needs a look.
+  final String? warning;
+
   MoveOutResult({
     required this.success,
     this.ledgerEntryIds = const [],
     this.charges,
     this.refund,
     this.error,
+    this.warning,
   });
 }
 

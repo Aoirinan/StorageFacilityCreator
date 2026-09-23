@@ -264,7 +264,8 @@ class MoveInService {
         
         // Update tenant with move-in info
         // Note: Insurance status should be set via the wizard UI, not here
-        await TenantService.updateTenant(
+        // Never frees a unit the tenant already rents (a second unit).
+        await TenantService.recordMoveInUnit(
           tenantId: tenant.id,
           facilityId: facilityId,
           unitNumber: moveInData.unit.unitNumber,
