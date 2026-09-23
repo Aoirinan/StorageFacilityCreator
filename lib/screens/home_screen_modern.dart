@@ -117,7 +117,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   bool _showSearchResults = false;
   bool _sidebarCollapsed = false;
   Timer? _searchDebounce;
-  bool _ownerDashboardTipsHandled = false;
+  // Static, not per-State: this screen's State is rebuilt every time the
+  // dashboard is visited, so an instance flag re-showed the tips on every
+  // return to the dashboard. Once per app session is the ceiling.
+  static bool _ownerDashboardTipsHandled = false;
 
   @override
   void initState() {
@@ -305,19 +308,21 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
 
   Future<void> _processOwnerDashboardTips(List<FacilityModel> facilities) async {
     if (!mounted || _ownerDashboardTipsHandled) return;
+    // Claimed before any await: build() calls this on every rebuild, and
+    // checking the flag only after the preference reads let two calls both
+    // pass and open the dialog twice.
+    _ownerDashboardTipsHandled = true;
     final uid = widget.user.uid;
     final teamOnly = facilities.isNotEmpty &&
         facilities.every((f) => f.showsAsTeamMemberForViewer(uid));
-    if (teamOnly) {
-      _ownerDashboardTipsHandled = true;
-      return;
-    }
-    if (await DashboardOwnerTipsService.isDisabled()) {
-      _ownerDashboardTipsHandled = true;
+    if (teamOnly) return;
+    if (await DashboardOwnerTipsService.isDisabled() ||
+        await DashboardOwnerTipsService.shownRecently()) {
       return;
     }
     if (!mounted) return;
-    _ownerDashboardTipsHandled = true;
+    await DashboardOwnerTipsService.markShown();
+    if (!mounted) return;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final result = await showDialog<DashboardOwnerTipsDialogResult>(
@@ -499,6 +504,13 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           loading: () => false,
           error: (_, __) => false,
         );
+    // Only a loaded, empty list means "no facilities". While loading,
+    // hasFacilities is false too, and the onboarding checklist ("Create your
+    // first facility") flashed at existing owners on every reload.
+    final showGetStarted = facilitiesAsync.maybeWhen(
+      data: (list) => list.isEmpty,
+      orElse: () => false,
+    );
     final isMobile = MediaQuery.of(context).size.width < 900;
 
     return SingleChildScrollView(
@@ -511,7 +523,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           const SizedBox(height: 16),
           // Sync counts only when user has facilities; otherwise show get-started checklist
           if (hasFacilities) _buildDashboardSyncRow(context),
-          if (!hasFacilities) ...[
+          if (showGetStarted) ...[
             _buildGetStartedChecklist(context),
             const SizedBox(height: 24),
           ],

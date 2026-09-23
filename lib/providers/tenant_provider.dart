@@ -156,7 +156,10 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
       
       return Stream.value(sorted);
     },
-    loading: () => Stream.value([]),
+    // Emit nothing while the source loads, so this provider stays in its
+    // loading state. Emitting [] here reported "no tenants" as real data,
+    // and the tenant list showed "No tenants found" after a page reload.
+    loading: () => const Stream<List<TenantModel>>.empty(),
     error: (error, stack) => Stream<List<TenantModel>>.error(error, stack),
   );
 });

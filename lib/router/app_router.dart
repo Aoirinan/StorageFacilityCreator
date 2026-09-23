@@ -1445,7 +1445,13 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         name: 'legacy-screen',
         builder: (context, state) {
           final extra = state.extra;
-          if (extra is Widget) return extra;
+          // Most screens pushed here (tenant create/edit, DNR entry/detail)
+          // build no Scaffold of their own. Returned bare they had no
+          // Material ancestor, so every Text fell back to Flutter's debug
+          // style: yellow double underlines and wrong sizes, seen on the
+          // live Create Tenant form. A Scaffold under a screen that brings
+          // its own (tenant portal, unit creation) is harmless.
+          if (extra is Widget) return Scaffold(body: SafeArea(child: extra));
           return NotFoundPage(state: state);
         },
       ),
