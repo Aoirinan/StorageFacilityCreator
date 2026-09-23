@@ -36,6 +36,7 @@ import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../widgets/tenant_facility_unit_picker.dart';
+import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 import '../constants/location_options.dart';
 import 'ledger_screen.dart';
 import '../ui/payments/tenant_billing_panel.dart';
@@ -812,7 +813,16 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
 
         // Show blocking dialog if matches found
         if (matches.isNotEmpty) {
-          _showDNRBlockingDialog(context, matches);
+          await showDnrBlockingDialog(
+            context,
+            matches: matches,
+            onOverride: () {
+              setState(() {
+                _dnrOverride = true;
+              });
+              _logDNROverride(matches);
+            },
+          );
         }
       }
     } catch (e) {
@@ -825,95 +835,6 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         });
       }
     }
-  }
-
-  void _showDNRBlockingDialog(BuildContext context, List<DNRModel> matches) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.warning, color: AppTheme.error),
-              const SizedBox(width: 8),
-              const Text('DNR Alert'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'This tenant matches ${matches.length} active DNR entr${matches.length == 1 ? 'y' : 'ies'}:',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              ...matches.map((match) => Card(
-                color: AppTheme.error.withOpacity(0.1),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Name: ${match.name}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      if (match.email.isNotEmpty)
-                        Text('Email: ${match.email}'),
-                      if (match.phone.isNotEmpty)
-                        Text('Phone: ${match.phone}'),
-                      Text('Reason: ${match.reason}'),
-                      if (match.addedByName != null && match.addedByEmail != null)
-                        Text(
-                          'Added by: ${match.addedByName} (${match.addedByEmail})',
-                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                      if (match.facilityName != null)
-                        Text(
-                          'Facility: ${match.facilityName}',
-                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                      if (match.expiresAt != null)
-                        Text('Expires: ${match.expiresAt!.toLocal().toString().split(' ')[0]}'),
-                    ],
-                  ),
-                ),
-              )),
-              const SizedBox(height: 16),
-              const Text(
-                'Do you want to override and continue?',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop(); // Close dialog
-                Navigator.of(context).pop(); // Go back to tenant list
-              },
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _dnrOverride = true;
-                });
-                Navigator.of(context).pop(); // Close dialog
-                _logDNROverride(matches);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.error,
-                foregroundColor: AppTheme.textOnDark,
-              ),
-              child: const Text('Override & Continue'),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   Future<void> _logDNROverride(List<DNRModel> matches) async {

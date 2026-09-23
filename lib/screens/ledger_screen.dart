@@ -13,10 +13,25 @@ import '../services/statement_service.dart';
 import '../services/facility_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
 import '../utils/error_message_helper.dart';
+
+/// The ledger's back arrow. The ledger is opened on top of the tenant's page,
+/// so back pops to that page. It used to push a second tenant page on top of
+/// the ledger, so the top-bar back then went "back" to the ledger, and every
+/// round trip grew the stack and re-ran the tenant page's DNR check.
+void backToTenantFromLedger(BuildContext context, TenantModel tenant) {
+  popOrGo(
+    context,
+    AppRoute.tenantDetailFor(
+      tenantId: tenant.id,
+      facilityId: tenant.facilityId,
+    ),
+  );
+}
 
 class LedgerScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -157,7 +172,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                   children: [
                     IconButton(
                       icon: const Icon(Icons.arrow_back),
-                      onPressed: () => context.push(AppRoute.tenantDetail, extra: widget.tenant),
+                      onPressed: () => backToTenantFromLedger(context, widget.tenant),
                       tooltip: 'Back to tenant',
                     ),
                     const SizedBox(width: 8),

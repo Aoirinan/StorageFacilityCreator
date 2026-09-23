@@ -28,6 +28,18 @@ class AppRoute {
   static const facilityEdit = '/facilities/edit';
   static const tenants = '/tenants';
   static const tenantDetail = '/tenants/detail';
+
+  /// A tenant's detail page by id, for when there is no tenant to pass
+  /// as `extra` (a reload or a link).
+  static String tenantDetailFor({
+    required String tenantId,
+    required String facilityId,
+  }) =>
+      Uri(path: tenantDetail, queryParameters: {
+        'tenantId': tenantId,
+        'facilityId': facilityId,
+      }).toString();
+
   static const tenantCsvImport = '/tenants/import-csv';
   static const units = '/units';
   static const unitsMap = '/units/map';

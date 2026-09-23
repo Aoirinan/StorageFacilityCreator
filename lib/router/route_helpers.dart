@@ -271,16 +271,24 @@ class AppShell extends ConsumerWidget {
   final Widget child;
   final bool showSubscriptionBanner;
 
+  /// Location of the page on screen (the ShellRoute's `state.uri`), used for
+  /// the sidebar highlight.
+  final String? visibleLocation;
+
   const AppShell({
     super.key,
     required this.child,
     this.showSubscriptionBanner = false,
+    this.visibleLocation,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isMobile = MediaQuery.of(context).size.width < 900;
     final currentRoute = GoRouter.of(context).routeInformationProvider.value.location ?? '/dashboard';
+    // The URL leaves pushed pages out, so a tenant opened from the Dashboard
+    // kept Dashboard highlighted in the sidebar.
+    final highlightedRoute = visibleLocation ?? currentRoute;
 
     return _TrialExpiryChecker(
       child: SubscriptionLockOverlay(
@@ -300,7 +308,7 @@ class AppShell extends ConsumerWidget {
                           height: constraints.maxHeight,
                           width: 240,
                           child: _SubscriptionAwareSidebar(
-                            currentRoute: currentRoute,
+                            currentRoute: highlightedRoute,
                             onNavigate: (route) =>
                                 ModernNavigationService.navigateToRoute(
                               context,
@@ -337,7 +345,7 @@ class AppShell extends ConsumerWidget {
               width: (MediaQuery.sizeOf(context).width * 0.88)
                   .clamp(280.0, 360.0),
               child: _SubscriptionAwareSidebar(
-                currentRoute: currentRoute,
+                currentRoute: highlightedRoute,
                 onNavigate: (route) {
                   Navigator.of(context).pop();
                   ModernNavigationService.navigateToRoute(context, route);

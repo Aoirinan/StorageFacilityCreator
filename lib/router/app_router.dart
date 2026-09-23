@@ -225,8 +225,13 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       ShellRoute(
-        builder: (context, state, child) =>
-            AppShell(child: child, showSubscriptionBanner: true),
+        builder: (context, state, child) => AppShell(
+          showSubscriptionBanner: true,
+          // state.uri is the page on screen, including pushed pages the URL
+          // leaves out, so the sidebar highlights the right section.
+          visibleLocation: state.uri.toString(),
+          child: child,
+        ),
         routes: [
           GoRoute(
             path: AppRoute.dashboard,

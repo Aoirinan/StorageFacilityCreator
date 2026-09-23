@@ -18,6 +18,7 @@ import '../theme/app_theme.dart';
 import '../screens/subscription_test_screen.dart';
 import '../router/app_router.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
 
@@ -382,14 +383,18 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                     TextButton(
                       onPressed: () {
                         Navigator.of(context).pop();
-                        Navigator.of(context).pop(); // Close wizard
+                        // Close the wizard from its own context. A second pop
+                        // here ran on the dialog's (root) navigator, removed
+                        // the whole app shell and left a blank screen.
+                        if (mounted) popOrGo(this.context, AppRoute.facilities);
                       },
                       child: const Text('Cancel'),
                     ),
                     ElevatedButton.icon(
                       onPressed: () {
                         Navigator.of(context).pop();
-                        Navigator.of(context).pop(); // Close wizard
+                        // go() below replaces the wizard; a second pop here
+                        // removed the app shell first (see Cancel).
                 context.go(
                   AppRoute.subscription,
                   extra: const SubscriptionTestScreen(

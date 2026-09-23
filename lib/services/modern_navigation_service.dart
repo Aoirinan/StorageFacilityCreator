@@ -21,8 +21,18 @@ class ModernNavigationService {
     );
     // #endregion
 
-    final currentLocation =
-        GoRouter.of(context).routeInformationProvider.value.uri.toString();
+    final router = GoRouter.of(context);
+    String currentLocation;
+    try {
+      // The page actually on screen. routeInformationProvider mirrors the
+      // URL, and go_router keeps pushed pages out of the URL, so with a
+      // tenant's detail or ledger pushed over /tenants it still read
+      // '/tenants' and the sidebar's Tenants item did nothing.
+      currentLocation = router.state.uri.toString();
+    } catch (_) {
+      // state throws on an empty match list; fall back to the URL.
+      currentLocation = router.routeInformationProvider.value.uri.toString();
+    }
 
     // Normalize paths (ignore query) to avoid re-navigating to the same page.
     // Use exact path equality only: `/units/map` must not be treated as `/units`

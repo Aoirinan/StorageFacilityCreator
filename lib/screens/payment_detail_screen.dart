@@ -9,6 +9,7 @@ import '../providers/tenant_provider.dart';
 import '../services/payment_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../utils/error_message_helper.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
@@ -86,7 +87,10 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => context.go(AppRoute.payments),
+            // Back to where the payment was opened from (the payment list,
+            // the past-due tab). go() cleared the stack and always landed
+            // on the default payments tab.
+            onPressed: () => popOrGo(context, AppRoute.payments),
             tooltip: 'Back',
             color: cs.onSurfaceVariant,
           ),
