@@ -1177,31 +1177,88 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
 
     if (confirmed == true) {
-      try {
-        await ref.read(tenantOperationsProvider.notifier).archiveTenant(
-          facilityId: tenant.facilityId,
-          tenantId: tenant.id,
+      final error = await _archive(tenant.facilityId, tenant.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error ?? '${tenant.name} archived successfully'),
+            backgroundColor: error == null ? AppTheme.success : AppTheme.error,
+            duration: Duration(seconds: error == null ? 4 : 10),
+          ),
         );
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${tenant.name} archived successfully'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error archiving tenant: $e'),
-              backgroundColor: AppTheme.error,
-            ),
-          );
-        }
       }
     }
+  }
+
+  /// Archives one tenant. Returns null on success, else a message to show:
+  /// archive is refused while the tenant still holds a unit.
+  Future<String?> _archive(String facilityId, String tenantId) async {
+    try {
+      await ref.read(tenantOperationsProvider.notifier).archiveTenant(
+        facilityId: facilityId,
+        tenantId: tenantId,
+      );
+      return null;
+    } on TenantStillAssignedToUnitException catch (e) {
+      return e.message;
+    } catch (e) {
+      return 'Error archiving tenant: $e';
+    }
+  }
+
+  /// Delete was refused because the tenant(s) have history. Explains what
+  /// they have and offers Archive only for those who hold no unit, because
+  /// archiving an occupant silently stops their rent, autopay and lockout.
+  Future<void> _showDeleteRefused(
+    TenantHasFinancialRecordsException refusal, {
+    required String facilityId,
+    String? note,
+  }) async {
+    if (!mounted) return;
+    final archivable = refusal.blocked.where((b) => b.canArchiveInstead).toList();
+    final single = refusal.blocked.length == 1;
+    final archive = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(single
+            ? "Can't delete ${refusal.blocked.single.tenantName}"
+            : 'Nothing was deleted'),
+        content: SingleChildScrollView(
+          child: Text(note == null ? refusal.details : '${refusal.details}\n\n$note'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(archivable.isEmpty ? 'OK' : 'Cancel'),
+          ),
+          if (archivable.isNotEmpty)
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(single ? 'Archive instead' : 'Archive ${archivable.length}'),
+            ),
+        ],
+      ),
+    );
+    if (archive != true || !mounted) return;
+
+    final errors = <String>[];
+    for (final b in archivable) {
+      final error = await _archive(facilityId, b.tenantId);
+      if (error != null) errors.add(single ? error : '${b.tenantName}: $error');
+    }
+    if (!mounted) return;
+    final archived = archivable.length - errors.length;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(errors.isEmpty
+            ? (single
+                ? '${archivable.single.tenantName} archived'
+                : '$archived tenant${archived == 1 ? '' : 's'} archived')
+            : errors.join('\n')),
+        backgroundColor: errors.isEmpty ? AppTheme.success : AppTheme.error,
+        duration: Duration(seconds: errors.isEmpty ? 4 : 10),
+      ),
+    );
   }
 
   Future<void> _deleteTenant(TenantModel tenant) async {
@@ -1225,7 +1282,10 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Tenant'),
-        content: Text('Are you sure you want to permanently delete ${tenant.name}? This action cannot be undone.'),
+        content: Text(
+          'Permanently delete ${tenant.name}? This cannot be undone.\n\n'
+          '$_permanentDeleteNote',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1245,13 +1305,21 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
           facilityId: tenant.facilityId,
           tenantId: tenant.id,
         );
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('${tenant.name} deleted successfully'),
               backgroundColor: AppTheme.success,
             ),
+          );
+        }
+      } on TenantHasFinancialRecordsException catch (e) {
+        await _showDeleteRefused(e, facilityId: tenant.facilityId);
+      } on TenantDeleteCheckFailedException catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message), backgroundColor: AppTheme.error),
           );
         }
       } catch (e) {
@@ -1266,6 +1334,14 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       }
     }
   }
+
+  // Shown before every permanent delete. Deliberately no mention of
+  // Move-out: it has no entry point in the app, needs a contract, and
+  // emails the tenant.
+  static const _permanentDeleteNote =
+      'Permanent delete is only for tenants entered by mistake who have no '
+      'charges, payments, invoices, contracts or saved cards. For someone who '
+      'has left: unassign their unit, then Archive. Their history is kept.';
 
   Future<void> _deleteSelectedTenants() async {
     if (_selectedTenantIds.isEmpty) return;
@@ -1295,16 +1371,20 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     final selectedTenants = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
     final count = _selectedTenantIds.length;
     final tenantIdsToDelete = _selectedTenantIds.toList();
-    
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Tenants'),
-        content: Text(
-          'Are you sure you want to permanently delete $count tenant${count == 1 ? '' : 's'}?\n\n'
-          'This action cannot be undone.\n\n'
-          'Selected tenants:\n${selectedTenants.take(5).map((t) => '• ${t.name}').join('\n')}'
-          '${selectedTenants.length > 5 ? '\n... and ${selectedTenants.length - 5} more' : ''}',
+        content: SingleChildScrollView(
+          child: Text(
+            'Permanently delete $count tenant${count == 1 ? '' : 's'}? '
+            'This cannot be undone.\n\n'
+            '$_permanentDeleteNote\n\n'
+            'If any selected tenant has history, nothing is deleted.\n\n'
+            'Selected tenants:\n${selectedTenants.take(5).map((t) => '• ${t.name}').join('\n')}'
+            '${selectedTenants.length > 5 ? '\n... and ${selectedTenants.length - 5} more' : ''}',
+          ),
         ),
         actions: [
           TextButton(
@@ -1328,18 +1408,39 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
           facilityId: _selectedFacilityId,
           tenantIds: tenantIdsToDelete,
         );
-        
+
         if (mounted) {
           setState(() {
             _selectedTenantIds.clear();
             _isSelectionMode = false;
           });
-          
+
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('$count tenant${count == 1 ? '' : 's'} deleted successfully'),
               backgroundColor: AppTheme.success,
             ),
+          );
+        }
+      } on TenantHasFinancialRecordsException catch (e) {
+        if (!mounted) return;
+        // Deselect the refused tenants so pressing Delete again removes only
+        // the clean ones; the refusal was all or nothing.
+        final blockedIds = e.blocked.map((b) => b.tenantId).toSet();
+        final remaining = tenantIdsToDelete.where((id) => !blockedIds.contains(id)).length;
+        setState(() => _selectedTenantIds.removeAll(blockedIds));
+        await _showDeleteRefused(
+          e,
+          facilityId: _selectedFacilityId,
+          note: remaining == 0
+              ? null
+              : 'They have been taken out of your selection, so pressing Delete '
+                  'again removes only the other $remaining.',
+        );
+      } on TenantDeleteCheckFailedException catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message), backgroundColor: AppTheme.error),
           );
         }
       } catch (e) {
