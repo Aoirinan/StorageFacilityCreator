@@ -555,7 +555,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       labelText: 'Mailing Address (if different)',
                       hintText: 'PO Box 123, City, State 12345',
                       border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.markunread_mailbox_outlined),
+                      prefixIcon: Icon(Icons.mail_outline),
+                      alignLabelWithHint: true,
                       helperText:
                           'Where tenants mail payments. Shown on statements and invoices.',
                     ),
@@ -601,7 +602,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       hintText:
                           'Please make payment by the due date to avoid late fees.',
                       border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.notes),
+                      prefixIcon: Icon(Icons.description_outlined),
+                      alignLabelWithHint: true,
                       helperText:
                           'Printed at the bottom of every account statement. Leave blank for the default.',
                     ),
