@@ -10,10 +10,17 @@ import 'facility_stats_service.dart';
 import 'facility_service.dart';
 import 'superadmin_service.dart';
 import 'unit_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 
 class TenantService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so tests can sign a fake user in and run
+  // the real read code (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   // Create a new tenant
   static Future<String> createTenant({
@@ -148,25 +155,16 @@ class TenantService {
     }
   }
 
-  /// Most tenant docs one facility read returns.
-  ///
-  /// It was 250, ordered by name. That silently dropped every tenant past
-  /// the 250th by name, and every doc with no `name` (Firestore leaves those
-  /// out of a name-ordered query). The dashboard, the Units list and the
-  /// facility cards treat a missing tenant's unit as empty, so a large
-  /// facility read as emptier than it is. This bound only guards against a
-  /// runaway facility (a load test once wrote ~30,000 tenant docs to one),
-  /// and reaching it is reported, not silent.
-  static const int facilityTenantReadLimit = 5000;
-
-  static final Set<String> _tenantReadLimitReported = <String>{};
+  /// Most tenant docs one facility read returns; see
+  /// [FacilitySubcollections.readLimit]. It was 250, ordered by name, which
+  /// silently dropped every tenant past the 250th by name and every doc with
+  /// no `name`, so their units counted as empty.
+  static const int facilityTenantReadLimit = FacilitySubcollections.readLimit;
 
   /// One read of [tenants] (a facility's tenants collection, or a filter of
   /// it) for [facilityId]: unordered, so docs with no name are included, and
-  /// sorted with [compareTenantsByName]. Takes the query so tests can pass a
-  /// fake one.
-  @visibleForTesting
-  static Future<List<TenantModel>> readFacilityTenants(
+  /// sorted with [compareTenantsByName].
+  static Future<List<TenantModel>> _readFacilityTenants(
     Query<Map<String, dynamic>> tenants,
     String facilityId,
   ) async {
@@ -174,9 +172,8 @@ class TenantService {
     return _tenantsFromRead(facilityId, snapshot.docs);
   }
 
-  /// [readFacilityTenants] as a live stream.
-  @visibleForTesting
-  static Stream<List<TenantModel>> watchFacilityTenants(
+  /// [_readFacilityTenants] as a live stream.
+  static Stream<List<TenantModel>> _watchFacilityTenants(
     Query<Map<String, dynamic>> tenants,
     String facilityId,
   ) {
@@ -199,30 +196,13 @@ class TenantService {
     String facilityId,
     List<DocumentSnapshot<Map<String, dynamic>>> docs,
   ) {
-    if (docs.length >= facilityTenantReadLimit &&
-        _tenantReadLimitReported.add(facilityId)) {
-      final message = 'Facility $facilityId has at least '
-          '$facilityTenantReadLimit tenant docs; the tenant list, occupancy '
-          'and dashboard counts only see the first $facilityTenantReadLimit.';
-      debugPrint('⚠️ [TenantService] $message');
-      // Reaches Sentry through main.dart's FlutterError.onError.
-      FlutterError.reportError(FlutterErrorDetails(
-        exception: StateError(message),
-        stack: StackTrace.current,
-        library: 'tenant_service',
-      ));
-    }
+    FacilitySubcollections.reportIfReadLimitReached(
+      facilityId,
+      'tenant',
+      docs.length,
+    );
     return docs.map(TenantModel.fromFirestore).toList()
       ..sort(compareTenantsByName);
-  }
-
-  static CollectionReference<Map<String, dynamic>> _tenantsCollection(
-    String facilityId,
-  ) {
-    return _firestore
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('tenants');
   }
 
   // Get all tenants for a facility (real-time stream)
@@ -237,8 +217,10 @@ class TenantService {
         print('🔄 Setting up tenants stream for facility: $facilityId');
       }
 
-      return watchFacilityTenants(_tenantsCollection(facilityId), facilityId)
-          .map((tenants) {
+      return _watchFacilityTenants(
+        FacilitySubcollections.tenants(facilityId),
+        facilityId,
+      ).map((tenants) {
         if (kDebugMode) {
           print('📡 Stream update: ${tenants.length} tenants for facility: $facilityId');
         }
@@ -265,8 +247,8 @@ class TenantService {
       }
 
       // Same read as the full list: it had the same 250 cap and name order.
-      return watchFacilityTenants(
-        _tenantsCollection(facilityId).where('isActive', isEqualTo: true),
+      return _watchFacilityTenants(
+        FacilitySubcollections.activeTenants(facilityId),
         facilityId,
       ).map((tenants) {
         if (kDebugMode) {
@@ -294,8 +276,10 @@ class TenantService {
         print('🔄 Getting tenants for facility: $facilityId');
       }
 
-      final tenants =
-          await readFacilityTenants(_tenantsCollection(facilityId), facilityId);
+      final tenants = await _readFacilityTenants(
+        FacilitySubcollections.tenants(facilityId),
+        facilityId,
+      );
 
       if (kDebugMode) {
         print('✅ Successfully retrieved ${tenants.length} tenants');

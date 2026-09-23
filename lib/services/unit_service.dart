@@ -5,10 +5,17 @@ import '../models/unit_model.dart';
 import 'audit_service.dart';
 import 'facility_limits_service.dart';
 import 'facility_map_v2_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so tests can sign a fake user in and run
+  // the real read code (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   // Create a new unit in facility subcollection
   static Future<String> createUnit({
@@ -99,6 +106,56 @@ class UnitService {
     }
   }
 
+  /// Most unit docs one facility read returns; see
+  /// [FacilitySubcollections.readLimit].
+  ///
+  /// It was 400, ordered by unitNumber, with archived units dropped only after
+  /// the cap. Archived units used up the cap, docs with no unitNumber were
+  /// left out of the ordered query, and the Cloud Function that mirrors the
+  /// counts reads every unit, so the dashboard, the Units list and the
+  /// facility cards undercounted against it.
+  static const int facilityUnitReadLimit = FacilitySubcollections.readLimit;
+
+  /// A facility's non-archived units by unit number, from one unordered read.
+  ///
+  /// No auth check: callers check the signed-in user first. Used by the
+  /// public map sync too, so every unit list applies the same rule.
+  static Future<List<UnitModel>> readFacilityUnits(String facilityId) async {
+    final snapshot = await FacilitySubcollections.units(facilityId)
+        .limit(facilityUnitReadLimit)
+        .get();
+    return _unitsFromRead(facilityId, snapshot.docs);
+  }
+
+  /// Non-archived units, archived ones dropped from the whole read rather
+  /// than after a cap, sorted by unit number client-side (the read is
+  /// unordered so docs without a unitNumber are not left out).
+  ///
+  /// `(archived ?? false) == false` is the test the facility stats Cloud
+  /// Function applies (`isRentableUnit`), so a stray non-boolean is dropped
+  /// by both.
+  static List<UnitModel> _unitsFromRead(
+    String facilityId,
+    List<DocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    FacilitySubcollections.reportIfReadLimitReached(
+      facilityId,
+      'unit',
+      docs.length,
+    );
+    final units = [
+      for (final doc in docs)
+        if ((doc.data()?['archived'] ?? false) == false)
+          UnitModel.fromFirestore(doc),
+    ];
+    units.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
+    if (kDebugMode) {
+      debugPrint('📡 ${units.length} active units '
+          '(${docs.length - units.length} archived) for facility: $facilityId');
+    }
+    return units;
+  }
+
   // Get all units for a facility (real-time stream)
   static Stream<List<UnitModel>> getUnitsForFacilityStream(String facilityId) {
     try {
@@ -111,43 +168,10 @@ class UnitService {
         print('🔄 Setting up units stream for facility: $facilityId');
       }
 
-      Query query = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .limit(400); // Hard cap: 400 units per facility
-      
-      // Try ordered query, fall back to unordered if index is building
-      try {
-        query = query.orderBy('unitNumber');
-      } catch (orderingError) {
-        if (kDebugMode) {
-          print('⚠️ Ordered query not available, using unordered: $orderingError');
-        }
-      }
-
-      return query.snapshots().map((snapshot) {
-        final units = snapshot.docs.map((doc) {
-          return UnitModel.fromFirestore(doc);
-        }).toList();
-        
-        // Filter out archived units (treat missing archived field as false/not archived)
-        final activeUnits = units.where((unit) {
-          // Check if unit has archived field and filter accordingly
-          final data = snapshot.docs.firstWhere((doc) => doc.id == unit.id).data() as Map<String, dynamic>?;
-          final archived = data?['archived'] ?? false;
-          return archived == false;
-        }).toList();
-
-        // Sort in memory if we used fallback query
-        activeUnits.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
-
-        if (kDebugMode) {
-          print('📡 Stream update: ${activeUnits.length} active units (${units.length - activeUnits.length} archived) for facility: $facilityId');
-        }
-
-        return activeUnits;
-      });
+      return FacilitySubcollections.units(facilityId)
+          .limit(facilityUnitReadLimit)
+          .snapshots()
+          .map((snapshot) => _unitsFromRead(facilityId, snapshot.docs));
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error setting up units stream: $e');
@@ -168,53 +192,7 @@ class UnitService {
         print('🔄 Getting units for facility: $facilityId');
       }
 
-      // Try ordered query first, fall back to unordered if index is building
-      QuerySnapshot snapshot;
-      try {
-        snapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('units')
-            .orderBy('unitNumber')
-            .limit(400) // Hard cap: 400 units per facility
-            .get();
-      } catch (orderingError) {
-        if (orderingError.toString().contains('failed-precondition') && orderingError.toString().contains('index')) {
-          if (kDebugMode) {
-            print('📋 INDEX BUILDING: Using fallback unordered query for units...');
-          }
-          // Fallback to unordered query
-          snapshot = await _firestore
-              .collection('facilities')
-              .doc(facilityId)
-              .collection('units')
-              .limit(400) // Hard cap: 400 units per facility
-              .get();
-        } else {
-          rethrow;
-        }
-      }
-      
-      // Filter out archived units in memory (treat missing archived field as false/not archived)
-      final allDocs = snapshot.docs;
-      final activeDocs = allDocs.where((doc) {
-        final data = doc.data() as Map<String, dynamic>?;
-        final archived = data?['archived'] ?? false;
-        return archived == false;
-      }).toList();
-
-      if (kDebugMode) {
-        print('✅ Successfully retrieved ${activeDocs.length} active units (${allDocs.length - activeDocs.length} archived)');
-      }
-
-      final units = activeDocs
-          .map((doc) => UnitModel.fromFirestore(doc))
-          .toList();
-          
-      // Sort in memory (needed for fallback queries)
-      units.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
-      
-      return units;
+      return await readFacilityUnits(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting units: $e');

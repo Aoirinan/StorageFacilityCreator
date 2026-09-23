@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import '../models/unit_model.dart';
 import '../services/unit_service.dart';
 import '../services/tenant_service.dart';
@@ -39,12 +40,8 @@ class FacilityStatsService {
   /// True if the facility has at least one unit document (cheap `limit(1)` probe).
   static Future<bool> facilityHasAnyUnitDoc(String facilityId) async {
     try {
-      final snap = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .limit(1)
-          .get();
+      final snap =
+          await FacilitySubcollections.units(facilityId).limit(1).get();
       return snap.docs.isNotEmpty;
     } catch (e) {
       if (kDebugMode) {
@@ -58,11 +55,7 @@ class FacilityStatsService {
   /// probe). For the onboarding checklist, which only needs yes or no.
   static Future<bool> facilityHasAnyActiveTenant(String facilityId) async {
     try {
-      final snap = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .where('isActive', isEqualTo: true)
+      final snap = await FacilitySubcollections.activeTenants(facilityId)
           .limit(1)
           .get();
       return snap.docs.isNotEmpty;

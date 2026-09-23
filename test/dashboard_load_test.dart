@@ -3,11 +3,17 @@ import 'dart:async';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/dashboard_provider.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
+
+import 'support/fake_facility_collection.dart';
 
 UnitModel _unit(
   String id, {
@@ -129,6 +135,68 @@ void main() {
       ], now);
       expect(due.map((d) => d.unit.id), ['in-window']);
       expect(due.single.moveOutDate, DateTime(2026, 9, 26));
+    });
+  });
+
+  group('loadDashboardStats (the dashboard load, on fake collections)', () {
+    setUp(() {
+      final auth = MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner-1'));
+      TenantService.authForTesting = auth;
+      UnitService.authForTesting = auth;
+    });
+    tearDown(() {
+      TenantService.authForTesting = null;
+      UnitService.authForTesting = null;
+      FacilitySubcollections.overrideForTesting(null);
+    });
+
+    test('counts every tenant doc for occupancy but only active tenants as tenants', () async {
+      final collections = {
+        'tenants': FakeCollection([
+          FakeDoc('active-t', {'name': 'Al', 'isActive': true, 'monthlyRate': 100}),
+          FakeDoc('archived-t', {'name': 'Bo', 'isActive': false, 'monthlyRate': 50}),
+          // A partial doc (no name, no isActive), e.g. recreated by a server
+          // merge-write after its tenant was deleted.
+          FakeDoc('partial-t', {'autopay': {'status': 'OFF'}}),
+        ]),
+        'units': FakeCollection([
+          FakeDoc('u-active', {'unitNumber': '1', 'status': 'occupied', 'tenantId': 'active-t'}),
+          FakeDoc('u-archived-tenant', {'unitNumber': '2', 'status': 'occupied', 'tenantId': 'archived-t'}),
+          FakeDoc('u-orphan', {'unitNumber': '3', 'status': 'occupied', 'tenantId': 'deleted-t'}),
+          FakeDoc('u-free', {'unitNumber': '4', 'status': 'available'}),
+          FakeDoc('u-no-number', {'status': 'available'}),
+          FakeDoc('u-office', {
+            'unitNumber': 'OFF',
+            'status': 'occupied',
+            'tenantId': 'active-t',
+            'publicListingEnabled': false,
+          }),
+          FakeDoc('u-gone', {'unitNumber': '0', 'status': 'available', 'archived': true}),
+        ]),
+      };
+      FacilitySubcollections.overrideForTesting((facilityId, name) {
+        expect(facilityId, 'fac1');
+        return collections[name]!;
+      });
+
+      final stats = await loadDashboardStats(
+        [FacilityModel(id: 'fac1', name: 'Main', ownerUid: 'owner-1', createdAt: DateTime(2026, 1, 1))],
+        DateTime(2026, 9, 23, 12),
+      );
+
+      // Units held by the active and the archived tenant; the orphan is not
+      // occupied. Counting from active tenants only gave 1.
+      expect(stats.occupiedUnits, 2);
+      // Rentable, non-archived units, including the one with no unitNumber
+      // (an ordered, capped unit read left it out).
+      expect(stats.totalUnits, 5);
+      expect(stats.availableUnits, 3);
+      expect(stats.totalUnitDocs, 6);
+      expect(stats.staffOnlyUnits, 1);
+      // The partial doc is not an active tenant, as on the server. It used to
+      // read as active because a missing isActive defaulted to true.
+      expect(stats.totalTenants, 1);
+      expect(stats.monthlyRevenue, 100);
     });
   });
 

@@ -105,6 +105,7 @@ class TenantModel {
   final DateTime? paidThrough;
   final DateTime createdAt;
   final DateTime? updatedAt;
+  /// See [isActiveField].
   final bool isActive;
   final String? contractUrl;
   final String? notes;
@@ -233,6 +234,17 @@ class TenantModel {
     this.monthStatusOverrides = const {},
   });
 
+  /// Whether a tenant doc's `isActive` value makes it an active tenant: only
+  /// exactly `true`.
+  ///
+  /// Every active-tenant query (`where('isActive', isEqualTo: true)`), the
+  /// facility stats Cloud Function and the server rent and autopay jobs use
+  /// this rule. A missing field used to read as active here, so a partial doc
+  /// (e.g. one a server merge-write recreated after the tenant was deleted)
+  /// counted as an active tenant on the dashboard and nowhere else. Every
+  /// tenant writer (createTenant, the online move-in) sets the field.
+  static bool isActiveField(Object? value) => value == true;
+
   // Create TenantModel from Firestore document
   factory TenantModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>?;
@@ -248,7 +260,7 @@ class TenantModel {
       paidThrough: (data?['paidThrough'] as Timestamp?)?.toDate(),
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate(),
-      isActive: data?['isActive'] ?? true,
+      isActive: isActiveField(data?['isActive']),
       contractUrl: data?['contractUrl'],
       notes: data?['notes'],
       isOnDNR: data?['isOnDNR'] ?? false,

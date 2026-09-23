@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import '../services/facility_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/tenant_service.dart';
@@ -180,8 +180,19 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
     return _emptyStats();
   }
 
+  return loadDashboardStats(facilities, DateTime.now());
+});
+
+/// The dashboard numbers for [facilities]; [dashboardStatsProvider] picks
+/// which (the active facility, or all). Tests call this so the real tenant
+/// and unit reads and the real per-facility counting run against fake
+/// collections.
+@visibleForTesting
+Future<DashboardStats> loadDashboardStats(
+  List<FacilityModel> facilities,
+  DateTime now,
+) async {
   // Facilities load side by side rather than one after another.
-  final now = DateTime.now();
   final perFacility = await Future.wait(
     facilities.map((facility) => _loadFacilityDashboard(facility, now)),
   );
@@ -245,7 +256,7 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
     topDelinquentTenants: top5Delinquent,
     upcomingMoveOuts: upcomingMoveOuts,
   );
-});
+}
 
 /// One facility's share of the dashboard.
 class _FacilityDashboard {
