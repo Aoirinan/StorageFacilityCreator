@@ -15,11 +15,18 @@ class SubscriptionAccessResult {
   final String? message;
   final SubscriptionStatus? subscriptionStatus;
 
+  /// False when the check could not read what it needed (the account or the
+  /// facilities), so the answer is a fail-closed guess rather than the
+  /// account's standing. Never cache it, and don't yank a working session to
+  /// /subscription over it from a background re-check.
+  final bool verified;
+
   const SubscriptionAccessResult({
     required this.canAccess,
     this.redirectRoute,
     this.message,
     this.subscriptionStatus,
+    this.verified = true,
   });
 }
 
@@ -100,9 +107,10 @@ class SubscriptionGuardService {
         return const SubscriptionAccessResult(canAccess: true);
       }
 
-      // Get account for current user
-      final accountFetcher =
-          accountProvider ?? FacilityCreatorAccountService.getAccountByOwnerUid;
+      // Get account for current user. The throwing read: the other one turns
+      // a failed read into null, which reads as "no account yet, allow".
+      final accountFetcher = accountProvider ??
+          FacilityCreatorAccountService.getAccountByOwnerUidOrThrow;
       final account = await accountFetcher(user.uid);
 
       // Accounts the platform does not bill are never locked out. Set by a
@@ -145,9 +153,14 @@ class SubscriptionGuardService {
       }
 
       // Check if user can access platform (account-level OR per-facility subs)
-      final facilitiesFetcher =
-          facilitiesProvider ??
-          () => FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
+      // Throwing, for the same reason: a failed read returned [], which looks
+      // exactly like a per-facility-billed owner whose subscription lapsed.
+      final facilitiesFetcher = facilitiesProvider ??
+          () => FacilityService.getUserFacilities(
+                includeArchived: false,
+                forceRefresh: false,
+                throwOnError: true,
+              );
       final bool hasAccess;
       if (activeSubscriptionChecker != null) {
         hasAccess = await activeSubscriptionChecker(user.uid, await facilitiesFetcher());
@@ -268,6 +281,7 @@ class SubscriptionGuardService {
         canAccess: false,
         redirectRoute: '/subscription',
         message: 'We could not verify your subscription status. Please check your connection or try again.',
+        verified: false,
       );
     }
   }

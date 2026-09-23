@@ -144,7 +144,9 @@ class _TrialExpiryCheckerState extends State<_TrialExpiryChecker> {
         allowSubscriptionRoutes: true,
       );
       if (!mounted) return;
-      if (!result.canAccess && result.redirectRoute != null) {
+      // An unverified result means a read failed, not that access lapsed; the
+      // next navigation re-checks. Don't yank the page away over a blip.
+      if (!result.canAccess && result.verified && result.redirectRoute != null) {
         context.go(result.redirectRoute!);
       }
     } catch (_) {}
@@ -193,7 +195,9 @@ class _SubscriptionAwareSidebarState extends State<_SubscriptionAwareSidebar> {
 
       final account = await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
       final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
+      // Against the account above: hasActiveSubscription fetched it again.
+      final hasAccess = account != null &&
+          FacilityCreatorAccountService.accountGrantsPlatformAccess(account, facilities: facilities);
 
       if (mounted) {
         // Pending approval gets its own screen/guard. Don't freeze sidebar interactions here.

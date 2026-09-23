@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/services/facility_service.dart';
@@ -103,22 +105,170 @@ void main() {
     });
   });
 
-  group('facility list cache is per account', () {
+  group('getUserFacilities cache and shared load (production path, fake read)', () {
+    // loadUserFacilitiesFor is what getUserFacilities runs, with the signed-in
+    // uid and the Firestore read passed in; everything else is production.
+    late Map<String, int> fetches;
+    late Map<String, List<Completer<List<FacilityModel>>>> pending;
+
+    setUp(() {
+      FacilityService.clearFacilitiesCache();
+      fetches = {};
+      pending = {};
+    });
     tearDown(FacilityService.clearFacilitiesCache);
 
-    test('a cached list is never handed to a different uid', () {
-      // The bug: one unkeyed static list, so the next account to sign in on
-      // the tab was shown the previous account's facilities for 2 minutes.
-      FacilityService.debugSeedFacilitiesCache('uid-A', [_facility('f1', 'A Storage')]);
+    /// A read that answers straight away with one facility named after [uid].
+    Future<List<FacilityModel>> instant(String uid, {required bool includeArchived}) async {
+      fetches[uid] = (fetches[uid] ?? 0) + 1;
+      return [_facility('f-$uid', '$uid Storage')];
+    }
 
-      expect(FacilityService.cachedFacilitiesFor('uid-A'), hasLength(1));
-      expect(FacilityService.cachedFacilitiesFor('uid-B'), isNull);
+    /// A read that waits until the test completes it.
+    Future<List<FacilityModel>> gated(String uid, {required bool includeArchived}) {
+      fetches[uid] = (fetches[uid] ?? 0) + 1;
+      final gate = Completer<List<FacilityModel>>();
+      (pending[uid] ??= []).add(gate);
+      return gate.future;
+    }
+
+    Future<List<FacilityModel>> load(
+      String uid, {
+      required Future<List<FacilityModel>> Function(String uid, {required bool includeArchived})
+          fetch,
+      bool forceRefresh = false,
+      bool throwOnError = false,
+    }) {
+      return FacilityService.loadUserFacilitiesFor(
+        currentUid: () => uid,
+        fetch: fetch,
+        forceRefresh: forceRefresh,
+        throwOnError: throwOnError,
+      );
+    }
+
+    List<String> names(List<FacilityModel> list) => list.map((f) => f.name).toList();
+
+    test('a cached list is served to its own account without another read', () async {
+      await load('uid-A', fetch: instant);
+      expect(names(await load('uid-A', fetch: instant)), ['uid-A Storage']);
+      expect(fetches['uid-A'], 1);
     });
 
-    test('clearFacilitiesCache empties it', () {
-      FacilityService.debugSeedFacilitiesCache('uid-A', [_facility('f1', 'A Storage')]);
+    test('a cached list is never handed to a different account', () async {
+      // The bug: one unkeyed static list, so the next account to sign in on
+      // the tab was shown the previous account's facilities for 2 minutes.
+      await load('uid-A', fetch: instant);
+      expect(names(await load('uid-B', fetch: instant)), ['uid-B Storage']);
+      expect(fetches['uid-B'], 1);
+    });
+
+    test('a load in flight for one account is never shared with another', () async {
+      final a = load('uid-A', fetch: gated);
+      final b = load('uid-B', fetch: gated);
+      await pumpEventQueue();
+      pending['uid-B']!.single.complete([_facility('fb', 'B Storage')]);
+      pending['uid-A']!.single.complete([_facility('fa', 'A Storage')]);
+      expect(names(await a), ['A Storage']);
+      expect(names(await b), ['B Storage']);
+    });
+
+    test('concurrent callers for one account share one read', () async {
+      final a = load('uid-A', fetch: gated);
+      final b = load('uid-A', fetch: gated);
+      await pumpEventQueue();
+      expect(fetches['uid-A'], 1);
+      pending['uid-A']!.single.complete([_facility('fa', 'A Storage')]);
+      expect(names(await a), ['A Storage']);
+      expect(names(await b), ['A Storage']);
+    });
+
+    test('a forced refresh does not join a load already running', () async {
+      final old = load('uid-A', fetch: gated);
+      await pumpEventQueue();
+      final forced = load('uid-A', fetch: gated, forceRefresh: true);
+      await pumpEventQueue();
+      expect(fetches['uid-A'], 2);
+      pending['uid-A']![1].complete([_facility('f2', 'After write')]);
+      pending['uid-A']![0].complete([_facility('f1', 'Before write')]);
+      expect(names(await forced), ['After write']);
+      expect(names(await old), ['Before write']);
+    });
+
+    test('a load that started before a forced refresh never overwrites its newer list', () async {
+      // The old load finishes last. It used to write its list over the forced
+      // one with a fresh 2-minute timestamp.
+      final old = load('uid-A', fetch: gated);
+      await pumpEventQueue();
+      final forced = load('uid-A', fetch: gated, forceRefresh: true);
+      await pumpEventQueue();
+      pending['uid-A']![1].complete([_facility('f2', 'After write')]);
+      await forced;
+      pending['uid-A']![0].complete([_facility('f1', 'Before write')]);
+      await old;
+
+      expect(names(await load('uid-A', fetch: instant)), ['After write']);
+      expect(fetches['uid-A'], 2, reason: 'served from the forced load\'s cache');
+    });
+
+    test('a load that started before clearFacilitiesCache is not cached', () async {
+      // e.g. accepting an invite clears the cache; a load already under way
+      // read the facilities before the new role existed.
+      final old = load('uid-A', fetch: gated);
+      await pumpEventQueue();
       FacilityService.clearFacilitiesCache();
-      expect(FacilityService.cachedFacilitiesFor('uid-A'), isNull);
+      pending['uid-A']!.single.complete([_facility('f1', 'Before invite')]);
+      await old;
+
+      expect(names(await load('uid-A', fetch: instant)), ['uid-A Storage']);
+      expect(fetches['uid-A'], 2);
+    });
+
+    testWidgets('a hung read releases its waiters after the timeout', (tester) async {
+      // Callers share one load, so a read that never settled used to hold
+      // every later caller, the route guard's access check included.
+      expect(FacilityService.facilityLoadTimeout, const Duration(seconds: 15));
+      List<FacilityModel>? first;
+      unawaited(load('uid-A', fetch: gated).then((l) => first = l));
+      await tester.pump(FacilityService.facilityLoadTimeout - const Duration(seconds: 1));
+      List<FacilityModel>? joined;
+      unawaited(load('uid-A', fetch: gated).then((l) => joined = l));
+      await tester.pump();
+      expect(fetches['uid-A'], 1, reason: 'inside the timeout it joins the hung read');
+      expect(first, isNull);
+
+      await tester.pump(const Duration(seconds: 2));
+      expect(first, isEmpty);
+      expect(joined, isEmpty);
+
+      // The slot is free again, so the next caller reads afresh.
+      List<FacilityModel>? retry;
+      unawaited(load('uid-A', fetch: gated).then((l) => retry = l));
+      await tester.pump();
+      expect(fetches['uid-A'], 2);
+      pending['uid-A']![1].complete([_facility('f1', 'Keepsake')]);
+      await tester.pump();
+      expect(names(retry!), ['Keepsake']);
+    });
+
+    test('a failed read is [] by default and an error when asked', () async {
+      Future<List<FacilityModel>> failing(String uid, {required bool includeArchived}) =>
+          Future.error(StateError('offline'));
+
+      expect(await load('uid-A', fetch: failing), isEmpty);
+      await expectLater(load('uid-A', fetch: failing, throwOnError: true), throwsStateError);
+    });
+
+    test('signed out is [] by default and an error when asked', () async {
+      Future<List<FacilityModel>> run({bool throwOnError = false}) =>
+          FacilityService.loadUserFacilitiesFor(
+            currentUid: () => null,
+            fetch: instant,
+            throwOnError: throwOnError,
+          );
+      expect(await run(), isEmpty);
+      await expectLater(run(throwOnError: true), throwsException);
+      expect(fetches, isEmpty);
     });
   });
 }

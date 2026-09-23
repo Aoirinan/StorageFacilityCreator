@@ -43,28 +43,25 @@ class FacilityService {
   static final SingleFlight<String, List<FacilityModel>> _facilitiesFlight =
       SingleFlight<String, List<FacilityModel>>();
 
+  /// Upper bound on one facility-list load. Callers share a load, so without
+  /// it one hung query held every later caller (the route guard included)
+  /// until the page was reloaded.
+  static const Duration facilityLoadTimeout = Duration(seconds: 15);
+
+  // Bumped by clearFacilitiesCache and every forced refresh. A load only
+  // caches its list if this has not moved since it started, so a load that
+  // began before a write can't overwrite the newer list for 2 minutes.
+  static int _facilitiesGeneration = 0;
+
   /// Clears in-memory facility list cache (e.g. after accepting an invite, or
   /// on sign-out).
   static void clearFacilitiesCache() {
+    _facilitiesGeneration++;
     _cachedFacilities = null;
     _cachedFacilitiesUid = null;
     _lastFacilitiesFetch = null;
     _facilitiesFlight.clear();
     _backfillCompletedForUid = null;
-  }
-
-  /// The cached active-facility list for [uid], or null when there is none or
-  /// it belongs to another account. Exposed for tests.
-  @visibleForTesting
-  static List<FacilityModel>? cachedFacilitiesFor(String uid) =>
-      _cachedFacilitiesUid == uid ? _cachedFacilities : null;
-
-  /// Seeds the cache as a finished fetch would. Exposed for tests.
-  @visibleForTesting
-  static void debugSeedFacilitiesCache(String uid, List<FacilityModel> facilities) {
-    _cachedFacilities = facilities;
-    _cachedFacilitiesUid = uid;
-    _lastFacilitiesFetch = DateTime.now();
   }
 
   /// Field updates the one-time facility backfill makes, keyed by facility id.
@@ -442,17 +439,42 @@ class FacilityService {
   }
 
   // Get user's facilities (owner-scoped query)
+  //
+  // Returns [] on any error unless [throwOnError], for callers that must not
+  // mistake a failed read for "no facilities" (the subscription check).
   static Future<List<FacilityModel>> getUserFacilities({
     bool includeArchived = false,
     bool forceRefresh = false,
+    bool throwOnError = false,
+  }) {
+    return loadUserFacilitiesFor(
+      currentUid: () => _auth.currentUser?.uid,
+      fetch: _fetchUserFacilities,
+      includeArchived: includeArchived,
+      forceRefresh: forceRefresh,
+      throwOnError: throwOnError,
+    );
+  }
+
+  /// [getUserFacilities] with the signed-in uid and the Firestore read passed
+  /// in. The per-account cache, the shared load, its timeout and the
+  /// generation check are the ones production runs. Exposed for tests.
+  @visibleForTesting
+  static Future<List<FacilityModel>> loadUserFacilitiesFor({
+    required String? Function() currentUid,
+    required Future<List<FacilityModel>> Function(String uid, {required bool includeArchived})
+        fetch,
+    bool includeArchived = false,
+    bool forceRefresh = false,
+    bool throwOnError = false,
   }) async {
     try {
-      final user = _auth.currentUser;
-      if (user == null) {
+      final uid = currentUid();
+      if (uid == null) {
         throw Exception('Not signed in');
       }
 
-      final cacheFresh = _cachedFacilitiesUid == user.uid &&
+      final cacheFresh = _cachedFacilitiesUid == uid &&
           _cachedFacilities != null &&
           _lastFacilitiesFetch != null &&
           DateTime.now().difference(_lastFacilitiesFetch!) < _facilityCacheTtl;
@@ -469,17 +491,32 @@ class FacilityService {
         return _cachedFacilities!;
       }
 
+      Future<List<FacilityModel>> loadAndCache() async {
+        final generation = _facilitiesGeneration;
+        final facilities = await fetch(uid, includeArchived: includeArchived)
+            .timeout(facilityLoadTimeout);
+        if (!includeArchived && generation == _facilitiesGeneration) {
+          _cachedFacilities = facilities;
+          _cachedFacilitiesUid = uid;
+          _lastFacilitiesFetch = DateTime.now();
+        }
+        return facilities;
+      }
+
       final List<FacilityModel> facilities;
       if (forceRefresh) {
-        // Not joined to a call already running: that one may have started
-        // before the write the caller is refreshing to see.
-        facilities = await _loadUserFacilities(user.uid, includeArchived: includeArchived);
+        // A forced refresh follows a write. Anything already loading may have
+        // read before it: keep it out of the cache, and don't let later
+        // callers join it.
+        _facilitiesGeneration++;
+        _facilitiesFlight.clear();
+        facilities = await loadAndCache();
       } else {
         // On a cold load the dashboard, sidebar, banner and route guard each
         // ran this whole chain at once; now they share one.
         facilities = await _facilitiesFlight.run(
-          '${user.uid}|$includeArchived',
-          () => _loadUserFacilities(user.uid, includeArchived: includeArchived),
+          '$uid|$includeArchived',
+          loadAndCache,
         );
       }
       // #region agent log
@@ -499,7 +536,7 @@ class FacilityService {
           _facilityServiceDebugLog('🚨 PERMISSION DENIED: Check Firestore security rules for facilities collection');
         }
       }
-      
+      if (throwOnError) rethrow;
       return [];
     }
   }
@@ -514,7 +551,7 @@ class FacilityService {
   /// query below has no active filter and no orderBy, so it needs no composite
   /// index; archived facilities are dropped in memory and the list is sorted by
   /// name, which is all the ordered query was ever used for.
-  static Future<List<FacilityModel>> _loadUserFacilities(
+  static Future<List<FacilityModel>> _fetchUserFacilities(
     String uid, {
     required bool includeArchived,
   }) async {
@@ -543,18 +580,11 @@ class FacilityService {
     final ownedIds = owned.map((f) => f.id).toSet();
     final fromRoles = await _facilitiesByIds(roleIds.difference(ownedIds));
 
-    final facilities = mergeUserFacilities(
+    return mergeUserFacilities(
       owned: owned,
       fromRoles: fromRoles,
       includeArchived: includeArchived,
     );
-
-    if (!includeArchived) {
-      _cachedFacilities = facilities;
-      _cachedFacilitiesUid = uid;
-      _lastFacilitiesFetch = DateTime.now();
-    }
-    return facilities;
   }
 
   // Real-time stream for ACTIVE facilities only

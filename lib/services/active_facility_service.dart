@@ -29,17 +29,6 @@ class ActiveFacilityService {
     return savedByUid == null || currentUid == null || savedByUid == currentUid;
   }
 
-  /// The cached id for [uid], or null when none is cached for that account.
-  /// Exposed for tests.
-  @visibleForTesting
-  static String? cachedActiveFacilityIdFor(String? uid) =>
-      _cachedActiveFacilityUid == uid ? _cachedActiveFacilityId : null;
-
-  /// Seeds the in-memory cache as a read would. Exposed for tests.
-  @visibleForTesting
-  static void debugSeedCache(String? uid, String? facilityId) =>
-      _setCache(uid, facilityId);
-
   static void _setCache(String? uid, String? facilityId) {
     _cachedActiveFacilityUid = uid;
     _cachedActiveFacilityId = facilityId;
@@ -56,8 +45,34 @@ class ActiveFacilityService {
 
   /// Get the active facility ID from cache, localStorage, or Firestore
   /// Returns null if "All Facilities" is selected
-  static Future<String?> getActiveFacilityId() async {
-    final uid = _auth.currentUser?.uid;
+  static Future<String?> getActiveFacilityId() {
+    return activeFacilityIdFor(
+      currentUid: () => _auth.currentUser?.uid,
+      readUserDoc: _readSavedActiveFacilityId,
+    );
+  }
+
+  /// The users/{uid} copy of the selection: whether the doc exists, and the
+  /// id it holds.
+  static Future<({bool exists, String? facilityId})> _readSavedActiveFacilityId(
+      String uid) async {
+    final userDoc = await _firestore.collection('users').doc(uid).get();
+    return (
+      exists: userDoc.exists,
+      facilityId: userDoc.data()?['activeFacilityId'] as String?,
+    );
+  }
+
+  /// [getActiveFacilityId] with the signed-in uid and the users-doc read passed
+  /// in; the cache and localStorage handling are the ones production runs.
+  /// Exposed for tests.
+  @visibleForTesting
+  static Future<String?> activeFacilityIdFor({
+    required String? Function() currentUid,
+    required Future<({bool exists, String? facilityId})> Function(String uid)
+        readUserDoc,
+  }) async {
+    final uid = currentUid();
     // Return cached value if available
     if (_cachedActiveFacilityId != null && _cachedActiveFacilityUid == uid) {
       return _cachedActiveFacilityId;
@@ -81,17 +96,15 @@ class ActiveFacilityService {
       }
 
       // Fallback to Firestore
-      final user = _auth.currentUser;
-      if (user != null) {
-        final userDoc = await _firestore.collection('users').doc(user.uid).get();
-        if (userDoc.exists) {
-          final data = userDoc.data();
-          final facilityId = data?['activeFacilityId'] as String?;
-          
+      if (uid != null) {
+        final saved = await readUserDoc(uid);
+        if (saved.exists) {
+          final facilityId = saved.facilityId;
+
           // Store in localStorage for next time
-          await _saveLocally(prefs, user.uid, facilityId);
-          
-          _setCache(user.uid, facilityId);
+          await _saveLocally(prefs, uid, facilityId);
+
+          _setCache(uid, facilityId);
           return facilityId;
         }
       }

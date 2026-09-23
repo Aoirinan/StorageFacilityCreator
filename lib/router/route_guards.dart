@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -43,6 +45,45 @@ final _subscriptionCheckFlight = SingleFlight<String, SubscriptionAccessResult>(
 /// every single navigation for nothing.
 bool needsVerificationReload(User user) => !user.emailVerified;
 
+/// Throttles the background [User.reload] the guard fires for verified users.
+///
+/// That reload is the only client-side check that ends a session a super
+/// admin disabled (superAdminDisableUser revokes nothing) or whose password
+/// was changed elsewhere: Auth answers USER_DISABLED or TOKEN_EXPIRED, the SDK
+/// signs the user out, and the router's refreshListenable re-runs this guard,
+/// which sends them to /login. Awaiting it on every navigation cost a round
+/// trip each click; once a minute, in the background, keeps the check without
+/// the wait.
+@visibleForTesting
+class VerifiedUserRecheck {
+  VerifiedUserRecheck({this.interval = const Duration(seconds: 60)});
+
+  final Duration interval;
+  String? _uid;
+  DateTime? _lastAt;
+
+  /// Whether [uid] is due a re-check at [now]. Records the check when it is,
+  /// so only the first navigation in each [interval] fires one. A different
+  /// account is always due.
+  bool claim(String uid, DateTime now) {
+    final lastAt = _lastAt;
+    if (_uid == uid && lastAt != null && now.difference(lastAt) < interval) {
+      return false;
+    }
+    _uid = uid;
+    _lastAt = now;
+    return true;
+  }
+
+  void reset() {
+    _uid = null;
+    _lastAt = null;
+  }
+}
+
+@visibleForTesting
+final VerifiedUserRecheck verifiedUserRecheck = VerifiedUserRecheck();
+
 /// Main redirect guard function for GoRouter
 ///
 /// Handles:
@@ -74,6 +115,7 @@ Future<String?> evaluateRouteGuard({
   bool Function(User? user)? isSuperAdmin,
   Future<bool> Function()? isTwoFactorEnabled,
   Future<SubscriptionAccessResult> Function(String path)? checkAccess,
+  DateTime Function()? clock,
 }) async {
   final User? Function() readCurrentUser =
       currentUser ?? () => FirebaseAuth.instance.currentUser;
@@ -234,6 +276,12 @@ Future<String?> evaluateRouteGuard({
         // degrades closed rather than letting an unverified user through.
         effectiveUser = verifiedUser;
       }
+    } else if (verifiedUserRecheck.claim(
+        verifiedUser.uid, (clock ?? DateTime.now)())) {
+      // Not awaited: this navigation proceeds on the current snapshot. If the
+      // account was disabled or its password changed, the SDK signs it out
+      // when this settles and the guard runs again (see VerifiedUserRecheck).
+      unawaited(verifiedUser.reload().catchError((Object _) {}));
     }
 
     if (effectiveUser != null &&
@@ -340,6 +388,39 @@ Future<String?> evaluateRouteGuard({
     return AppRoute.dashboard;
   }
 
+  // One access answer per uid, shared by the pending-approval exception and
+  // the subscription check below, so they cost one lookup between them.
+  //
+  // Keyed by uid alone although [accessCheck] takes the path: checkAccess only
+  // reads the path to let /subscription routes through, and neither caller
+  // runs for those. Anything that does must not use this cache, or it would
+  // hand every later route the "subscription pages are allowed" answer.
+  Future<SubscriptionAccessResult> sharedAccessCheck(String uid) async {
+    assert(!path.startsWith('/subscription'),
+        'the uid-keyed access cache must not hold a /subscription answer');
+    final cached = SubscriptionGuardService.routeGuardCache.freshFor(uid);
+    if (cached != null) return cached;
+
+    final result = await _subscriptionCheckFlight.run(
+      uid,
+      () => accessCheck(path).timeout(_accessCheckTimeout),
+    );
+    // Only a confirmed grant is kept. Trialing/pending status can change
+    // quickly. A cached denial turned one transient failure (a failed
+    // facilities read looks like a lapsed per-facility subscription) into a
+    // 2-minute lockout. An unverified answer is a fail-closed guess made when
+    // a read failed, not the account's standing.
+    final status = result.subscriptionStatus;
+    final cacheable = result.canAccess &&
+        result.verified &&
+        status != SubscriptionStatus.trialing &&
+        status != SubscriptionStatus.pendingApproval;
+    if (cacheable) {
+      SubscriptionGuardService.routeGuardCache.store(uid, result);
+    }
+    return result;
+  }
+
   // Redirect authenticated users from landing page to dashboard
   if (isAuthenticated && (loc == AppRoute.landing || path == '/')) {
     final target = await redirectToDashboardOrLoginIf2FA();
@@ -390,6 +471,23 @@ Future<String?> evaluateRouteGuard({
       return null; // Allow them to stay on these routes
     }
 
+    // /pending-approval is where the subscription check sends a pending
+    // account. Bouncing it on to the dashboard here (including every time the
+    // shell's 1-minute checker sent it back) left pending users on the
+    // dashboard. Everyone else still leaves it, as does a pending user whose
+    // check fails.
+    if (loc == AppRoute.pendingApproval && !superAdmin(firebaseUser)) {
+      try {
+        final access = await sharedAccessCheck(firebaseUser.uid);
+        if (!access.canAccess &&
+            access.redirectRoute == AppRoute.pendingApproval) {
+          return null;
+        }
+      } catch (_) {
+        // Fall through to the dashboard, as before.
+      }
+    }
+
     final target = await redirectToDashboardOrLoginIf2FA();
     // #region agent log
     debugSessionLog(
@@ -438,31 +536,16 @@ Future<String?> evaluateRouteGuard({
 
   // Check subscription status for authenticated users (skip for subscription routes)
   if (isAuthenticated && !isPublicRoute && !path.startsWith('/subscription')) {
-    final uid = firebaseUser.uid;
-    // Keyed by uid: the cache used to be shared by whoever signed in next.
-    var subscriptionCheck = SubscriptionGuardService.routeGuardCache.freshFor(uid);
-
-    if (subscriptionCheck == null) {
-      try {
-        final result = await _subscriptionCheckFlight.run(
-          uid,
-          () => accessCheck(path).timeout(_accessCheckTimeout),
-        );
-        subscriptionCheck = result;
-        // Don't cache trialing/pending results: status can change quickly.
-        final status = result.subscriptionStatus;
-        final shouldBypassCache = status == SubscriptionStatus.trialing ||
-            status == SubscriptionStatus.pendingApproval;
-        if (!shouldBypassCache) {
-          SubscriptionGuardService.routeGuardCache.store(uid, result);
-        }
-      } catch (e) {
-        // Fail closed to avoid bypassing access control on errors
-        if (kDebugMode) {
-          print('⚠️ Subscription check error: $e');
-        }
-        return AppRoute.subscription;
+    final SubscriptionAccessResult subscriptionCheck;
+    try {
+      // Keyed by uid: the cache used to be shared by whoever signed in next.
+      subscriptionCheck = await sharedAccessCheck(firebaseUser.uid);
+    } catch (e) {
+      // Fail closed to avoid bypassing access control on errors
+      if (kDebugMode) {
+        print('⚠️ Subscription check error: $e');
       }
+      return AppRoute.subscription;
     }
 
     if (!subscriptionCheck.canAccess &&

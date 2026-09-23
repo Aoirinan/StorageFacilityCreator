@@ -57,8 +57,15 @@ class _FacilityEditRouteState extends ConsumerState<FacilityEditRoute> {
   }
 
   /// The facility from the user's facility list, if a screen already loaded
-  /// it. That list only holds facilities the user owns or has a role on, the
-  /// same access rule [FacilityService.getFacility] applies.
+  /// it and the user owns it. That list only holds facilities the user owns
+  /// or has a role on, the same access rule [FacilityService.getFacility]
+  /// applies.
+  ///
+  /// Owned entries only: the list's owner query keeps them current, but a
+  /// role facility (a super admin in a support session, invited staff) is
+  /// read once when the stream starts and never again. Seeding the form from
+  /// that copy made Save write back name, address, billing settings and the
+  /// rest as they were then, silently undoing the owner's later edits.
   ///
   /// Read once, never watched: the editor copies the facility into its text
   /// fields in its own initState, so swapping in a newer copy later would
@@ -73,7 +80,10 @@ class _FacilityEditRouteState extends ConsumerState<FacilityEditRoute> {
     final facilities = ref.read(provider).value;
     if (facilities == null) return null;
     for (final facility in facilities) {
-      if (facility.id == widget.facilityId) return facility;
+      if (facility.id == widget.facilityId &&
+          facility.currentUserOwnsFacility == true) {
+        return facility;
+      }
     }
     return null;
   }

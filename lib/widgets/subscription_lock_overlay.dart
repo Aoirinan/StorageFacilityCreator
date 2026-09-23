@@ -81,7 +81,9 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
 
       final account = await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
       final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
+      // Against the account above: hasActiveSubscription fetched it again.
+      final hasAccess = account != null &&
+          FacilityCreatorAccountService.accountGrantsPlatformAccess(account, facilities: facilities);
 
       if (mounted) {
         // hasAccess = account.canAccessPlatform (legacy) OR any facility has per-facility platform sub

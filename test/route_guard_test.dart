@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,16 +22,20 @@ class _ReloadCounter {
 // MockUser's own fields are mutable; the counter here is not.
 // ignore: must_be_immutable
 class _CountingUser extends MockUser {
-  _CountingUser({required super.uid, super.isEmailVerified})
+  _CountingUser({required super.uid, super.isEmailVerified, this.reloadResult})
       : super(email: '$uid@example.com');
 
   final _ReloadCounter _reloads = _ReloadCounter();
   int get reloads => _reloads.count;
 
+  /// What reload() returns instead of MockUser's instant success, e.g. a
+  /// future that never settles, or an error such as Auth's USER_DISABLED.
+  final Future<void> Function()? reloadResult;
+
   @override
   Future<void> reload() {
     _reloads.count += 1;
-    return super.reload();
+    return reloadResult?.call() ?? super.reload();
   }
 }
 
@@ -73,6 +79,8 @@ class _Tab {
     bool superAdmin = false,
     bool twoFactorEnabled = false,
     Object? accessError,
+    Object? accountReadError,
+    DateTime? at,
   }) {
     final uri = Uri.parse(location);
     return evaluateRouteGuard(
@@ -82,6 +90,7 @@ class _Tab {
       currentUser: () => user,
       isSuperAdmin: (_) => superAdmin,
       isTwoFactorEnabled: () async => twoFactorEnabled,
+      clock: at == null ? null : () => at,
       // The real access rules, with their existing injected seams.
       checkAccess: (path) {
         accessChecks += 1;
@@ -92,7 +101,10 @@ class _Tab {
           userOverride: user,
           authOverride: MockFirebaseAuth(mockUser: user as MockUser?),
           superAdminResolver: () => superAdmin,
-          accountProvider: (_) async => account,
+          accountProvider: (_) async {
+            if (accountReadError != null) throw accountReadError;
+            return account;
+          },
           facilitiesProvider: () async => facilities,
         );
       },
@@ -107,22 +119,89 @@ class _Tab {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(SubscriptionGuardService.routeGuardCache.clear);
+  setUp(() {
+    SubscriptionGuardService.routeGuardCache.clear();
+    verifiedUserRecheck.reset();
+  });
 
   test('needsVerificationReload only for accounts that are not verified yet', () {
     expect(needsVerificationReload(MockUser(isEmailVerified: true)), isFalse);
     expect(needsVerificationReload(MockUser(isEmailVerified: false)), isTrue);
   });
 
-  test('a verified user is not reloaded on every navigation', () async {
-    final tab = _Tab();
-    addTearDown(tab.dispose);
-    final user = _CountingUser(uid: 'owner');
+  group('verified users are re-checked with Auth in the background, once a minute', () {
+    // The reload is what ends a session a super admin disabled or whose
+    // password changed: Auth refuses it and the SDK signs the user out. On
+    // every navigation it cost a round trip per click; never at all left a
+    // disabled user in the app until their ID token expired (up to an hour).
     final account = _account('owner', status: SubscriptionStatus.active);
+    final t0 = DateTime(2026, 9, 23, 12);
 
-    await tab.go('/dashboard', user: user, account: account);
-    await tab.go('/tenants', user: user, account: account);
-    expect(user.reloads, 0);
+    test('the first navigation re-checks, later ones within 60 s do not', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = _CountingUser(uid: 'owner');
+
+      await tab.go('/dashboard', user: user, account: account, at: t0);
+      expect(user.reloads, 1);
+      await tab.go('/tenants', user: user, account: account,
+          at: t0.add(const Duration(seconds: 30)));
+      await tab.go('/units', user: user, account: account,
+          at: t0.add(const Duration(seconds: 59)));
+      expect(user.reloads, 1);
+    });
+
+    test('the next navigation after 60 s re-checks again', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = _CountingUser(uid: 'owner');
+
+      await tab.go('/dashboard', user: user, account: account, at: t0);
+      await tab.go('/tenants', user: user, account: account,
+          at: t0.add(const Duration(seconds: 61)));
+      expect(user.reloads, 2);
+      await tab.go('/units', user: user, account: account,
+          at: t0.add(const Duration(seconds: 90)));
+      expect(user.reloads, 2);
+    });
+
+    test('another account on the same tab is re-checked straight away', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final first = _CountingUser(uid: 'owner');
+      final second = _CountingUser(uid: 'other');
+
+      await tab.go('/dashboard', user: first, account: account, at: t0);
+      await tab.go('/dashboard', user: second,
+          account: _account('other', status: SubscriptionStatus.active),
+          at: t0.add(const Duration(seconds: 5)));
+      expect(second.reloads, 1);
+    });
+
+    test('the navigation does not wait for it', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final never = Completer<void>();
+      final user = _CountingUser(uid: 'owner', reloadResult: () => never.future);
+
+      expect(await tab.go('/dashboard', user: user, account: account, at: t0), isNull);
+      expect(user.reloads, 1);
+    });
+
+    test('a refused re-check does not break the navigation', () async {
+      // Auth's answer for a disabled account. The SDK signs the user out on
+      // it; the guard itself must not throw.
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = _CountingUser(
+        uid: 'owner',
+        reloadResult: () => Future.error(FirebaseAuthException(code: 'user-disabled')),
+      );
+
+      expect(await tab.go('/dashboard', user: user, account: account, at: t0), isNull);
+      await pumpEventQueue();
+      expect(user.reloads, 1);
+    });
   });
 
   test('an unverified user is still reloaded and sent to verify their email', () async {
@@ -317,18 +396,118 @@ void main() {
     );
   });
 
+  group('/pending-approval after the first navigation', () {
+    // The subscription check sends a pending account to /pending-approval,
+    // and the "signed in on a public route" rule used to send it straight on
+    // to the dashboard. The shell's 1-minute checker hit the same bounce, so
+    // pending users ended up on the dashboard.
+    Future<_Tab> signedInTab() async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      tab.container.read(twoFactorVerifiedProvider.notifier).state = true;
+      return tab;
+    }
+
+    final user = MockUser(uid: 'owner', email: 'owner@example.com');
+
+    test('a pending account stays on it', () async {
+      final tab = await signedInTab();
+      final pending = _account('owner', status: SubscriptionStatus.pendingApproval);
+
+      expect(await tab.go('/dashboard', user: user, account: pending), '/pending-approval');
+      expect(await tab.go('/pending-approval', user: user, account: pending), isNull);
+    });
+
+    test('an approved account is still sent on to the dashboard', () async {
+      final tab = await signedInTab();
+      expect(
+        await tab.go('/pending-approval',
+            user: user, account: _account('owner', status: SubscriptionStatus.active)),
+        '/dashboard',
+      );
+    });
+
+    test('an owner with no account yet is still sent on to the dashboard', () async {
+      final tab = await signedInTab();
+      expect(await tab.go('/pending-approval', user: user, account: null), '/dashboard');
+    });
+
+    test('a super admin is sent on without a lookup', () async {
+      final tab = await signedInTab();
+      expect(await tab.go('/pending-approval', user: user, superAdmin: true), '/dashboard');
+      expect(tab.accessChecks, 0);
+    });
+
+    test('a failed check falls back to the dashboard, as before', () async {
+      final tab = await signedInTab();
+      expect(
+        await tab.go('/pending-approval', user: user, accessError: StateError('offline')),
+        '/dashboard',
+      );
+    });
+  });
+
+  group('only a confirmed grant is cached', () {
+    final user = MockUser(uid: 'owner', email: 'owner@example.com');
+    final active = _account('owner', status: SubscriptionStatus.active);
+    final lapsed = _account(
+      'owner',
+      status: SubscriptionStatus.cancelled,
+      trialEnd: DateTime.now().subtract(const Duration(days: 40)),
+    );
+
+    test('a grant is reused for 2 minutes', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      await tab.go('/dashboard', user: user, account: active);
+      await tab.go('/tenants', user: user, account: active);
+      expect(tab.accessChecks, 1);
+    });
+
+    test('a denial is not: renewing is seen on the next navigation', () async {
+      // A denial used to be cached for 2 minutes, so one transient failure
+      // that looked like a lapse (a failed facilities read) locked a paying
+      // owner out for the whole window.
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      expect(await tab.go('/dashboard', user: user, account: lapsed),
+          '/subscription?trialExpired=1');
+      expect(await tab.go('/dashboard', user: user, account: active), isNull);
+    });
+
+    test('a failed account read fails closed and is not cached', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      expect(
+        await tab.go('/dashboard',
+            user: user, account: active, accountReadError: StateError('unavailable')),
+        '/subscription',
+      );
+      expect(await tab.go('/dashboard', user: user, account: active), isNull);
+    });
+  });
+
   test('a signed-out navigation drops the per-account caches', () async {
     final tab = _Tab();
     addTearDown(tab.dispose);
-    FacilityService.debugSeedFacilitiesCache('owner', [
-      FacilityModel(id: 'f1', name: 'Keepsake', ownerUid: 'owner', createdAt: DateTime(2026)),
-    ]);
+    var facilityReads = 0;
+    Future<List<FacilityModel>> ownerFacilities() => FacilityService.loadUserFacilitiesFor(
+          currentUid: () => 'owner',
+          fetch: (uid, {required includeArchived}) async {
+            facilityReads += 1;
+            return [
+              FacilityModel(id: 'f1', name: 'Keepsake', ownerUid: uid, createdAt: DateTime(2026)),
+            ];
+          },
+        );
+    await ownerFacilities();
     SubscriptionGuardService.routeGuardCache
         .store('owner', const SubscriptionAccessResult(canAccess: true));
 
     expect(await tab.go('/login', user: null), isNull);
 
-    expect(FacilityService.cachedFacilitiesFor('owner'), isNull);
+    await ownerFacilities();
+    expect(facilityReads, 2, reason: 'the cached list was dropped');
     expect(SubscriptionGuardService.routeGuardCache.freshFor('owner'), isNull);
   });
 }

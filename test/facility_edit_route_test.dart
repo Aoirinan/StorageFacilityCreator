@@ -7,11 +7,12 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/router/facility_edit_route.dart';
 
-FacilityModel _facility(String id, String name) => FacilityModel(
+FacilityModel _facility(String id, String name, {bool? owned}) => FacilityModel(
       id: id,
       name: name,
       ownerUid: 'owner',
       createdAt: DateTime(2026),
+      currentUserOwnsFacility: owned,
     );
 
 /// Stands in for the router: rebuilds the route's widget on demand, the way
@@ -101,7 +102,10 @@ void main() {
   testWidgets('uses the facility list another screen already loaded, without a read',
       (tester) async {
     var loads = 0;
-    final list = [_facility('f0', 'Other'), _facility('f1', 'Keepsake')];
+    final list = [
+      _facility('f0', 'Other', owned: true),
+      _facility('f1', 'Keepsake', owned: true),
+    ];
 
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -156,4 +160,41 @@ void main() {
     expect(loads, 1);
     expect(find.text('editing Keepsake'), findsOneWidget);
   });
+
+  for (final owned in [false, null]) {
+    testWidgets('a facility the user does not own (currentUserOwnsFacility: $owned) is read fresh',
+        (tester) async {
+      // The list keeps owned entries current, but a role facility (a super
+      // admin in a support session, invited staff) is read once when the
+      // stream starts. Seeding the form from it made Save write the old name,
+      // address and billing settings back over the owner's later edits.
+      var loads = 0;
+      final stale = [_facility('f1', 'Keepsake (as first read)', owned: owned)];
+
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          userFacilitiesProvider.overrideWith((ref, uid) => Stream.value(stale)),
+        ],
+        child: MaterialApp(
+          home: Consumer(builder: (context, ref, _) {
+            final facilities = ref.watch(userFacilitiesProvider('manager'));
+            if (!facilities.hasValue) return const SizedBox();
+            return _route(
+              uid: 'manager',
+              load: (_) async {
+                loads += 1;
+                return _facility('f1', 'Keepsake (current)');
+              },
+            );
+          }),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump();
+
+      expect(loads, 1);
+      expect(find.text('editing Keepsake (current)'), findsOneWidget);
+      expect(find.text('editing Keepsake (as first read)'), findsNothing);
+    });
+  }
 }

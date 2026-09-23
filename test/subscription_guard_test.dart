@@ -2,6 +2,7 @@ import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
 
 FacilityCreatorAccountModel _account({
@@ -192,8 +193,9 @@ void main() {
       expect(facilityFetches, 0);
     });
 
-    test('a billing-exempt facility alone does not grant access (unchanged rule)', () async {
-      // Only the account-level flag is honoured by the guard, before and after.
+    test('a billing-exempt facility linked to the account grants access', () async {
+      // The guard used to honour only the account-level flag, so an owner
+      // whose facility a super admin had exempted was still locked out.
       final result = await check(
         _account(
           status: SubscriptionStatus.cancelled,
@@ -201,7 +203,64 @@ void main() {
         ),
         facilities: [_facility(billingExempt: true)],
       );
+      expect(result.canAccess, isTrue);
+      expect(facilityFetches, 1);
+    });
+
+    test('a billing-exempt facility linked to a different account does not', () async {
+      final result = await check(
+        _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+        ),
+        facilities: [_facility(accountId: 'acct_other', billingExempt: true)],
+      );
       expect(result.canAccess, isFalse);
+    });
+
+    test('a failed account read is refused as unverified, not let through as "no account"', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => throw StateError('unavailable'),
+        facilitiesProvider: () async => const [],
+      );
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isFalse);
+      expect(result.redirectRoute, '/subscription');
+    });
+
+    test('a failed facilities read is refused as unverified, not as a lapse', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+        ),
+        facilitiesProvider: () async => throw StateError('unavailable'),
+      );
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isFalse);
+    });
+
+    test('a real denial is verified', () async {
+      final result = await check(_account(
+        status: SubscriptionStatus.trialing,
+        trialEnd: DateTime.now().subtract(const Duration(days: 1)),
+      ));
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isTrue);
+    });
+
+    test('no account at all is still let through (created with the first facility)', () async {
+      final result = await check(null);
+      expect(result.canAccess, isTrue);
+      expect(result.verified, isTrue);
     });
 
     test('a suspended account is refused even while active', () async {
@@ -216,6 +275,46 @@ void main() {
       final result = await check(null, superAdmin: true);
       expect(result.canAccess, isTrue);
       expect(accountFetches, 0);
+    });
+  });
+
+  group('accountGrantsPlatformAccess (route guard, sidebar lock and lock overlay)', () {
+    final lapsed = _account(
+      status: SubscriptionStatus.cancelled,
+      periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+    );
+
+    test('account-level access', () {
+      expect(
+        FacilityCreatorAccountService.accountGrantsPlatformAccess(
+            _account(status: SubscriptionStatus.active)),
+        isTrue,
+      );
+      expect(FacilityCreatorAccountService.accountGrantsPlatformAccess(lapsed), isFalse);
+    });
+
+    test('a billing-exempt account, whatever its status', () {
+      // The guard already let these through; the sidebar lock and the lock
+      // overlay (which used this rule) locked them.
+      expect(
+        FacilityCreatorAccountService.accountGrantsPlatformAccess(_account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().subtract(const Duration(days: 40)),
+          billingExempt: true,
+        )),
+        isTrue,
+      );
+    });
+
+    test('a linked facility that is billing-exempt or has an active platform subscription', () {
+      bool grants(FacilityModel f) =>
+          FacilityCreatorAccountService.accountGrantsPlatformAccess(lapsed, facilities: [f]);
+
+      expect(grants(_facility(billingExempt: true)), isTrue);
+      expect(grants(_facility(platformStatus: 'active')), isTrue);
+      expect(grants(_facility(platformStatus: 'cancelled')), isFalse);
+      expect(grants(_facility(accountId: 'acct_other', billingExempt: true)), isFalse);
+      expect(grants(_facility(accountId: 'acct_other', platformStatus: 'active')), isFalse);
     });
   });
 

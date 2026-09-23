@@ -73,26 +73,35 @@ class FacilityCreatorAccountService {
     }
   }
 
-  /// Get account by owner UID
+  /// Get account by owner UID. Null when there is no account, and also when
+  /// the read fails; use [getAccountByOwnerUidOrThrow] where those differ.
   static Future<FacilityCreatorAccountModel?> getAccountByOwnerUid(String ownerUid) async {
     try {
-      final snapshot = await _firestore
-          .collection('facilityCreatorAccounts')
-          .where('ownerUid', isEqualTo: ownerUid)
-          .limit(1)
-          .get();
-
-      if (snapshot.docs.isEmpty) {
-        return null;
-      }
-
-      return FacilityCreatorAccountModel.fromFirestore(snapshot.docs.first);
+      return await getAccountByOwnerUidOrThrow(ownerUid);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting account by owner UID: $e');
       }
       return null;
     }
+  }
+
+  /// [getAccountByOwnerUid] that lets a failed read throw, so null only ever
+  /// means "no account". The access check needs the difference: it lets an
+  /// owner with no account yet through, and must not do that on a failed read.
+  static Future<FacilityCreatorAccountModel?> getAccountByOwnerUidOrThrow(
+      String ownerUid) async {
+    final snapshot = await _firestore
+        .collection('facilityCreatorAccounts')
+        .where('ownerUid', isEqualTo: ownerUid)
+        .limit(1)
+        .get();
+
+    if (snapshot.docs.isEmpty) {
+      return null;
+    }
+
+    return FacilityCreatorAccountModel.fromFirestore(snapshot.docs.first);
   }
 
   /// Get account by account ID
@@ -352,19 +361,25 @@ class FacilityCreatorAccountService {
     }
   }
 
-  /// The platform-access rule for an account already in hand: account-level
-  /// access, or any facility linked to the account with an active per-facility
-  /// platform subscription. [facilities] null means "account only".
+  /// The platform-access rule for an account already in hand: a billing-exempt
+  /// account, account-level access, or any facility linked to the account that
+  /// has an active per-facility platform subscription or is billing-exempt.
+  /// [facilities] null means "account only".
+  ///
+  /// billingExempt is set only by a super admin (the rules refuse it from
+  /// owners) and means "never locked out", which is how the route guard and
+  /// the subscription banner already treat it; the sidebar lock and the lock
+  /// overlay ignored it, and every check ignored it on a facility.
   static bool accountGrantsPlatformAccess(
     FacilityCreatorAccountModel account, {
     List<FacilityModel>? facilities,
   }) {
-    if (account.canAccessPlatform) {
+    if (account.billingExempt || account.canAccessPlatform) {
       return true;
     }
     if (facilities == null) return false;
     final linked = facilities.where((f) => f.facilityCreatorAccountId == account.accountId);
-    return linked.any((f) => f.hasActivePlatformSubscription);
+    return linked.any((f) => f.billingExempt || f.hasActivePlatformSubscription);
   }
 
   /// Check if user has active subscription (account-level OR any per-facility platform sub)
