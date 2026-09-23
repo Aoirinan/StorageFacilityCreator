@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 
@@ -31,7 +32,7 @@ class _OkBackend extends TenantOperationsBackend {
 /// The notifier used to catch every error and return normally, so the tenant
 /// list said "deleted successfully" even when the delete was refused.
 void main() {
-  const refusal = TenantHasFinancialRecordsException([
+  const refusal = TenantDeleteRefusedException([
     TenantDeleteBlock(tenantId: 't1', tenantName: 'Ada Park', reasons: ['an invoice']),
   ]);
 
@@ -61,7 +62,7 @@ void main() {
   test('archiveTenant passes a refusal on to the caller', () async {
     const stillAssigned = TenantStillAssignedToUnitException(
       tenantName: 'Ada Park',
-      unitNumbers: ['101'],
+      units: [HeldUnit('101', UnitStatus.occupied)],
     );
     final notifier = TenantOperationsNotifier(const _FailingBackend(stillAssigned));
     addTearDown(notifier.dispose);

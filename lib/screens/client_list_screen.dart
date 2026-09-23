@@ -1,39 +1,28 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:csv/csv.dart';
-import 'dart:convert';
-import '../providers/tenant_provider.dart';
-import '../providers/permission_provider.dart';
-import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
-import '../providers/active_facility_provider.dart';
-import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/tenant_service.dart';
-import '../services/tenant_portal_service.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../constants/app_constants.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
-import '../router/app_route.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../utils/error_message_helper.dart';
-import '../utils/setup_retry_controller.dart';
-import 'client_detail_screen.dart';
-import 'tenant_creation_screen.dart';
-import 'tenant_edit_screen.dart';
-import 'subscription_test_screen.dart';
-import 'facility_map_editor_screen.dart';
-import 'tenant_csv_import_wizard_screen.dart';
-import '../services/late_logic_service.dart';
-import '../services/permission_service.dart';
-import '../models/permission_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/providers/permission_provider.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/constants/app_constants.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/setup_retry_controller.dart';
+import 'package:sfcapp/screens/tenant_creation_screen.dart';
+import 'package:sfcapp/screens/tenant_edit_screen.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/models/permission_model.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
 final _facilityGracePeriodProvider = FutureProvider.family<int, String>((ref, facilityId) async {
@@ -125,7 +114,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       if (facilities == null || facilities.isEmpty) return;
 
       final activeId = next.whenOrNull(data: (d) => d);
-      final newLocal = activeId == null ? 'all' : activeId;
+      final newLocal = activeId ?? 'all';
       if (newLocal == _selectedFacilityId) return;
       if (activeId == null || facilities.any((f) => f.id == activeId)) {
         setState(() {
@@ -402,7 +391,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       Container(
                         padding: const EdgeInsets.symmetric(vertical: AppConstants.spacingS),
                         decoration: BoxDecoration(
-                          color: cs.primary.withOpacity(0.1),
+                          color: cs.primary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
@@ -438,7 +427,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                             _selectedTenantIds.clear();
                                           } else {
                                             _selectedTenantIds.clear();
-                                            _selectedTenantIds.addAll(tenants.where((t) => t.id != null).map((t) => t.id!));
+                                            _selectedTenantIds.addAll(tenants.map((t) => t.id));
                                           }
                                         });
                                       },
@@ -834,7 +823,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: AppConstants.spacingM, vertical: AppConstants.spacingXS),
-      color: isSelected ? AppTheme.primaryBlue.withOpacity(0.1) : null,
+      color: isSelected ? AppTheme.primaryBlue.withValues(alpha: 0.1) : null,
       child: ListTile(
         leading: _isSelectionMode
             ? Checkbox(
@@ -842,7 +831,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 onChanged: (value) {
                   setState(() {
                     if (value == true) {
-                      _selectedTenantIds.add(tenant.id!);
+                      _selectedTenantIds.add(tenant.id);
                     } else {
                       _selectedTenantIds.remove(tenant.id);
                     }
@@ -880,9 +869,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 margin: const EdgeInsets.only(top: AppConstants.spacingXS),
                 padding: const EdgeInsets.symmetric(horizontal: AppConstants.spacingS, vertical: AppConstants.spacingXS / 2),
                 decoration: BoxDecoration(
-                  color: AppTheme.error.withOpacity(0.1),
+                  color: AppTheme.error.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.error.withOpacity(0.3)),
+                  border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
                 ),
                 child: Text(
                   'LATE PAYMENT - $daysLate ${daysLate == 1 ? 'day' : 'days'}',
@@ -901,16 +890,16 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 onSelected: (value) async {
                   switch (value) {
                     case 'view':
-                      context.push(AppRoute.tenantDetail, extra: tenant);
+                      unawaited(context.push(AppRoute.tenantDetail, extra: tenant));
                       break;
                     case 'edit':
-                      context.push(
+                      unawaited(context.push(
                         AppRoute.legacyScreen,
                         extra: TenantEditScreen(
                           tenant: tenant,
                           facilityIdOverride: _selectedFacilityId.isNotEmpty ? _selectedFacilityId : null,
                         ),
-                      );
+                      ));
                       break;
                     case 'archive':
                       await _archiveTenant(tenant);
@@ -922,7 +911,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       setState(() {
                         _isSelectionMode = true;
                         _selectedTenantIds.clear();
-                        _selectedTenantIds.add(tenant.id!);
+                        _selectedTenantIds.add(tenant.id);
                       });
                       break;
                     case 'delete':
@@ -1000,7 +989,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                   if (isSelected) {
                     _selectedTenantIds.remove(tenant.id);
                   } else {
-                    _selectedTenantIds.add(tenant.id!);
+                    _selectedTenantIds.add(tenant.id);
                   }
                 });
               }
@@ -1089,7 +1078,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   /// Bulk form of the portal invite: everyone currently selected.
   Future<void> _inviteSelectedTenants() async {
     final tenants = ref.read(filteredTenantsProvider(_selectedFacilityId)).value ?? const <TenantModel>[];
-    final selected = tenants.where((t) => t.id != null && _selectedTenantIds.contains(t.id)).toList();
+    final selected = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
     if (selected.isEmpty) return;
     await _inviteTenants(selected);
   }
@@ -1120,8 +1109,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     final byFacility = <String, List<String>>{};
     for (final t in tenants) {
-      if (t.id == null) continue;
-      byFacility.putIfAbsent(t.facilityId, () => []).add(t.id!);
+      byFacility.putIfAbsent(t.facilityId, () => []).add(t.id);
     }
     final lines = <String>[];
     var anyFailed = false;
@@ -1210,7 +1198,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   /// they have and offers Archive only for those who hold no unit, because
   /// archiving an occupant silently stops their rent, autopay and lockout.
   Future<void> _showDeleteRefused(
-    TenantHasFinancialRecordsException refusal, {
+    TenantDeleteRefusedException refusal, {
     required String facilityId,
     String? note,
   }) async {
@@ -1278,6 +1266,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       return;
     }
 
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1314,7 +1303,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
             ),
           );
         }
-      } on TenantHasFinancialRecordsException catch (e) {
+      } on TenantDeleteRefusedException catch (e) {
         await _showDeleteRefused(e, facilityId: tenant.facilityId);
       } on TenantDeleteCheckFailedException catch (e) {
         if (mounted) {
@@ -1339,9 +1328,10 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   // Move-out: it has no entry point in the app, needs a contract, and
   // emails the tenant.
   static const _permanentDeleteNote =
-      'Permanent delete is only for tenants entered by mistake who have no '
-      'charges, payments, invoices, contracts or saved cards. For someone who '
-      'has left: unassign their unit, then Archive. Their history is kept.';
+      'Permanent delete is only for tenants entered by mistake: no unit, and '
+      'no charges, payments, invoices, contracts, liens or saved cards. For '
+      'someone who has left: unassign their unit, then Archive. Their history '
+      'is kept.';
 
   Future<void> _deleteSelectedTenants() async {
     if (_selectedTenantIds.isEmpty) return;
@@ -1372,6 +1362,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     final count = _selectedTenantIds.length;
     final tenantIdsToDelete = _selectedTenantIds.toList();
 
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1422,7 +1413,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
             ),
           );
         }
-      } on TenantHasFinancialRecordsException catch (e) {
+      } on TenantDeleteRefusedException catch (e) {
         if (!mounted) return;
         // Deselect the refused tenants so pressing Delete again removes only
         // the clean ones; the refusal was all or nothing.
@@ -1494,13 +1485,13 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
         // Navigate to tenant creation screen
         if (isMounted) {
-          context.push(
+          unawaited(context.push(
             AppRoute.legacyScreen,
             extra: TenantCreationScreen(
               facilities: facilities,
               selectedFacilityId: selectedFacilityId,
             ),
-          );
+          ));
         }
       }
     } catch (e) {

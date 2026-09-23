@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -5,46 +6,104 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/invoice_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
-import 'package:sfcapp/models/lien_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
-import '../models/tenant_model.dart';
-import '../models/unit_model.dart';
-import 'audit_service.dart';
-import 'facility_creator_account_service.dart';
-import 'facility_limits_service.dart';
-import 'facility_stats_service.dart';
-import 'facility_service.dart';
-import 'superadmin_service.dart';
-import 'unit_service.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_limits_service.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/superadmin_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
+
+/// A unit that still shows a tenant as its occupant, and how to free it.
+class HeldUnit {
+  const HeldUnit(this.unitNumber, this.status);
+
+  final String unitNumber;
+  final UnitStatus status;
+
+  /// Where to go to free the unit. Unit detail only offers Unassign Tenant on
+  /// an occupied unit, so "Unassign Tenant" alone led nowhere for a unit in
+  /// lockout, reserved, in maintenance or at auction.
+  String get freeingSteps {
+    final unit = 'Units > unit $unitNumber';
+    return switch (status) {
+      UnitStatus.occupied || UnitStatus.available => '$unit > Unassign Tenant',
+      UnitStatus.lockout ||
+      UnitStatus.overlocked =>
+        '$unit > Remove Lockout, then Unassign Tenant',
+      UnitStatus.reserved ||
+      UnitStatus.maintenance ||
+      UnitStatus.outOfOrder ||
+      UnitStatus.auction =>
+        '$unit > Edit Unit, set Status to Occupied, then Unassign Tenant',
+    };
+  }
+
+  /// "unit 101" or "units 101 and 102".
+  static String label(List<HeldUnit> units) => units.length == 1
+      ? 'unit ${units.single.unitNumber}'
+      : 'units ${TenantService.joinReadable([
+              for (final u in units) u.unitNumber
+            ])}';
+
+  /// "Unassign the unit first (Units > unit 101 > Unassign Tenant)."
+  static String unassignFirst(List<HeldUnit> units) =>
+      'Unassign the ${units.length == 1 ? 'unit' : 'units'} first '
+      '(${units.map((u) => u.freeingSteps).join('; ')}).';
+
+  @override
+  bool operator ==(Object other) =>
+      other is HeldUnit &&
+      other.unitNumber == unitNumber &&
+      other.status == status;
+
+  @override
+  int get hashCode => Object.hash(unitNumber, status);
+
+  @override
+  String toString() => 'HeldUnit($unitNumber, ${status.name})';
+}
 
 /// One tenant a permanent delete was refused for, and why.
 class TenantDeleteBlock {
   const TenantDeleteBlock({
     required this.tenantId,
     required this.tenantName,
-    required this.reasons,
-    this.heldUnitNumbers = const [],
+    this.reasons = const [],
+    this.heldUnits = const [],
   });
 
   final String tenantId;
   final String tenantName;
 
-  /// Readable reasons, from [TenantService.permanentDeleteBlockers].
+  /// Billing or legal history, from [TenantService.permanentDeleteBlockers].
   final List<String> reasons;
 
   /// Units that still show this tenant as the occupant.
-  final List<String> heldUnitNumbers;
+  final List<HeldUnit> heldUnits;
 
   /// Archive is only a safe way out for someone who holds no unit: archiving
   /// an occupant silently stops their rent, autopay and lockout.
-  bool get canArchiveInstead => heldUnitNumbers.isEmpty;
+  bool get canArchiveInstead => heldUnits.isEmpty;
+
+  /// "has an invoice and is still assigned to unit 101".
+  String get summary => [
+        if (reasons.isNotEmpty) 'has ${TenantService.joinReadable(reasons)}',
+        if (heldUnits.isNotEmpty)
+          'is still assigned to ${HeldUnit.label(heldUnits)}',
+      ].join(' and ');
 }
 
-/// Permanent delete refused: the tenant has billing or legal history. Deleting
-/// them orphaned those records, so their balance fell out of AR and their
-/// ledger could no longer be opened.
-class TenantHasFinancialRecordsException implements Exception {
-  const TenantHasFinancialRecordsException(this.blocked);
+/// Permanent delete refused for every selected tenant, because at least one
+/// has billing or legal history or still holds a unit. Deleting such a tenant
+/// orphaned their ledger (the balance fell out of AR and the history could no
+/// longer be opened), or freed a unit that was still theirs and listed it as
+/// rentable.
+class TenantDeleteRefusedException implements Exception {
+  const TenantDeleteRefusedException(this.blocked);
 
   final List<TenantDeleteBlock> blocked;
 
@@ -55,40 +114,38 @@ class TenantHasFinancialRecordsException implements Exception {
   String get message {
     if (blocked.length == 1) {
       final b = blocked.single;
-      return 'Nothing was deleted. ${b.tenantName} has '
-          '${TenantService.joinReadable(b.reasons)}, so their history has to be kept.';
+      return 'Nothing was deleted. ${b.tenantName} ${b.summary}.';
     }
-    final names = blocked
-        .map((b) => '${b.tenantName} (${b.reasons.join(', ')})')
-        .join('; ');
-    return 'Nothing was deleted. ${blocked.length} of the selected tenants have '
-        'billing records that have to be kept: $names.';
+    final names =
+        blocked.map((b) => '${b.tenantName} (${b.summary})').join('; ');
+    return 'Nothing was deleted. ${blocked.length} of the selected tenants '
+        'have to be kept for now: $names.';
   }
 
   /// Dialog body: what each tenant has and what to do instead. Archive is
   /// only suggested for tenants who hold no unit.
   String get details {
-    String unassignFirst(TenantDeleteBlock b) => TenantStillAssignedToUnitException(
-          tenantName: b.tenantName,
-          unitNumbers: b.heldUnitNumbers,
-        ).message;
-
     if (blocked.length == 1) {
       final b = blocked.single;
+      final why = b.reasons.isEmpty
+          ? 'Permanent delete is only for tenants entered by mistake; deleting '
+              'them would free the unit and list it as rentable.'
+          : 'Permanently deleting them would orphan that history, so it has '
+              'to be kept.';
       final next = b.canArchiveInstead
           ? 'You can archive ${b.tenantName} instead: they leave your active '
               'lists and their history is kept.'
-          : unassignFirst(b);
-      return '${b.tenantName} has ${TenantService.joinReadable(b.reasons)}. '
-          'Permanently deleting them would orphan that history, so it has to '
-          'be kept.\n\n$next';
+          : '${HeldUnit.unassignFirst(b.heldUnits)} Then '
+              '${b.reasons.isEmpty ? 'you can delete them' : 'archive them'}.';
+      return '${b.tenantName} ${b.summary}. $why\n\n$next';
     }
 
     final lines = [
-      'Nothing was deleted. These tenants have history that has to be kept:',
+      'Nothing was deleted. These tenants have history that has to be kept, '
+          'or still hold a unit:',
       for (final b in blocked)
-        '• ${b.tenantName}: ${TenantService.joinReadable(b.reasons)}.'
-            '${b.canArchiveInstead ? '' : ' ${unassignFirst(b)}'}',
+        '• ${b.tenantName}: ${b.summary}.'
+            '${b.canArchiveInstead ? '' : ' ${HeldUnit.unassignFirst(b.heldUnits)}'}',
     ];
     final archivable = blocked.where((b) => b.canArchiveInstead).length;
     if (archivable > 0) {
@@ -103,40 +160,70 @@ class TenantHasFinancialRecordsException implements Exception {
   String toString() => message;
 }
 
+enum _CheckFailure { permission, connection, other }
+
 /// The pre-delete check could not read a tenant's records. An unreadable
 /// history is not an empty one, so this refuses the delete.
 class TenantDeleteCheckFailedException implements Exception {
-  const TenantDeleteCheckFailedException(this.cause);
+  const TenantDeleteCheckFailedException(this.cause, {this.tenantCount = 1});
 
   final Object cause;
 
-  String get message =>
-      "Couldn't verify this tenant's billing records; nothing was deleted. "
-      '${cause.toString().contains('permission-denied') ? 'Your role cannot read them; ask the facility owner.' : 'Check your connection and try again.'}';
+  /// How many tenants the refused delete was for.
+  final int tenantCount;
+
+  /// Worded by cause: every failure used to read "Check your connection",
+  /// even a bad cast, which sent owners chasing their network.
+  String get message {
+    final whose = tenantCount == 1
+        ? "this tenant's"
+        : "the $tenantCount selected tenants'";
+    final next = switch (_kind) {
+      _CheckFailure.permission =>
+        "Your role can't read all of them; ask the facility owner to do this.",
+      _CheckFailure.connection => 'Check your connection and try again.',
+      _CheckFailure.other =>
+        'Try again, and contact support if it keeps happening.',
+    };
+    final text = "Couldn't check $whose records, so nothing was deleted. $next";
+    return kDebugMode ? '$text ($cause)' : text;
+  }
+
+  _CheckFailure get _kind {
+    final error = cause;
+    final code = error is FirebaseException ? error.code : '';
+    final text = '$code $error';
+    if (text.contains('permission-denied')) return _CheckFailure.permission;
+    if (error is TimeoutException ||
+        const ['unavailable', 'deadline-exceeded', 'network']
+            .any(text.contains)) {
+      return _CheckFailure.connection;
+    }
+    return _CheckFailure.other;
+  }
 
   @override
   String toString() => message;
 }
 
-/// Archive (or switching a tenant to inactive) refused while a unit still
+/// Archive, or switching a tenant to inactive, refused while a unit still
 /// shows them as the occupant.
 class TenantStillAssignedToUnitException implements Exception {
   const TenantStillAssignedToUnitException({
     required this.tenantName,
-    required this.unitNumbers,
+    required this.units,
   });
 
   final String tenantName;
-  final List<String> unitNumbers;
+  final List<HeldUnit> units;
 
-  String get message {
-    final units = unitNumbers.length == 1
-        ? 'unit ${unitNumbers.single}'
-        : 'units ${unitNumbers.join(', ')}';
-    return '$tenantName is still assigned to $units. Unassign the unit first '
-        '(Units > unit > Unassign Tenant), then archive. Archiving someone who '
-        'still holds a unit would stop their rent, autopay and lockout.';
-  }
+  /// Neutral on purpose: the same refusal answers Archive and the Active
+  /// switch, and "then archive" read wrong after switching Active off.
+  String get message =>
+      '$tenantName is still assigned to ${HeldUnit.label(units)}. '
+      '${HeldUnit.unassignFirst(units)} A tenant who still holds a unit '
+      "can't be archived or set inactive: their rent, autopay and lockout "
+      'would stop while the unit still shows them as its occupant.';
 
   @override
   String toString() => message;
@@ -147,31 +234,184 @@ class TenantDeletePlan {
   const TenantDeletePlan({
     required this.tenantId,
     required this.tenantName,
-    required this.blockers,
+    this.blockers = const [],
     this.before,
     this.unitIds = const [],
-    this.heldUnitNumbers = const [],
+    this.heldUnits = const [],
     this.activeGateAccessIds = const [],
   });
 
   final String tenantId;
   final String tenantName;
+
+  /// Billing or legal history that rules the delete out.
   final List<String> blockers;
   final Map<String, dynamic>? before;
 
-  /// Every unit still linked to the tenant; the delete unlinks them all.
+  /// Every unit linked to the tenant at the check. The commit unlinks those
+  /// that still are.
   final List<String> unitIds;
 
-  /// The linked units the tenant actually occupies (for the refusal dialog).
-  final List<String> heldUnitNumbers;
+  /// The linked units the tenant actually occupies; any one rules the
+  /// delete out too.
+  final List<HeldUnit> heldUnits;
   final List<String> activeGateAccessIds;
+
+  bool get isBlocked => blockers.isNotEmpty || heldUnits.isNotEmpty;
+
+  /// Writes the commit makes for this tenant, at most.
+  int get writeCount => unitIds.length + activeGateAccessIds.length + 1;
 
   TenantDeleteBlock toBlock() => TenantDeleteBlock(
         tenantId: tenantId,
         tenantName: tenantName,
         reasons: blockers,
-        heldUnitNumbers: heldUnitNumbers,
+        heldUnits: heldUnits,
       );
+}
+
+/// Writes the tenant guards make, all under one facility. [collection] is a
+/// facility subcollection: tenants, units or gateAccess.
+abstract class TenantRecordsWriter {
+  void update(String collection, String docId, Map<String, dynamic> fields);
+  void delete(String collection, String docId);
+}
+
+/// A [TenantRecordsWriter] inside a transaction, which can also re-read a
+/// unit. Reads come before writes, as Firestore requires.
+abstract class TenantRecordsTransaction implements TenantRecordsWriter {
+  /// The unit's tenantId as of this transaction; null when it has none or
+  /// the unit is gone.
+  Future<String?> unitTenantId(String unitId);
+}
+
+/// The reads and writes behind permanent delete, archive and switching a
+/// tenant inactive, for one facility. A seam: the guards, and what they
+/// write, are tested against a fake without Firebase.
+abstract class TenantRecordsStore {
+  /// The tenant doc's data, or null if it doesn't exist.
+  Future<Map<String, dynamic>?> tenant(String tenantId);
+
+  /// Up to [limit] rows of a facility [collection] whose tenantId is
+  /// [tenantId].
+  Future<List<Map<String, dynamic>>> facilityRows(
+      String collection, String tenantId, int limit);
+
+  /// Up to [limit] rows of the tenant's own [subcollection].
+  Future<List<Map<String, dynamic>>> tenantRows(
+      String tenantId, String subcollection, int limit);
+
+  /// One doc of the tenant's [subcollection], or null.
+  Future<Map<String, dynamic>?> tenantSubdoc(
+      String tenantId, String subcollection, String docId);
+
+  /// Non-archived units whose tenantId is [tenantId]. Throws on a read
+  /// error, so callers fail closed rather than reading "no units".
+  Future<List<UnitModel>> linkedUnits(String tenantId);
+
+  /// Ids of the tenant's gate codes that are still on.
+  Future<List<String>> activeGateAccessIds(String tenantId);
+
+  /// Runs [body] as one transaction. It may run more than once.
+  Future<void> transaction(
+      Future<void> Function(TenantRecordsTransaction txn) body);
+}
+
+/// [TenantRecordsStore] over one facility in Firestore.
+class _FirestoreTenantRecords implements TenantRecordsStore {
+  _FirestoreTenantRecords(this._facility);
+
+  final DocumentReference<Map<String, dynamic>> _facility;
+
+  DocumentReference<Map<String, dynamic>> _tenantRef(String tenantId) =>
+      _facility.collection('tenants').doc(tenantId);
+
+  @override
+  Future<Map<String, dynamic>?> tenant(String tenantId) async =>
+      (await _tenantRef(tenantId).get()).data();
+
+  @override
+  Future<List<Map<String, dynamic>>> facilityRows(
+      String collection, String tenantId, int limit) async {
+    final snap = await _facility
+        .collection(collection)
+        .where('tenantId', isEqualTo: tenantId)
+        .limit(limit)
+        .get();
+    return [for (final d in snap.docs) d.data()];
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> tenantRows(
+      String tenantId, String subcollection, int limit) async {
+    final snap =
+        await _tenantRef(tenantId).collection(subcollection).limit(limit).get();
+    return [for (final d in snap.docs) d.data()];
+  }
+
+  @override
+  Future<Map<String, dynamic>?> tenantSubdoc(
+          String tenantId, String subcollection, String docId) async =>
+      (await _tenantRef(tenantId).collection(subcollection).doc(docId).get())
+          .data();
+
+  @override
+  Future<List<UnitModel>> linkedUnits(String tenantId) async {
+    final snap = await _facility
+        .collection('units')
+        .where('tenantId', isEqualTo: tenantId)
+        .get();
+    return [
+      for (final d in snap.docs)
+        if (d.data()['archived'] != true) UnitModel.fromFirestore(d),
+    ];
+  }
+
+  @override
+  Future<List<String>> activeGateAccessIds(String tenantId) async {
+    final snap = await _facility
+        .collection('gateAccess')
+        .where('tenantId', isEqualTo: tenantId)
+        .get();
+    return [
+      for (final d in snap.docs)
+        if (TenantService.isActiveFlagSet(d.data())) d.id,
+    ];
+  }
+
+  @override
+  Future<void> transaction(
+      Future<void> Function(TenantRecordsTransaction txn) body) {
+    return _facility.firestore.runTransaction<void>(
+        (txn) => body(_FirestoreTenantTransaction(_facility, txn)));
+  }
+}
+
+class _FirestoreTenantTransaction implements TenantRecordsTransaction {
+  _FirestoreTenantTransaction(this._facility, this._txn);
+
+  final DocumentReference<Map<String, dynamic>> _facility;
+  final Transaction _txn;
+
+  DocumentReference<Map<String, dynamic>> _ref(String collection, String id) =>
+      _facility.collection(collection).doc(id);
+
+  @override
+  Future<String?> unitTenantId(String unitId) async {
+    final snap = await _txn.get(_ref('units', unitId));
+    final tenantId = snap.data()?['tenantId'];
+    return tenantId is String ? tenantId : null;
+  }
+
+  @override
+  void update(String collection, String docId, Map<String, dynamic> fields) {
+    _txn.update(_ref(collection, docId), fields);
+  }
+
+  @override
+  void delete(String collection, String docId) {
+    _txn.delete(_ref(collection, docId));
+  }
 }
 
 class TenantService {
@@ -693,31 +933,27 @@ class TenantService {
       final deactivating = isActive == false &&
           beforeData != null &&
           ((beforeData['isActive'] as bool?) ?? true);
-      if (deactivating && unitNumber == null) {
-        // This call leaves the unit link alone, so switching the tenant off
-        // would stop rent, autopay and lockout on a unit that still shows
-        // them as the occupant. Same rule as archive.
-        await _assertHoldsNoUnits(
-            facilityId, tenantId, _displayName(beforeData, tenantId));
-      }
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .update(updateData);
-
+      ({int unitsFreed, int gateCodesOff})? deactivation;
       if (deactivating) {
-        // An inactive tenant keeps no gate code. Best effort, as move-out
-        // does: the tenant update has already happened.
-        try {
-          await _deactivateGateAccess(facilityId, tenantId, user.uid);
-        } catch (e) {
-          if (kDebugMode) {
-            print('⚠️ Could not deactivate gate access for $tenantId: $e');
-          }
-        }
+        // Every deactivation is checked, not only the Active switch: the edit
+        // screen always passes a unit number ('' for a tenant assigned from
+        // the Units screen), so the old unitNumber == null check never ran
+        // there and turned off a paying occupant's gate code.
+        deactivation = await deactivateForUpdate(
+          _records(facilityId),
+          tenantId: tenantId,
+          before: beforeData,
+          requestedUnitNumber: unitNumber,
+          updateData: updateData,
+          uid: user.uid,
+        );
+      } else {
+        await _firestore
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('tenants')
+            .doc(tenantId)
+            .update(updateData);
       }
 
       // Get after snapshot for audit log
@@ -740,11 +976,21 @@ class TenantService {
         after: afterData != null ? Map<String, dynamic>.from(afterData) : null,
         metadata: {
           'fieldsChanged': updateData.keys.toList(),
+          if (deactivation != null) ...{
+            'unitsFreed': deactivation.unitsFreed,
+            'gateAccessDeactivated': deactivation.gateCodesOff,
+          },
         },
       );
 
+      if (deactivation != null && deactivation.unitsFreed > 0) {
+        await FacilityStatsService.updateFacilityStats(facilityId);
+        UnitService.schedulePublicMapInventorySync(facilityId);
+      }
+
       // Keep facilities/{id}/units in sync when unit number changes (createTenant already does this).
-      if (unitNumber != null && beforeData != null) {
+      // A deactivation already freed its units, in the same transaction.
+      if (unitNumber != null && beforeData != null && !deactivating) {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
         final newNum = unitNumber.trim();
         final wasActive = (beforeData['isActive'] as bool?) ?? true;
@@ -763,10 +1009,6 @@ class TenantService {
             await _updateUnitOccupancy(
                 facilityId, newNum, tenantId, resolvedName, true, resolvedRate);
           }
-          await FacilityStatsService.updateFacilityStats(facilityId);
-        } else if (newNum.isNotEmpty && isActive == false && wasActive) {
-          await _updateUnitOccupancy(
-              facilityId, newNum, tenantId, resolvedName, false, resolvedRate);
           await FacilityStatsService.updateFacilityStats(facilityId);
         } else if (newNum.isNotEmpty && nowActive) {
           final unitsSnap = await _firestore
@@ -929,32 +1171,10 @@ class TenantService {
         print('🔄 Archiving tenant: $tenantId');
       }
 
-      final facilityRef = _firestore.collection('facilities').doc(facilityId);
-      final tenantRef = facilityRef.collection('tenants').doc(tenantId);
-
-      // Get before snapshot for audit log
-      final beforeDoc = await tenantRef.get();
-      final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
-
-      // Rent, autopay and delinquency jobs skip inactive tenants, so archiving
-      // someone who still holds a unit silently stopped their rent and
-      // lockout while the unit kept showing as occupied.
-      await _assertHoldsNoUnits(
-          facilityId, tenantId, _displayName(beforeData, tenantId));
-
-      // Archive and gate-code shutoff land together: an archived tenant kept
-      // an enabled gate code before (only move-out turned it off).
-      final gateAccessIds = await _activeGateAccessIds(facilityId, tenantId);
-      final batch = _firestore.batch();
-      batch.update(tenantRef, {
-        'isActive': false,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      final gateOff = _gateAccessOffFields(user.uid);
-      for (final accessId in gateAccessIds) {
-        batch.update(facilityRef.collection('gateAccess').doc(accessId), gateOff);
-      }
-      await batch.commit();
+      // Refused while the tenant still holds a unit; turns their gate codes
+      // off in the same transaction as the archive.
+      final archived = await archiveWith(_records(facilityId), tenantId, uid: user.uid);
+      final beforeData = archived.before;
 
       // Log audit event
       await AuditService.logEvent(
@@ -965,7 +1185,7 @@ class TenantService {
         tenantId: tenantId,
         before: beforeData != null ? Map<String, dynamic>.from(beforeData) : null,
         after: {'isActive': false},
-        metadata: {'gateAccessDeactivated': gateAccessIds.length},
+        metadata: {'gateAccessDeactivated': archived.gateCodesOff},
       );
 
       if (kDebugMode) {
@@ -1014,45 +1234,74 @@ class TenantService {
   // --- Permanent delete guard -------------------------------------------
   //
   // Permanent delete is only for tenants entered by mistake. Anyone with
-  // billing or legal history is refused, because deleting the tenant doc
-  // orphaned their ledger, invoices and payments: the balance vanished from
-  // AR and the history could no longer be opened. Archive keeps it.
+  // billing or legal history, or who still holds a unit, is refused, because
+  // deleting the tenant doc orphaned their ledger, invoices and payments: the
+  // balance vanished from AR and the history could no longer be opened.
+  // Archive keeps it.
 
   /// Rows read per collection when checking a tenant for history.
   static const int _deleteCheckScanLimit = 10;
 
-  /// Tenants checked at once in a bulk delete (each check is ~9 queries).
+  /// Tenants checked (or audit-logged) at once in a bulk delete; each check
+  /// is ~11 reads.
   static const int _deleteCheckConcurrency = 8;
 
-  /// Writes per batch, under Firestore's 500 cap.
+  /// Writes per transaction, under Firestore's 500 cap.
   static const int _maxWritesPerBatch = 450;
 
+  static TenantRecordsStore _records(String facilityId) =>
+      _FirestoreTenantRecords(_firestore.collection('facilities').doc(facilityId));
+
+  static String _statusOf(Map<String, dynamic> row) =>
+      (row['status'] as Object?)?.toString().trim().toLowerCase() ?? '';
+
   /// Posted or pending. A voided entry was reversed and leaves nothing behind.
-  static bool isLiveLedgerEntry(LedgerEntry e) =>
-      e.status != LedgerEntryStatus.voided;
+  static bool isLiveLedgerRow(Map<String, dynamic> row) =>
+      _statusOf(row) != LedgerEntryStatus.voided.name;
 
   /// Draft, sent, paid and overdue invoices are all history; only voided is not.
-  static bool isLiveInvoice(InvoiceModel i) => i.status != InvoiceStatus.voided;
+  static bool isLiveInvoiceRow(Map<String, dynamic> row) =>
+      _statusOf(row) != InvoiceStatus.voided.name;
+
+  /// Payment statuses that never moved money ('canceled' is Stripe's
+  /// spelling, used on the tenant's own payment rows).
+  static final _deadPaymentStatuses = {
+    PaymentStatus.failed.name,
+    PaymentStatus.cancelled.name,
+    'canceled',
+  };
 
   /// Failed and cancelled payments never moved money, and archived ones were
-  /// removed on purpose. Everything else (pending, paid, refunded, and
-  /// statuses the model reads as pending, like disputed) is real history.
-  static bool isLivePayment(PaymentModel p) =>
-      p.isActive &&
-      p.status != PaymentStatus.failed &&
-      p.status != PaymentStatus.cancelled;
+  /// removed on purpose. Everything else (pending, paid, refunded, disputed,
+  /// and statuses not known here) is real history.
+  static bool isLivePaymentRow(Map<String, dynamic> row) =>
+      row['isActive'] != false &&
+      !_deadPaymentStatuses.contains(_statusOf(row));
 
-  static bool isLiveLien(LienModel l) => l.isActive && l.isActiveLien;
+  /// A row of tenants/{id}/payments. The card-payment callables write it as
+  /// 'processing' before Stripe charges, and only the webhook writes the
+  /// facility payment and ledger rows. Deleting in between left the webhook
+  /// writing money for a tenant who no longer existed.
+  static bool isLiveCardPaymentRow(Map<String, dynamic> row) =>
+      !_deadPaymentStatuses.contains(_statusOf(row));
 
-  /// Contracts, saved cards and gate codes count as active unless switched
-  /// off. A missing flag means active, as in their models.
+  /// billing/default holds the tenant's Stripe autopay subscription while it
+  /// is armed. Deleting the tenant left Stripe charging them with nowhere to
+  /// record the payments.
+  static bool hasAutopaySubscription(Map<String, dynamic>? billing) {
+    final id = billing?['stripeSubscriptionId'];
+    return id is String && id.trim().isNotEmpty;
+  }
+
+  /// Saved cards and gate codes count as on unless switched off. A missing
+  /// flag means on, as in their models.
   static bool isActiveFlagSet(Map<String, dynamic>? data) =>
       data?['isActive'] != false;
 
-  /// How many rows of a capped scan count as live. A row that can't be read
-  /// counts as live, and so does a full page with none live, because rows past
-  /// the cap may be live: deleting on a guess would orphan them.
-  static int liveCountFromScan<T>(
+  /// How many rows of a capped scan are live. A row that can't be read
+  /// counts as live. A full page with none live is [inconclusive]: rows past
+  /// the cap may be live, so deleting on a guess could orphan them.
+  static ({int live, bool inconclusive}) scanLiveRows<T>(
     Iterable<T> rows,
     bool Function(T row) isLive, {
     required int scanLimit,
@@ -1069,53 +1318,98 @@ class TenantService {
       }
       if (rowIsLive) live++;
     }
-    if (live == 0 && total >= scanLimit) return 1;
-    return live;
+    return (live: live, inconclusive: live == 0 && total >= scanLimit);
   }
 
-  /// Readable reasons a tenant can't be permanently deleted; empty means the
-  /// delete may go ahead. Gated on history, not balance: a tenant charged $150
-  /// who paid $150 owes nothing but is still a real customer.
+  /// Readable history that rules out a permanent delete; empty means none.
+  /// Gated on history, not balance: a tenant charged $150 who paid $150 owes
+  /// nothing but is still a real customer.
   static List<String> permanentDeleteBlockers({
-    required int liveLedgerEntries,
-    required int liveInvoices,
-    required int livePayments,
-    required int activeContracts,
-    required int activeSavedCards,
-    int activeLiens = 0,
+    int liveLedgerEntries = 0,
+    int liveInvoices = 0,
+    int livePayments = 0,
+    int liveCardPayments = 0,
+    int contracts = 0,
+    int liens = 0,
+    int activeSavedCards = 0,
+    bool hasAutopaySubscription = false,
+    bool moreThanChecked = false,
   }) {
     String counted(int n, String one, String many) => n == 1 ? one : many;
-    return [
+    final reasons = [
       if (liveLedgerEntries > 0) 'charges or payments on the ledger',
       if (liveInvoices > 0) counted(liveInvoices, 'an invoice', 'invoices'),
       if (livePayments > 0)
         counted(livePayments, 'a payment record', 'payment records'),
-      if (activeContracts > 0)
-        counted(activeContracts, 'an active contract', 'active contracts'),
+      if (liveCardPayments > 0) 'a card payment in progress or payment history',
+      if (contracts > 0) counted(contracts, 'a contract', 'contracts'),
+      if (liens > 0) counted(liens, 'a lien', 'liens'),
       if (activeSavedCards > 0)
         counted(activeSavedCards, 'a saved card', 'saved cards'),
-      if (activeLiens > 0) counted(activeLiens, 'an active lien', 'active liens'),
+      if (hasAutopaySubscription) 'an autopay subscription',
+    ];
+    // Its own reason: counting a full page of voided rows as "charges on the
+    // ledger" sent owners looking for charges that weren't there. Only when
+    // nothing else blocks, since beside a real reason it adds nothing.
+    if (reasons.isEmpty && moreThanChecked) {
+      reasons.add('more records than could be checked here');
+    }
+    return reasons;
+  }
+
+  /// Units that still show [tenantId] as their occupant, less those whose
+  /// number is in [releasing] (units the same write frees). A unit marked
+  /// available with a stale link is not held: it has no Unassign button, so
+  /// counting it would leave the owner stuck.
+  static List<HeldUnit> unitsHeldByTenant(
+    String tenantId,
+    Iterable<UnitModel> units, {
+    Set<String> releasing = const {},
+  }) {
+    return [
+      for (final u in units)
+        if (u.tenantId == tenantId &&
+            u.status != UnitStatus.available &&
+            !releasing.contains(u.unitNumber.trim()))
+          HeldUnit(u.unitNumber, u.status),
     ];
   }
 
-  /// Units that show [tenantId] as their occupant; any one of them rules out
-  /// archiving (see [TenantDeleteBlock.canArchiveInstead]). A unit marked
-  /// available with a stale link is not held, and has no Unassign button, so
-  /// counting it would leave the owner unable to archive at all.
-  static List<String> unitNumbersHeldByTenant(
-    String tenantId,
-    Iterable<UnitModel> units,
-  ) {
-    return units
-        .where((u) => u.tenantId == tenantId && u.status != UnitStatus.available)
-        .map((u) => u.unitNumber)
-        .toList();
+  /// Unit numbers an [updateTenant] call that switches the tenant off
+  /// frees: the old and the new number when it sets one (an inactive
+  /// tenant is never given a unit), nothing when it doesn't (the Active
+  /// switch leaves units alone).
+  static Set<String> unitNumbersReleasedByUpdate({
+    String? previous,
+    String? requested,
+  }) {
+    if (requested == null) return const {};
+    return {previous?.trim() ?? '', requested.trim()}..remove('');
   }
+
+  /// Whether a unit doc shows [tenantId] as its occupant. Freeing by number
+  /// alone let a stale tenant.unitNumber free another tenant's unit.
+  static bool isUnitLinkedTo(String tenantId, Map<String, dynamic>? unit) =>
+      unit?['tenantId'] == tenantId;
 
   /// "a", "a and b", "a, b and c".
   static String joinReadable(List<String> parts) {
     if (parts.length <= 1) return parts.join();
     return '${parts.sublist(0, parts.length - 1).join(', ')} and ${parts.last}';
+  }
+
+  /// Runs [run] for every item, [concurrency] at a time, results in order.
+  static Future<List<R>> _inGroups<T, R>(
+    List<T> items,
+    Future<R> Function(T item) run, {
+    int concurrency = _deleteCheckConcurrency,
+  }) async {
+    final results = <R>[];
+    for (var i = 0; i < items.length; i += concurrency) {
+      final slice = items.sublist(i, math.min(i + concurrency, items.length));
+      results.addAll(await Future.wait(slice.map(run)));
+    }
+    return results;
   }
 
   /// Runs [load] for every id, [concurrency] at a time, results in id order.
@@ -1127,23 +1421,17 @@ class TenantService {
     Future<T> Function(String tenantId) load, {
     int concurrency = _deleteCheckConcurrency,
   }) async {
-    final results = <T>[];
     try {
-      for (var i = 0; i < tenantIds.length; i += concurrency) {
-        final slice =
-            tenantIds.sublist(i, math.min(i + concurrency, tenantIds.length));
-        results.addAll(await Future.wait(slice.map(load)));
-      }
+      return await _inGroups(tenantIds, load, concurrency: concurrency);
     } on TenantDeleteCheckFailedException {
       rethrow;
     } catch (e) {
-      throw TenantDeleteCheckFailedException(e);
+      throw TenantDeleteCheckFailedException(e, tenantCount: tenantIds.length);
     }
-    return results;
   }
 
   /// The order that makes permanent delete safe: read every tenant first,
-  /// refuse them all if any has history (the dialog said "Delete N"), and
+  /// refuse them all if any is blocked (the dialog said "Delete N"), and
   /// only then write. [commit] is never called on a refusal.
   @visibleForTesting
   static Future<List<TenantDeletePlan>> runPermanentDelete({
@@ -1152,40 +1440,37 @@ class TenantService {
     required Future<void> Function(List<TenantDeletePlan> plans) commit,
   }) async {
     final plans = await loadAllForDelete(tenantIds, loadPlan);
-    final blocked = plans
-        .where((p) => p.blockers.isNotEmpty)
-        .map((p) => p.toBlock())
-        .toList();
+    final blocked =
+        plans.where((p) => p.isBlocked).map((p) => p.toBlock()).toList();
     if (blocked.isNotEmpty) {
-      throw TenantHasFinancialRecordsException(blocked);
+      throw TenantDeleteRefusedException(blocked);
     }
     await commit(plans);
     return plans;
   }
 
-  /// Packs per-tenant write groups into batches of at most [maxPerChunk],
-  /// never splitting a group that fits in one. If a later batch is refused,
-  /// each tenant is then either fully deleted or untouched, never a freed
-  /// unit pointing at a tenant who still exists.
+  /// Packs [items] into chunks of at most [maxPerChunk] writes, never
+  /// splitting one item: each tenant is then either fully deleted or
+  /// untouched. An item over the cap goes alone, and its transaction is
+  /// refused whole rather than half-written.
   @visibleForTesting
-  static List<List<T>> packWriteGroups<T>(
-    List<List<T>> groups, {
+  static List<List<T>> packByWrites<T>(
+    List<T> items,
+    int Function(T item) writes, {
     int maxPerChunk = _maxWritesPerBatch,
   }) {
     final chunks = <List<T>>[];
     var current = <T>[];
-    for (final group in groups) {
-      if (current.isNotEmpty && current.length + group.length > maxPerChunk) {
+    var size = 0;
+    for (final item in items) {
+      final n = writes(item);
+      if (current.isNotEmpty && size + n > maxPerChunk) {
         chunks.add(current);
         current = <T>[];
+        size = 0;
       }
-      if (group.length > maxPerChunk) {
-        for (var i = 0; i < group.length; i += maxPerChunk) {
-          chunks.add(group.sublist(i, math.min(i + maxPerChunk, group.length)));
-        }
-        continue;
-      }
-      current.addAll(group);
+      current.add(item);
+      size += n;
     }
     if (current.isNotEmpty) chunks.add(current);
     return chunks;
@@ -1206,184 +1491,312 @@ class TenantService {
     };
   }
 
-  /// Non-archived units linked to the tenant. Throws on a read error, so
-  /// callers fail closed rather than reading "no units".
-  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-      _linkedUnitDocs(String facilityId, String tenantId) async {
-    final snap = await _firestore
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('units')
-        .where('tenantId', isEqualTo: tenantId)
-        .get();
-    return snap.docs.where((d) => d.data()['archived'] != true).toList();
-  }
-
-  static Future<void> _assertHoldsNoUnits(
-    String facilityId,
-    String tenantId,
-    String tenantName,
-  ) async {
-    final docs = await _linkedUnitDocs(facilityId, tenantId);
-    final held =
-        unitNumbersHeldByTenant(tenantId, docs.map(UnitModel.fromFirestore));
+  /// Switches a tenant off: refuses while a unit not in [releasing] still
+  /// shows them as its occupant, then writes [tenantUpdate], frees the
+  /// [releasing] units still linked to them and turns their gate codes off,
+  /// all in one transaction. Before, the gate codes were turned off best
+  /// effort after the update, so a failure left an inactive tenant with a
+  /// working code.
+  @visibleForTesting
+  static Future<({int unitsFreed, int gateCodesOff})> commitDeactivation(
+    TenantRecordsStore store, {
+    required String tenantId,
+    required String tenantName,
+    required Map<String, dynamic> tenantUpdate,
+    required String uid,
+    Set<String> releasing = const {},
+  }) async {
+    final units = await store.linkedUnits(tenantId);
+    // Rent, autopay and delinquency jobs skip inactive tenants, so switching
+    // off someone who still holds a unit silently stopped their rent and
+    // lockout while the unit kept showing them as its occupant.
+    final held = unitsHeldByTenant(tenantId, units, releasing: releasing);
     if (held.isNotEmpty) {
       throw TenantStillAssignedToUnitException(
-        tenantName: tenantName,
-        unitNumbers: held,
-      );
+          tenantName: tenantName, units: held);
     }
+    final toFree = [
+      for (final u in units)
+        if (releasing.contains(u.unitNumber.trim())) u.id,
+    ];
+    final gateIds = await store.activeGateAccessIds(tenantId);
+    final unitOff = UnitService.tenantUnlinkFields(updatedBy: uid);
+    final gateOff = _gateAccessOffFields(uid);
+    var freed = 0;
+    await store.transaction((txn) async {
+      freed = 0;
+      final holders = await Future.wait(toFree.map(txn.unitTenantId));
+      final holderOf = Map.fromIterables(toFree, holders);
+      txn.update('tenants', tenantId, tenantUpdate);
+      for (final unitId in toFree) {
+        if (holderOf[unitId] != tenantId) continue;
+        txn.update('units', unitId, unitOff);
+        freed++;
+      }
+      for (final accessId in gateIds) {
+        txn.update('gateAccess', accessId, gateOff);
+      }
+    });
+    return (unitsFreed: freed, gateCodesOff: gateIds.length);
   }
 
-  static Future<List<String>> _activeGateAccessIds(
-    String facilityId,
-    String tenantId,
-  ) async {
-    final snap = await _firestore
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('gateAccess')
-        .where('tenantId', isEqualTo: tenantId)
-        .get();
-    return snap.docs
-        .where((d) => isActiveFlagSet(d.data()))
-        .map((d) => d.id)
-        .toList();
+  /// Archive: switch the tenant off, freeing nothing.
+  @visibleForTesting
+  static Future<({Map<String, dynamic>? before, int gateCodesOff})>
+      archiveWith(
+    TenantRecordsStore store,
+    String tenantId, {
+    required String uid,
+  }) async {
+    final before = await store.tenant(tenantId);
+    final result = await commitDeactivation(
+      store,
+      tenantId: tenantId,
+      tenantName: _displayName(before, tenantId),
+      tenantUpdate: {
+        'isActive': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      uid: uid,
+    );
+    return (before: before, gateCodesOff: result.gateCodesOff);
   }
 
-  static Future<void> _deactivateGateAccess(
-    String facilityId,
-    String tenantId,
-    String uid,
-  ) async {
-    final ids = await _activeGateAccessIds(facilityId, tenantId);
-    if (ids.isEmpty) return;
-    final ref = _firestore
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('gateAccess');
-    final batch = _firestore.batch();
-    final off = _gateAccessOffFields(uid);
-    for (final id in ids) {
-      batch.update(ref.doc(id), off);
-    }
-    await batch.commit();
+  /// The part of [updateTenant] that switches a tenant off, [before] being
+  /// the tenant doc as read and [requestedUnitNumber] the call's unitNumber.
+  @visibleForTesting
+  static Future<({int unitsFreed, int gateCodesOff})> deactivateForUpdate(
+    TenantRecordsStore store, {
+    required String tenantId,
+    required Map<String, dynamic> before,
+    required String? requestedUnitNumber,
+    required Map<String, dynamic> updateData,
+    required String uid,
+  }) {
+    return commitDeactivation(
+      store,
+      tenantId: tenantId,
+      tenantName: _displayName(before, tenantId),
+      tenantUpdate: updateData,
+      uid: uid,
+      releasing: unitNumbersReleasedByUpdate(
+        previous: (before['unitNumber'] as Object?)?.toString(),
+        requested: requestedUnitNumber,
+      ),
+    );
   }
 
   /// Reads everything a permanent delete of [tenantId] needs to know. Every
   /// query is equality on tenantId only, so the single-field indexes serve
   /// them and no composite index is needed.
-  static Future<TenantDeletePlan> _loadDeletePlan(
-    String facilityId,
+  @visibleForTesting
+  static Future<TenantDeletePlan> loadDeletePlan(
+    TenantRecordsStore store,
     String tenantId,
   ) async {
-    final facilityRef = _firestore.collection('facilities').doc(facilityId);
-    final tenantRef = facilityRef.collection('tenants').doc(tenantId);
-    Future<QuerySnapshot<Map<String, dynamic>>> scan(String collection) =>
-        facilityRef
-            .collection(collection)
-            .where('tenantId', isEqualTo: tenantId)
-            .limit(_deleteCheckScanLimit)
-            .get();
-
-    final results = await Future.wait<Object>([
-      tenantRef.get(),
-      scan('ledgers'),
-      scan('invoices'),
-      scan('payments'),
-      scan('contracts'),
-      scan('liens'),
-      tenantRef.collection('paymentMethods').limit(_deleteCheckScanLimit).get(),
-      _linkedUnitDocs(facilityId, tenantId),
-      _activeGateAccessIds(facilityId, tenantId),
+    const limit = _deleteCheckScanLimit;
+    // Started together and read back by name: the old list was read by
+    // index, where one slip matches a result to the wrong reason.
+    final tenantRead = store.tenant(tenantId);
+    final ledgerRead = store.facilityRows('ledgers', tenantId, limit);
+    final invoicesRead = store.facilityRows('invoices', tenantId, limit);
+    final paymentsRead = store.facilityRows('payments', tenantId, limit);
+    final contractsRead = store.facilityRows('contracts', tenantId, limit);
+    final liensRead = store.facilityRows('liens', tenantId, limit);
+    final cardsRead = store.tenantRows(tenantId, 'paymentMethods', limit);
+    final cardPaymentsRead = store.tenantRows(tenantId, 'payments', limit);
+    final billingRead = store.tenantSubdoc(tenantId, 'billing', 'default');
+    final unitsRead = store.linkedUnits(tenantId);
+    final gateIdsRead = store.activeGateAccessIds(tenantId);
+    // Future.wait fails on the first error and handles the others, so a
+    // second failed read can't surface as an uncaught error.
+    await Future.wait<Object?>([
+      tenantRead,
+      ledgerRead,
+      invoicesRead,
+      paymentsRead,
+      contractsRead,
+      liensRead,
+      cardsRead,
+      cardPaymentsRead,
+      billingRead,
+      unitsRead,
+      gateIdsRead,
     ]);
-    final tenantSnap = results[0] as DocumentSnapshot<Map<String, dynamic>>;
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs(int i) =>
-        (results[i] as QuerySnapshot<Map<String, dynamic>>).docs;
-    int live(
-      List<QueryDocumentSnapshot<Map<String, dynamic>>> rows,
-      bool Function(QueryDocumentSnapshot<Map<String, dynamic>> d) isLive,
-    ) =>
-        liveCountFromScan(rows, isLive, scanLimit: _deleteCheckScanLimit);
 
-    final units =
-        results[7] as List<QueryDocumentSnapshot<Map<String, dynamic>>>;
-    final before = tenantSnap.data();
+    var moreThanChecked = false;
+    int live(
+      List<Map<String, dynamic>> rows,
+      bool Function(Map<String, dynamic> row) isLive,
+    ) {
+      final scan = scanLiveRows(rows, isLive, scanLimit: limit);
+      moreThanChecked = moreThanChecked || scan.inconclusive;
+      return scan.live;
+    }
+
+    // Any contract or lien counts, active or not: history, not state. An
+    // ended contract or a released lien is still a legal record.
+    bool anyRow(Map<String, dynamic> _) => true;
+
+    final ledger = live(await ledgerRead, isLiveLedgerRow);
+    final invoices = live(await invoicesRead, isLiveInvoiceRow);
+    final payments = live(await paymentsRead, isLivePaymentRow);
+    final contracts = live(await contractsRead, anyRow);
+    final liens = live(await liensRead, anyRow);
+    final cards = live(await cardsRead, isActiveFlagSet);
+    final cardPayments = live(await cardPaymentsRead, isLiveCardPaymentRow);
+    final before = await tenantRead;
+    final units = await unitsRead;
     return TenantDeletePlan(
       tenantId: tenantId,
       tenantName: _displayName(before, tenantId),
       before: before == null ? null : Map<String, dynamic>.from(before),
       blockers: permanentDeleteBlockers(
-        liveLedgerEntries: live(
-            docs(1), (d) => isLiveLedgerEntry(LedgerEntry.fromFirestore(d))),
-        liveInvoices:
-            live(docs(2), (d) => isLiveInvoice(InvoiceModel.fromFirestore(d))),
-        livePayments:
-            live(docs(3), (d) => isLivePayment(PaymentModel.fromFirestore(d))),
-        activeContracts: live(docs(4), (d) => isActiveFlagSet(d.data())),
-        activeLiens:
-            live(docs(5), (d) => isLiveLien(LienModel.fromFirestore(d))),
-        activeSavedCards: live(docs(6), (d) => isActiveFlagSet(d.data())),
+        liveLedgerEntries: ledger,
+        liveInvoices: invoices,
+        livePayments: payments,
+        liveCardPayments: cardPayments,
+        contracts: contracts,
+        liens: liens,
+        activeSavedCards: cards,
+        hasAutopaySubscription: hasAutopaySubscription(await billingRead),
+        moreThanChecked: moreThanChecked,
       ),
-      unitIds: units.map((d) => d.id).toList(),
-      heldUnitNumbers:
-          unitNumbersHeldByTenant(tenantId, units.map(UnitModel.fromFirestore)),
-      activeGateAccessIds: results[8] as List<String>,
+      unitIds: [for (final u in units) u.id],
+      // An occupant is refused too: deleting them freed their unit and
+      // listed it as rentable, even with no billing history yet.
+      heldUnits: unitsHeldByTenant(tenantId, units),
+      activeGateAccessIds: await gateIdsRead,
     );
   }
 
-  /// Unit unlinks, gate-code shutoff and the tenant delete, in batches, so a
-  /// rules refusal of the delete frees no unit. Before, each unit was freed
-  /// (and listed as rentable) before the delete was even tried.
-  static Future<void> _commitDeletePlans(
-    String facilityId,
-    List<TenantDeletePlan> plans,
-    String uid,
-  ) async {
-    final facilityRef = _firestore.collection('facilities').doc(facilityId);
-    final unitOff =
-        UnitService.tenantUnlinkFields(updatedBy: uid, moveOutDate: DateTime.now());
+  /// Unit unlinks, gate-code shutoff and the tenant delete, one transaction
+  /// per chunk of tenants, so a rules refusal of the delete frees no unit.
+  /// [onCommitted] hears about each chunk once it is committed, with the
+  /// units actually unlinked.
+  @visibleForTesting
+  static Future<void> commitDeletePlans(
+    TenantRecordsStore store,
+    List<TenantDeletePlan> plans, {
+    required String uid,
+    DateTime? now,
+    int maxWritesPerTransaction = _maxWritesPerBatch,
+    Future<void> Function(
+            List<TenantDeletePlan> committed, Set<String> unlinkedUnitIds)?
+        onCommitted,
+  }) async {
+    final unitOff = UnitService.tenantUnlinkFields(
+        updatedBy: uid, moveOutDate: now ?? DateTime.now());
     final gateOff = _gateAccessOffFields(uid);
-    final groups = [
-      for (final plan in plans)
-        <void Function(WriteBatch)>[
-          for (final unitId in plan.unitIds)
-            (b) => b.update(facilityRef.collection('units').doc(unitId), unitOff),
-          for (final accessId in plan.activeGateAccessIds)
-            (b) => b.update(
-                facilityRef.collection('gateAccess').doc(accessId), gateOff),
-          (b) => b.delete(facilityRef.collection('tenants').doc(plan.tenantId)),
-        ],
-    ];
-    for (final chunk in packWriteGroups(groups)) {
-      final batch = _firestore.batch();
-      for (final write in chunk) {
-        write(batch);
-      }
-      await batch.commit();
+    final chunks = packByWrites(plans, (p) => p.writeCount,
+        maxPerChunk: maxWritesPerTransaction);
+    for (final chunk in chunks) {
+      final unlinked = <String>{};
+      await store.transaction((txn) async {
+        unlinked.clear(); // the body runs again on contention
+        // Re-read every unit inside the transaction. One reassigned since
+        // the check belongs to someone else now: unlinking it freed that
+        // tenant's unit and listed it as rentable.
+        final unitIds = [for (final p in chunk) ...p.unitIds];
+        final holders = await Future.wait(unitIds.map(txn.unitTenantId));
+        final holderOf = Map.fromIterables(unitIds, holders);
+        for (final plan in chunk) {
+          for (final unitId in plan.unitIds) {
+            if (holderOf[unitId] != plan.tenantId) continue;
+            txn.update('units', unitId, unitOff);
+            unlinked.add(unitId);
+          }
+          for (final accessId in plan.activeGateAccessIds) {
+            txn.update('gateAccess', accessId, gateOff);
+          }
+          txn.delete('tenants', plan.tenantId);
+        }
+      });
+      if (onCommitted != null) await onCommitted(chunk, unlinked);
     }
   }
 
-  static Future<List<TenantDeletePlan>> _permanentlyDelete(
+  /// Checks, then deletes, every tenant in [tenantIds], or none. Calls
+  /// [logDeleted] once per deleted tenant, as its transaction commits, so a
+  /// bulk delete leaves the same per-tenant record (with the before
+  /// snapshot) as a single one.
+  @visibleForTesting
+  static Future<List<TenantDeletePlan>> permanentlyDelete(
+    TenantRecordsStore store,
+    List<String> tenantIds, {
+    required String uid,
+    required Future<void> Function(TenantDeletePlan plan, int unitsUnlinked)
+        logDeleted,
+  }) {
+    return runPermanentDelete(
+      tenantIds: tenantIds,
+      loadPlan: (id) => loadDeletePlan(store, id),
+      commit: (plans) => commitDeletePlans(
+        store,
+        plans,
+        uid: uid,
+        onCommitted: (chunk, unlinked) => _inGroups(
+          chunk,
+          (plan) => logDeleted(
+              plan, plan.unitIds.where(unlinked.contains).length),
+        ),
+      ),
+    );
+  }
+
+  static Future<void> _logTenantDeleted(
+    String facilityId,
+    TenantDeletePlan plan, {
+    required int unitsUnlinked,
+    String? bulkId,
+  }) {
+    return AuditService.logEvent(
+      facilityId: facilityId,
+      eventType: 'tenant.deleted',
+      targetType: 'tenant',
+      targetId: plan.tenantId,
+      tenantId: plan.tenantId,
+      before: plan.before,
+      metadata: {
+        'unitsUnlinked': unitsUnlinked,
+        'gateAccessDeactivated': plan.activeGateAccessIds.length,
+        if (bulkId != null) 'bulkDeleteId': bulkId,
+      },
+    );
+  }
+
+  /// [permanentlyDelete] in Firestore, audit-logged, then the public map
+  /// resynced if any unit was freed. Returns the plans and the units freed.
+  static Future<({List<TenantDeletePlan> plans, int unitsUnlinked})>
+      _permanentlyDeleteInFacility(
     String facilityId,
     List<String> tenantIds,
-    String uid,
-  ) async {
-    final plans = await runPermanentDelete(
-      tenantIds: tenantIds,
-      loadPlan: (id) => _loadDeletePlan(facilityId, id),
-      commit: (plans) => _commitDeletePlans(facilityId, plans, uid),
-    );
-    if (plans.any((p) => p.unitIds.isNotEmpty)) {
-      UnitService.schedulePublicMapInventorySync(facilityId);
+    String uid, {
+    String? bulkId,
+  }) async {
+    var unlinked = 0;
+    try {
+      final plans = await permanentlyDelete(
+        _records(facilityId),
+        tenantIds,
+        uid: uid,
+        logDeleted: (plan, unitsUnlinked) {
+          unlinked += unitsUnlinked;
+          return _logTenantDeleted(facilityId, plan,
+              unitsUnlinked: unitsUnlinked, bulkId: bulkId);
+        },
+      );
+      return (plans: plans, unitsUnlinked: unlinked);
+    } finally {
+      // Also after a later chunk fails: earlier chunks did free their units.
+      if (unlinked > 0) UnitService.schedulePublicMapInventorySync(facilityId);
     }
-    return plans;
   }
 
-  // Delete tenant permanently. Refused (TenantHasFinancialRecordsException)
-  // when the tenant has billing or legal history. Otherwise unlinks their
-  // units, turns off their gate codes and deletes the doc in one batch, then
-  // refreshes facility counts.
+  // Delete tenant permanently. Refused (TenantDeleteRefusedException) when
+  // the tenant has billing or legal history or still holds a unit. Otherwise
+  // unlinks their units, turns off their gate codes and deletes the doc in
+  // one transaction, then refreshes facility counts.
   static Future<void> deleteTenant({
     required String facilityId,
     required String tenantId,
@@ -1400,23 +1813,11 @@ class TenantService {
         print('🔄 [TenantService] Deleting tenant: $tenantId (facility: $facilityId)');
       }
 
-      final plan = (await _permanentlyDelete(facilityId, [tenantId], user.uid)).single;
-
-      await AuditService.logEvent(
-        facilityId: facilityId,
-        eventType: 'tenant.deleted',
-        targetType: 'tenant',
-        targetId: tenantId,
-        tenantId: tenantId,
-        before: plan.before,
-        metadata: {
-          'unitsUnlinked': plan.unitIds.length,
-          'gateAccessDeactivated': plan.activeGateAccessIds.length,
-        },
-      );
+      final result =
+          await _permanentlyDeleteInFacility(facilityId, [tenantId], user.uid);
 
       if (kDebugMode) {
-        print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${plan.unitIds.length} unit(s)');
+        print('✅ [TenantService] Tenant deleted: $tenantId, unlinked ${result.unitsUnlinked} unit(s)');
       }
 
       // Refresh facility counts so dashboard/list stay correct.
@@ -1431,7 +1832,7 @@ class TenantService {
   }
 
   // Delete multiple tenants permanently, all or nothing: if any selected
-  // tenant has history, none are deleted. Then refresh facility counts once.
+  // tenant is blocked, none are deleted. Then refresh facility counts once.
   static Future<void> deleteTenants({
     required String facilityId,
     required List<String> tenantIds,
@@ -1451,18 +1852,24 @@ class TenantService {
 
       await _assertFacilityAllowsPermanentTenantDeletion(facilityId);
 
-      final plans = await _permanentlyDelete(facilityId, ids, user.uid);
-      final unlinked = plans.fold<int>(0, (n, p) => n + p.unitIds.length);
+      final bulkId = 'bulk_${ids.length}_${DateTime.now().millisecondsSinceEpoch}';
+      // Each tenant also gets its own tenant.deleted event with its before
+      // snapshot; the bulk event alone left bulk-deleted tenants
+      // unrecoverable from the audit log.
+      final result = await _permanentlyDeleteInFacility(
+          facilityId, ids, user.uid,
+          bulkId: bulkId);
+      final plans = result.plans;
 
       await AuditService.logEvent(
         facilityId: facilityId,
         eventType: 'tenant.bulkDeleted',
         targetType: 'tenant',
-        targetId: 'bulk_${ids.length}_${DateTime.now().millisecondsSinceEpoch}',
+        targetId: bulkId,
         metadata: {
           'tenantIds': ids,
           'count': ids.length,
-          'unitsUnlinked': unlinked,
+          'unitsUnlinked': result.unitsUnlinked,
           'gateAccessDeactivated':
               plans.fold<int>(0, (n, p) => n + p.activeGateAccessIds.length),
           // Same order as tenantIds (a missing doc falls back to its id).
@@ -1471,7 +1878,7 @@ class TenantService {
       );
 
       if (kDebugMode) {
-        print('✅ [TenantService] Deleted ${ids.length} tenants, unlinked $unlinked unit(s)');
+        print('✅ [TenantService] Deleted ${ids.length} tenants, unlinked ${result.unitsUnlinked} unit(s)');
       }
 
       // force: a bulk delete must be reflected immediately, not swallowed by
@@ -1542,8 +1949,22 @@ class TenantService {
           .toList();
 
       DocumentReference unitDocRef;
-      
-      if (activeUnits.isEmpty) {
+
+      if (!occupied) {
+        // Free only a unit that still shows this tenant as its occupant.
+        // Matching by number alone let a stale tenant.unitNumber free
+        // another tenant's unit and list it as rentable (and created the
+        // unit when it didn't exist, just to mark it available).
+        final linked = activeUnits.where((doc) =>
+            isUnitLinkedTo(tenantId, doc.data() as Map<String, dynamic>?));
+        if (linked.isEmpty) {
+          if (kDebugMode) {
+            print('ℹ️ Unit $unitNumber is not linked to $tenantId; left as is');
+          }
+          return;
+        }
+        unitDocRef = linked.first.reference;
+      } else if (activeUnits.isEmpty) {
         // Unit doesn't exist - create it automatically
         if (kDebugMode) {
           print('🔄 Unit $unitNumber not found, creating it automatically...');
