@@ -57,8 +57,9 @@ test('recomputes for a caller with facility access', async () => {
     { auth: { uid: 'owner', token: {} } },
     d,
   );
-  assert.equal(result.success, true);
-  assert.deepEqual(result.stats, { totalUnits: 3, occupiedUnits: 2 });
+  // Only success: the stats hold revenue and past-due counts, and the
+  // callable is open to staff roles. Before: the full stats came back.
+  assert.deepEqual(result, { success: true });
   assert.equal(calls.access, 1);
   assert.equal(calls.recompute, 1);
 });

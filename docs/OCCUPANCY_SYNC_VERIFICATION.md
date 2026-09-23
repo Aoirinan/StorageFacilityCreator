@@ -23,9 +23,11 @@
 
 Only the Cloud Function (`functions-facility-ops`):
 
-- `onUnitWrite` / `onTenantWrite` (coalesced, 15 s window) and `updateAllFacilityStatsNightly`.
-- `updateFacilityStatsManual`, called by the app's **Sync counts** buttons (`FacilityStatsService.recomputeAllFacilitiesStats`). The caller must have access to the facility (owner, `roles` map, `managers` map, active `user_roles` row) or carry the `superadmin` claim.
+- `onUnitWrite` / `onTenantWrite` (coalesced, 15 s window) and `updateAllFacilityStatsNightly`. When a coalesced pass fails, writes that landed during it get one retry; if it still fails, the claim is released so the next write recomputes at once.
+- `updateFacilityStatsManual`, called by the app's **Sync counts** buttons (`FacilityStatsService.recomputeAllFacilitiesStats`). The caller must have access to the facility (owner, `roles` map, `managers` map, active `user_roles` row) or carry the `superadmin` claim. It returns only `{ success: true }`; the stats (revenue, past due) are not sent back.
 - A pass reads units, then all tenants, then active tenants, and heals only after every read has succeeded. A failed read throws; nothing (not even zeros) is written.
+- Each orphan heal is a separate update with the unit's read `updateTime` as a precondition. A unit that changed since the read (e.g. a move-in relinked it) or was deleted is skipped; its own write triggers another pass.
+- An active tenant doc with unreadable dates (no `createdAt`, or a non-Timestamp `paidThrough`) is logged and left out of the past-due counts; it no longer fails the facility's pass. A non-number `monthlyRate` counts as 0.
 
 The client never heals or writes stats. `FacilityStatsService.updateFacilityStats` is a no-op kept for existing callers: its writes were always denied, and its client-side heal could free rented units from a capped, name-ordered tenant list that returns `[]` on error.
 
@@ -48,4 +50,4 @@ The client never heals or writes stats. `FacilityStatsService.updateFacilityStat
 
 - `test/facility_stats_logic_test.dart`: `countUnits`, `cachedUnitTotalDrifted`, `countsMatchFacilityMirror`, Sync counts messages (an empty facility list is an error) and failure tally.
 - `test/tenant_facility_read_test.dart` (no 250 cap, no name ordering, unnamed tenants kept, bound reported), `test/dashboard_load_test.dart` (`facilityUnitCounts`), `test/unit_counts_header_test.dart` (header and rows keep the last tenant list through a stream error), `test/keyed_memo_test.dart` (`callKeeping`), `test/settings_onboarding_test.dart`, `test/active_facility_provider_test.dart`, `test/late_overdue_list_test.dart`, `test/chunked_parallel_test.dart`.
-- `functions-facility-ops/src/test/facility_stats.test.ts` (archived exclusion, heal scope, no zeros on read failure) and `facility_stats_manual.test.ts` (access check).
+- `functions-facility-ops/src/test/facility_stats.test.ts` (archived exclusion, heal scope, heal preconditions, bad tenant docs, no zeros on read failure), `facility_stats_coalesce.test.ts` (retry and claim release after a failed pass) and `facility_stats_manual.test.ts` (access check, success-only response).

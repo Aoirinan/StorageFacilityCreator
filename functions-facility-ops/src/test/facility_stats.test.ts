@@ -11,6 +11,7 @@ const {
   summarizeFacilityStats,
   computeFacilityStats,
   recomputeAndPersistFacilityStats,
+  healOrphanUnitsWith,
 } = facilityStatsTestUtils;
 
 function ts(date: Date): admin.firestore.Timestamp {
@@ -131,8 +132,8 @@ test('computeFacilityStats still heals an archived orphan unit', async () => {
         ],
         allTenantIds: new Set(['t1']),
       }),
-    healOrphans: async (_facilityId, ids) => {
-      healed.push(ids);
+    healOrphans: async (_facilityId, orphans) => {
+      healed.push(orphans.map((o) => o.id));
     },
   });
   assert.deepEqual(healed, [['archived-orphan', 'staff-orphan']]);
@@ -173,4 +174,96 @@ test('recomputeAndPersist writes nothing when the compute fails', async () => {
     /unavailable/,
   );
   assert.equal(persisted, 0);
+});
+
+test('each heal carries the version of the unit the pass read', async () => {
+  const readAt = ts(new Date('2026-09-23T12:00:00.000Z'));
+  const healed: Array<{ id: string; updateTime?: admin.firestore.Timestamp }> = [];
+  await computeFacilityStats('fac-1', {
+    load: async () =>
+      statsInputs({
+        units: [{ id: 'orphan', status: 'occupied', tenantId: 'gone', updateTime: readAt }],
+      }),
+    healOrphans: async (_facilityId, orphans) => {
+      healed.push(...orphans);
+    },
+  });
+  assert.equal(healed.length, 1);
+  assert.equal(healed[0].updateTime, readAt);
+});
+
+function firestoreError(code: number, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+test('a unit that changed since the read is skipped, not overwritten', async () => {
+  const readAt = ts(new Date('2026-09-23T12:00:00.000Z'));
+  const writes: Array<[string, admin.firestore.Timestamp]> = [];
+  const result = await healOrphanUnitsWith(
+    'fac-1',
+    [
+      { id: 'still-orphan', updateTime: readAt },
+      // A move-in relinked this unit between the read and the heal.
+      { id: 'just-rented', updateTime: readAt },
+      { id: 'deleted', updateTime: readAt },
+    ],
+    async (unitId, updateTime) => {
+      writes.push([unitId, updateTime]);
+      if (unitId === 'just-rented') throw firestoreError(9, 'FAILED_PRECONDITION');
+      if (unitId === 'deleted') throw firestoreError(5, 'NOT_FOUND');
+    },
+  );
+  // Before: one blind batch.update set the rented unit back to available.
+  assert.deepEqual(result, { healed: 1, skipped: 2 });
+  assert.deepEqual(
+    writes.map(([id, t]) => [id, t === readAt]),
+    [
+      ['still-orphan', true],
+      ['just-rented', true],
+      ['deleted', true],
+    ],
+  );
+});
+
+test('any other heal failure still fails the pass', async () => {
+  await assert.rejects(
+    healOrphanUnitsWith('fac-1', [{ id: 'u1', updateTime: ts(new Date()) }], async () => {
+      throw firestoreError(14, 'UNAVAILABLE');
+    }),
+    /UNAVAILABLE/,
+  );
+});
+
+test('a unit with no read version is left for the next pass', async () => {
+  let writes = 0;
+  const result = await healOrphanUnitsWith('fac-1', [{ id: 'u1' }], async () => {
+    writes++;
+  });
+  assert.equal(writes, 0);
+  assert.deepEqual(result, { healed: 0, skipped: 1 });
+});
+
+test('one tenant with unreadable dates does not fail the facility', () => {
+  const now = new Date('2026-06-15T12:00:00.000Z');
+  const stats = summarizeFacilityStats(
+    statsInputs({
+      activeTenants: [
+        // Never paid, created long ago: 30+ days late.
+        { id: 'late', isActive: true, monthlyRate: 100, createdAt: ts(new Date('2026-01-01T12:00:00.000Z')) },
+        // No createdAt and no paidThrough.
+        { id: 'no-created', isActive: true, monthlyRate: 50 } as any,
+        // paidThrough stored as a string.
+        { id: 'string-date', isActive: true, monthlyRate: 25, paidThrough: '2026-05-01', createdAt: ts(now) } as any,
+        // monthlyRate stored as a string.
+        { id: 'string-rate', isActive: true, monthlyRate: '75', paidThrough: ts(now), createdAt: ts(now) } as any,
+      ],
+    }),
+    now,
+  );
+  // Before: summarizeFacilityStats threw on the first bad tenant, so every
+  // pass for the facility failed and its counts froze.
+  assert.equal(stats.totalTenantsActive, 4);
+  assert.equal(stats.tenantsSeverelyOverdue, 1);
+  assert.equal(stats.totalPastDue, 1);
+  assert.equal(stats.scheduledMonthlyRevenue, 175);
 });
