@@ -1,6 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { isUnitOfferedOnline } from '@sfc/functions-shared';
+import {
+  enabledOnlineUnitTypes,
+  isArchivedForOnlineRental,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
+  isUnlistedUnit,
+} from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
 const INVENTORY_KEYS = [
@@ -120,10 +126,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
   const settings = (settingsSnap.data() || {}) as Record<string, any>;
   const showPublicPricing = settings.publicPricingEnabled !== false;
   const showUnitNumbers = settings.publicUnitNumbersEnabled !== false;
-  const enabledRaw = settings.enabledPublicUnitTypes;
-  const enabledTypes: string[] = Array.isArray(enabledRaw)
-    ? enabledRaw.map((e: any) => String(e).trim()).filter((e: string) => e.length > 0)
-    : [];
+  const enabledTypes = enabledOnlineUnitTypes(settings);
 
   // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
   const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
@@ -148,12 +151,11 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // The app's unit read (UnitService.readFacilityUnits) and the stats
     // function keep a unit only when `(archived ?? false) === false`; this
     // kept a stray non-boolean such as 'true' that the app's publish drops.
-    if ((d.archived ?? false) !== false) continue;
+    if (isArchivedForOnlineRental(d)) continue;
 
     const unitType = String(d.unitType || '');
     const categorySlug = slugify(unitType);
-    const isPubliclyEnabledType =
-      enabledTypes.length === 0 || enabledTypes.includes(unitType);
+    const isPubliclyEnabledType = isUnitTypeOfferedOnline(d, enabledTypes);
     // The online rental holds rent a unit whose String(status || '') lower-cases
     // to 'available' or 'reserved': none for a missing status, 'Available'
     // included. A non-string counts as no status here and in the app
@@ -171,7 +173,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
     const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
     const statusAllowsRental = st === 'available' || st === 'reserved';
-    const publicListingEnabled = d.publicListingEnabled !== false;
+    const publicListingEnabled = !isUnlistedUnit(d);
     // The online rental callables rent only what isUnitOfferedOnline allows:
     // listed and not internal use. This looked at the listing switch alone, so
     // an office or residence left listed was advertised as rentable and then

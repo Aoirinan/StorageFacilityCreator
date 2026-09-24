@@ -28,6 +28,8 @@ const NOT_AVAILABLE = 'Unit is not currently available';
 const NOT_OFFERED: Array<[string, Record<string, unknown>]> = [
   ['not listed on the public website', { publicListingEnabled: false }],
   ['kept for internal use', { internalUse: true }],
+  // An office whose listing switch was left on is still internal use.
+  ['kept for internal use with its listing on', { internalUse: true, publicListingEnabled: true }],
   ['archived', { archived: true }],
 ];
 
