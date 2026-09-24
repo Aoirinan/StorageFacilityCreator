@@ -210,6 +210,30 @@ for (const [why, fields] of NOT_OFFERED) {
   });
 }
 
+test('a unit type the owner has not opened to online rental cannot be held, and nothing is written', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacility(inMemory, { publicRentalsEnabled: true, enabledPublicUnitTypes: ['climateControlled'] });
+  seedUnit(inMemory, { unitType: 'standard' });
+  const { hold } = loadPublicMoveIn(inMemory);
+
+  // Before: the public map showed it as not rentable, but a direct call
+  // held it.
+  await assert.rejects(() => hold(holdRequest), refusedWith(NOT_AVAILABLE));
+
+  assertNothingHeld(inMemory);
+});
+
+test('a unit type the owner opened to online rental can be held', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacility(inMemory, { publicRentalsEnabled: true, enabledPublicUnitTypes: [' standard '] });
+  seedUnit(inMemory, { unitType: 'standard' });
+  const { hold } = loadPublicMoveIn(inMemory);
+
+  const result = (await hold(holdRequest)) as { success?: boolean };
+
+  assert.equal(result.success, true);
+});
+
 test.after(() => {
   testEnv.cleanup();
 });

@@ -6,8 +6,10 @@ import {
   enforceAppCheckOrThrow,
   enforceRateLimit,
   escapeHtml,
+  enabledOnlineUnitTypes,
   getStripeClient,
   isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
   sendFacilityEmailWithCompliance,
 } from '@sfc/functions-shared';
 import {
@@ -247,17 +249,21 @@ export const ONLINE_RENTALS_OFF_MESSAGE =
  * rentals on (FacilityPublicSettings.publicRentalsEnabled, off by default), so
  * a direct call is held to the same switch. The setting is already public in
  * the facility's publicFacilityMaps doc, so saying so leaks nothing.
+ *
+ * Returns the settings, so the hold can apply their unit types too.
  */
-async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<void> {
+async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Record<string, unknown>> {
   const settingsSnap = await admin.firestore()
     .collection('facilities')
     .doc(facilityId)
     .collection('settings')
     .doc('public')
     .get();
-  if (settingsSnap.data()?.publicRentalsEnabled !== true) {
+  const settings = (settingsSnap.data() || {}) as Record<string, unknown>;
+  if (settings.publicRentalsEnabled !== true) {
     throw new functions.https.HttpsError('failed-precondition', ONLINE_RENTALS_OFF_MESSAGE);
   }
+  return settings;
 }
 
 /**
@@ -305,7 +311,8 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     userId: context.auth?.uid || null,
   });
 
-  await assertFacilityTakesOnlineRentals(String(facilityId));
+  const publicSettings = await assertFacilityTakesOnlineRentals(String(facilityId));
+  const enabledUnitTypes = enabledOnlineUnitTypes(publicSettings);
 
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name ? String(name).trim() : '',
@@ -347,9 +354,15 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     }
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
-    // One refusal for both, so a caller cannot tell an unlisted or
-    // internal-use unit from a rented one.
-    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isUnitOfferedOnline(unitData)) {
+    // One refusal for all of these, so a caller cannot tell an unlisted or
+    // internal-use unit from a rented one. The unit type too: the public map
+    // marks a type the owner turned off not rentable, but a direct call held
+    // it.
+    if (
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isUnitOfferedOnline(unitData) ||
+      !isUnitTypeOfferedOnline(unitData, enabledUnitTypes)
+    ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 

@@ -5,7 +5,9 @@ import {
   sendFacilityEmailWithCompliance,
   authenticatePortalTenantForFacility,
   extractCallableClientIp,
+  enabledOnlineUnitTypes,
   isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
 } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
@@ -294,15 +296,37 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
   }
 });
 
+/** The unit types the facility opened to online rental (settings/public); empty means all. */
+async function readEnabledOnlineUnitTypes(facilityId: string): Promise<string[]> {
+  const settingsSnap = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('settings')
+    .doc('public')
+    .get();
+  return enabledOnlineUnitTypes(settingsSnap.data());
+}
+
+/**
+ * Whether a portal tenant may rent [unit] online, apart from its status,
+ * which each caller checks: the owner offers it online, its type is one the
+ * owner opened to online rental (as on the public map), and it is not
+ * deactivated. The list and the hold both use this, so a unit the list
+ * leaves out cannot be held by sending its id.
+ */
+function isOfferedToPortalTenant(unit: Record<string, unknown>, enabledTypes: string[]): boolean {
+  return unit.isActive !== false && isUnitOfferedOnline(unit) && isUnitTypeOfferedOnline(unit, enabledTypes);
+}
+
 /**
  * Lists units available for online/additional rental for a tenant portal session.
  * Direct Firestore reads are blocked for portal users; this callable validates email + access code
  * then reads inventory with the Admin SDK (same trust boundary as createTenantPortalAdditionalUnitHold).
  *
- * Only units the owner offers online (isUnitOfferedOnline): the portal rents
- * through the same online move-in and checkout as the public rental page, so
- * a unit left off the public website, archived or kept for internal use is not
- * offered here either.
+ * Only units the owner offers online (isOfferedToPortalTenant): the portal
+ * rents through the same online move-in and checkout as the public rental
+ * page, so a unit left off the public website, archived or kept for internal
+ * use is not offered here either.
  */
 export const tenantPortalListAvailableUnits = functions.https.onCall(async (data: any, context) => {
   const email = (data?.email || '').toString().trim().toLowerCase();
@@ -319,6 +343,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
 
+  const enabledTypes = await readEnabledOnlineUnitTypes(facilityId);
   const unitsSnap = await admin
     .firestore()
     .collection('facilities')
@@ -335,7 +360,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   unitsSnap.forEach((doc) => {
     const d = doc.data() as Record<string, any>;
-    if (d.isActive === false || !isUnitOfferedOnline(d)) {
+    if (!isOfferedToPortalTenant(d, enabledTypes)) {
       return;
     }
     const st = String(d.status || '').toLowerCase();
@@ -393,6 +418,7 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
   const session = await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
   const sourceTenantDoc = session.tenantDoc;
   const sourceTenantData = session.tenantData as Record<string, any>;
+  const enabledTypes = await readEnabledOnlineUnitTypes(facilityId);
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + holdMinutes * 60 * 1000);
@@ -421,8 +447,10 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
     // The list above leaves these units out, but a unit id can be sent
-    // directly: every unit's id is in the public map doc.
-    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isUnitOfferedOnline(unitData)) {
+    // directly: every unit's id is in the public map doc. Same test as the
+    // list, which the hold did not share: it took deactivated units and
+    // unit types the owner had not opened to online rental.
+    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isOfferedToPortalTenant(unitData, enabledTypes)) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 
