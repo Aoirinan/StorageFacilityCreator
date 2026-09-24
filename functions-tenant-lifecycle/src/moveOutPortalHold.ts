@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { sendFacilityEmailWithCompliance, authenticatePortalTenantForFacility, extractCallableClientIp } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
+import { tenantFieldsAfterMoveOut } from './moveOutTenantFields';
 /**
  * Process move-out workflow
  * Handles move-out in a transaction-safe way: updates contract, frees unit, calculates charges/refunds
@@ -119,6 +120,24 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
           .where('isActive', '==', true),
       );
       const stillRentsElsewhere = otherContractsSnap.docs.some((d) => d.id !== contractId);
+      // Their units, for the rate and unit number they keep (read before any write).
+      const linkedUnitsSnap = stillRentsElsewhere
+        ? await transaction.get(
+          admin.firestore()
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('units')
+            .where('tenantId', '==', tenantId),
+        )
+        : null;
+      const tenantFields = tenantFieldsAfterMoveOut({
+        tenantId,
+        tenant: tenantDoc.data() || {},
+        unitId,
+        unit: unitDoc.data() || {},
+        stillRentsElsewhere,
+        linkedUnits: (linkedUnitsSnap?.docs ?? []).map((d) => ({ id: d.id, data: d.data() })),
+      });
 
       // 4. Update contract - mark as ended
       transaction.update(contractRef, {
@@ -142,11 +161,10 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         updatedBy: userId,
       });
 
-      // 6. Update tenant — only end the tenancy if this was their last unit.
+      // 6. Update tenant — only end the tenancy if this was their last unit;
+      // otherwise this unit's rent comes off their rate (tenantFieldsAfterMoveOut).
       transaction.update(tenantRef, {
-        ...(stillRentsElsewhere
-          ? {}
-          : { unitNumber: '', isActive: false }),
+        ...tenantFields,
         updatedAt: now,
       });
 
