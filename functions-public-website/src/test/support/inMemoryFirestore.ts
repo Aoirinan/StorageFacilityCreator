@@ -19,6 +19,9 @@ export class InMemoryFirestore {
   /** The last transaction queued; the next one starts when it settles. */
   private transactionTail: Promise<unknown> = Promise.resolve();
 
+  /** Ids handed out by `doc()` with no id. */
+  private autoIds = 0;
+
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
   }
@@ -108,6 +111,10 @@ export class InMemoryFirestore {
         store.set(this.path, next);
       }
 
+      async delete(): Promise<void> {
+        store.delete(this.path);
+      }
+
       collection(name: string): CollectionRef {
         return new CollectionRef(joinPath(this.path, name));
       }
@@ -172,7 +179,9 @@ export class InMemoryFirestore {
       }
 
       doc(id?: string): DocRef {
-        const docId = id || `auto_${store.size + 1}`;
+        // Counted, not taken from the store's size: after a delete, the size
+        // would name a document that still exists, and overwrite it.
+        const docId = id || `auto_${++owner.autoIds}`;
         return new DocRef(joinPath(this.path, docId));
       }
     }
@@ -214,6 +223,7 @@ export class InMemoryFirestore {
           get: async (ref: DocRef) => ref.get(),
           set: async (ref: DocRef, data: DocData) => ref.set(data),
           update: async (ref: DocRef, data: DocData) => ref.update(data),
+          delete: async (ref: DocRef) => ref.delete(),
         };
         const run = owner.transactionTail.then(() => fn(tx));
         owner.transactionTail = run.catch(() => undefined);

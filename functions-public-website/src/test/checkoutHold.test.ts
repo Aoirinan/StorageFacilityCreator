@@ -19,6 +19,7 @@ import {
   FINISH_AFTER_PAYMENT_MINUTES,
 } from '../checkoutHold';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
+import { MOVE_IN_FORM } from './support/moveInForm';
 
 const testEnv = firebaseFunctionsTest({ projectId: 'in-memory-test' });
 const callableContext = { app: { appId: 'test-app-check' } };
@@ -88,7 +89,7 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, paymentMetadata: Record<s
     open: () => testEnv.wrap(moveIn.getPublicReservationByToken)({ token: TOKEN }, callableContext),
     checkout: () =>
       testEnv.wrap(moveIn.createPublicMoveInCheckout)(
-        { reservationId: RESERVATION, token: TOKEN, amount: quoteCents(inMemory) / 100 },
+        { reservationId: RESERVATION, token: TOKEN, amount: quoteCents(inMemory) / 100, moveInForm: MOVE_IN_FORM },
         callableContext,
       ),
     complete: (overrides: Record<string, unknown> = {}) =>

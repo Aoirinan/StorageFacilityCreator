@@ -1676,6 +1676,22 @@ service cloud.firestore {
         isFacilityStaff(resource.data.facilityId);
     }
     
+    // Online move-in records that only Cloud Functions read or write:
+    // publicMoveInForms holds a renter's saved move-in form (government ID
+    // number, signature) between checkout and completion; publicMoveInCheckouts
+    // holds paid Checkout Sessions recorded by the Stripe webhook; and
+    // publicMoveInPayments marks each payment that has completed a move-in.
+    // No client, staff included, reads or writes them.
+    match /publicMoveInForms/{reservationId} {
+      allow read, write: if false;
+    }
+    match /publicMoveInCheckouts/{checkoutSessionId} {
+      allow read, write: if false;
+    }
+    match /publicMoveInPayments/{paymentIntentId} {
+      allow read, write: if false;
+    }
+
     // Super admin internal notes - only superadmin can read/write
     match /superAdminNotes/{noteId} {
       allow read, write: if request.auth != null && isSuperAdmin();

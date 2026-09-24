@@ -12,6 +12,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
 import { computePublicMoveInCharges } from '../moveInCharges';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
+import { MOVE_IN_FORM } from './support/moveInForm';
 import { MAX_ACTIVE_TENANTS_PER_FACILITY, countActiveTenants } from '../tenantCapacity';
 
 const testEnv = firebaseFunctionsTest({ projectId: 'in-memory-test' });
@@ -79,7 +80,8 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stripe: { amountReceived?
   return {
     stripeCalls,
     hold: (data: Record<string, unknown>) => testEnv.wrap(moveIn.createPublicReservationHold)(data, callableContext),
-    checkout: (data: Record<string, unknown>) => testEnv.wrap(moveIn.createPublicMoveInCheckout)(data, callableContext),
+    checkout: (data: Record<string, unknown>) =>
+      testEnv.wrap(moveIn.createPublicMoveInCheckout)({ moveInForm: MOVE_IN_FORM, ...data }, callableContext),
     complete: (data: Record<string, unknown>) => testEnv.wrap(moveIn.completePublicMoveIn)(data, callableContext),
   };
 }

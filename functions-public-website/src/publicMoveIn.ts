@@ -10,6 +10,7 @@ import {
   getStripeClient,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
+  PUBLIC_MOVE_IN_PAYMENT_TYPE,
   sendFacilityEmailWithCompliance,
   unitNotOfferedOnlineReason,
 } from '@sfc/functions-shared';
@@ -35,6 +36,16 @@ import {
   timestampToDate,
 } from './checkoutHold';
 import { notifyOwnerOfMoveInToUnitNotOffered } from './onlineMoveInReview';
+import {
+  assertMoveInFormComplete,
+  loadSavedMoveInForm,
+  MOVE_IN_FORM_NOT_SAVED_MESSAGE,
+  MOVE_IN_FORM_NOT_SAVED_REASON,
+  moveInFormFromData,
+  saveMoveInForm,
+  savedMoveInFormRef,
+} from './moveInForm';
+import type { MoveInForm } from './moveInForm';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -176,10 +187,12 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
     throw new functions.https.HttpsError('invalid-argument', 'Valid token is required');
   }
 
+  // Completed too: a renter who paid and left may have been moved in by the
+  // paid-checkout trigger, and on coming back should see that, not the form.
   const snapshot = await admin.firestore()
     .collection('publicReservations')
     .where('moveInToken', '==', token)
-    .where('status', 'in', ['pending', 'confirmed'])
+    .where('status', 'in', ['pending', 'confirmed', 'completed'])
     .limit(1)
     .get();
 
@@ -198,6 +211,23 @@ export const getPublicReservationByToken = functions.https.onCall(async (data: a
       limit: 60,
       windowSeconds: 60,
     });
+  }
+  if (reservation.status === 'completed') {
+    // Only what the page shows for a finished move-in: no charges, no form.
+    return {
+      found: true,
+      reservation: {
+        id: doc.id,
+        facilityId: reservation.facilityId || '',
+        unitId: reservation.unitId || null,
+        unitNumber: reservation.unitNumber || null,
+        email: reservation.email || '',
+        name: reservation.name || null,
+        status: 'completed',
+        moveInDate: timestampToDate(reservation.moveInDate)?.toISOString() || null,
+        completedAt: timestampToDate(reservation.completedAt)?.toISOString() || null,
+      },
+    };
   }
   const expiresAt = reservation.expiresAt as admin.firestore.Timestamp | undefined;
   // A reservation that went to checkout stays open for a while after its hold
@@ -530,6 +560,8 @@ export const transitionPublicReservationStatus = functions.https.onCall(async (d
     if (holdRef) {
       tx.delete(holdRef);
     }
+    // No move-in will be completed from it.
+    tx.delete(savedMoveInFormRef(reservationId));
   });
 
   return { success: true, status: 'cancelled' };
@@ -548,6 +580,7 @@ export const createPublicMoveInCheckout = functions
     token,
     amount,
     description,
+    moveInForm: rawMoveInForm,
   } = data || {};
 
   if (!reservationId || !token || amount == null) {
@@ -556,6 +589,17 @@ export const createPublicMoveInCheckout = functions
       'reservationId, token, and amount are required',
     );
   }
+  // The move-in form is saved before the renter pays, so the move-in can be
+  // completed from it if they never come back from Stripe (moveInForm.ts).
+  // A page loaded before the form was sent here sends none.
+  if (!rawMoveInForm || typeof rawMoveInForm !== 'object') {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Please refresh this page, then fill in the move-in form before paying.',
+    );
+  }
+  const moveInForm = moveInFormFromData(rawMoveInForm as Record<string, unknown>);
+  assertMoveInFormComplete(moveInForm);
 
   const amountNumber = Number(amount);
   if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
@@ -636,11 +680,26 @@ export const createPublicMoveInCheckout = functions
   // minutes old, and tenant-portal holds are created in another codebase.
   await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
 
-  await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+  const reservedIdentity = {
     name: reservation.name ? String(reservation.name).trim() : '',
     email: String(reservation.email || '').trim().toLowerCase(),
     phone: reservation.phone ? String(reservation.phone).trim() : '',
-  });
+  };
+  await assertOnlineRentalNotOnDnrList(admin.firestore(), reservedIdentity);
+  // Completion screens the name, email and phone on the form, so a form that
+  // differs is screened here too: a match found only after payment leaves the
+  // renter paid and refused.
+  if (
+    moveInForm.name.toLowerCase() !== reservedIdentity.name.toLowerCase() ||
+    moveInForm.email !== reservedIdentity.email ||
+    moveInForm.phone.replace(/\D/g, '') !== reservedIdentity.phone.replace(/\D/g, '')
+  ) {
+    await assertOnlineRentalNotOnDnrList(admin.firestore(), {
+      name: moveInForm.name,
+      email: moveInForm.email,
+      phone: moveInForm.phone,
+    });
+  }
 
   const moveInDate =
     (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
@@ -705,6 +764,13 @@ export const createPublicMoveInCheckout = functions
       expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    // With the hold, before Stripe is called: every payable session has a form.
+    saveMoveInForm(tx, {
+      reservationId: String(reservationId),
+      facilityId,
+      form: moveInForm,
+      now: new Date(),
+    });
     if (holdRef && hold && hold.reservationId === String(reservationId)) {
       tx.update(holdRef, {
         expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold.expiresAt, holdUntil)),
@@ -765,7 +831,7 @@ export const createPublicMoveInCheckout = functions
         // Stripe's default is 24 hours; the hold only covers this long.
         expires_at: Math.floor(holdWindow.sessionExpiresAt.getTime() / 1000),
         metadata: {
-          type: 'public_move_in',
+          type: PUBLIC_MOVE_IN_PAYMENT_TYPE,
           reservationId: String(reservationId),
           moveInToken: String(token),
           facilityId,
@@ -774,7 +840,7 @@ export const createPublicMoveInCheckout = functions
         // reservation a payment was for. The token stays off it.
         payment_intent_data: {
           metadata: {
-            type: 'public_move_in',
+            type: PUBLIC_MOVE_IN_PAYMENT_TYPE,
             reservationId: String(reservationId),
             facilityId,
           },
@@ -1029,65 +1095,81 @@ const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 const PAYMENT_ALREADY_USED_MESSAGE =
   'This payment has already been used to complete a move-in. Contact the facility.';
 
-/**
- * Complete public move-in flow (no auth)
- * - Validates reservation token
- * - Creates tenant and contract
- * - Creates ledger entries for move-in charges
- * - Verifies payment intent (optional) and logs payment
- * - Updates unit status and reservation status
- * - Generates gate access code
- */
-export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any, context) => {
-  enforceAppCheckOrThrow(context);
+/** Who is completing an online move-in. */
+export type MoveInCaller =
+  /** The renter's browser, holding the reservation's move-in token. */
+  | { kind: 'renter'; token: string }
+  /**
+   * The paid-checkout trigger (paidCheckoutCompletion.ts), after the Stripe
+   * webhook recorded a paid Checkout Session for the reservation. It holds no
+   * token: it acts for a payment Stripe reported, and that payment is
+   * verified here exactly as the renter's is.
+   */
+  | { kind: 'paidCheckout'; checkoutSessionId: string };
 
-  const {
+/** The move-in form: sent with the request, or saved when checkout was created. */
+export type MoveInFormSource = { kind: 'provided'; form: MoveInForm } | { kind: 'saved' };
+
+export type MoveInCompletion =
+  | {
+      status: 'completed';
+      reservationId: string;
+      tenantId: string;
+      contractId: string;
+      gateAccessCode: string | null;
+    }
+  /** The reservation had already been completed; nothing was written. */
+  | {
+      status: 'alreadyCompleted';
+      reservationId: string;
+      tenantId: string | null;
+      /** The payment that completed it, if one did. */
+      paymentIntentId: string | null;
+    };
+
+function assertCallerMayComplete(caller: MoveInCaller, reservation: Record<string, any>): void {
+  if (caller.kind === 'renter' && reservation.moveInToken !== caller.token) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+  }
+}
+
+function alreadyCompleted(reservationId: string, reservation: Record<string, any>): MoveInCompletion {
+  return {
+    status: 'alreadyCompleted',
     reservationId,
-    token,
-    name,
-    email,
-    phone,
-    address,
-    emergencyContactName,
-    emergencyContactPhone,
-    paymentIntentId,
-    totalAmount,
-    lineItems = [],
-    skipPayment = false,
-    signaturePngBase64,
-    signatureSignedAt,
-    addressLine2,
-    city,
-    state,
-    zipCode,
-    country,
-    governmentIdType,
-    governmentIdNumber,
-    governmentIdState,
-    governmentIdCountry,
-    emergencyContactRelationship,
-    emergencyContactEmail,
-    enrollAutopayInterest,
-  } = data || {};
+    tenantId: reservation.tenantId ? String(reservation.tenantId) : null,
+    paymentIntentId: reservation.paymentIntentId ? String(reservation.paymentIntentId) : null,
+  };
+}
 
-  const enrollAutopay =
-    enrollAutopayInterest === true ||
-    enrollAutopayInterest === 'true' ||
-    (data as any)?.enrollAutopay === true;
-
-  const normalizedSignaturePngBase64 = (signaturePngBase64 || '').toString().trim();
-  const normalizedSignatureSignedAt = (signatureSignedAt || '').toString().trim();
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  const normalizedCountry = String(country || '').trim().toUpperCase();
-  const normalizedGovernmentIdType = String(governmentIdType || '').trim();
-  const normalizedGovernmentIdNumber = String(governmentIdNumber || '').trim();
-  const normalizedGovernmentIdState = String(governmentIdState || '').trim();
-  const normalizedGovernmentIdCountry = String(governmentIdCountry || '').trim().toUpperCase();
-  const normalizedEmergencyContactRelationship = String(emergencyContactRelationship || '').trim();
-  const normalizedEmergencyContactEmail = String(emergencyContactEmail || '').trim().toLowerCase();
-
-  if (!reservationId || !token || !name || !normalizedEmail || !phone || !normalizedSignaturePngBase64) {
-    throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
+/**
+ * Completes an online move-in.
+ * - Checks the reservation, and the caller's token
+ * - Verifies the payment with Stripe: amount, status, reservation, one use
+ * - Creates the tenant, contract and move-in charges, occupies the unit and
+ *   completes the reservation, in one transaction
+ * - Then the signed PDF, payment ledger entry, gate code and confirmation email
+ *
+ * The only place a move-in is completed: by the renter's browser
+ * (completePublicMoveIn) and, for a renter who paid and never came back, by
+ * the paid-checkout trigger (paidCheckoutCompletion.ts). Either can come
+ * first, or both at once. The reservation's status and the payment's one-use
+ * record are read and written in the one transaction, so a reservation is
+ * completed once and a payment completes one move-in; the later caller gets
+ * `alreadyCompleted`. Refusals throw HttpsErrors.
+ */
+export async function completeMoveInForReservation(params: {
+  reservationId: string;
+  caller: MoveInCaller;
+  formSource: MoveInFormSource;
+  paymentIntentId: string | null;
+  skipPayment: boolean;
+}): Promise<MoveInCompletion> {
+  const { reservationId, caller, formSource, skipPayment } = params;
+  const paymentIntentId = params.paymentIntentId ? String(params.paymentIntentId).trim() || null : null;
+  if (caller.kind === 'paidCheckout' && (skipPayment || !paymentIntentId)) {
+    // A paid checkout completes a move-in with its payment or not at all.
+    throw new functions.https.HttpsError('internal', 'A paid checkout must be completed with its payment');
   }
 
   const reservationRef = admin.firestore().collection('publicReservations').doc(reservationId);
@@ -1099,10 +1181,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
 
   const reservation = reservationSnap.data() as Record<string, any>;
 
-  if (reservation.moveInToken !== token) {
-    throw new functions.https.HttpsError('permission-denied', 'Invalid token');
-  }
+  assertCallerMayComplete(caller, reservation);
 
+  if (reservation.status === 'completed') {
+    return alreadyCompleted(reservationId, reservation);
+  }
   if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
   }
@@ -1124,6 +1207,44 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
     finishingAfterLapsedHold = true;
   }
+
+  // Read after the reservation checks, so a cancelled or expired reservation
+  // is refused as that rather than as having no form.
+  let form: MoveInForm;
+  if (formSource.kind === 'provided') {
+    form = formSource.form;
+  } else {
+    const saved = await loadSavedMoveInForm(reservationId);
+    if (!saved) {
+      throw new functions.https.HttpsError('failed-precondition', MOVE_IN_FORM_NOT_SAVED_MESSAGE, {
+        reason: MOVE_IN_FORM_NOT_SAVED_REASON,
+      });
+    }
+    form = saved;
+  }
+  assertMoveInFormComplete(form);
+  const {
+    name,
+    phone,
+    address,
+    addressLine2,
+    city,
+    state,
+    zipCode,
+    emergencyContactName,
+    emergencyContactPhone,
+    enrollAutopay,
+  } = form;
+  const normalizedEmail = form.email;
+  const normalizedCountry = form.country;
+  const normalizedGovernmentIdType = form.governmentIdType;
+  const normalizedGovernmentIdNumber = form.governmentIdNumber;
+  const normalizedGovernmentIdState = form.governmentIdState;
+  const normalizedGovernmentIdCountry = form.governmentIdCountry;
+  const normalizedEmergencyContactRelationship = form.emergencyContactRelationship;
+  const normalizedEmergencyContactEmail = form.emergencyContactEmail;
+  const normalizedSignaturePngBase64 = form.signaturePngBase64;
+  const normalizedSignatureSignedAt = form.signatureSignedAt;
 
   // Derive core context
   const facilityId = reservation.facilityId as string | undefined;
@@ -1228,6 +1349,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   let verifiedPaymentIntentId: string | null = null;
   let verifiedAmountReceivedCents = 0;
   if (paymentVerified) {
+    if (!paymentIntentId) {
+      // Unreachable: a required payment without an id was refused above.
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Payment is required before completing move-in.',
+      );
+    }
     if (requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents) {
       throw new functions.https.HttpsError(
         'failed-precondition',
@@ -1271,7 +1399,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       const paymentType = String(paymentMetadata.type || '').trim();
       const paidReservationId = String(paymentMetadata.reservationId || '').trim();
       if (
-        (paymentType && paymentType !== 'public_move_in') ||
+        (paymentType && paymentType !== PUBLIC_MOVE_IN_PAYMENT_TYPE) ||
         (paidReservationId && paidReservationId !== String(reservationId))
       ) {
         throw new functions.https.HttpsError(
@@ -1426,15 +1554,19 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   };
 
   // Perform transactional writes for tenant/contract/unit/reservation/charges
-  const transactionResult = await admin.firestore().runTransaction(async (tx) => {
+  type WrittenMoveIn = { status: 'written'; tenantId: string; contractId: string };
+  const transactionResult = await admin.firestore().runTransaction(async (tx): Promise<WrittenMoveIn | MoveInCompletion> => {
     // Re-check reservation inside transaction
     const freshReservation = await tx.get(reservationRef);
     if (!freshReservation.exists) {
       throw new functions.https.HttpsError('not-found', 'Reservation not found');
     }
     const freshData = freshReservation.data() as Record<string, any>;
-    if (freshData.moveInToken !== token) {
-      throw new functions.https.HttpsError('permission-denied', 'Invalid token');
+    assertCallerMayComplete(caller, freshData);
+    // Completed by the other caller since the checks above: the renter's
+    // browser and the paid-checkout trigger can arrive together.
+    if (freshData.status === 'completed') {
+      return alreadyCompleted(reservationId, freshData);
     }
     if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
@@ -1525,7 +1657,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       phoneDigits: phone.replace(/[^\d]/g, ''),
       unitNumber: displayUnitNumber,
       monthlyRate: deriveMonthlyRate(),
-      notes: String(data?.notes || '').trim(),
+      notes: form.notes,
       createdAt: nowTs,
       createdBy: 'publicMoveIn',
       isActive: true,
@@ -1608,7 +1740,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
           signaturePngBase64: normalizedSignaturePngBase64,
           signedAt: normalizedSignatureSignedAt || new Date().toISOString(),
           signerName: name.trim(),
-          signerEmail: email.trim().toLowerCase(),
+          signerEmail: normalizedEmail,
         },
         onlineMoveInContext,
         ...(activatedLeaseTemplate
@@ -1702,15 +1834,25 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       tenantId: tenantRef.id,
       contractId: contractRef.id,
       completedBy: 'publicMoveIn',
+      // Which caller got here first: the renter's browser or the paid-checkout trigger.
+      completedVia: caller.kind,
       paymentIntentId: verifiedPaymentIntentId,
     });
 
+    // Its contents are on the tenant and the contract now; the government ID
+    // and signature are not kept a second time.
+    tx.delete(savedMoveInFormRef(reservationId));
+
     return {
+      status: 'written',
       tenantId: tenantRef.id,
       contractId: contractRef.id,
     };
   });
 
+  if (transactionResult.status !== 'written') {
+    return transactionResult;
+  }
   const { tenantId, contractId } = transactionResult;
 
   // Reached only when paid (unpaid ones were refused above).
@@ -1872,6 +2014,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     tenantId,
     contractId,
     paymentIntentId,
+    completedVia: caller.kind,
   });
 
   // Best-effort email confirmation (do not fail move-in if email provider is unavailable).
@@ -1921,10 +2064,59 @@ If you need help, contact the facility.`,
   }
 
   return {
-    success: true,
+    status: 'completed',
+    reservationId,
     tenantId,
     contractId,
     gateAccessCode,
+  };
+}
+
+/**
+ * The renter's browser completes their online move-in (no auth; the
+ * reservation's move-in token).
+ *
+ * The form comes with the request, or, with `useSavedForm`, is the one saved
+ * when checkout was created: a renter coming back from Stripe has paid and
+ * already filled it in. A reservation already completed, as the paid-checkout
+ * trigger may have done while they were away, answers `alreadyCompleted`.
+ */
+export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY] }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+
+  const reservationId = String(data?.reservationId || '').trim();
+  const token = String(data?.token || '').trim();
+  if (!reservationId || !token) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
+  }
+  if (reservationId.includes('/') || reservationId.length > 128) {
+    throw new functions.https.HttpsError('invalid-argument', 'Valid reservationId is required');
+  }
+  let formSource: MoveInFormSource;
+  if (data?.useSavedForm === true) {
+    formSource = { kind: 'saved' };
+  } else {
+    const form = moveInFormFromData(data);
+    assertMoveInFormComplete(form);
+    formSource = { kind: 'provided', form };
+  }
+
+  const result = await completeMoveInForReservation({
+    reservationId,
+    caller: { kind: 'renter', token },
+    formSource,
+    paymentIntentId: data?.paymentIntentId ? String(data.paymentIntentId) : null,
+    skipPayment: Boolean(data?.skipPayment),
+  });
+
+  if (result.status === 'alreadyCompleted') {
+    return { success: true, alreadyCompleted: true, reservationId };
+  }
+  return {
+    success: true,
+    tenantId: result.tenantId,
+    contractId: result.contractId,
+    gateAccessCode: result.gateAccessCode,
     reservationId,
   };
 });

@@ -141,6 +141,13 @@ export type {
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export {
+  PUBLIC_MOVE_IN_CHECKOUTS_COLLECTION,
+  PUBLIC_MOVE_IN_PAYMENT_TYPE,
+  isPublicMoveInCheckoutSession,
+  paidPublicMoveInCheckoutFromSession,
+} from './stripe/publicMoveInCheckout';
+export type { PaidPublicMoveInCheckout, PublicMoveInCheckoutStatus } from './stripe/publicMoveInCheckout';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,

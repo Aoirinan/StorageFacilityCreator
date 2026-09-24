@@ -654,6 +654,51 @@ test('public payment-link creation and reservation writes are callable-only', as
   );
 });
 
+test('saved move-in forms and paid move-in records are server-only, even to the facility', async () => {
+  await seedFacility();
+  // A renter's saved form holds a government ID number and a signature.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('publicMoveInForms').doc('reservation-1').set({
+      facilityId: FACILITY_ID,
+      reservationId: 'reservation-1',
+      form: { name: 'Rita Renter', governmentIdNumber: 'D1234567', signaturePngBase64: 'iVBORw0KGgo=' },
+    });
+    await db.collection('publicMoveInCheckouts').doc('cs_1').set({
+      facilityId: FACILITY_ID,
+      reservationId: 'reservation-1',
+      paymentIntentId: 'pi_1',
+      status: 'paid',
+    });
+    await db.collection('publicMoveInPayments').doc('pi_1').set({
+      facilityId: FACILITY_ID,
+      reservationId: 'reservation-1',
+    });
+  });
+
+  const clients = [
+    testEnv.unauthenticatedContext().firestore(),
+    testEnv.authenticatedContext(STAFF_UID).firestore(),
+    testEnv.authenticatedContext(OWNER_UID).firestore(),
+    testEnv.authenticatedContext('admin-user', { superadmin: true }).firestore(),
+  ];
+  for (const db of clients) {
+    for (const [collection, id] of [
+      ['publicMoveInForms', 'reservation-1'],
+      ['publicMoveInCheckouts', 'cs_1'],
+      ['publicMoveInPayments', 'pi_1'],
+    ]) {
+      const ref = db.collection(collection).doc(id);
+      await assertFails(ref.get());
+      await assertFails(db.collection(collection).where('facilityId', '==', FACILITY_ID).get());
+      await assertFails(ref.set({ facilityId: FACILITY_ID }));
+      await assertFails(ref.update({ status: 'completed' }));
+      await assertFails(ref.delete());
+      await assertFails(db.collection(collection).doc('new-doc').set({ facilityId: FACILITY_ID }));
+    }
+  }
+});
+
 test('export jobs are owner-managed but server-updated', async () => {
   await seedFacility();
   const owner = testEnv.authenticatedContext(OWNER_UID).firestore();

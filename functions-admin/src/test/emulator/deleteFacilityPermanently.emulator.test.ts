@@ -112,6 +112,8 @@ async function seedFacility(): Promise<void> {
   ]) {
     await db.collection('user_roles').doc(`role-${suffix}`).set({ userId: 'manager-1', facilityId, roleType: 'manager' });
     await db.collection('publicReservations').doc(`res-${suffix}`).set({ facilityId, unitId: 'u1', status: 'pending' });
+    await db.collection('publicMoveInForms').doc(`res-${suffix}`).set({ facilityId, form: { governmentIdNumber: 'D123' } });
+    await db.collection('publicMoveInCheckouts').doc(`cs-${suffix}`).set({ facilityId, reservationId: `res-${suffix}`, status: 'paid' });
     await db
       .collection('publicPaymentLinks')
       .doc(`token-${suffix}`)
@@ -131,6 +133,8 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
+  'publicMoveInCheckouts/cs-theirs',
+  'publicMoveInForms/res-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
   'user_roles/role-theirs',
@@ -138,6 +142,8 @@ const THEIR_KEYED_ROWS = [
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
+  'publicMoveInCheckouts/cs-mine',
+  'publicMoveInForms/res-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
   'user_roles/role-mine',

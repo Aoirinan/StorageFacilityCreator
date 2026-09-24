@@ -7,4 +7,3 @@
         isFacilityStaff(resource.data.facilityId);
     }
     
-    // Super admin internal notes - only superadmin can read/write

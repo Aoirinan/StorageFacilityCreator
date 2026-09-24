@@ -1,7 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 import * as Sentry from '@sentry/node';
-import { getStripeClient, parseWebhookSecrets, verifyWithAnySecret } from '@sfc/functions-shared';
+import {
+  getStripeClient,
+  isPublicMoveInCheckoutSession,
+  parseWebhookSecrets,
+  verifyWithAnySecret,
+} from '@sfc/functions-shared';
 import {
   STRIPE_WEBHOOK_SECRET,
   STRIPE_WEBHOOK_SECRET_CONNECT,
@@ -9,6 +14,7 @@ import {
 } from './secrets';
 import { isStripeEventProcessed, markStripeEventProcessed } from './stripeWebhookIdempotency';
 import { handleConnectAccountDeauthorized } from './stripeFacilityConnectOffboarding';
+import { recordPaidPublicMoveInCheckout } from './stripeWebhookPublicMoveIn';
 import {
   handleChargeRefunded,
   handleDisputeCreated,
@@ -25,10 +31,17 @@ import {
   handleSubscriptionUpdate,
 } from './stripeWebhookSubscriptionHandlers';
 
-async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
+export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
+      if (isPublicMoveInCheckoutSession(session)) {
+        // A renter paid for an online move-in, on the facility's connected
+        // account. Recorded so the move-in is completed even if they never
+        // come back from Stripe.
+        await recordPaidPublicMoveInCheckout(session, (event as any).account as string | undefined, event.id);
+        break;
+      }
       await handleCheckoutCompleted(session);
       break;
     }

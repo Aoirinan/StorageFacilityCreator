@@ -12,6 +12,8 @@ const PURGE_ROOT_COLLECTIONS = [
   'facilities',
   'facilityCreatorAccounts',
   'publicReservations',
+  'publicMoveInForms',
+  'publicMoveInCheckouts',
   'publicFacilityMaps',
   'publicPaymentLinks',
   'marketing_leads',

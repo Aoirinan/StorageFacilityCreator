@@ -13,6 +13,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
 import { computePublicMoveInCharges } from '../moveInCharges';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
+import { MOVE_IN_FORM } from './support/moveInForm';
 
 const testEnv = firebaseFunctionsTest({ projectId: 'in-memory-test' });
 const callableContext = { app: { appId: 'test-app-check' } };
@@ -71,7 +72,8 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore) {
   const moveIn = require('../publicMoveIn') as typeof import('../publicMoveIn');
   return {
     stripeCalls,
-    checkout: (data: Record<string, unknown>) => testEnv.wrap(moveIn.createPublicMoveInCheckout)(data, callableContext),
+    checkout: (data: Record<string, unknown>) =>
+      testEnv.wrap(moveIn.createPublicMoveInCheckout)({ moveInForm: MOVE_IN_FORM, ...data }, callableContext),
   };
 }
 

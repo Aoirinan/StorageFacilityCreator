@@ -69,6 +69,7 @@
     "14-publicFacilityMaps.rules",
     "15-publicPaymentLinks.rules",
     "16-publicReservations.rules",
+    "16a-publicMoveIn.rules",
     "17-superAdminNotes.rules",
     "18-marketing_leads.rules",
     "19-commission_payout_periods.rules",

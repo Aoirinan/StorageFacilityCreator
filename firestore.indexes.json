@@ -315,6 +315,12 @@
   ],
   "fieldOverrides": [
     {
+      "collectionGroup": "publicMoveInForms",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "aiChatAuditLogs",
       "fieldPath": "createdAt",
       "indexes": [

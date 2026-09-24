@@ -129,6 +129,10 @@ export async function purgeFacility(
 export const FACILITY_KEYED_COLLECTIONS = [
   'user_roles',
   'publicReservations',
+  // A renter's saved move-in form: government ID number and signature.
+  'publicMoveInForms',
+  // Paid move-in Checkout Sessions recorded by the Stripe webhook.
+  'publicMoveInCheckouts',
   'publicPaymentLinks',
   'customDomainClaims',
 ] as const;
