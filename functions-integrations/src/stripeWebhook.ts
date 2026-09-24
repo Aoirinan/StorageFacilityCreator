@@ -77,15 +77,17 @@ export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<v
       break;
     }
     case 'charge.dispute.created':
+    case 'charge.dispute.updated':
     case 'charge.dispute.closed':
-    case 'charge.dispute.updated': {
-      // Disputes change state after they are opened. Only `created` posts to
-      // the ledger (once, by dispute id); `updated`/`closed` record the
-      // dispute's status on the payment so an operator can see won or lost.
+    case 'charge.dispute.funds_withdrawn':
+    case 'charge.dispute.funds_reinstated': {
+      // The tenant is charged for a dispute only once money has actually left
+      // the facility's account, and credited back when it returns; inquiries
+      // move no money. See stripeWebhookDisputeCreated.ts for the rule.
       // Tenant charges live on the connected account, so the handler needs it.
       const dispute = event.data.object as Stripe.Dispute;
       const connectedAccountId = (event as any).account as string | undefined;
-      await handleDisputeCreated(dispute, connectedAccountId, event.type);
+      await handleDisputeCreated(dispute, connectedAccountId, event.type, event.created);
       break;
     }
     case 'payment_intent.payment_failed': {

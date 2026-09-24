@@ -312,8 +312,20 @@ All new functions check feature flags before processing:
 
 ### New Event Handlers
 
-- `charge.refunded` → Updates payment status, creates ledger entry
-- `charge.dispute.created` → Updates payment status, creates ledger entry
+- `charge.refunded` → Updates payment status, creates one ledger entry per refund (`refund_{refundId}`)
+- `charge.dispute.*` (`created`, `updated`, `closed`, `funds_withdrawn`, `funds_reinstated`) → records
+  `disputeStatus` on the payment (`created` also sets status `disputed`). The ledger only follows the money:
+  `dispute_{disputeId}` (+amount) once Stripe has withdrawn the funds (never for an inquiry, status `warning_*`),
+  and `dispute_{disputeId}_reinstated` (the same amount, negative) once they come back (`funds_reinstated`, or
+  closed as `won`). See `functions-integrations/src/stripeWebhookDisputeCreated.ts`.
+
+Connected-account events (`event.account` set) for `payment_intent.succeeded`, `charge.refunded` and
+`charge.dispute.*` only write to the facility whose `stripeConnectAccountId` is that account; anything else is
+refused and logged as an error (Sentry when configured). The PaymentIntent metadata that names the facility is
+written by whoever created it, which on a Standard account can be the account owner.
+
+The Connect webhook destination must subscribe to `payment_intent.succeeded`, `checkout.session.completed`,
+`charge.refunded` and all five `charge.dispute.*` events above.
 
 ### Enhanced Idempotency
 
