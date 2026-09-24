@@ -37,10 +37,10 @@ class FakeQueryLog {
 }
 
 /// A facility subcollection that answers queries the way Firestore does for
-/// the operations the app's reads use: equality `where`, `orderBy` (which
-/// leaves out docs without the field), `limit`, `get`, `snapshots` and
-/// `count`, plus `doc(id)` with `get`, `set` and `update` for the app's unit
-/// writes. Anything else fails the test.
+/// the operations the app's reads use: equality `where` (`isNull: true`
+/// included), `orderBy` (which leaves out docs without the field), `limit`,
+/// `get`, `snapshots` and `count`, plus `doc(id)` with `get`, `set` and
+/// `update` for the app's unit writes. Anything else fails the test.
 class FakeCollection extends Fake
     implements CollectionReference<Map<String, dynamic>> {
   FakeCollection(List<FakeDoc> docs, {FakeQueryLog? log})
@@ -75,6 +75,19 @@ class FakeCollection extends Fake
     Iterable<Object?>? whereNotIn,
     bool? isNull,
   }) {
+    if (isNull == true && isEqualTo == null) {
+      log.equalityFilters.add((field, null));
+      // Firestore's `== null`: the field is there and holds null; a doc
+      // without it is left out.
+      return FakeCollection._(
+        [
+          for (final d in _docs)
+            if (d.data().containsKey(field) && d.data()[field] == null) d,
+        ],
+        log,
+        _limit,
+      );
+    }
     if (isEqualTo == null ||
         isNotEqualTo != null ||
         isLessThan != null ||

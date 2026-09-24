@@ -183,3 +183,26 @@ test('the portal lists only the unit types the owner opened to online rental', a
   assert.deepEqual(units.map((u) => u.id), ['s1']);
   assert.equal((await hold('s1')).success, true);
 });
+
+test('a unit with no type, or a type that is not text, is a standard unit to the portal, as it is to the app', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  seedStandardUnitsOnly(inMemory);
+  seedUnit(inMemory, 'none');
+  const stored = inMemory.read(unitPath('none')) as Record<string, unknown>;
+  delete stored.unitType;
+  inMemory.seed(unitPath('none'), stored);
+  seedUnit(inMemory, 'map', { unitType: { name: 'vehicle' } });
+  const { list, hold } = loadPortal(inMemory);
+
+  const { units } = (await list()) as { units: Array<{ id: string; unitType: string }> };
+
+  // Before: read as '' (and '[object Object]'), so with standard units
+  // offered online the portal left out, and refused, units the app's
+  // publish offered as standard.
+  assert.deepEqual(
+    units.map((u) => [u.id, u.unitType]).sort(),
+    [['map', 'standard'], ['none', 'standard']],
+  );
+  assert.equal((await hold('none')).success, true);
+});

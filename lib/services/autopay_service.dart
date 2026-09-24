@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 
 /// Calls Cloud Functions for autopay: request, enable, disable.
 class AutopayService {
@@ -98,18 +99,26 @@ class AutopayService {
         .snapshots();
   }
 
-  /// Facility notifications of one [type] (a FacilityNotificationType value),
-  /// read or not. Filtered on type alone, so no composite index is needed;
-  /// the kinds shown this way are rare, and callers drop the read ones.
-  static Stream<QuerySnapshot<Map<String, dynamic>>> watchFacilityNotificationsOfType(
+  /// Most unread alerts of one type [watchUnreadFacilityNotificationsOfType]
+  /// streams.
+  static const int unreadNotificationsOfTypeLimit = 10;
+
+  /// Unread facility notifications of one [type] (a FacilityNotificationType
+  /// value), at most [unreadNotificationsOfTypeLimit] of them, in no order.
+  ///
+  /// This streamed every alert of the type, read ones included, with no
+  /// limit, on every screen of every staff session, for as long as the
+  /// facility had them. Two equality filters with no ordering are served by
+  /// Firestore's single-field indexes, so no composite index is needed.
+  static Stream<QuerySnapshot<Map<String, dynamic>>>
+      watchUnreadFacilityNotificationsOfType(
     String facilityId,
     String type,
   ) {
-    return FirebaseFirestore.instance
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('Notifications')
+    return FacilitySubcollections.notifications(facilityId)
         .where('type', isEqualTo: type)
+        .where('readAt', isNull: true)
+        .limit(unreadNotificationsOfTypeLimit)
         .snapshots();
   }
 
@@ -119,10 +128,7 @@ class AutopayService {
     required String facilityId,
     required String notificationId,
   }) async {
-    await FirebaseFirestore.instance
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('Notifications')
+    await FacilitySubcollections.notifications(facilityId)
         .doc(notificationId)
         .update({'readAt': FieldValue.serverTimestamp()});
   }

@@ -311,4 +311,5 @@ export {
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
   unitNotOfferedOnlineReason,
+  unitTypeOf,
 } from './units/onlineRental';

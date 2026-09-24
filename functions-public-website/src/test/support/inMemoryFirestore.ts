@@ -1,7 +1,18 @@
 import * as admin from 'firebase-admin';
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 
 type DocData = Record<string, unknown>;
+
+/** FieldValue.delete() as the code under test passes it: the field is removed. */
+function isDeleteSentinel(value: unknown): boolean {
+  return value instanceof FieldValue && value.isEqual(FieldValue.delete());
+}
+
+/** A map field, not a sentinel, Timestamp or array. */
+function isPlainMap(value: unknown): value is DocData {
+  return typeof value === 'object' && value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype && !('__increment' in value);
+}
 
 function joinPath(...segments: string[]): string {
   return segments.filter(Boolean).join('/');
@@ -15,6 +26,14 @@ export class InMemoryFirestore {
 
   /** A query's `get()` on a collection path listed here rejects with its error. */
   readonly queryErrors = new Map<string, Error>();
+
+  /**
+   * A write made outside a transaction to a doc in a collection path listed
+   * here rejects with its error, as when the instance dies after a
+   * transaction commits and before a follow-up write. Transaction writes are
+   * not affected.
+   */
+  readonly writeErrorsOutsideTransactions = new Map<string, Error>();
 
   /** The last transaction queued; the next one starts when it settles. */
   private transactionTail: Promise<unknown> = Promise.resolve();
@@ -83,16 +102,58 @@ export class InMemoryFirestore {
       }
 
       async set(data: DocData, options?: { merge?: boolean }): Promise<void> {
-        if (options?.merge && store.has(this.path)) {
-          store.set(this.path, { ...store.get(this.path), ...data });
-        } else {
-          store.set(this.path, { ...data });
-        }
+        this.failIfWritesRefused();
+        this.write(data, options);
       }
 
       async update(data: DocData): Promise<void> {
-        const existing = store.get(this.path) || {};
-        const next = { ...existing };
+        this.failIfWritesRefused();
+        this.applyUpdate(data);
+      }
+
+      async delete(): Promise<void> {
+        this.failIfWritesRefused();
+        store.delete(this.path);
+      }
+
+      private failIfWritesRefused(): void {
+        const collectionPath = this.path.split('/').slice(0, -1).join('/');
+        const error = owner.writeErrorsOutsideTransactions.get(collectionPath);
+        if (error) throw error;
+      }
+
+      /** A set, as a transaction or a direct write makes it. */
+      write(data: DocData, options?: { merge?: boolean }): void {
+        if (options?.merge && store.has(this.path)) {
+          store.set(this.path, DocRef.mergeFields({ ...store.get(this.path) }, data));
+        } else {
+          store.set(this.path, DocRef.applyFields({}, data));
+        }
+      }
+
+      /** set(..., { merge: true }): nested maps merge field by field, as Firestore merges them. */
+      private static mergeFields(next: DocData, data: DocData): DocData {
+        for (const [key, value] of Object.entries(data)) {
+          const existing = next[key];
+          if (isPlainMap(value) && isPlainMap(existing)) {
+            next[key] = DocRef.mergeFields({ ...existing }, value);
+          } else {
+            DocRef.applyFields(next, { [key]: value });
+          }
+        }
+        return next;
+      }
+
+      /** An update, as a transaction or a direct write makes it. */
+      applyUpdate(data: DocData): void {
+        if (!store.has(this.path)) {
+          // As Firestore refuses an update to a missing doc.
+          throw Object.assign(new Error(`No document to update: ${this.path}`), { code: 5 });
+        }
+        store.set(this.path, DocRef.applyFields({ ...store.get(this.path) }, data));
+      }
+
+      private static applyFields(next: DocData, data: DocData): DocData {
         for (const [key, value] of Object.entries(data)) {
           if (
             value &&
@@ -101,11 +162,13 @@ export class InMemoryFirestore {
           ) {
             const delta = (value as { __increment: number }).__increment;
             next[key] = Number(next[key] ?? 0) + delta;
+          } else if (isDeleteSentinel(value)) {
+            delete next[key];
           } else {
             next[key] = value;
           }
         }
-        store.set(this.path, next);
+        return next;
       }
 
       collection(name: string): CollectionRef {
@@ -118,6 +181,8 @@ export class InMemoryFirestore {
      * operators, ordering and limits are ignored.
      */
     class Query {
+      // [path] is a collection's path, or '**' + '/' + {id} for every
+      // collection named {id} (a collection-group query).
       constructor(
         readonly path: string,
         private readonly equals: Array<[string, unknown]> = [],
@@ -126,6 +191,15 @@ export class InMemoryFirestore {
       where(field?: string, op?: string, value?: unknown): Query {
         if (field === undefined || op !== '==') return this;
         return new Query(this.path, [...this.equals, [field, value]]);
+      }
+
+      private holds(key: string): boolean {
+        if (this.path.startsWith('**/')) {
+          const segments = key.split('/');
+          return segments.length % 2 === 0 && segments[segments.length - 2] === this.path.slice(3);
+        }
+        const prefix = `${this.path}/`;
+        return key.startsWith(prefix) && !key.slice(prefix.length).includes('/');
       }
 
       limit(): Query {
@@ -144,9 +218,8 @@ export class InMemoryFirestore {
       async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
         const queryError = owner.queryErrors.get(this.path);
         if (queryError) throw queryError;
-        const prefix = `${this.path}/`;
         const docs = [...store.keys()]
-          .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
+          .filter((key) => this.holds(key))
           .filter((key) => {
             const data = store.get(key) || {};
             return this.equals.every(([field, value]) => field in data && data[field] === value);
@@ -199,8 +272,9 @@ export class InMemoryFirestore {
       doc(path: string): DocRef {
         return new DocRef(path);
       },
-      collectionGroup(): CollectionRef {
-        return new CollectionRef('');
+      // Its query errors are keyed '**' + '/' + collectionId.
+      collectionGroup(collectionId: string): Query {
+        return new Query(`**/${collectionId}`);
       },
       batch(): WriteBatch {
         return new WriteBatch();
@@ -210,10 +284,20 @@ export class InMemoryFirestore {
        * so a transaction that throws part way leaves its earlier writes.
        */
       runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
-        const tx = {
+        const tx: Record<string, unknown> = {
           get: async (ref: DocRef) => ref.get(),
-          set: async (ref: DocRef, data: DocData) => ref.set(data),
-          update: async (ref: DocRef, data: DocData) => ref.update(data),
+          set: (ref: DocRef, data: DocData, options?: { merge?: boolean }) => {
+            ref.write(data, options);
+            return tx;
+          },
+          update: (ref: DocRef, data: DocData) => {
+            ref.applyUpdate(data);
+            return tx;
+          },
+          delete: (ref: DocRef) => {
+            store.delete(ref.path);
+            return tx;
+          },
         };
         const run = owner.transactionTail.then(() => fn(tx));
         owner.transactionTail = run.catch(() => undefined);

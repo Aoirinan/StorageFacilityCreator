@@ -9,6 +9,7 @@ import {
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
   unitNotOfferedOnlineReason,
+  unitTypeOf,
 } from '../units/onlineRental';
 import * as shared from '../index';
 
@@ -80,6 +81,18 @@ test('the reason a unit is not offered is the one the owner alert names', () => 
   assert.equal(unitNotOfferedOnlineReason({ publicListingEnabled: false }), 'unlisted');
 });
 
+test('a unit off online rental for several reasons is named by the one that hides it most', () => {
+  // Archived hides the unit from the app altogether, so it comes first: the
+  // owner cannot see an archived unit to check it. Internal use is next: it
+  // takes the unit out of occupancy, which an unlisted unit still counts in.
+  assert.equal(
+    unitNotOfferedOnlineReason({ archived: true, internalUse: true, publicListingEnabled: false }),
+    'archived',
+  );
+  assert.equal(unitNotOfferedOnlineReason({ archived: true, internalUse: true }), 'archived');
+  assert.equal(unitNotOfferedOnlineReason({ internalUse: true, publicListingEnabled: false }), 'internal-use');
+});
+
 test('no enabled unit types means every type is offered online', () => {
   const settingsWithNoTypes: Array<Record<string, unknown> | null | undefined> = [
     undefined,
@@ -103,7 +116,32 @@ test('with enabled unit types, only those types are offered online', () => {
   assert.equal(isUnitTypeOfferedOnline({ unitType: 'standard' }, types), true);
   assert.equal(isUnitTypeOfferedOnline({ unitType: 'climateControlled' }, types), true);
   assert.equal(isUnitTypeOfferedOnline({ unitType: 'vehicle' }, types), false);
-  assert.equal(isUnitTypeOfferedOnline({}, types), false);
+});
+
+test("a unit's type is read as the app's UnitModel reads it", () => {
+  // textFromField, else 'standard' (lib/models/unit_model.dart). This read
+  // String(unitType || ''), so a unit with no type was refused by the holds
+  // while the app's publish offered it as standard.
+  assert.equal(unitTypeOf({}), 'standard');
+  assert.equal(unitTypeOf({ unitType: null }), 'standard');
+  assert.equal(unitTypeOf({ unitType: { name: 'vehicle' } }), 'standard');
+  assert.equal(unitTypeOf({ unitType: ['vehicle'] }), 'standard');
+  assert.equal(unitTypeOf({ unitType: 'vehicle' }), 'vehicle');
+  // A string as stored, blank or padded included, as the app keeps it.
+  assert.equal(unitTypeOf({ unitType: '' }), '');
+  assert.equal(unitTypeOf({ unitType: ' standard ' }), ' standard ');
+  // Numbers and booleans as their text, 0 and false included.
+  assert.equal(unitTypeOf({ unitType: 5 }), '5');
+  assert.equal(unitTypeOf({ unitType: 0 }), '0');
+  assert.equal(unitTypeOf({ unitType: false }), 'false');
+
+  const standardOnly = enabledOnlineUnitTypes({ enabledPublicUnitTypes: ['standard'] });
+  assert.equal(isUnitTypeOfferedOnline({}, standardOnly), true);
+  assert.equal(isUnitTypeOfferedOnline({ unitType: null }, standardOnly), true);
+  assert.equal(isUnitTypeOfferedOnline({ unitType: { a: 1 } }, standardOnly), true);
+  assert.equal(isUnitTypeOfferedOnline({ unitType: '' }, standardOnly), false);
+  assert.equal(isUnitTypeOfferedOnline({ unitType: 0 }, standardOnly), false);
+  assert.equal(isUnitTypeOfferedOnline({}, enabledOnlineUnitTypes({ enabledPublicUnitTypes: ['vehicle'] })), false);
 });
 
 test('the online rental rules are exported from the package root the callables import', () => {
@@ -114,4 +152,5 @@ test('the online rental rules are exported from the package root the callables i
   assert.equal(shared.enabledOnlineUnitTypes, enabledOnlineUnitTypes);
   assert.equal(shared.isUnitTypeOfferedOnline, isUnitTypeOfferedOnline);
   assert.equal(shared.unitNotOfferedOnlineReason, unitNotOfferedOnlineReason);
+  assert.equal(shared.unitTypeOf, unitTypeOf);
 });

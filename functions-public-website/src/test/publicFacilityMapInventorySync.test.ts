@@ -177,6 +177,8 @@ type PublicMapCase = {
   name: string;
   units: FixtureDoc[];
   tenants: FixtureDoc[];
+  /** The facility's settings/public doc; none means default settings. */
+  publicSettings?: Record<string, unknown>;
   /** Per unit, the published fields compared: isRentable and status always, some others. */
   expected: Record<string, Record<string, unknown>>;
 };
@@ -196,6 +198,7 @@ test('the sync publishes every shared parity case as the app does', async () => 
     inMemory.seed(`publicFacilityMaps/${MAP_SLUG}`, { facilityId: MAP_FACILITY, units: [] });
     for (const u of c.units) inMemory.seed(`facilities/${MAP_FACILITY}/units/${u.id}`, u.data);
     for (const t of c.tenants) inMemory.seed(`facilities/${MAP_FACILITY}/tenants/${t.id}`, t.data);
+    if (c.publicSettings) inMemory.seed(`facilities/${MAP_FACILITY}/settings/public`, c.publicSettings);
     installInMemoryFirestore(inMemory);
 
     await syncPublicFacilityMapInventoryForFacility(MAP_FACILITY);

@@ -31,6 +31,12 @@ class FacilitySubcollections {
   static CollectionReference<Map<String, dynamic>> units(String facilityId) =>
       _open(facilityId, 'units');
 
+  /// The facility's alerts (written by Cloud Functions only). Opened here so
+  /// tests run the app's own query on them.
+  static CollectionReference<Map<String, dynamic>> notifications(
+          String facilityId) =>
+      _open(facilityId, 'Notifications');
+
   static CollectionReference<Map<String, dynamic>> Function(
     String facilityId,
     String name,

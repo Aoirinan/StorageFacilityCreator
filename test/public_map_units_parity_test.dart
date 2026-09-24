@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -55,13 +56,19 @@ void main() {
       );
 
       // What publish and refreshPublicMapInventoryFromLiveUnits do between
-      // reading the public settings (none here: the defaults) and writing.
+      // reading the public settings (FacilityPublicService.getPublicSettings,
+      // null when the facility has none) and writing.
+      final settings = c['publicSettings'] as Map?;
       final units =
           await FacilityMapV2Service.fetchActiveUnitsForTesting('fac1');
       final tenants = await TenantService.getTenantsForFacility('fac1');
       final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
         units: units,
-        publicSettings: null,
+        publicSettings: settings == null
+            ? null
+            : FacilityPublicSettings.fromMap(
+                {...Map<String, dynamic>.from(settings), 'facilityId': 'fac1'},
+              ),
         tenantClaimedUnitNumbers:
             FacilityMapV2Service.claimedUnitNumbersFromActiveTenants(tenants),
       );

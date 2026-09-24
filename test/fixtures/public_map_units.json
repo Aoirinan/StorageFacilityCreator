@@ -1,6 +1,6 @@
 {
   "_about": [
-    "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with default public settings.",
+    "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with the case's publicSettings (the facility's settings/public doc; default settings when a case has none).",
     "The app side runs each case through the public map's unit and tenant reads and FacilityMapV2Service.buildPublicUnitInventoryMaps (test/public_map_units_parity_test.dart).",
     "The server side runs each case through syncPublicFacilityMapInventoryForFacility (functions-public-website/src/test/publicFacilityMapInventorySync.test.ts).",
     "expected is keyed by unit doc id and lists every unit that is published; a unit left out of it must not be published. Each entry names the published fields compared for that unit.",
@@ -210,6 +210,29 @@
         "text-dims": { "isRentable": true, "status": "available", "size": "10x15" },
         "number-link": { "isRentable": true, "status": "available" },
         "junk": { "isRentable": true, "status": "available", "unitNumber": "B6", "monthlyRate": 60, "size": null }
+      }
+    },
+    {
+      "name": "a unit whose type is missing or not text is standard, as the app reads it, and offered when standard is",
+      "publicSettings": { "enabledPublicUnitTypes": ["standard"] },
+      "units": [
+        { "id": "missing", "data": { "unitNumber": "T1", "status": "available" } },
+        { "id": "nul", "data": { "unitNumber": "T2", "status": "available", "unitType": null } },
+        { "id": "map", "data": { "unitNumber": "T3", "status": "available", "unitType": { "name": "vehicle" } } },
+        { "id": "standard", "data": { "unitNumber": "T4", "status": "available", "unitType": "standard" } },
+        { "id": "vehicle", "data": { "unitNumber": "T5", "status": "available", "unitType": "vehicle" } },
+        { "id": "blank", "data": { "unitNumber": "T6", "status": "available", "unitType": "" } },
+        { "id": "zero", "data": { "unitNumber": "T7", "status": "available", "unitType": 0 } }
+      ],
+      "tenants": [],
+      "expected": {
+        "missing": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "nul": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "map": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "standard": { "isRentable": true, "status": "available", "unitType": "standard", "categorySlug": "standard" },
+        "vehicle": { "isRentable": false, "status": "available", "unitType": "vehicle", "categorySlug": "vehicle" },
+        "blank": { "isRentable": false, "status": "available", "unitType": "", "categorySlug": "facility-map" },
+        "zero": { "isRentable": false, "status": "available", "unitType": "0", "categorySlug": "0" }
       }
     }
   ]

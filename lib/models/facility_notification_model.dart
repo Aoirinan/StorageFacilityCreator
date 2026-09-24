@@ -8,7 +8,8 @@ enum FacilityNotificationType {
 
   /// A renter who had paid online was moved into a unit taken off online
   /// rental after they reserved it (functions-public-website
-  /// onlineMoveInReview.ts). Shown by OnlineMoveInReviewBanner.
+  /// onlineMoveInReview.ts), or was refunded because they could not be
+  /// (paidMoveInRefund.ts). Shown by OnlineMoveInReviewBanner.
   onlineMoveInReview,
 }
 

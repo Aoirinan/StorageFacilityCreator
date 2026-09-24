@@ -6,10 +6,10 @@ import 'package:sfcapp/models/facility_notification_model.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/services/autopay_service.dart';
 
-/// Unread online move-in reviews for a facility, newest first.
+/// Unread online move-in reviews for a facility (a bounded few), newest first.
 final unreadOnlineMoveInReviewsProvider = StreamProvider.autoDispose
     .family<List<FacilityNotificationModel>, String>((ref, facilityId) {
-  return AutopayService.watchFacilityNotificationsOfType(
+  return AutopayService.watchUnreadFacilityNotificationsOfType(
     facilityId,
     FacilityNotificationType.onlineMoveInReview.value,
   ).map((snap) => unreadNewestFirst(snap.docs));
@@ -36,13 +36,15 @@ final markFacilityNotificationReadProvider =
 
 /// Shown across the top of every screen while a renter who had already paid
 /// online was moved into a unit taken off online rental after they reserved
-/// it (unlisted, archived or set to internal use).
+/// it (unlisted, archived, set to internal use or of a type no longer rented
+/// online), or could not be moved in and was refunded (or needs refunding by
+/// hand).
 ///
 /// completePublicMoveIn used to refuse that renter after Checkout had charged
-/// them. It now completes the move-in and leaves this alert, which stays
-/// until someone at the facility marks it reviewed. The facility's
-/// Notifications list is not on any screen, so this banner is where the
-/// owner sees it.
+/// them. It now completes the move-in or refunds them and leaves this alert,
+/// which stays until someone at the facility marks it reviewed. The
+/// facility's Notifications list is not on any screen, so this banner is
+/// where the owner sees it.
 class OnlineMoveInReviewBanner extends ConsumerStatefulWidget {
   const OnlineMoveInReviewBanner({super.key});
 
