@@ -301,3 +301,5 @@ export {
   unitStatusOf,
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
+
+export { isUnitOfferedOnline } from './units/onlineRental';
