@@ -652,7 +652,8 @@ test('a move-in with nothing paid is still refused once its hold runs out', asyn
     () => complete({ paymentIntentId: undefined, skipPayment: true }),
     refusedWith('failed-precondition', 'Reservation has expired'),
   );
-  assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'expired');
+  // Left open: checkout started, so the renter may yet come back having paid.
+  assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'pending');
 });
 
 test('a reservation whose hold ran out after checkout started still loads, so a renter who paid can finish', async () => {

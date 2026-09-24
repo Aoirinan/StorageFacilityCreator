@@ -30,6 +30,12 @@ import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import { assertFacilityHasTenantCapacity } from './tenantCapacity';
 import {
+  CHECKOUT_RUN_OUT_MESSAGE,
+  checkoutHoldWindow,
+  laterExpiry,
+  timestampToDate,
+} from './checkoutHold';
+import {
   onlineMoveInReviewAlert,
   onlineMoveInReviewRef,
 } from './onlineMoveInReview';
@@ -396,7 +402,7 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
   const now = new Date();
   // Capped at 15 minutes, not 60. A hold makes the unit unavailable to everyone
   // else, so a long window is a cheap way to keep inventory off the market.
-  // Fifteen minutes is ample for a checkout that is already in progress.
+  // Starting checkout extends it to cover payment and the form (checkoutHold.ts).
   const boundedMinutes = Math.max(1, Math.min(Number(holdMinutes) || 10, 15));
   const expiresAt = new Date(now.getTime() + boundedMinutes * 60 * 1000);
   const moveInToken = crypto.randomBytes(24).toString('hex');
@@ -720,14 +726,6 @@ export const createPublicMoveInCheckout = functions
     );
   }
 
-  await reservationRef.set(
-    {
-      expectedCheckoutAmountCents: chargeQuote.totalCents,
-      checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
-
   const cents = chargeQuote.totalCents;
   if (cents < 50) {
     throw new functions.https.HttpsError(
@@ -735,6 +733,66 @@ export const createPublicMoveInCheckout = functions
       'The amount due is below the $0.50 card minimum. Contact the facility to complete payment.',
     );
   }
+
+  // The hold is extended to outlast the Checkout Session, which is given a
+  // short expiry below, so a renter who pays still holds the unit while they
+  // come back and finish the form. Written before Stripe is called: if this
+  // fails, there is no payable session that the hold does not cover.
+  const holdWindow = checkoutHoldWindow(new Date(), timestampToDate(reservation.reservedAt));
+  if (!holdWindow) {
+    throw new functions.https.HttpsError('failed-precondition', CHECKOUT_RUN_OUT_MESSAGE);
+  }
+  const holdUntil = holdWindow.holdUntil;
+  await admin.firestore().runTransaction(async (tx) => {
+    const currentSnap = await tx.get(reservationRef);
+    const current = (currentSnap.data() || {}) as Record<string, any>;
+    if (current.status !== 'pending' && current.status !== 'confirmed') {
+      throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+
+    let holdRef: admin.firestore.DocumentReference | null = null;
+    let hold: Record<string, any> | null = null;
+    if (reservedUnitId) {
+      holdRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('mapEngine')
+        .doc('activeHolds')
+        .collection('items')
+        .doc(reservedUnitId);
+      const holdSnap = await tx.get(holdRef);
+      hold = holdSnap.exists ? (holdSnap.data() as Record<string, any>) : null;
+      const heldUntil = timestampToDate(hold?.expiresAt);
+      if (hold && hold.reservationId !== String(reservationId) && heldUntil && heldUntil > new Date()) {
+        throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+      }
+    }
+
+    tx.update(reservationRef, {
+      expectedCheckoutAmountCents: chargeQuote.totalCents,
+      checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    if (holdRef && hold && hold.reservationId === String(reservationId)) {
+      tx.update(holdRef, {
+        expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold.expiresAt, holdUntil)),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else if (holdRef) {
+      // Missing, or another reservation's lapsed hold: hold the unit again, as
+      // createPublicReservationHold would.
+      tx.set(holdRef, {
+        facilityId,
+        unitId: reservedUnitId,
+        reservationId: String(reservationId),
+        status: 'pending',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt: admin.firestore.Timestamp.fromDate(holdUntil),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  });
 
   const safeToken = encodeURIComponent(String(token));
   const safeReservationId = encodeURIComponent(String(reservationId));
@@ -773,6 +831,8 @@ export const createPublicMoveInCheckout = functions
         ...(customerEmail ? { customer_email: customerEmail } : {}),
         success_url: successUrl,
         cancel_url: cancelUrl,
+        // Stripe's default is 24 hours; the hold only covers this long.
+        expires_at: Math.floor(holdWindow.sessionExpiresAt.getTime() / 1000),
         metadata: {
           type: 'public_move_in',
           reservationId: String(reservationId),
@@ -1130,7 +1190,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
     }
     if (reservationExpired) {
-      await reservationRef.update({ status: 'expired', updatedAt: nowTs });
+      // Left open while a renter who went to checkout may still come back
+      // with their payment: getPublicReservationByToken finds only open ones.
+      if (!checkoutMayHaveBeenPaid(reservation)) {
+        await reservationRef.update({ status: 'expired', updatedAt: nowTs });
+      }
       throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
     }
   } else if (!reservationActive && reservationStatus !== 'expired') {
@@ -1287,7 +1351,6 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
           'This payment was made for a different reservation. Contact the facility.',
         );
       }
-
       verifiedPaymentIntentId = String(paymentIntent.id || '').trim();
       if (!verifiedPaymentIntentId) {
         throw new functions.https.HttpsError('internal', 'Failed to validate payment intent');
@@ -1543,6 +1606,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const facilitySnap = await tx.get(facilityDocRef);
     const unitRef = unitId ? facilityDocRef.collection('units').doc(unitId) : null;
     const unitSnap = unitRef ? await tx.get(unitRef) : null;
+    const holdRef = unitId
+      ? facilityDocRef.collection('mapEngine').doc('activeHolds').collection('items').doc(unitId)
+      : null;
+    const holdSnap = holdRef ? await tx.get(holdRef) : null;
 
     const freshData = (freshReservation.data() || {}) as Record<string, any>;
     if (freshReservation.exists && freshData.moveInToken !== token) {
@@ -1588,6 +1655,17 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       return refuse(
         'unit-taken',
         new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
+      );
+    }
+    // A hold that lapsed (checkout extends it past payment, checkoutHold.ts)
+    // lets another renter hold the unit; theirs is honoured.
+    const otherHold = (holdSnap?.data() || null) as Record<string, any> | null;
+    const otherHeldUntil = timestampToDate(otherHold?.expiresAt);
+    const ownHoldLapsed = (timestampToDate(freshData.expiresAt)?.getTime() ?? Infinity) < Date.now();
+    if (ownHoldLapsed && otherHold && otherHold.reservationId !== String(reservationId) && otherHeldUntil && otherHeldUntil > new Date()) {
+      return refuse(
+        'unit-taken',
+        new functions.https.HttpsError('failed-precondition', 'Unit is not currently available'),
       );
     }
     const reviewReason = freshUnit ? moveInReviewReasonFor(freshUnit, enabledUnitTypes) : null;
