@@ -11,7 +11,9 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   sendFacilityEmailWithCompliance,
+  unitNotOfferedOnlineReason,
 } from '@sfc/functions-shared';
+import type { UnitNotOfferedReason } from '@sfc/functions-shared';
 import {
   amountsMatchCents,
   isPublicMoveInStripePaymentRequired,
@@ -25,6 +27,7 @@ import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import { assertFacilityHasTenantCapacity } from './tenantCapacity';
+import { notifyOwnerOfMoveInToUnitNotOffered } from './onlineMoveInReview';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -1059,6 +1062,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const facilityEmailForContext = String(facilityPre.email || '').trim();
 
   let preloadedUnitData: Record<string, any> | null = null;
+  // Why the unit is no longer offered online, when it was unlisted, archived
+  // or set to internal use since the hold. Refused below only if nothing
+  // has been paid.
+  let unitNotOfferedReason: UnitNotOfferedReason | null = null;
   // Optional unit validation
   if (unitId) {
     const unitSnap = await admin.firestore()
@@ -1077,13 +1084,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
     }
-    // Both hold callables (this codebase's and the tenant portal's) check this
-    // too. Checked again for a unit unlisted, archived or set to internal use
-    // since the hold. As with the status check above, the renter may already
-    // have paid through Checkout by now.
-    if (!isUnitOfferedOnline(preloadedUnitData)) {
-      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
-    }
+    // Both hold callables and checkout check this too. Looked at again for a
+    // unit unlisted, archived or set to internal use since then; whether that
+    // refuses the move-in waits on the payment check below.
+    unitNotOfferedReason = unitNotOfferedOnlineReason(preloadedUnitData);
     const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
     if (numFromUnit) {
       displayUnitNumber = numFromUnit;
@@ -1231,10 +1235,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
   }
 
-  // A renter who has paid is never turned away for capacity: that was
-  // checked when checkout was created. A move-in with nothing to pay has no
-  // checkout, so it is checked here.
+  // A renter who has paid is never turned away for capacity or for a unit
+  // taken off online rental: both were checked when checkout was created, and
+  // refusing after Checkout has charged left the renter paid with no tenancy,
+  // no refund and nothing said to the owner. A paid move-in into a unit no
+  // longer offered goes ahead and the owner is told (after the transaction).
+  // A move-in with nothing to pay has no checkout, so it is refused here.
   if (!paymentVerified) {
+    if (unitNotOfferedReason) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
     await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
   }
 
@@ -1596,6 +1606,20 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   });
 
   const { tenantId, contractId } = transactionResult;
+
+  // Reached only when paid (unpaid ones were refused above).
+  if (unitNotOfferedReason && unitId) {
+    await notifyOwnerOfMoveInToUnitNotOffered({
+      facilityId,
+      tenantId,
+      tenantName: name.trim(),
+      unitId,
+      unitNumber: displayUnitNumber,
+      reason: unitNotOfferedReason,
+      reservationId: String(reservationId),
+      paymentIntentId: verifiedPaymentIntentId,
+    });
+  }
 
   // Generate and store a reviewable PDF (dashboard contract detail uses signedFileUrl / fileUrl).
   try {

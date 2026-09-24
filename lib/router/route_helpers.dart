@@ -7,6 +7,7 @@ import 'package:sfcapp/services/superadmin_service.dart';
 import 'app_route.dart';
 import '../widgets/subscription_warning_banner.dart';
 import '../widgets/support_session_banner.dart';
+import 'package:sfcapp/widgets/online_move_in_review_banner.dart';
 import '../widgets/subscription_lock_overlay.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/subscription_guard_service.dart';
@@ -315,6 +316,10 @@ class AppShell extends ConsumerWidget {
                         // Visible on every screen while a super admin is
                         // working inside someone else's facility.
                         const SupportSessionBanner(),
+
+                        // A paid online move-in into a unit taken off online
+                        // rental: the owner's only alert of it.
+                        const OnlineMoveInReviewBanner(),
 
                         // Page content
                         Expanded(child: KeyboardScrollable(child: child)),
