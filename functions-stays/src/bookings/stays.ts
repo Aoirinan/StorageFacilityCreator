@@ -604,7 +604,10 @@ export async function handleCreateStay(
   } else if (profile && (await doNotRentNameMatch(db, facilityId, profile.name, profile.profileId))) {
     warnings.push({ code: 'do_not_rent', message: `Someone named ${profile.name} is on your do-not-rent list. Check it is not the same guest.` });
   }
-  if (isReservation && !guest.guestDisplayName && profile) guest.guestDisplayName = displayNameFrom(profile.name);
+  // Every role reads the stay doc: a full name typed as the display name is shortened to "Jane D.";
+  // the full name lives in stayPrivate.
+  const typedFullName = !!profile && guest.guestDisplayName.trim().toLowerCase() === profile.name.trim().toLowerCase();
+  if (isReservation && profile && (!guest.guestDisplayName || typedFullName)) guest.guestDisplayName = displayNameFrom(profile.name);
   // A returning RVer's rig length comes from their profile when the desk left it blank.
   const knownRig = profile?.existing?.vehicle?.rvLengthFt ?? profile?.create?.vehicle?.rvLengthFt ?? null;
   if (isReservation && guest.rvLengthFt === null && knownRig) guest.rvLengthFt = knownRig;

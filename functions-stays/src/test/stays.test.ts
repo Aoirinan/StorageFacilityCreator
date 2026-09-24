@@ -138,6 +138,15 @@ test('a walk-up check-in writes stay, locks, folio, income, private details and 
   assert.equal(e.handle.audits.filter((a) => a.entry.eventType === 'stays.stay.created').length, 1);
 });
 
+test('a full name typed as the display name stays off the stay doc; a chosen display name is kept', async () => {
+  const e = env();
+  const typed = await create(e, OWNER, booking({ guest: { displayName: 'jane doe', adults: 1, children: 0, pets: 0, rvLengthFt: null }, guestProfile: { create: { name: 'Jane Doe' } } }));
+  assert.equal(e.fake.read(`${P}/stays/${typed.stayId}`)!.guestDisplayName, 'Jane D.');
+  assert.equal(e.fake.read(`${P}/stayPrivate/${typed.stayId}`)!.fullName, 'Jane Doe');
+  const chosen = await create(e, OWNER, booking({ checkIn: '2026-10-10', checkOut: '2026-10-12', guest: { displayName: 'The Does', adults: 2, children: 0, pets: 0, rvLengthFt: null }, guestProfile: { create: { name: 'John Doe' } } }));
+  assert.equal(e.fake.read(`${P}/stays/${chosen.stayId}`)!.guestDisplayName, 'The Does');
+});
+
 test('a double tap sent twice at once still makes one stay and one payment', async () => {
   const e = env();
   e.fake.onBeforeCommit = commitBarrier(2);
