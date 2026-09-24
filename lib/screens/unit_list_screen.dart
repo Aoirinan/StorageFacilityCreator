@@ -16,17 +16,16 @@ import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
 
-/// "72 / 78 rentable units occupied (4 staff-only not counted)".
+/// "72 / 78 units occupied (2 internal-use not counted)".
 ///
 /// Counts come from [FacilityStatsService.countUnits], the same numbers as the
-/// dashboard and facility cards. The table below lists staff-only units too,
-/// so the note says why there are more rows than the total.
+/// dashboard and facility cards. The table below lists internal-use units
+/// too, so the note says why there are more rows than the total.
 String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantIds) {
   final counts = FacilityStatsService.countUnits(nonArchivedUnits, allTenantIds);
-  final staffOnly = nonArchivedUnits.length - counts.totalUnits;
-  final label =
-      '${counts.occupiedUnits} / ${counts.totalUnits} rentable units occupied';
-  return staffOnly > 0 ? '$label ($staffOnly staff-only not counted)' : label;
+  final internalUse = nonArchivedUnits.length - counts.totalUnits;
+  final label = '${counts.occupiedUnits} / ${counts.totalUnits} units occupied';
+  return internalUse > 0 ? '$label ($internalUse internal-use not counted)' : label;
 }
 
 /// The tenants the Units list matches units against: the latest list the
@@ -34,7 +33,7 @@ String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantI
 ///
 /// `whenOrNull(data:)` gave null for an error that still holds the previous
 /// list, while the header is shown whenever a list exists, so after an
-/// auto-retried stream error it read "0 / 78 rentable units occupied" and
+/// auto-retried stream error it read "0 / 78 units occupied" and
 /// every rented unit was hidden as a ghost.
 List<TenantModel> unitListTenants(AsyncValue<List<TenantModel>> tenantsAsync) =>
     tenantsAsync.value ?? const <TenantModel>[];
@@ -472,7 +471,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             // From the unit and tenant streams already on screen, so it is
             // current with the rows below. It used to run its own unit and
             // tenant reads, keyed on the filtered counts: it re-read on every
-            // search or filter change yet missed a unit's staff-only toggle.
+            // search or filter change yet missed a unit's internal-use toggle.
             // Shown once tenants load: before that every unit reads as vacant.
             if (tenantsAsync.hasValue)
               Padding(

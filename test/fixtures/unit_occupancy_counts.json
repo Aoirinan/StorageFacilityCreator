@@ -1,0 +1,69 @@
+{
+  "_about": [
+    "Total and Occupied units that the app and the facility stats Cloud Function must both give for the same unit and tenant docs.",
+    "The app side runs each case through FacilityStatsService.computeUnitCounts on fake collections (test/unit_occupancy_parity_test.dart).",
+    "The server side runs each case through loadFacilityStatsInputs and computeFacilityStats (functions-facility-ops/src/test/facility_stats.test.ts).",
+    "Change a rule on one side only and that side's test fails. Docs are raw Firestore data; tenants are every tenant doc, active or not."
+  ],
+  "cases": [
+    {
+      "name": "units kept off the public website still count (rental page not live yet)",
+      "units": [
+        { "id": "a1", "data": { "unitNumber": "A1", "status": "occupied", "tenantId": "t1", "publicListingEnabled": false } },
+        { "id": "a2", "data": { "unitNumber": "A2", "status": "available", "publicListingEnabled": false } },
+        { "id": "a3", "data": { "unitNumber": "A3", "status": "available", "publicListingEnabled": true } },
+        { "id": "a4", "data": { "unitNumber": "A4", "status": "available" } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true } }],
+      "expected": { "totalUnits": 4, "occupiedUnits": 1 }
+    },
+    {
+      "name": "internal-use units are left out, occupied or not",
+      "units": [
+        { "id": "office", "data": { "unitNumber": "OFF", "status": "occupied", "tenantId": "t1", "internalUse": true } },
+        { "id": "home", "data": { "unitNumber": "MGR", "status": "available", "internalUse": true, "publicListingEnabled": false } },
+        { "id": "b1", "data": { "unitNumber": "B1", "status": "occupied", "tenantId": "t1", "internalUse": false } },
+        { "id": "b2", "data": { "unitNumber": "B2", "status": "available" } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true } }],
+      "expected": { "totalUnits": 2, "occupiedUnits": 1 }
+    },
+    {
+      "name": "only an exact true marks internal use",
+      "units": [
+        { "id": "c1", "data": { "unitNumber": "C1", "status": "available", "internalUse": "true" } },
+        { "id": "c2", "data": { "unitNumber": "C2", "status": "available", "internalUse": 1 } },
+        { "id": "c3", "data": { "unitNumber": "C3", "status": "available", "internalUse": null } }
+      ],
+      "tenants": [],
+      "expected": { "totalUnits": 3, "occupiedUnits": 0 }
+    },
+    {
+      "name": "archived units are left out, a stray non-boolean archived too",
+      "units": [
+        { "id": "d1", "data": { "unitNumber": "D1", "status": "occupied", "tenantId": "t1", "archived": true } },
+        { "id": "d2", "data": { "unitNumber": "D2", "status": "available", "archived": "true" } },
+        { "id": "d3", "data": { "unitNumber": "D3", "status": "available", "archived": false } },
+        { "id": "d4", "data": { "status": "available" } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true } }],
+      "expected": { "totalUnits": 2, "occupiedUnits": 0 }
+    },
+    {
+      "name": "an archived or partial tenant doc still occupies, an orphan does not, reserved is vacant",
+      "units": [
+        { "id": "e1", "data": { "unitNumber": "E1", "status": "occupied", "tenantId": "active" } },
+        { "id": "e2", "data": { "unitNumber": "E2", "status": "occupied", "tenantId": "archived" } },
+        { "id": "e3", "data": { "unitNumber": "E3", "status": "occupied", "tenantId": "partial" } },
+        { "id": "e4", "data": { "unitNumber": "E4", "status": "occupied", "tenantId": "deleted" } },
+        { "id": "e5", "data": { "unitNumber": "E5", "status": "reserved", "tenantId": "active" } }
+      ],
+      "tenants": [
+        { "id": "active", "data": { "name": "Al", "isActive": true } },
+        { "id": "archived", "data": { "name": "Bo", "isActive": false } },
+        { "id": "partial", "data": { "autopay": { "status": "OFF" } } }
+      ],
+      "expected": { "totalUnits": 5, "occupiedUnits": 3 }
+    }
+  ]
+}

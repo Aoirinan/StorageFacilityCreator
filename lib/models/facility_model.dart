@@ -35,8 +35,8 @@ class FacilityModel {
   final int totalUnits;
   final int occupiedUnits;
 
-  /// Number of rentable unit documents under this facility (not archived, not
-  /// staff-only; see `FacilityStatsService.countUnits`). Written only by the
+  /// Number of counted unit documents under this facility (not archived, not
+  /// internal-use; see `FacilityStatsService.countUnits`). Written only by the
   /// functions-facility-ops Cloud Function whenever it recomputes stats.
   /// [totalUnits] is only the editable capacity max.
   final int unitDocCount;
