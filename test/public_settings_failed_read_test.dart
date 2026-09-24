@@ -59,9 +59,8 @@ Future<void> _saveWebsite({String? customDomain}) =>
 /// What an Edit Facility save of the public rental settings writes
 /// (FacilityEditScreen._savePublicRentalSettings).
 Future<void> _saveRentalSettings() =>
-    FacilityPublicService.updatePublicSettings(
+    FacilityPublicService.updateRentalSettings(
       facilityId: 'fac1',
-      enabled: true,
       publicRentalsEnabled: true,
       publicPricingEnabled: true,
       publicUnitNumbersEnabled: true,
