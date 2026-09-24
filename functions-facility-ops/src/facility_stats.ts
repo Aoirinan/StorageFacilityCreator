@@ -485,9 +485,11 @@ export const facilityStatsTestUtils = {
  * and recomputes; writers arriving inside that window only mark the facility dirty
  * and return. The claim holder then drains the dirty flag, so writes that landed
  * while it was computing still get a fresh pass rather than waiting for the nightly
- * job. A lone edit finds no live claim and recomputes immediately, exactly as before.
+ * job, and ends the claim once a drain finds nothing waiting (consumeStatsDirtyFlag).
+ * A lone edit finds no live claim and recomputes immediately, exactly as before.
  *
- * Worst case a burst's tail is stale until the next write or
+ * Worst case, a sustained burst that outlasts STATS_MAX_DRAIN_PASSES, or writes in
+ * the short backoff after a failed pass, are stale until the next write or
  * updateAllFacilityStatsNightly, which already exists for precisely that reason.
  */
 const STATS_COALESCE_WINDOW_MS = 15_000;
@@ -582,12 +584,39 @@ async function releaseStatsClaim(
   });
 }
 
-/** Consume the dirty flag set by writers that arrived during our recompute. */
-async function consumeStatsDirtyFlag(facilityId: string): Promise<boolean> {
-  const ref = statsClaimRef(facilityId);
-  return getFirestore().runTransaction(async (tx) => {
+/**
+ * Consume the dirty flag set by writers that arrived during our recompute.
+ *
+ * When nothing is waiting, the claim ends here, in the same transaction:
+ * the holder is about to stop draining. It used to stay live for the rest of
+ * the window, so a write landing after this check only marked the facility
+ * dirty and nothing recomputed it until the next write or the nightly job
+ * (create a tenant, assign a unit 5 s later: the mirror kept the old counts).
+ * A writer whose claim transaction runs before this one is seen as dirty and
+ * drained; one that runs after it finds no live claim and recomputes itself.
+ *
+ * Bursts still coalesce: while writes keep landing during passes the flag is
+ * dirty and the holder keeps draining. If a pass outlived the window and
+ * another writer claimed since, this ends their claim too; the worst case is
+ * one extra concurrent pass. An update, not a merge-set, so a claim doc
+ * deleted with its facility is not recreated.
+ */
+async function consumeStatsDirtyFlag(
+  facilityId: string,
+  db: admin.firestore.Firestore = getFirestore(),
+  nowMs: () => number = Date.now,
+): Promise<boolean> {
+  const ref = db.collection('facilities').doc(facilityId).collection('stats').doc('recompute');
+  return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (!snap.data()?.dirty) return false;
+    if (!snap.data()?.dirty) {
+      if (snap.exists) {
+        tx.update(ref, {
+          claimedAt: admin.firestore.Timestamp.fromMillis(nowMs() - STATS_COALESCE_WINDOW_MS),
+        });
+      }
+      return false;
+    }
     tx.set(ref, { dirty: false }, { merge: true });
     return true;
   });
@@ -603,7 +632,7 @@ export interface StatsCoalesceHooks {
 
 const firestoreStatsCoalesceHooks: StatsCoalesceHooks = {
   claim: (facilityId: string) => claimStatsRecompute(facilityId),
-  consumeDirty: consumeStatsDirtyFlag,
+  consumeDirty: (facilityId: string) => consumeStatsDirtyFlag(facilityId),
   release: (facilityId: string) => releaseStatsClaim(facilityId),
   recompute: async (facilityId: string) => {
     await recomputeAndPersistFacilityStats(facilityId);
@@ -800,6 +829,7 @@ export const statsCoalesceTestUtils = {
   shouldClaimStatsRecompute,
   recomputeFacilityStatsCoalesced,
   claimStatsRecompute,
+  consumeStatsDirtyFlag,
   releaseStatsClaim,
   STATS_COALESCE_WINDOW_MS,
   STATS_MAX_DRAIN_PASSES,
