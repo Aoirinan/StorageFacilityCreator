@@ -1174,6 +1174,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return MoveOutScreen(
                 contractId: contractId,
                 facilityId: facilityId,
+                unitId: state.uri.queryParameters['unitId'],
               );
             },
           ),
