@@ -567,6 +567,31 @@ export const createPublicMoveInCheckout = functions
     userId: context.auth?.uid || null,
   });
 
+  // The unit can be rented, unlisted, archived or set to internal use while it
+  // is held (up to 15 minutes for a public hold, 60 for a tenant-portal one).
+  // completePublicMoveIn refuses such a unit too, but only after Checkout has
+  // taken the payment, leaving the owner to refund it by hand. Same test and
+  // refusal as both holds; trimmed as loadPublicMoveInChargeQuote does, so the
+  // unit checked is the unit priced.
+  const reservedUnitId = String(reservation.unitId || '').trim();
+  if (reservedUnitId) {
+    const unitSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('units')
+      .doc(reservedUnitId)
+      .get();
+    const unitData = unitSnap.exists ? (unitSnap.data() as Record<string, any>) : null;
+    const unitStatus = String(unitData?.status || '').toLowerCase();
+    if (
+      !unitData ||
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isUnitOfferedOnline(unitData)
+    ) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+  }
+
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Facility not found');
