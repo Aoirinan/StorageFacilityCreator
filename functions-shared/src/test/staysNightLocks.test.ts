@@ -10,6 +10,8 @@ import {
   lockMonthsFor,
   rebuildBuckets,
 } from '../stays/nightLocks';
+import { STAYS_LIMITS } from '../stays/contracts';
+import { addDays } from '../stays/dates';
 
 const HORIZON = { clampFrom: '2026-01-01', clampTo: '2028-01-01' };
 
@@ -151,4 +153,20 @@ test('checkRequested reports hard nights held by others and soft nights', () => 
   const check = checkRequested(r.buckets, 'mine', ['2026-10-01', '2026-10-03', '2026-10-05', '2026-10-07']);
   assert.deepEqual(check.hardConflicts, [{ date: '2026-10-03', stayId: 'theirs' }]);
   assert.deepEqual(check.softNights, ['2026-10-05']);
+});
+
+test('the per-write bucket cap covers the whole lock horizon on every day', () => {
+  let day = '2026-01-01';
+  let widest = 0;
+  for (let i = 0; i < 365 * 8; i++) {
+    const { clampFrom, clampTo } = lockHorizon(day);
+    const months = lockMonthsFor(clampFrom, clampTo, clampFrom, clampTo).length;
+    widest = Math.max(widest, months);
+    assert.ok(months <= STAYS_LIMITS.bucketsPerListingPerTransaction, `${day}: the horizon touches ${months} months`);
+    day = addDays(day, 1);
+  }
+  // 600 nights touch 21 months on many days (2026-09-23 is one).
+  assert.equal(widest, 21);
+  const h = lockHorizon('2026-09-23');
+  assert.equal(lockMonthsFor(h.clampFrom, h.clampTo, h.clampFrom, h.clampTo).length, 21);
 });

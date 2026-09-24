@@ -13,14 +13,16 @@ import {
   NightClaim,
   STAYS_LIMITS,
   STAY_COLLECTIONS,
+  STAY_STAFF_FIELDS,
   StayConflict,
   StayControlsDoc,
   StayDoc,
+  StayStaffField,
   StayStatus,
   YearMonth,
   Ymd,
 } from '@sfc/functions-shared/stays/contracts';
-import { facilityToday, monthEnd, monthOf, monthStart, nextMonth } from '@sfc/functions-shared/stays/dates';
+import { facilityToday, isValidYmd, monthEnd, monthOf, monthStart } from '@sfc/functions-shared/stays/dates';
 import { lockBucketId, sha256Hex } from '@sfc/functions-shared/stays/ids';
 import {
   LockBlockInput,
@@ -46,7 +48,8 @@ import { isAborted, staysError } from './errors';
  *  3. reads the listing's channel block docs;
  *  4. runs the caller's extra reads (folio, income id, profile);
  *  5. validates: an SFC write is refused on a hard night another stay holds,
- *     and on a soft (channel-block) night unless overrideSoftBlocks; a feed
+ *     on a soft (channel-block) night unless overrideSoftBlocks, and when it
+ *     adds nights past the lock horizon (they could not be locked); a feed
  *     write records a conflict instead;
  *  6. rebuilds the buckets from the stays and writes only the buckets and
  *     stay statuses that changed, plus the caller's extra writes.
@@ -55,6 +58,16 @@ import { isAborted, staysError } from './errors';
  * listing-month contend and one retries, so two browsers cannot book the
  * same night, and cancelling a conflict's winner hands its nights back in the
  * same commit.
+ *
+ * The writer, not the caller, decides two things about each written stay:
+ *  - createdAtMs (lock precedence): an existing stay keeps its stored value,
+ *    so rebuilding a doc cannot reorder winners and losers; a new stay must
+ *    carry a positive time.
+ *  - the staff fields (STAY_STAFF_FIELDS): staff change these directly
+ *    without bumping `version`, so their stored values are kept unless the
+ *    mutation `owns` them, and a check-in made while a callable or the sync
+ *    was in flight survives it.
+ * Every active stay written must have valid dates with checkIn < checkOut.
  */
 
 export interface StayMutation {
@@ -72,6 +85,12 @@ export interface StayMutation {
    * a retried request returns `created:false`.
    */
   createOnly?: boolean;
+  /**
+   * The staff fields this write sets on an existing stay (a modify that
+   * renames the guest owns 'guestDisplayName'). Every other staff field keeps
+   * its stored value, whatever `next` carries. Ignored for a new stay.
+   */
+  owns?: readonly StayStaffField[];
 }
 
 export interface ChannelBlockUpdate {
@@ -83,7 +102,7 @@ export interface ChannelBlockUpdate {
   ranges: ChannelBlockRange[];
 }
 
-/** A rebuild with no mutation: the daily drift repair, ≤20 months per listing per call. */
+/** A rebuild with no mutation: the daily drift repair, ≤ bucketsPerListingPerTransaction months per listing per call. */
 export interface ListingRebuild {
   listingId: string;
   months: YearMonth[];
@@ -173,6 +192,11 @@ export function docDigest(doc: unknown): string {
   return sha256Hex(JSON.stringify(canonical(doc)));
 }
 
+/** A usable lock precedence: a finite, positive epoch time. */
+function isPrecedence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
 function toLockInput(stayId: string, doc: StayDoc): LockStayInput {
   return {
     stayId,
@@ -181,8 +205,39 @@ function toLockInput(stayId: string, doc: StayDoc): LockStayInput {
     source: doc.source,
     checkIn: doc.checkIn,
     checkOut: doc.checkOut,
-    createdAtMs: typeof doc.createdAtMs === 'number' ? doc.createdAtMs : 0,
+    // A stored doc without a usable time goes last, never first.
+    createdAtMs: isPrecedence(doc.createdAtMs) ? doc.createdAtMs : Number.MAX_SAFE_INTEGER,
   };
+}
+
+/**
+ * The doc a mutation actually writes (see the header): an existing stay
+ * keeps its stored createdAtMs and the staff fields the mutation does not
+ * own; a new stay must bring a usable createdAtMs.
+ */
+function preparedNext(m: StayMutation, stored: StayDoc | null): StayDoc | null {
+  if (!m.next) return null;
+  if (!stored) {
+    if (!isPrecedence(m.next.createdAtMs)) {
+      throw staysError('invalid-argument', 'invalid_argument', 'A new stay needs its creation time.', {
+        stayId: m.stayId,
+        field: 'createdAtMs',
+      });
+    }
+    return m.next;
+  }
+  const owned = new Set<string>(m.owns ?? []);
+  const storedFields = stored as unknown as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...m.next };
+  for (const field of STAY_STAFF_FIELDS) {
+    if (!owned.has(field) && storedFields[field] !== undefined) next[field] = storedFields[field];
+  }
+  next.createdAtMs = isPrecedence(stored.createdAtMs)
+    ? stored.createdAtMs
+    : isPrecedence(m.next.createdAtMs)
+      ? m.next.createdAtMs
+      : Number.MAX_SAFE_INTEGER;
+  return next as unknown as StayDoc;
 }
 
 function isActive(doc: StayDoc | null | undefined): doc is StayDoc {
@@ -191,12 +246,6 @@ function isActive(doc: StayDoc | null | undefined): doc is StayDoc {
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
-function monthsBetween(first: YearMonth, last: YearMonth): YearMonth[] {
-  const out: YearMonth[] = [];
-  for (let m = first; m <= last; m = nextMonth(m)) out.push(m);
-  return out;
 }
 
 function conflictLabel(doc: StayDoc | undefined): string {
@@ -237,10 +286,14 @@ interface ListingState {
   bucketSnaps: Map<YearMonth, DocumentSnapshot>;
 }
 
-/** Month chunks (≤20 each) covering the whole lock horizon, for the drift rebuild. */
+/**
+ * The lock horizon's months in chunks of at most bucketsPerListingPerTransaction,
+ * for the drift rebuild. The cap covers the whole horizon, so today this is
+ * always one chunk; the split stays in case the horizon ever grows.
+ */
 export function driftRebuildMonthChunks(todayYmd: Ymd): YearMonth[][] {
   const { clampFrom, clampTo } = lockHorizon(todayYmd);
-  const all = monthsBetween(monthOf(clampFrom), monthOf(clampTo));
+  const all = lockMonthsFor(clampFrom, clampTo, clampFrom, clampTo);
   const chunks: YearMonth[][] = [];
   for (let i = 0; i < all.length; i += STAYS_LIMITS.bucketsPerListingPerTransaction) {
     chunks.push(all.slice(i, i + STAYS_LIMITS.bucketsPerListingPerTransaction));
@@ -266,6 +319,11 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
     if (m.next && m.next.facilityId !== facilityId) {
       throw staysError('invalid-argument', 'invalid_argument', 'A stay must belong to this facility.');
     }
+    // An active stay with bad or inverted dates would hold no nights and
+    // still read as confirmed, in either mode.
+    if (isActive(m.next) && (!isValidYmd(m.next.checkIn) || !isValidYmd(m.next.checkOut) || m.next.checkIn >= m.next.checkOut)) {
+      throw staysError('invalid-argument', 'invalid_dates', 'Check-out must be after check-in.', { stayId: m.stayId });
+    }
   }
 
   const tz = confirmedTimeZone(controls);
@@ -283,6 +341,8 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
     const before: Record<string, StayDoc | null> = {};
     const skipped: string[] = [];
     const live: StayMutation[] = [];
+    /** What each live mutation writes (preparedNext), by stayId. */
+    const nexts = new Map<string, StayDoc | null>();
     mutations.forEach((m, i) => {
       const snap = storedSnaps[i];
       const stored = snap.exists ? (snap.data() as StayDoc) : null;
@@ -300,8 +360,10 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
           });
         }
       }
+      nexts.set(m.stayId, preparedNext(m, stored));
       live.push(m);
     });
+    const nextOf = (m: StayMutation): StayDoc | null => nexts.get(m.stayId) ?? null;
 
     // --- Which listings and months this write touches --------------------
     const listings = new Map<string, ListingState>();
@@ -319,10 +381,11 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
       for (const m of lockMonthsFor(doc.checkIn, doc.checkOut, clampFrom, clampTo)) s.requested.add(m);
     };
     for (const m of live) {
+      const next = nextOf(m);
       addStayMonths(before[m.stayId]);
-      addStayMonths(m.next);
+      addStayMonths(next);
       // A stay with no nights in the horizon still needs its listing loaded to be written.
-      if (m.next) listing(m.next.listingId);
+      if (next) listing(next.listingId);
     }
 
     const blockUpdates = input.channelBlockUpdates ?? [];
@@ -341,9 +404,12 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
 
     for (const s of listings.values()) {
       if (s.requested.size > STAYS_LIMITS.bucketsPerListingPerTransaction) {
-        throw staysError('invalid-argument', 'invalid_argument', 'A write may touch at most 20 months of one listing.', {
-          listingId: s.listingId,
-        });
+        throw staysError(
+          'invalid-argument',
+          'invalid_argument',
+          `A write may touch at most ${STAYS_LIMITS.bucketsPerListingPerTransaction} months of one listing.`,
+          { listingId: s.listingId },
+        );
       }
     }
 
@@ -405,8 +471,9 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
     // --- Apply in memory ----------------------------------------------------
     for (const m of live) {
       const old = before[m.stayId];
+      const next = nextOf(m);
       if (old) listings.get(old.listingId)?.stays.delete(m.stayId);
-      if (m.next) listing(m.next.listingId).stays.set(m.stayId, m.next);
+      if (next) listing(next.listingId).stays.set(m.stayId, next);
     }
     for (const u of blockUpdates) {
       const s = listing(u.listingId);
@@ -424,16 +491,30 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
       [...stays.entries()].filter(([id]) => id !== without).map(([id, doc]) => toLockInput(id, doc));
 
     // --- Validate SFC writes ------------------------------------------------
+    const notBefore = (ymd: Ymd, floor: Ymd): Ymd => (ymd > floor ? ymd : floor);
     for (const m of live) {
-      if (m.mode !== 'sfc' || !isActive(m.next)) continue;
-      const s = listing(m.next.listingId);
+      const next = nextOf(m);
+      if (m.mode !== 'sfc' || !isActive(next)) continue;
+      const s = listing(next.listingId);
       const old = before[m.stayId];
-      const kept = new Set(
-        isActive(old) && old.listingId === m.next.listingId ? clampedNights(old.checkIn, old.checkOut, clampFrom, clampTo) : [],
-      );
+      const sameListing = isActive(old) && old.listingId === next.listingId;
+      // Nights from clampTo on cannot be locked, so an SFC write may not take
+      // any there. Keeping ones the stay already had (a feed stay that
+      // reaches past the horizon, re-saved or shortened) is fine.
+      if (next.checkOut > clampTo) {
+        const keepsOnlyItsOwn =
+          sameListing && notBefore(old.checkIn, clampTo) <= notBefore(next.checkIn, clampTo) && next.checkOut <= old.checkOut;
+        if (!keepsOnlyItsOwn) {
+          throw staysError('invalid-argument', 'invalid_dates', `That is too far ahead: a booking must end by ${clampTo}.`, {
+            stayId: m.stayId,
+            maxCheckOut: clampTo,
+          });
+        }
+      }
+      const kept = new Set(sameListing ? clampedNights(old.checkIn, old.checkOut, clampFrom, clampTo) : []);
       // Only nights this write adds are checked: re-saving a stay must not
       // trip over a later stay that lost those nights to it.
-      const added = clampedNights(m.next.checkIn, m.next.checkOut, clampFrom, clampTo).filter((n) => !kept.has(n));
+      const added = clampedNights(next.checkIn, next.checkOut, clampFrom, clampTo).filter((n) => !kept.has(n));
       if (added.length === 0) continue;
       const others = rebuildBuckets({
         months: [...new Set(added.map(monthOf))],
@@ -501,7 +582,8 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
     for (const m of live) {
       const old = before[m.stayId];
       const ref = staysCol.doc(m.stayId);
-      if (!m.next) {
+      const prepared = nextOf(m);
+      if (!prepared) {
         plan.after[m.stayId] = null;
         if (old) {
           tx.delete(ref);
@@ -509,7 +591,7 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
         }
         continue;
       }
-      let next: StayDoc = m.next;
+      let next: StayDoc = prepared;
       const outcome = outcomes[m.stayId];
       if (isActiveStatus(next.status)) {
         if (outcome && fullyRebuilt(next)) {

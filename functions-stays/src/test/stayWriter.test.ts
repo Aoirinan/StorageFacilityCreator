@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Timestamp } from 'firebase-admin/firestore';
 
-import type { StayDoc } from '@sfc/functions-shared/stays/contracts';
+import { STAYS_LIMITS, STAY_STAFF_FIELDS, type StayDoc } from '@sfc/functions-shared/stays/contracts';
+import { lockHorizon } from '@sfc/functions-shared/stays/nightLocks';
 
 import { staysErrorReason } from '../common/errors';
 import { ApplyStayMutationsInput, applyStayMutations, driftRebuildMonthChunks } from '../common/stayWriter';
@@ -385,19 +388,217 @@ test('stays outside the lock horizon are written without locks', async () => {
   assert.equal(result.plan.clampFrom, '2026-08-02');
 });
 
-test('writes are limited to 20 months per listing and 150 stays', async () => {
+test('writes are limited in months per listing and in stays', async () => {
   const fake = newFake();
-  const months = Array.from({ length: 21 }, (_, i) => {
+  const cap = STAYS_LIMITS.bucketsPerListingPerTransaction;
+  const months = Array.from({ length: cap + 1 }, (_, i) => {
     const d = new Date(Date.UTC(2026, 9 + i, 1));
     return d.toISOString().slice(0, 7);
   });
   assert.equal(await reasonOf(write(fake, { rebuild: [{ listingId: 'lst1', months }] })), 'invalid_argument');
+  assert.equal(await reasonOf(write(fake, { rebuild: [{ listingId: 'lst1', months: months.slice(0, cap) }] })), null);
   const many = Array.from({ length: 151 }, (_, i) => ({ stayId: `man_${i}`, next: null, mode: 'feed' as const }));
   assert.equal(await reasonOf(write(fake, { mutations: many })), 'invalid_argument');
-  // The drift rebuild splits the horizon into chunks that fit.
+  // The drift rebuild covers the horizon's exact months, in one chunk that fits.
   const chunks = driftRebuildMonthChunks('2026-10-01');
-  assert.ok(chunks.every((c) => c.length <= 20));
+  assert.equal(chunks.length, 1);
+  assert.ok(chunks.every((c) => c.length <= cap));
   assert.equal(chunks.flat()[0], '2026-08');
+  assert.equal(chunks.flat()[chunks.flat().length - 1], '2028-03');
+  assert.equal(driftRebuildMonthChunks('2026-09-23')[0].length, 21);
+});
+
+/** 2026-09-23 12:00 in Denver: the horizon (2026-07-25 to 2028-03-16) touches 21 months. */
+const NOW_21_MONTHS = Date.parse('2026-09-23T18:00:00Z');
+
+test('a feed block set that spans the whole horizon commits, on a day the horizon touches 21 months', async () => {
+  const fake = newFake();
+  const { clampFrom, clampTo } = lockHorizon('2026-09-23');
+  assert.deepEqual([clampFrom, clampTo], ['2026-07-25', '2028-03-16']);
+  // A calendar blocked from before the horizon to far past it.
+  const whole = [{ checkIn: '2026-07-01', checkOut: '2029-01-01', echo: false }];
+  const first = await write(fake, {
+    nowMs: NOW_21_MONTHS,
+    channelBlockUpdates: [{ channelId: 'ch1', listingId: 'lst1', provider: 'airbnb', ranges: whole }],
+  });
+  assert.equal(first.plan.listingMonths.lst1.length, 21);
+  assert.equal(first.changedBuckets.length, 21);
+  assert.equal(nightsOf(fake, 'lst1', '2026-07')['2026-07-25'].s, 'blk:ch1');
+  assert.equal(nightsOf(fake, 'lst1', '2026-07')['2026-07-24'], undefined);
+  assert.equal(nightsOf(fake, 'lst1', '2028-03')['2028-03-15'].s, 'blk:ch1');
+  assert.equal(nightsOf(fake, 'lst1', '2028-03')['2028-03-16'], undefined);
+
+  // The next sync: a recent block plus Airbnb's long "Not available" tail.
+  // Stored plus new still reach both ends of the horizon.
+  const tail = [
+    { checkIn: '2026-07-26', checkOut: '2026-07-28', echo: false },
+    { checkIn: '2027-01-01', checkOut: '2029-01-01', echo: false },
+  ];
+  const second = await write(fake, {
+    nowMs: NOW_21_MONTHS,
+    channelBlockUpdates: [{ channelId: 'ch1', listingId: 'lst1', ranges: tail }],
+  });
+  assert.equal(second.plan.listingMonths.lst1.length, 21);
+  assert.deepEqual(Object.keys(nightsOf(fake, 'lst1', '2026-07')), ['2026-07-26', '2026-07-27']);
+  assert.equal(fake.has(`${LOCKS}/lst1_2026-10`), false);
+  assert.equal(nightsOf(fake, 'lst1', '2028-03')['2028-03-15'].s, 'blk:ch1');
+
+  // A booking on that listing, that day, still fits in one write.
+  await write(fake, {
+    nowMs: NOW_21_MONTHS,
+    mutations: [{ stayId: 'man_mid', next: makeStay('lst1', '2026-10-10', '2026-10-12'), mode: 'sfc', createOnly: true }],
+  });
+  assert.equal(nightsOf(fake, 'lst1', '2026-10')['2026-10-10'].s, 'man_mid');
+});
+
+test('an active stay needs valid dates with check-out after check-in, in either mode', async () => {
+  const fake = newFake();
+  const bad: [string, string][] = [
+    ['2026-10-12', '2026-10-10'],
+    ['2026-10-12', '2026-10-12'],
+    ['2026-02-30', '2026-03-02'],
+    ['2026-10-12', 'soon'],
+  ];
+  for (const [checkIn, checkOut] of bad) {
+    for (const mode of ['sfc', 'feed'] as const) {
+      const next = { ...makeStay('lst1', '2026-10-10', '2026-10-12'), checkIn, checkOut };
+      assert.equal(await reasonOf(write(fake, { mutations: [{ stayId: `man_bad_${mode}`, next, mode, createOnly: true }] })), 'invalid_dates');
+    }
+  }
+  assert.equal(fake.list(STAYS).length, 0);
+  // A cancelled stay holds no nights, so its dates are not checked.
+  const cancelled = { ...makeStay('lst1', '2026-10-12', '2026-10-10'), status: 'cancelled' as const };
+  assert.equal(await reasonOf(write(fake, { mutations: [{ stayId: 'man_cx', next: cancelled, mode: 'sfc', createOnly: true }] })), null);
+});
+
+test('SFC cannot book past the lock horizon, so far-future nights cannot be sold twice', async () => {
+  const fake = newFake();
+  const { clampTo } = lockHorizon('2026-10-01');
+  assert.equal(clampTo, '2028-03-24');
+  const far = () => makeStay('lst1', '2028-06-10', '2028-06-13');
+  for (const id of ['man_far1', 'man_far2']) {
+    await assert.rejects(write(fake, { mutations: [{ stayId: id, next: far(), mode: 'sfc', createOnly: true }] }), (e: unknown) => {
+      return staysErrorReason(e) === 'invalid_dates' && (e as { details: { maxCheckOut: string } }).details.maxCheckOut === clampTo;
+    });
+  }
+  // Straddling the end is refused too; ending on it is the last bookable stay.
+  assert.equal(
+    await reasonOf(write(fake, { mutations: [{ stayId: 'man_edge', next: makeStay('lst1', '2028-03-22', '2028-03-25'), mode: 'sfc', createOnly: true }] })),
+    'invalid_dates',
+  );
+  await write(fake, { mutations: [{ stayId: 'man_edge', next: makeStay('lst1', '2028-03-21', '2028-03-24'), mode: 'sfc', createOnly: true }] });
+  assert.equal(nightsOf(fake, 'lst1', '2028-03')['2028-03-23'].s, 'man_edge');
+  assert.equal(
+    await reasonOf(write(fake, { mutations: [{ stayId: 'man_twice', next: makeStay('lst1', '2028-03-23', '2028-03-24'), mode: 'sfc', createOnly: true }] })),
+    'hard_conflict',
+  );
+
+  // A feed reservation may reach past the horizon (clamped); SFC may re-save or shorten it, not extend it.
+  const feed = makeStay('lst2', '2028-03-20', '2028-04-05', { source: 'airbnb', origin: 'feed' });
+  await write(fake, { mutations: [{ stayId: 'airbnb_HMFAR0001', next: feed, mode: 'feed', createOnly: true }] });
+  assert.equal(fake.read(`${STAYS}/airbnb_HMFAR0001`)?.status, 'confirmed');
+  assert.equal(
+    await reasonOf(
+      write(fake, {
+        mutations: [{ stayId: 'airbnb_HMFAR0001', next: { ...feed, guestDisplayName: 'Kim K.', version: 2 }, owns: ['guestDisplayName'], mode: 'sfc' }],
+      }),
+    ),
+    null,
+  );
+  assert.equal(fake.read(`${STAYS}/airbnb_HMFAR0001`)?.guestDisplayName, 'Kim K.');
+  assert.equal(
+    await reasonOf(write(fake, { mutations: [{ stayId: 'airbnb_HMFAR0001', next: { ...feed, checkOut: '2028-04-02', version: 3 }, mode: 'sfc' }] })),
+    null,
+  );
+  assert.equal(
+    await reasonOf(write(fake, { mutations: [{ stayId: 'airbnb_HMFAR0001', next: { ...feed, checkOut: '2028-04-09', version: 4 }, mode: 'sfc' }] })),
+    'invalid_dates',
+  );
+});
+
+test('a new stay must carry its creation time: none, zero or NaN is refused', async () => {
+  const fake = newFake();
+  for (const createdAtMs of [0, Number.NaN, -5, undefined]) {
+    const next = { ...makeStay('lst1', '2026-10-10', '2026-10-12'), createdAtMs } as StayDoc;
+    assert.equal(await reasonOf(write(fake, { mutations: [{ stayId: 'ical_zero', next, mode: 'feed', createOnly: true }] })), 'invalid_argument');
+  }
+  assert.equal(fake.has(`${STAYS}/ical_zero`), false);
+  assert.equal(fake.paths(LOCKS).length, 0);
+});
+
+test('an existing stay keeps its precedence, whatever createdAtMs the caller rebuilt', async () => {
+  const fake = newFake();
+  const early = makeStay('lst1', '2026-10-10', '2026-10-13', { createdAtMs: 100 });
+  const late = makeStay('lst1', '2026-10-11', '2026-10-14', { createdAtMs: 200, source: 'vrbo', origin: 'feed' });
+  seedStay(fake, 'man_early', early);
+  seedStay(fake, 'ical_late', late);
+  await write(fake, { rebuild: [{ listingId: 'lst1', months: ['2026-10'] }] });
+  assert.equal(fake.read(`${STAYS}/man_early`)?.status, 'confirmed');
+  assert.equal(fake.read(`${STAYS}/ical_late`)?.status, 'conflict');
+
+  // A modify that renames the guest but stamps createdAtMs as "now" changes nothing about who wins.
+  await write(fake, {
+    mutations: [
+      { stayId: 'man_early', next: { ...early, guestDisplayName: 'Ann A.', createdAtMs: NOW + 99_999, version: 2 }, owns: ['guestDisplayName'], mode: 'sfc' },
+    ],
+  });
+  assert.equal(fake.read(`${STAYS}/man_early`)?.createdAtMs, 100);
+  assert.equal(fake.read(`${STAYS}/man_early`)?.guestDisplayName, 'Ann A.');
+  assert.equal(fake.read(`${STAYS}/man_early`)?.status, 'confirmed');
+  assert.equal(fake.read(`${STAYS}/ical_late`)?.status, 'conflict');
+
+  // Nor can the loser jump the queue with an early (or missing) time.
+  for (const createdAtMs of [1, 0]) {
+    await write(fake, { mutations: [{ stayId: 'ical_late', next: { ...late, createdAtMs }, mode: 'feed' }] });
+    assert.equal(fake.read(`${STAYS}/ical_late`)?.createdAtMs, 200);
+    assert.equal(fake.read(`${STAYS}/ical_late`)?.status, 'conflict');
+    assert.equal(fake.read(`${STAYS}/man_early`)?.status, 'confirmed');
+    assert.equal(nightsOf(fake, 'lst1', '2026-10')['2026-10-11'].s, 'man_early');
+  }
+});
+
+test('a staff check-in or note made while a write was in flight is kept, unless the write owns it', async () => {
+  const fake = newFake();
+  const opened = makeStay('lst1', '2026-10-01', '2026-10-04', { version: 1 });
+  seedStay(fake, 'man_live', opened);
+  // After the callable (or sync) read the stay, an employee checks the guest
+  // in and adds a note: the rules allow it and the version does not move.
+  const checkedInAt = Timestamp.fromMillis(NOW - 60_000);
+  seedStay(fake, 'man_live', { ...opened, arrivalState: 'checked_in', checkedInAt, staffNotes: 'Parked by the shed', updatedBy: 'uid-employee' });
+
+  await write(fake, { mutations: [{ stayId: 'man_live', next: { ...opened, checkOutTime: '10:00', version: 2 }, expectedVersion: 1, mode: 'sfc' }] });
+  const kept = fake.read(`${STAYS}/man_live`)!;
+  assert.equal(kept.checkOutTime, '10:00');
+  assert.equal(kept.version, 2);
+  assert.equal(kept.arrivalState, 'checked_in');
+  assert.equal((kept.checkedInAt as Timestamp).toMillis(), checkedInAt.toMillis());
+  assert.equal(kept.staffNotes, 'Parked by the shed');
+
+  // A write that owns a field sets it (an owner correcting the name and undoing the check-in).
+  await write(fake, {
+    mutations: [
+      {
+        stayId: 'man_live',
+        next: { ...opened, guestDisplayName: 'Jan D.', arrivalState: 'upcoming', checkedInAt: null, version: 3 },
+        owns: ['guestDisplayName', 'arrivalState', 'checkedInAt'],
+        expectedVersion: 2,
+        mode: 'sfc',
+      },
+    ],
+  });
+  const owned = fake.read(`${STAYS}/man_live`)!;
+  assert.equal(owned.guestDisplayName, 'Jan D.');
+  assert.equal(owned.arrivalState, 'upcoming');
+  assert.equal(owned.checkedInAt, null);
+  assert.equal(owned.staffNotes, 'Parked by the shed');
+});
+
+test("the writer's staff fields are exactly the rules' quick-edit keys", () => {
+  const rules = readFileSync(join(__dirname, '..', '..', '..', 'firestore-rules-src', 'facilities', '53-stays.rules'), 'utf8');
+  const body = /function quickKeys\(\)\s*\{\s*return\s*\[([^\]]*)\]/.exec(rules);
+  assert.ok(body, '53-stays.rules has no quickKeys()');
+  const keys = [...body![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.deepEqual([...keys].sort(), [...STAY_STAFF_FIELDS, 'updatedAt', 'updatedBy'].sort());
 });
 
 test('no stay write ever touched a storage-side collection', () => {

@@ -244,7 +244,13 @@ export const STAYS_LIMITS = {
   lockHorizonPastDays: 60,
   lockHorizonFutureDays: 540,
   stayMutationsPerTransaction: 150,
-  bucketsPerListingPerTransaction: 20,
+  /**
+   * Lock buckets (months) one write may touch per listing. The horizon's 600
+   * nights touch up to 21 months (on about two days in three), and a
+   * whole-horizon write such as a feed's full block set must fit, so this is
+   * at least that; staysNightLocks.test.ts checks it for every day of 8 years.
+   */
+  bucketsPerListingPerTransaction: 22,
   feedTimeoutMs: 10_000,
   feedMaxBytes: 2_000_000,
   feedMaxRedirects: 3,
@@ -485,7 +491,9 @@ export interface StayConflict {
 /**
  * stays/{stayId}: bookings and blocks, with no personal data or money
  * amounts. Ids: `airbnb_{CODE}`, `ical_{sha256(listingId|provider|uid)[0:40]}`
- * or `man_{requestId}` (see ids.ts).
+ * or `man_{requestId}` (see ids.ts). Viewers read the whole doc, so
+ * staffNotes and cleanerNotes are visible to them: the app labels those
+ * fields as such, and private details belong in stayPrivate.privateNotes.
  */
 export interface StayDoc extends StayCommonFields {
   listingId: string;
@@ -531,9 +539,37 @@ export interface StayDoc extends StayCommonFields {
   cancelReason: string | null;
   requestId: string | null;
   version: number;
-  /** Lock precedence: the first writer wins. */
+  /**
+   * Lock precedence: the first writer wins. The writer owns it: an existing
+   * stay keeps its stored value whatever the caller sends, and a new stay
+   * must carry a positive time (callers pass their nowMs).
+   */
   createdAtMs: number;
 }
+
+/**
+ * The stay fields staff change directly under the rules (53-stays.rules
+ * quickKeys, less the updatedAt/updatedBy stamp). They do not bump
+ * `version`, so the writer keeps the stored values of these unless a
+ * mutation names them in `owns`: a check-in or note saved while a callable
+ * or sync was in flight is never undone by it. The staff notes are readable
+ * by viewers too, like the rest of the stay doc.
+ */
+export const STAY_STAFF_FIELDS = [
+  'guestDisplayName',
+  'adults',
+  'children',
+  'pets',
+  'rvLengthFt',
+  'staffNotes',
+  'cleanerNotes',
+  'tags',
+  'messageMarks',
+  'arrivalState',
+  'checkedInAt',
+  'checkedOutAt',
+] as const;
+export type StayStaffField = (typeof STAY_STAFF_FIELDS)[number];
 
 /** stayPrivate/{stayId}: owner/manager only. */
 export interface StayPrivateDoc {
