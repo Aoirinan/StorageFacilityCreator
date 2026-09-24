@@ -1,88 +1,230 @@
+import 'dart:async';
+
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:sfcapp/services/public_payment_link_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
-import '../services/public_payment_link_service.dart';
-import '../services/stripe_service.dart';
-import '../services/tenant_service.dart';
-import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../widgets/keyboard_scrollable.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+/// The server calls the payment page makes. Tests pass their own.
+class PublicPaymentApi {
+  const PublicPaymentApi();
+
+  Future<PublicPaymentLink?> getLink(String token) =>
+      PublicPaymentLinkService.getPaymentLink(token);
+
+  Future<PublicCheckoutStart> startCheckout(String token) =>
+      PublicPaymentLinkService.startCheckout(token);
+
+  Future<String> confirmCheckout(String token, String sessionId) =>
+      PublicPaymentLinkService.confirmCheckout(token: token, sessionId: sessionId);
+}
 
 /// Public payment screen - accessible via /pay?token=...
 /// No authentication required
 class PublicPaymentScreen extends StatefulWidget {
   final String? token;
 
+  /// Where Stripe sent the tenant back from. Read from the address bar on web
+  /// when not given.
+  final PublicCheckoutReturn? checkoutReturn;
+  final PublicPaymentApi api;
+
+  /// How often, and how many times, to re-check a payment that is confirming.
+  final Duration pollInterval;
+  final int maxPolls;
+
   const PublicPaymentScreen({
     super.key,
     this.token,
+    this.checkoutReturn,
+    this.api = const PublicPaymentApi(),
+    this.pollInterval = const Duration(seconds: 3),
+    this.maxPolls = 10,
   });
 
   @override
   State<PublicPaymentScreen> createState() => _PublicPaymentScreenState();
 }
 
+/// Paid states never show Pay Now: a tenant back from Stripe who sees the
+/// button again pays again.
+enum _Phase { loading, error, pay, confirming, stillConfirming, paid, received }
+
 class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   PublicPaymentLink? _paymentLink;
-  bool _isLoading = true;
+  _Phase _phase = _Phase.loading;
   String? _error;
   bool _isProcessing = false;
-  String? _checkoutUrl;
+  String? _token;
+  String? _returnSessionId;
+  Timer? _pollTimer;
+  int _polls = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadPaymentLink();
+    _start();
   }
 
-  Future<void> _loadPaymentLink() async {
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _set(VoidCallback update) {
+    if (mounted) setState(update);
+  }
+
+  Future<void> _start() async {
     final token = widget.token ?? _getTokenFromUrl();
     if (token == null || token.isEmpty) {
-      setState(() {
+      _set(() {
         _error = 'Payment link token is missing';
-        _isLoading = false;
+        _phase = _Phase.error;
       });
       return;
     }
+    _token = token;
+    final checkoutReturn = widget.checkoutReturn ??
+        (kIsWeb ? PublicCheckoutReturn.fromUri(Uri.base) : null);
+    if (checkoutReturn != null && checkoutReturn.isSuccess) {
+      await _confirm(checkoutReturn.sessionId!);
+    } else {
+      await _loadPaymentLink();
+    }
+  }
 
+  Future<void> _loadPaymentLink() async {
+    final token = _token;
+    if (token == null) return;
     try {
-      final link = await PublicPaymentLinkService.getPaymentLink(token);
+      final link = await widget.api.getLink(token);
       if (link == null) {
-        setState(() {
+        _set(() {
           _error = 'Payment link not found or has expired';
-          _isLoading = false;
+          _phase = _Phase.error;
         });
         return;
       }
-
+      // Paid first: a paid link is not "active", and used to be reported as
+      // "no longer active" to the tenant who had just paid it.
+      if (link.status == 'paid') {
+        _set(() {
+          _paymentLink = link;
+          _phase = _Phase.paid;
+        });
+        return;
+      }
       if (!link.isActive) {
-        setState(() {
+        _set(() {
           _error = link.isExpired
               ? 'This payment link has expired'
               : 'This payment link is no longer active';
-          _isLoading = false;
+          _phase = _Phase.error;
         });
         return;
       }
-
-      setState(() {
+      _set(() {
         _paymentLink = link;
-        _isLoading = false;
+        _phase = _Phase.pay;
       });
-
-      // Load tenant info
-      _loadTenantInfo();
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error loading payment link: $e');
       }
-      setState(() {
+      _set(() {
         _error = 'Error loading payment link: $e';
-        _isLoading = false;
+        _phase = _Phase.error;
       });
     }
+  }
+
+  /// Stripe sent the tenant back after paying: record it now.
+  Future<void> _confirm(String sessionId) async {
+    final token = _token;
+    if (token == null) return;
+    _pollTimer?.cancel();
+    _returnSessionId = sessionId;
+    _set(() => _phase = _Phase.confirming);
+    String status;
+    try {
+      status = await widget.api.confirmCheckout(token, sessionId);
+    } on FirebaseFunctionsException catch (e) {
+      // Not this link's session (an old bookmark, a stale tab): the link's own
+      // status decides what to show.
+      if (const {'not-found', 'permission-denied', 'invalid-argument'}.contains(e.code)) {
+        await _loadPaymentLink();
+        return;
+      }
+      status = 'processing';
+    } catch (_) {
+      // Stripe only returns here after taking the payment, so never offer
+      // Pay Now on a failed check; keep looking instead.
+      status = 'processing';
+    }
+    switch (status) {
+      case 'paid':
+        await _showPaid();
+        break;
+      case 'received':
+        _set(() => _phase = _Phase.received);
+        break;
+      case 'unpaid':
+        await _loadPaymentLink();
+        break;
+      default:
+        _startPolling();
+    }
+  }
+
+  Future<void> _showPaid() async {
+    final token = _token;
+    PublicPaymentLink? link;
+    try {
+      link = token == null ? null : await widget.api.getLink(token);
+    } catch (_) {
+      link = null;
+    }
+    _set(() {
+      _paymentLink = link ?? _paymentLink;
+      _phase = _Phase.paid;
+    });
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _polls = 0;
+    _set(() => _phase = _Phase.confirming);
+    _pollTimer = Timer.periodic(widget.pollInterval, (timer) async {
+      _polls++;
+      final token = _token;
+      PublicPaymentLink? link;
+      try {
+        link = token == null ? null : await widget.api.getLink(token);
+      } catch (_) {
+        link = null;
+      }
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (link != null && link.status == 'paid') {
+        timer.cancel();
+        _set(() {
+          _paymentLink = link;
+          _phase = _Phase.paid;
+        });
+      } else if (_polls >= widget.maxPolls) {
+        timer.cancel();
+        _set(() => _phase = _Phase.stillConfirming);
+      }
+    });
   }
 
   String? _getTokenFromUrl() {
@@ -97,22 +239,6 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     return Uri.splitQueryString(fragment.substring(q + 1))['token'];
   }
 
-  Future<void> _loadTenantInfo() async {
-    if (_paymentLink == null) return;
-
-    try {
-      // Optional: Load tenant info for display
-      // final tenant = await TenantService.getTenant(
-      //   facilityId: _paymentLink!.facilityId,
-      //   tenantId: _paymentLink!.tenantId,
-      // );
-    } catch (e) {
-      if (kDebugMode) {
-        print('⚠️ Could not load tenant info: $e');
-      }
-    }
-  }
-
   Future<void> _proceedToPayment() async {
     // A second tap in the same frame, before the rebuild disables the
     // button, would open a second checkout.
@@ -123,24 +249,27 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     });
 
     try {
-      // Create Stripe checkout session using public payment link token
-      final checkoutUrl = await StripeService.createPublicPaymentCheckout(
-        token: _paymentLink!.token,
-      );
-
+      // The server hands back the link's open session, or reports it paid.
+      final start = await widget.api.startCheckout(_paymentLink!.token);
+      if (!mounted) return;
       setState(() {
-        _checkoutUrl = checkoutUrl;
         _isProcessing = false;
       });
-
-      // Open checkout
-      _openCheckout(checkoutUrl);
+      if (start.alreadyPaid) {
+        await _showPaid();
+        return;
+      }
+      _openCheckout(start.checkoutUrl!);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error creating checkout: $e');
       }
-      setState(() {
-        _error = 'Error creating payment session. Please try again or contact support.';
+      final alreadyProcessing = e is FirebaseFunctionsException && e.code == 'failed-precondition';
+      _set(() {
+        _error = alreadyProcessing
+            ? (e.message ?? 'This payment link can no longer be paid.')
+            : 'Error creating payment session. Please try again or contact support.';
+        _phase = _Phase.error;
         _isProcessing = false;
       });
     }
@@ -175,12 +304,12 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   }
 
   void _showCheckoutWebView(String url) {
-    showDialog(
+    showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => Dialog(
         insetPadding: const EdgeInsets.all(16),
-        child: Container(
+        child: SizedBox(
           width: double.infinity,
           height: double.infinity,
           child: Column(
@@ -192,7 +321,7 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
                   color: AppTheme.primaryBlue,
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
+                      color: Colors.black.withValues(alpha: 0.1),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
@@ -227,11 +356,12 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
                     ..setNavigationDelegate(
                       NavigationDelegate(
                         onPageFinished: (url) {
-                          if (url.contains('status=success') || url.contains('payment/success')) {
+                          final checkoutReturn = PublicCheckoutReturn.fromUri(Uri.parse(url));
+                          if (checkoutReturn?.status == 'success') {
                             // Payment succeeded
                             Navigator.of(context).pop();
-                            _handlePaymentSuccess();
-                          } else if (url.contains('status=cancel') || url.contains('payment/cancel')) {
+                            _handlePaymentSuccess(checkoutReturn!.sessionId);
+                          } else if (checkoutReturn?.status == 'cancel') {
                             // Payment cancelled
                             Navigator.of(context).pop();
                           }
@@ -248,14 +378,12 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     );
   }
 
-  void _handlePaymentSuccess() {
-    // Reload to show success state
-    setState(() {
-      _isLoading = true;
-    });
-    Future.delayed(const Duration(seconds: 2), () {
-      _loadPaymentLink();
-    });
+  void _handlePaymentSuccess(String? sessionId) {
+    if (sessionId != null) {
+      unawaited(_confirm(sessionId));
+    } else {
+      _startPolling();
+    }
   }
 
   @override
@@ -263,15 +391,15 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     // Public page - no ModernPageWrapper (no sidebar)
     return Scaffold(
       body: KeyboardScrollable(
-        child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? _buildErrorView()
-              : _paymentLink == null
-                  ? _buildErrorView()
-                  : _paymentLink!.status == 'paid'
-                      ? _buildSuccessView()
-                      : _buildPaymentView(),
+        child: switch (_phase) {
+          _Phase.loading => const Center(child: CircularProgressIndicator()),
+          _Phase.error => _buildErrorView(),
+          _Phase.pay => _paymentLink == null ? _buildErrorView() : _buildPaymentView(),
+          _Phase.confirming => _buildConfirmingView(stillWaiting: false),
+          _Phase.stillConfirming => _buildConfirmingView(stillWaiting: true),
+          _Phase.paid => _buildSuccessView(),
+          _Phase.received => _buildReceivedView(),
+        },
       ),
     );
   }
@@ -283,9 +411,9 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 64, color: AppTheme.error),
+            const Icon(Icons.error_outline, size: 64, color: AppTheme.error),
             const SizedBox(height: 16),
-            Text(
+            const Text(
               'Payment Link Error',
               style: TextStyle(
                 fontSize: 24,
@@ -297,13 +425,65 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
             Text(
               _error ?? 'An unknown error occurred',
               textAlign: TextAlign.center,
-              style: TextStyle(color: AppTheme.textSecondary),
+              style: const TextStyle(color: AppTheme.textSecondary),
             ),
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: () => context.go('/'),
               child: const Text('Go to Home'),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConfirmingView({required bool stillWaiting}) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (stillWaiting)
+              const Icon(Icons.hourglass_top, size: 64, color: AppTheme.primaryBlue)
+            else
+              const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              stillWaiting ? 'Payment Processing' : 'Confirming your payment…',
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              "You don't need to pay again.",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+            if (stillWaiting) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Your payment is still being confirmed. Check again in a few minutes.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () {
+                  final sessionId = _returnSessionId;
+                  if (sessionId != null) {
+                    unawaited(_confirm(sessionId));
+                  } else {
+                    _startPolling();
+                  }
+                },
+                child: const Text('Check again'),
+              ),
+            ],
           ],
         ),
       ),
@@ -317,9 +497,9 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.check_circle, size: 64, color: AppTheme.success),
+            const Icon(Icons.check_circle, size: 64, color: AppTheme.success),
             const SizedBox(height: 16),
-            Text(
+            const Text(
               'Payment Successful!',
               style: TextStyle(
                 fontSize: 24,
@@ -331,14 +511,45 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
             if (_paymentLink != null)
               Text(
                 'Amount: \$${_paymentLink!.amount.toStringAsFixed(2)}',
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 18,
                   color: AppTheme.textSecondary,
                 ),
               ),
             const SizedBox(height: 24),
+            // No receipt claim: whether Stripe emails one depends on the
+            // facility's own Stripe settings, which this page cannot see.
+            const Text(
+              'Thank you. Your payment has been received.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReceivedView() {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle_outline, size: 64, color: AppTheme.success),
+            SizedBox(height: 16),
             Text(
-              'Thank you for your payment. A receipt has been sent to your email.',
+              'Payment Received',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              "Your payment was received, and the facility has been notified. You don't need to pay again.",
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary),
             ),
@@ -363,9 +574,9 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
               children: [
                 const SizedBox(height: 40),
                 // Logo/Header
-                Icon(Icons.payment, size: 64, color: AppTheme.primaryBlue),
+                const Icon(Icons.payment, size: 64, color: AppTheme.primaryBlue),
                 const SizedBox(height: 16),
-                Text(
+                const Text(
                   'Payment Request',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -383,7 +594,7 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        const Text(
                           'Payment Details',
                           style: TextStyle(
                             fontSize: 18,
@@ -439,11 +650,11 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
                 ),
                 const SizedBox(height: 16),
                 // Security Notice
-                Row(
+                const Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(Icons.lock, size: 16, color: AppTheme.textTertiary),
-                    const SizedBox(width: 8),
+                    SizedBox(width: 8),
                     Text(
                       'Secure payment powered by Stripe',
                       style: TextStyle(
@@ -469,7 +680,7 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
         children: [
           Text(
             label,
-            style: TextStyle(
+            style: const TextStyle(
               color: AppTheme.textSecondary,
               fontSize: 14,
             ),
@@ -491,4 +702,3 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     return '${date.month}/${date.day}/${date.year}';
   }
 }
-
