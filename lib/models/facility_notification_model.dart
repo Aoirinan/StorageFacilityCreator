@@ -6,8 +6,9 @@ enum FacilityNotificationType {
   autopayRequested,
   stripeActionRequired,
 
-  /// A renter who had paid online was moved into a unit taken off online
-  /// rental after they reserved it (functions-public-website
+  /// An online move-in needs the owner: a renter who had paid was moved into
+  /// a unit taken off online rental after they reserved it, or a renter paid
+  /// and could not be moved in and needs a refund (functions-public-website
   /// onlineMoveInReview.ts). Shown by OnlineMoveInReviewBanner.
   onlineMoveInReview,
 }

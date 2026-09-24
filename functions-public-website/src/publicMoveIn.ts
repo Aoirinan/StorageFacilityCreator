@@ -1158,13 +1158,40 @@ function alreadyCompleted(reservationId: string, reservation: Record<string, any
  * completed once and a payment completes one move-in; the later caller gets
  * `alreadyCompleted`. Refusals throw HttpsErrors.
  */
-export async function completeMoveInForReservation(params: {
+export async function completeMoveInForReservation(params: MoveInCompletionRequest): Promise<MoveInCompletion> {
+  try {
+    return await completeMoveInOnce(params);
+  } catch (err: unknown) {
+    // Any refusal of a reservation that is now completed means it was
+    // completed, by an earlier call or by the other caller while this one was
+    // between its first read and its transaction. What that caller wrote
+    // reads as a refusal here: the reservation is not active, the payment
+    // posted to the ledger is "already used", the unit is occupied. The
+    // paid-checkout trigger would otherwise tell the owner to refund a renter
+    // who was moved in, and the renter would be shown an error.
+    if (!(err instanceof functions.https.HttpsError)) throw err;
+    let current: Record<string, any> | undefined;
+    try {
+      const snap = await admin.firestore().collection('publicReservations').doc(params.reservationId).get();
+      current = snap.exists ? (snap.data() as Record<string, any>) : undefined;
+    } catch {
+      throw err;
+    }
+    if (current?.status !== 'completed') throw err;
+    assertCallerMayComplete(params.caller, current);
+    return alreadyCompleted(params.reservationId, current);
+  }
+}
+
+type MoveInCompletionRequest = {
   reservationId: string;
   caller: MoveInCaller;
   formSource: MoveInFormSource;
   paymentIntentId: string | null;
   skipPayment: boolean;
-}): Promise<MoveInCompletion> {
+};
+
+async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<MoveInCompletion> {
   const { reservationId, caller, formSource, skipPayment } = params;
   const paymentIntentId = params.paymentIntentId ? String(params.paymentIntentId).trim() || null : null;
   if (caller.kind === 'paidCheckout' && (skipPayment || !paymentIntentId)) {
@@ -1183,9 +1210,8 @@ export async function completeMoveInForReservation(params: {
 
   assertCallerMayComplete(caller, reservation);
 
-  if (reservation.status === 'completed') {
-    return alreadyCompleted(reservationId, reservation);
-  }
+  // A completed reservation is refused here, and reported as completed by
+  // completeMoveInForReservation.
   if (reservation.status !== 'pending' && reservation.status !== 'confirmed') {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
   }
@@ -1554,20 +1580,16 @@ export async function completeMoveInForReservation(params: {
   };
 
   // Perform transactional writes for tenant/contract/unit/reservation/charges
-  type WrittenMoveIn = { status: 'written'; tenantId: string; contractId: string };
-  const transactionResult = await admin.firestore().runTransaction(async (tx): Promise<WrittenMoveIn | MoveInCompletion> => {
-    // Re-check reservation inside transaction
+  const transactionResult = await admin.firestore().runTransaction(async (tx) => {
+    // Re-check reservation inside transaction. Completed by the other caller
+    // since the checks above, it is refused here: the renter's browser and
+    // the paid-checkout trigger can arrive together.
     const freshReservation = await tx.get(reservationRef);
     if (!freshReservation.exists) {
       throw new functions.https.HttpsError('not-found', 'Reservation not found');
     }
     const freshData = freshReservation.data() as Record<string, any>;
     assertCallerMayComplete(caller, freshData);
-    // Completed by the other caller since the checks above: the renter's
-    // browser and the paid-checkout trigger can arrive together.
-    if (freshData.status === 'completed') {
-      return alreadyCompleted(reservationId, freshData);
-    }
     if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
     }
@@ -1826,6 +1848,32 @@ export async function completeMoveInForReservation(params: {
       });
     }
 
+    // The payment, with the tenant it pays for. Written after the
+    // transaction, it was lost whenever that write failed: a retry finds the
+    // reservation completed and writes nothing.
+    if (!skipPayment && verifiedPaymentIntentId && verifiedTotalAmount > 0) {
+      const paymentLedgerRef = admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .doc();
+      tx.set(paymentLedgerRef, {
+        tenantId: tenantRef.id,
+        facilityId,
+        type: 'payment',
+        amount: -Number(verifiedTotalAmount),
+        description: 'Move-in payment',
+        referenceId: verifiedPaymentIntentId,
+        entryDate: new Date(),
+        status: 'posted',
+        createdAt: nowTs,
+        createdBy: 'publicMoveIn',
+        metadata: {
+          paymentIntentId: verifiedPaymentIntentId,
+        },
+      });
+    }
+
     // Update reservation status
     tx.update(reservationRef, {
       status: 'completed',
@@ -1844,15 +1892,11 @@ export async function completeMoveInForReservation(params: {
     tx.delete(savedMoveInFormRef(reservationId));
 
     return {
-      status: 'written',
       tenantId: tenantRef.id,
       contractId: contractRef.id,
     };
   });
 
-  if (transactionResult.status !== 'written') {
-    return transactionResult;
-  }
   const { tenantId, contractId } = transactionResult;
 
   // Reached only when paid (unpaid ones were refused above).
@@ -1951,31 +1995,6 @@ export async function completeMoveInForReservation(params: {
     } catch (e) {
       functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
     }
-  }
-
-  // Create payment ledger entry (outside transaction to avoid blocking)
-  if (!skipPayment && verifiedPaymentIntentId && verifiedTotalAmount > 0) {
-    const ledgerRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('ledgers')
-      .doc();
-
-    await ledgerRef.set({
-      tenantId,
-      facilityId,
-      type: 'payment',
-      amount: -Number(verifiedTotalAmount),
-      description: 'Move-in payment',
-      referenceId: verifiedPaymentIntentId,
-      entryDate: new Date(),
-      status: 'posted',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdBy: 'publicMoveIn',
-      metadata: {
-        paymentIntentId: verifiedPaymentIntentId,
-      },
-    });
   }
 
   // Create gate access code

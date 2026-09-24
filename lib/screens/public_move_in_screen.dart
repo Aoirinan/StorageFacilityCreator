@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:signature/signature.dart';
 import '../models/reservation_model.dart';
 import '../services/public_rental_service.dart';
+import 'package:sfcapp/services/public_move_in_flow.dart';
 import '../models/unit_model.dart';
 import '../models/facility_model.dart';
 import '../services/move_in_service.dart';
@@ -82,6 +83,13 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
   double _totalAmount = 0.0;
   bool _chargesCalculated = false;
   String? _paymentIntentId;
+
+  /// The move-in is done: shown instead of the form.
+  bool _moveInCompleted = false;
+
+  /// Why a renter who has paid could not be moved in, shown instead of the
+  /// form so they do not pay again.
+  String? _paidMoveInProblem;
 
   double get _effectiveMonthlyRate {
     final reservationRate =
@@ -164,6 +172,24 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       if (reservation == null) {
         setState(() {
           _error = 'Reservation not found or has expired';
+          _isLoading = false;
+        });
+        return;
+      }
+
+      // Completed while the renter was away (the server completes a paid
+      // move-in when Stripe reports the payment), or submitted here before.
+      if (reservation.status == ReservationStatus.completed) {
+        FacilityModel? facility;
+        try {
+          facility = await FacilityService.getFacility(reservation.facilityId);
+        } catch (_) {
+          // Only for its name on the confirmation.
+        }
+        setState(() {
+          _reservation = reservation;
+          _facility = facility;
+          _moveInCompleted = true;
           _isLoading = false;
         });
         return;
@@ -331,15 +357,12 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       final queryPart = fragment.split('?').last;
       qp.addAll(Uri.splitQueryString(queryPart));
     }
-    final checkoutState = qp['checkout'];
-    final sessionId = qp['session_id'];
-    final reservationIdParam = qp['reservationId'];
-    if (reservationIdParam != null &&
-        reservationIdParam.isNotEmpty &&
-        reservationIdParam != reservation.id) {
-      return;
-    }
-    if (checkoutState == 'cancel') {
+    final start = publicMoveInStart(
+      status: reservation.status,
+      reservationId: reservation.id,
+      query: qp,
+    );
+    if (start == PublicMoveInStart.checkoutCancelled) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -350,11 +373,10 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       }
       return;
     }
-    if (checkoutState != 'success' ||
-        sessionId == null ||
-        sessionId.trim().isEmpty) {
+    if (start != PublicMoveInStart.finishAfterPayment) {
       return;
     }
+    final sessionId = qp['session_id']!.trim();
     try {
       setState(() => _isVerifyingCheckout = true);
       final result = await PublicRentalService.confirmPublicMoveInCheckout(
@@ -370,12 +392,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       setState(() {
         _paymentIntentId = paymentIntentId;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Payment verified. You can now submit move-in.'),
-          backgroundColor: AppTheme.success,
-        ),
-      );
+      await _finishPaidMoveIn(paymentIntentId);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -391,16 +408,90 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     }
   }
 
+  /// Finishes a paid move-in from the form saved at checkout, for a renter
+  /// back from Stripe. The server may have finished it already, when Stripe
+  /// reported the payment; either way the page then shows it done.
+  Future<void> _finishPaidMoveIn(String paymentIntentId) async {
+    final reservation = _reservation;
+    final token = widget.token;
+    if (reservation == null || token == null || token.isEmpty) return;
+    try {
+      await PublicRentalService.completePublicMoveInFromSavedForm(
+        reservationId: reservation.id,
+        token: token,
+        paymentIntentId: paymentIntentId,
+      );
+      if (!mounted) return;
+      setState(() => _moveInCompleted = true);
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      if (isMoveInFormNotSaved(code: e.code, details: e.details)) {
+        // Checkout was started before the form was saved with it: the
+        // renter fills it in here and submits, as before.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Payment verified. Fill in the form below and submit to finish your move-in.'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+        return;
+      }
+      setState(() => _paidMoveInProblem =
+          (e.message ?? '').trim().isNotEmpty ? e.message!.trim() : e.code);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _paidMoveInProblem = e.toString());
+    }
+  }
+
+  /// The move-in form, as createPublicMoveInCheckout saves it.
+  Future<Map<String, dynamic>> _moveInFormPayload() async {
+    final signaturePngBase64 = await _exportSignaturePngBase64();
+    if (signaturePngBase64 == null || signaturePngBase64.isEmpty) {
+      throw Exception('Unable to capture signature. Please sign again.');
+    }
+    return <String, dynamic>{
+      'name': _nameController.text.trim(),
+      'email': _emailController.text.trim(),
+      'phone': _phoneController.text.trim(),
+      'address': _addressController.text.trim(),
+      'addressLine2': _addressLine2Controller.text.trim(),
+      'city': _cityController.text.trim(),
+      'state': _stateController.text.trim(),
+      'zipCode': _zipCodeController.text.trim(),
+      'country': _countryController.text.trim(),
+      'emergencyContactName': _emergencyContactController.text.trim(),
+      'emergencyContactRelationship':
+          _emergencyRelationshipController.text.trim(),
+      'emergencyContactPhone': _emergencyPhoneController.text.trim(),
+      'emergencyContactEmail': _emergencyEmailController.text.trim(),
+      'governmentIdType': _governmentIdType == 'none' ? null : _governmentIdType,
+      'governmentIdNumber': _governmentIdNumberController.text.trim(),
+      'governmentIdState': _governmentIdStateController.text.trim(),
+      'governmentIdCountry': _governmentIdCountryController.text.trim(),
+      'notes': _notesController.text.trim(),
+      'signaturePngBase64': signaturePngBase64,
+      'signatureSignedAt': DateTime.now().toIso8601String(),
+      'enrollAutopayInterest': _enrollAutopayInterest,
+    };
+  }
+
   Future<void> _startCheckout() async {
     final reservation = _reservation;
     final token = widget.token;
     if (reservation == null || token == null || token.isEmpty) return;
     try {
       setState(() => _isLaunchingCheckout = true);
+      // Sent with the checkout, and saved before Stripe's page opens: the
+      // page is reloaded on the way back, and a renter who pays and closes
+      // the tab is moved in from it.
+      final moveInForm = await _moveInFormPayload();
       final result = await PublicRentalService.createPublicMoveInCheckout(
         reservationId: reservation.id,
         token: token,
         amount: _totalAmount,
+        moveInForm: moveInForm,
         description: 'Move-in payment for ${_facility?.name ?? 'Facility'}',
       );
       final checkoutUrl = result['checkoutUrl']?.toString();
@@ -526,7 +617,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
           .toList();
 
       // Call Cloud Function to complete move-in
-      final result = await PublicRentalService.completePublicMoveIn(
+      await PublicRentalService.completePublicMoveIn(
         reservationId: _reservation!.id,
         token: widget.token ?? '',
         name: _nameController.text.trim(),
@@ -559,20 +650,10 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content:
-                Text(result['message'] ?? 'Move-in completed successfully!'),
-            backgroundColor: AppTheme.success,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-
-        // Navigate to confirmation page
-        await Future.delayed(const Duration(seconds: 2));
-        if (mounted) {
-          context.go('/');
-        }
+        setState(() {
+          _isSubmitting = false;
+          _moveInCompleted = true;
+        });
       }
     } catch (e) {
       setState(() {
@@ -667,6 +748,10 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                     ),
                   ),
                 )
+              : _moveInCompleted
+                  ? _buildCompletedView()
+              : _paidMoveInProblem != null
+                  ? _buildPaidMoveInProblemView()
               : _reservation == null || _unit == null || _facility == null
                   ? const Center(child: Text('Invalid reservation'))
                   : Center(
@@ -1128,7 +1213,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                                 (_stripePaymentRequired &&
                                         _totalAmount > 0 &&
                                         _paymentIntentId == null)
-                                    ? 'Payment is required today to complete this move-in.'
+                                    ? 'Payment is required today to complete this move-in. Your details are saved before you pay, so your move-in is completed once your payment goes through.'
                                     : (_stripePaymentRequired &&
                                             _totalAmount > 0)
                                         ? 'Payment received — submit below to finish.'
@@ -1145,6 +1230,94 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                         ),
                       ),
                     ),
+      ),
+    );
+  }
+
+  /// Shown instead of the form once the move-in is done, including when the
+  /// server completed it while the renter was away.
+  Widget _buildCompletedView() {
+    final unitNumber = _reservation?.unitNumber ?? _unit?.unitNumber;
+    final facilityName = _facility?.name;
+    final where = unitNumber != null && facilityName != null
+        ? 'Unit $unitNumber at $facilityName is yours.'
+        : unitNumber != null
+            ? 'Unit $unitNumber is yours.'
+            : 'Your unit is ready.';
+    return _buildOutcomeView(
+      icon: Icons.check_circle,
+      color: AppTheme.success,
+      title: 'Your move-in is complete',
+      lines: [where, 'If you have any questions, contact the facility.'],
+    );
+  }
+
+  /// Shown instead of the form when the renter has paid but the move-in
+  /// could not be completed, so they know not to pay again. The facility is
+  /// alerted to the payment by the server.
+  Widget _buildPaidMoveInProblemView() {
+    final phone = _facility?.phone?.trim();
+    return _buildOutcomeView(
+      icon: Icons.error_outline,
+      color: AppTheme.warning,
+      title: 'Payment received, move-in not completed',
+      lines: [
+        'Your payment went through, but your move-in could not be completed: $_paidMoveInProblem',
+        'Please do not pay again. Contact the facility about your payment'
+            '${phone != null && phone.isNotEmpty ? ' at $phone' : ''}.',
+      ],
+    );
+  }
+
+  Widget _buildOutcomeView({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required List<String> lines,
+  }) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 64, color: color),
+              const SizedBox(height: 16),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              for (final line in lines) ...[
+                const SizedBox(height: 10),
+                Text(
+                  line,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Color(0xFF64748B), fontSize: 15, height: 1.4),
+                ),
+              ],
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => context.go('/'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0F7669),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text('Return Home'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

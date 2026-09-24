@@ -325,11 +325,47 @@ class PublicRentalService {
     }
   }
 
+  /// Completes a paid move-in from the form saved when checkout was created,
+  /// for a renter back from Stripe. Answers `alreadyCompleted: true` when the
+  /// server completed it first, which it does when Stripe reports the payment.
+  static Future<Map<String, dynamic>> completePublicMoveInFromSavedForm({
+    required String reservationId,
+    required String token,
+    required String paymentIntentId,
+  }) async {
+    try {
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('completePublicMoveIn');
+      final result = await callable.call(<String, dynamic>{
+        'reservationId': reservationId,
+        'token': token,
+        'paymentIntentId': paymentIntentId,
+        'useSavedForm': true,
+      }).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () =>
+            throw Exception('Request timed out. Please try again.'),
+      );
+      return Map<String, dynamic>.from(result.data as Map);
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [PublicRental] Error completing move-in from saved form: $e');
+      }
+      rethrow;
+    }
+  }
+
   /// Create a Stripe Checkout session for public move-in.
+  ///
+  /// [moveInForm] is the completed move-in form (the fields
+  /// [completePublicMoveIn] takes). The server saves it before creating the
+  /// session, so the move-in is completed even if the renter pays and never
+  /// comes back to this page.
   static Future<Map<String, dynamic>> createPublicMoveInCheckout({
     required String reservationId,
     required String token,
     required double amount,
+    required Map<String, dynamic> moveInForm,
     String? description,
   }) async {
     try {
@@ -340,6 +376,7 @@ class PublicRentalService {
         'token': token,
         'amount': amount,
         'description': description,
+        'moveInForm': moveInForm,
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () =>

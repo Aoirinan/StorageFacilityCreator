@@ -34,15 +34,18 @@ final markFacilityNotificationReadProvider =
       ),
 );
 
-/// Shown across the top of every screen while a renter who had already paid
-/// online was moved into a unit taken off online rental after they reserved
-/// it (unlisted, archived or set to internal use).
+/// Shown across the top of every screen while an online move-in needs the
+/// owner: a renter who had already paid online was moved into a unit taken
+/// off online rental after they reserved it (unlisted, archived or set to
+/// internal use), or a renter paid online and could not be moved in (the
+/// unit was rented meanwhile, the reservation ended), so the payment needs
+/// a refund.
 ///
-/// completePublicMoveIn used to refuse that renter after Checkout had charged
-/// them. It now completes the move-in and leaves this alert, which stays
-/// until someone at the facility marks it reviewed. The facility's
-/// Notifications list is not on any screen, so this banner is where the
-/// owner sees it.
+/// completePublicMoveIn used to refuse the first renter after Checkout had
+/// charged them. It now completes the move-in and leaves this alert, as the
+/// paid-checkout trigger does for the second, and it stays until someone at
+/// the facility marks it reviewed. The facility's Notifications list is not
+/// on any screen, so this banner is where the owner sees it.
 class OnlineMoveInReviewBanner extends ConsumerStatefulWidget {
   const OnlineMoveInReviewBanner({super.key});
 

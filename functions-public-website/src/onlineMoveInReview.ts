@@ -4,7 +4,8 @@ import type { UnitNotOfferedReason } from '@sfc/functions-shared';
 
 /**
  * The facility notification type the app shows as an alert banner
- * (FacilityNotificationType.onlineMoveInReview).
+ * (FacilityNotificationType.onlineMoveInReview): a paid move-in into a unit
+ * no longer offered, or a paid move-in that could not be completed.
  */
 export const ONLINE_MOVE_IN_REVIEW_TYPE = 'ONLINE_MOVE_IN_REVIEW';
 

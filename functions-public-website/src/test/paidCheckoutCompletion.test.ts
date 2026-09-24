@@ -68,6 +68,11 @@ type Harness = {
   stripeCalls: string[];
   /** Set to make every PaymentIntent retrieval fail as Stripe being unreachable would. */
   stripeDown: boolean;
+  /**
+   * Run, once, while the next PaymentIntent retrieval is in flight: the other
+   * caller finishing while this one is between its checks and its transaction.
+   */
+  duringNextRetrieve: (() => Promise<unknown>) | null;
   emails: Array<{ to: string; facilityId: string }>;
   checkout: (rental?: Rental, overrides?: Record<string, unknown>) => Promise<unknown>;
   complete: (data: Record<string, unknown>, rental?: Rental) => Promise<Record<string, any>>;
@@ -84,6 +89,7 @@ function load(inMemory: InMemoryFirestore): Harness {
     paymentIntents: {} as Record<string, StubPaymentIntent>,
     stripeCalls: [] as string[],
     stripeDown: false,
+    duringNextRetrieve: null,
     emails: [] as Array<{ to: string; facilityId: string }>,
   } as Harness;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -104,6 +110,9 @@ function load(inMemory: InMemoryFirestore): Harness {
         paymentIntents: {
           retrieve: async (id: string, options: { stripeAccount?: string }) => {
             harness.stripeCalls.push('paymentIntents.retrieve');
+            const interleaved = harness.duringNextRetrieve;
+            harness.duringNextRetrieve = null;
+            if (interleaved) await interleaved();
             if (harness.stripeDown) throw Object.assign(new Error('connect ECONNRESET'), { type: 'StripeConnectionError' });
             const paymentIntent = harness.paymentIntents[id];
             if (!paymentIntent || options?.stripeAccount !== CONNECT_ACCOUNT) {
@@ -486,6 +495,45 @@ test('browser and webhook at the same moment make one tenancy', async () => {
   assert.equal(tenants(h).length, 1);
   assert.equal(paymentEntries(h, 'pi_1').length, 1);
   assert.deepEqual(alerts(h), []);
+});
+
+test('the browser finishing while the webhook is checking the payment is not mistaken for a refusal', async () => {
+  const h = setUp();
+  await h.checkout();
+  pay(h, 'pi_1');
+  recordPaidCheckout(h, 'cs_1', 'pi_1');
+  const other: { browser?: Record<string, any> } = {};
+  // The webhook has read the reservation as pending; the browser then moves
+  // the renter in, posting the payment, before the webhook looks for it.
+  h.duringNextRetrieve = async () => {
+    other.browser = await h.complete({ useSavedForm: true, paymentIntentId: 'pi_1' });
+  };
+
+  const status = await h.webhook('cs_1');
+
+  assert.equal(other.browser?.success, true);
+  assert.equal(status, 'alreadyCompleted');
+  assert.equal(tenants(h).length, 1);
+  assert.equal(paymentEntries(h, 'pi_1').length, 1);
+  assert.deepEqual(alerts(h), [], 'the owner is not told to refund a renter who was moved in');
+});
+
+test('the webhook finishing while the browser is checking the payment shows the renter it is done', async () => {
+  const h = setUp();
+  await h.checkout();
+  pay(h, 'pi_1');
+  recordPaidCheckout(h, 'cs_1', 'pi_1');
+  const other: { webhook?: string | null } = {};
+  h.duringNextRetrieve = async () => {
+    other.webhook = await h.webhook('cs_1');
+  };
+
+  const browser = await h.complete({ useSavedForm: true, paymentIntentId: 'pi_1' });
+
+  assert.equal(other.webhook, 'completed');
+  assert.deepEqual(browser, { success: true, alreadyCompleted: true, reservationId: RENTAL.reservationId });
+  assert.equal(tenants(h).length, 1);
+  assert.equal(paymentEntries(h, 'pi_1').length, 1);
 });
 
 // Payments that cannot complete the move-in
