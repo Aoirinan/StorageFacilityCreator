@@ -25,6 +25,32 @@ const SEND_PATTERNS = [
   /\.messages\s*\.\s*create\(/,
 ];
 
+// A client bound once and used further down. orphanedSubscriptionSweep.ts does
+// `const mail = getSgMail() as {...}` and calls mail.send inside a loop a few
+// lines later, past the reach of the proximity pattern above. The check then
+// reported the file as no longer sending and asked for its allowlist entry to
+// be removed, which would have left a real send path unlisted and unseen.
+const SEND_CLIENT_BINDING = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*getSgMail\(\)/g;
+
+/** Names bound to a SendGrid client anywhere in [text]. */
+function sendClientNames(text) {
+  const names = new Set();
+  SEND_CLIENT_BINDING.lastIndex = 0;
+  let match;
+  while ((match = SEND_CLIENT_BINDING.exec(text))) names.add(match[1]);
+  return names;
+}
+
+/** Whether [text] hands a message to a provider, directly or via [clientNames]. */
+function sendsIn(text, clientNames) {
+  if (SEND_PATTERNS.some((re) => re.test(text))) return true;
+  for (const name of clientNames) {
+    const escaped = name.replace(/\$/g, '\\$');
+    if (new RegExp('(^|[^\\w$.])' + escaped + '\\s*\\.\\s*send\\(').test(text)) return true;
+  }
+  return false;
+}
+
 // Any one of these means the file asked permission before sending.
 const GATE_PATTERNS = [
   /isCustomerEmailAllowed/,
@@ -51,6 +77,11 @@ const ALLOWLIST = new Map([
   [
     'functions-automation/src/orphanedSubscriptionSweep.ts',
     'Summary to getSuperAdminEmails() only; never reaches an owner or tenant.',
+  ],
+  [
+    'functions-messaging-twilio/src/a2pAdminAlerts.ts',
+    'Texting registration status mail to getSuperAdminEmails() only; the owner ' +
+      'is never a recipient.',
   ],
   [
     'functions-messaging-twilio/src/twilioAccountHealth.ts',
@@ -242,13 +273,14 @@ for (const src of packages) {
   for (const file of listSourceFiles(src)) {
     const rel = path.relative(repoRoot, file).split(path.sep).join('/');
     const text = stripCommentsAndStrings(fs.readFileSync(file, 'utf8'));
-    if (!SEND_PATTERNS.some((re) => re.test(text))) continue;
+    const clientNames = sendClientNames(text);
+    if (!sendsIn(text, clientNames)) continue;
     staleAllowlist.delete(rel);
     if (ALLOWLIST.has(rel)) continue;
 
     for (const region of regionsOf(text)) {
       const body = text.slice(region.start, region.end);
-      if (!SEND_PATTERNS.some((re) => re.test(body))) continue;
+      if (!sendsIn(body, clientNames)) continue;
       if (GATE_PATTERNS.some((re) => re.test(body))) continue;
       ungated.push(rel + '  (' + region.name + ')');
     }
