@@ -9,8 +9,8 @@
  * bookings, and only as much as the link's scope allows. That is what keeps
  * two channels from bouncing each other's blocks back and forth.
  */
-import type { ExportScope, ExportTargetProvider, StayKind, StaySource, StayStatus, Ymd } from './contracts';
-import { OTA_SOURCES, SFC_BOOKING_SOURCES } from './contracts';
+import type { ChannelProvider, ExportScope, ExportTargetProvider, StayKind, StaySource, StayStatus, Ymd } from './contracts';
+import { CHANNEL_PROVIDERS, OTA_SOURCES, SFC_BOOKING_SOURCES } from './contracts';
 import { isActiveStatus } from './nightLocks';
 import { sha256Hex } from './ids';
 
@@ -114,6 +114,43 @@ export interface ExportableStay {
   checkIn: Ymd;
   checkOut: Ymd;
   version: number;
+  /** The feed a stay came from (stay.external.provider); a Hipcamp or Google feed's bookings are not source-named after it. */
+  external?: { provider?: string | null } | null;
+}
+
+/**
+ * The export target a channel of this provider imports from. There is no
+ * Hipcamp target, so a Hipcamp calendar imports an 'other' link.
+ */
+export function exportTargetForProvider(provider: ChannelProvider): ExportTargetProvider {
+  switch (provider) {
+    case 'airbnb':
+    case 'vrbo':
+    case 'booking':
+    case 'google':
+      return provider;
+    default:
+      return 'other';
+  }
+}
+
+/**
+ * The channel a stay's booking belongs to: its feed's provider, or for a
+ * booking entered by hand, the channel its source names ('other_channel'
+ * names none).
+ */
+function channelOf(stay: Pick<ExportableStay, 'source' | 'external'>): ChannelProvider | null {
+  const provider = stay.external?.provider;
+  if (typeof provider === 'string' && (CHANNEL_PROVIDERS as readonly string[]).includes(provider)) return provider as ChannelProvider;
+  switch (stay.source) {
+    case 'airbnb':
+    case 'vrbo':
+    case 'booking':
+    case 'hipcamp':
+      return stay.source;
+    default:
+      return null;
+  }
 }
 
 export interface ExportFilter {
@@ -129,10 +166,19 @@ export interface ExportFilter {
  * Whether a stay's kind and source are in a link's scope (ignoring dates):
  * blocks_only → owner and maintenance blocks; sfc → plus direct, phone and
  * walk-up bookings; all → plus other channels' bookings. The target
- * channel's own bookings are always left out.
+ * channel's own bookings are always left out: by source, and by the channel
+ * they came from, since a Hipcamp feed's bookings go to an 'other' link and a
+ * Google feed's are recorded as 'other_channel'. Sending a channel its own
+ * booking back would keep a cancelled one blocked there until we re-export.
  */
-export function inExportScope(stay: Pick<ExportableStay, 'kind' | 'source'>, scope: ExportScope, targetProvider: ExportTargetProvider): boolean {
+export function inExportScope(
+  stay: Pick<ExportableStay, 'kind' | 'source' | 'external'>,
+  scope: ExportScope,
+  targetProvider: ExportTargetProvider,
+): boolean {
   if ((stay.source as string) === (targetProvider as string)) return false;
+  const channel = channelOf(stay);
+  if (channel !== null && exportTargetForProvider(channel) === targetProvider) return false;
   if (stay.kind === 'owner_block' || stay.kind === 'maintenance_block') return true;
   if (stay.kind !== 'reservation') return false;
   if (scope === 'blocks_only') return false;

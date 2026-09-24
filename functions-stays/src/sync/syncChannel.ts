@@ -23,7 +23,7 @@ import {
 } from '@sfc/functions-shared/stays/contracts';
 import { diffDays, facilityToday } from '@sfc/functions-shared/stays/dates';
 import { IcsParseError, ParseIcsResult, classifyEvent, extractAirbnbRefs, keptSummary, parseIcs } from '@sfc/functions-shared/stays/ical';
-import { staysForExport } from '@sfc/functions-shared/stays/icsWriter';
+import { exportTargetForProvider, staysForExport } from '@sfc/functions-shared/stays/icsWriter';
 import {
   notificationId,
   sha256Hex,
@@ -39,8 +39,11 @@ import {
   FeedReservation,
   FeedSyncPlan,
   MissUpdate,
+  ReviewReason,
+  SuspiciousReason,
   UID_HISTORY_MAX,
   advanceMissesOnUnchanged,
+  isProtectedState,
   planFeedSync,
 } from '@sfc/functions-shared/stays/stayDiff';
 
@@ -58,7 +61,6 @@ import {
   channelsRoute,
   defaultSyncDeps,
   exportLinksCol,
-  exportTargetForProvider,
   facilityCol,
   formatDay,
   formatRange,
@@ -92,6 +94,12 @@ import {
  * A failed fetch or parse never counts as a miss and changes no stay. Every
  * write is idempotent: running the same feed twice changes nothing the
  * second time, and a run that dies half way is finished by the next one.
+ *
+ * An Airbnb code this feed lists that SFC has on another listing (Airbnb
+ * moved the reservation) moves here once that listing's feed has let go of
+ * it; until then, or when it is checked in, paid or typed in by hand there,
+ * the owner is asked instead, and this feed diffs in full every run so the
+ * move is picked up as soon as it can happen. Nothing is dropped silently.
  */
 
 export const SYNC_LEASE_MS = 4 * 60_000;
@@ -124,11 +132,14 @@ interface ChannelState {
   label: string;
   active: boolean;
   importBlocks: boolean;
+  urlFingerprint: string | null;
   sync: {
     etag: string | null;
     lastModified: string | null;
     contentSha256: string | null;
     consecutiveFailures: number;
+    /** Null when never written (unknown, not empty). */
+    eventCount: number | null;
     futureReservationCount: number;
     firstSyncCompletedAt: Timestamp | null;
     suspiciousSince: Timestamp | null;
@@ -151,11 +162,13 @@ function readChannel(id: string, data: Record<string, unknown>): ChannelState {
     label: typeof data.label === 'string' ? data.label : '',
     active: data.active === true,
     importBlocks: data.importBlocks !== false,
+    urlFingerprint: typeof data.urlFingerprint === 'string' ? data.urlFingerprint : null,
     sync: {
       etag: str(sync.etag),
       lastModified: str(sync.lastModified),
       contentSha256: str(sync.contentSha256),
       consecutiveFailures: int(sync.consecutiveFailures),
+      eventCount: Number.isInteger(sync.eventCount) && (sync.eventCount as number) >= 0 ? (sync.eventCount as number) : null,
       futureReservationCount: int(sync.futureReservationCount),
       firstSyncCompletedAt: (sync.firstSyncCompletedAt as Timestamp | undefined) ?? null,
       suspiciousSince: (sync.suspiciousSince as Timestamp | undefined) ?? null,
@@ -253,14 +266,37 @@ async function takeLease(db: Firestore, ref: DocumentReference, runId: string, n
   });
 }
 
-/** Writes the run's health and releases the lease, unless another run has taken it since. */
-async function finishLease(db: Firestore, ref: DocumentReference, runId: string, patch: Record<string, unknown>): Promise<void> {
+/** The settings a run's content hash and ETag describe. */
+function feedIdentityChanged(leased: ChannelState, now: ChannelState): boolean {
+  return now.urlFingerprint !== leased.urlFingerprint || now.importBlocks !== leased.importBlocks || now.provider !== leased.provider;
+}
+
+/**
+ * Writes the run's health and releases the lease, unless another run has
+ * taken it since. When the link, block import or provider changed while this
+ * run was fetching, staysUpsertChannel cleared the hash and ETag so the next
+ * run diffs in full; this run's values describe the old settings and are not
+ * written back (else a byte-stable feed would keep its old blocks).
+ */
+async function finishLease(
+  db: Firestore,
+  ref: DocumentReference,
+  runId: string,
+  patch: Record<string, unknown>,
+  leased: ChannelState,
+): Promise<void> {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return;
     const lease = snap.get('sync.lease') as { runId?: string } | null | undefined;
     if (lease && lease.runId !== runId) return;
-    tx.update(ref, { ...patch, 'sync.lease': null });
+    const out: Record<string, unknown> = { ...patch, 'sync.lease': null };
+    if (feedIdentityChanged(leased, readChannel(ref.id, snap.data() as Record<string, unknown>))) {
+      delete out['sync.etag'];
+      delete out['sync.lastModified'];
+      delete out['sync.contentSha256'];
+    }
+    tx.update(ref, out);
   });
 }
 
@@ -278,6 +314,16 @@ interface SyncContext {
   nowMs: number;
   now: Timestamp;
   missClock: Timestamp;
+  /** Airbnb bookings this feed lists that SFC has on another listing whose feed let go of them: they move here. */
+  moves: Map<string, MoveInfo>;
+}
+
+/** Where a moving stay was when the run was planned. */
+interface MoveInfo {
+  fromListingId: string;
+  fromListingName: string;
+  fromChannelId: string | null;
+  fromChannelLive: boolean;
 }
 
 type Transform = (stored: StayDoc | null) => StayDoc | null;
@@ -381,6 +427,21 @@ function ownedBy(ctx: SyncContext, stored: StayDoc | null): stored is StayDoc {
   return !!stored && stored.sync?.channelId === ctx.channel.id && stored.sync?.detached !== true;
 }
 
+/**
+ * Whether a stay SFC has on another listing may follow its Airbnb booking to
+ * this one (Airbnb moved the reservation): its own feed must have let go of
+ * it (missed it, removed it, been removed or switched off), and it must not be
+ * checked in or paid, or typed in there by hand. Anything else is for a
+ * person to sort out.
+ */
+function lettingGo(ctx: SyncContext, doc: StayDoc, fromChannelLive: boolean): boolean {
+  if (doc.status === 'cancelled' || isProtectedState(doc.arrivalState, doc.paymentStatus)) return false;
+  const sync = doc.sync;
+  if (!sync) return false;
+  if (sync.channelId === ctx.channel.id) return true;
+  return doc.status === 'removed_from_feed' || sync.detached === true || !fromChannelLive || (Number.isInteger(sync.missCount) && sync.missCount > 0);
+}
+
 function bumped(ctx: SyncContext, doc: StayDoc): StayDoc {
   return { ...doc, version: versionOf(doc) + 1, updatedAt: ctx.now, updatedBy: SYNC_ACTOR };
 }
@@ -398,6 +459,29 @@ function seenTransform(ctx: SyncContext, match: FeedMatch, kind: 'touch' | 'date
     const external = mergedExternal(ctx, stored, p);
     const sync = seenSync(ctx, stored);
     let next: StayDoc = { ...stored, external, sync };
+    if (stored.listingId !== ctx.channel.listingId) {
+      // Re-checked on the fresh doc: its old feed may have listed it again since the plan.
+      const move = ctx.moves.get(match.stayId);
+      const live = move && stored.sync?.channelId === move.fromChannelId ? move.fromChannelLive : true;
+      if (!move || !lettingGo(ctx, stored, live)) return null;
+      const listing = ctx.listing;
+      next = {
+        ...next,
+        listingId: ctx.channel.listingId,
+        listingName: listing.name,
+        listingGroup: listing.group,
+        listingKind: listing.kind,
+        checkIn: p.checkIn,
+        checkOut: p.checkOut,
+        nights: diffDays(p.checkIn, p.checkOut),
+        // The writer settles confirmed or conflict from this listing's nights.
+        status: 'confirmed',
+        cancelledAt: null,
+        cancelledBy: null,
+        cancelReason: null,
+      };
+      return bumped(ctx, next);
+    }
     if (kind === 'date_change' || kind === 'restore') {
       next = { ...next, checkIn: p.checkIn, checkOut: p.checkOut, nights: diffDays(p.checkIn, p.checkOut) };
     }
@@ -442,18 +526,24 @@ function missTransform(ctx: SyncContext, ops: MissOps): Transform {
     }
     if (ops.ageOut) sync.agedOutAt = ctx.now;
     let next: StayDoc = { ...stored, sync };
-    if (ops.remove) {
-      if (!isActiveStatus(stored.status)) return sameJson(prev, sync) ? null : next;
-      next = {
-        ...next,
-        status: 'removed_from_feed',
-        cancelledAt: ctx.now,
-        cancelledBy: 'feed',
-        cancelReason: `Removed from ${providerLabel(ctx.channel.provider)}`,
-      };
-      return bumped(ctx, next);
+    let review = ops.review === true;
+    if (ops.remove && isActiveStatus(stored.status)) {
+      // Checked in or paid since the plan was read (a check-in does not bump the
+      // version, so the writer's check would not catch it): kept, for a person.
+      if (isProtectedState(stored.arrivalState, stored.paymentStatus)) {
+        review = true;
+      } else {
+        next = {
+          ...next,
+          status: 'removed_from_feed',
+          cancelledAt: ctx.now,
+          cancelledBy: 'feed',
+          cancelReason: `Removed from ${providerLabel(ctx.channel.provider)}`,
+        };
+        return bumped(ctx, next);
+      }
     }
-    if (ops.review && sync.needsReview !== true) {
+    if (review && isActiveStatus(stored.status) && sync.needsReview !== true) {
       next = { ...next, sync: { ...sync, needsReview: true } };
       return bumped(ctx, next);
     }
@@ -519,8 +609,12 @@ interface ApplyResult {
   written: Set<string>;
 }
 
-/** Private phone last 4 (and the door code in phone-last-4 mode), only when it changed. */
-function phoneWrites(ctx: SyncContext, byStay: Map<string, string>): {
+/**
+ * Private phone last 4 (and the door code in phone-last-4 mode), only when it
+ * changed. `standalone` stays have no stay write in this transaction (the
+ * booking is otherwise the same); the rest are written only if their stay is.
+ */
+function phoneWrites(ctx: SyncContext, byStay: Map<string, string>, standalone: ReadonlySet<string>): {
   refs: DocumentReference[];
   write: (tx: WriteOnlyTransaction, snaps: DocumentSnapshot[], writePlan: { after: Record<string, StayDoc | null> }) => void;
 } {
@@ -540,7 +634,7 @@ function phoneWrites(ctx: SyncContext, byStay: Map<string, string>): {
       for (const id of ids) {
         const privSnap = snaps[i++];
         const accessSnap = withAccess ? snaps[i++] : null;
-        if (!writePlan.after[id]) continue;
+        if (!writePlan.after[id] && !standalone.has(id)) continue;
         const last4 = byStay.get(id)!;
         const priv = privSnap.exists ? (privSnap.data() as Record<string, unknown>) : null;
         if (!priv || priv.phoneLast4 !== last4) {
@@ -612,22 +706,32 @@ async function applyChanges(
       const snaps = chunk.length ? await ctx.db.getAll(...chunk.map((ch) => col.doc(ch.stayId))) : [];
       const mutations: StayMutation[] = [];
       const phones = new Map<string, string>();
+      const standalone = new Set<string>();
       chunk.forEach((ch, i) => {
         const stored = snaps[i].exists ? (snaps[i].data() as StayDoc) : null;
         if (ch.create === !!stored) return;
         const next = ch.transform(stored);
-        if (!next) return;
-        mutations.push({
-          stayId: ch.stayId,
-          next,
-          mode: 'feed',
-          ...(ch.create ? { createOnly: true } : { expectedVersion: versionOf(stored) }),
-        });
-        if (ch.phoneLast4) phones.set(ch.stayId, ch.phoneLast4);
+        if (next) {
+          mutations.push({
+            stayId: ch.stayId,
+            next,
+            mode: 'feed',
+            ...(ch.create ? { createOnly: true } : { expectedVersion: versionOf(stored) }),
+          });
+        }
+        // The phone last 4 follows the feed even when nothing else about the booking changed
+        // (its door code, in phone-last-4 mode, must not lag for hours).
+        if (!ch.phoneLast4) return;
+        if (next) {
+          if (next.sync?.channelId === ctx.channel.id) phones.set(ch.stayId, ch.phoneLast4);
+        } else if (ownedBy(ctx, stored) && isActiveStatus(stored.status)) {
+          phones.set(ch.stayId, ch.phoneLast4);
+          standalone.add(ch.stayId);
+        }
       });
       const blocks = c === 0 && blockUpdate ? [{ channelId: ctx.channel.id, listingId: ctx.channel.listingId, provider: ctx.channel.provider, ranges: blockUpdate.ranges }] : [];
-      if (mutations.length === 0 && blocks.length === 0) break;
-      const phone = phoneWrites(ctx, phones);
+      if (mutations.length === 0 && blocks.length === 0 && phones.size === 0) break;
+      const phone = phoneWrites(ctx, phones, standalone);
       try {
         const res = await applyStayMutations({
           db: ctx.db,
@@ -688,7 +792,18 @@ function stayNotifications(ctx: SyncContext, plan: FeedSyncPlan, applied: ApplyR
       });
     }
   }
+  for (const [id, move] of ctx.moves) {
+    const doc = written(id);
+    if (!doc || doc.listingId !== ctx.channel.listingId || applied.before[id]?.listingId !== move.fromListingId) continue;
+    out.push({
+      id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_CHANGED', stayId: id, version: versionOf(doc) }),
+      type: 'STAY_BOOKING_CHANGED',
+      message: `${label} moved the booking ${formatRange(doc.checkIn, doc.checkOut)} from ${move.fromListingName} to ${listingName}. SFC moved it too.`,
+      metadata: meta(id),
+    });
+  }
   for (const m of plan.dateChanges) {
+    if (ctx.moves.has(m.stayId)) continue;
     const doc = written(m.stayId);
     if (!doc || (doc.checkIn === m.from.checkIn && doc.checkOut === m.from.checkOut)) continue;
     out.push({
@@ -700,7 +815,7 @@ function stayNotifications(ctx: SyncContext, plan: FeedSyncPlan, applied: ApplyR
   }
   for (const m of plan.restores) {
     const doc = written(m.stayId);
-    if (!doc) continue;
+    if (!doc || ctx.moves.has(m.stayId)) continue;
     out.push({
       id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_CHANGED', stayId: m.stayId, version: versionOf(doc) }),
       type: 'STAY_BOOKING_CHANGED',
@@ -708,27 +823,60 @@ function stayNotifications(ctx: SyncContext, plan: FeedSyncPlan, applied: ApplyR
       metadata: meta(m.stayId),
     });
   }
+  const review = (id: string, doc: StayDoc, reason: ReviewReason): StayNotificationInput => ({
+    id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_NEEDS_REVIEW', stayId: id, version: versionOf(doc) }),
+    type: 'STAY_BOOKING_NEEDS_REVIEW',
+    message:
+      reason === 'feed_suspicious'
+        ? `Check the ${label} booking at ${listingName}, ${formatRange(doc.checkIn, doc.checkOut)}: it has been missing for hours from a ${label} calendar that looks empty, so SFC kept it and its nights.`
+        : `Check the ${label} booking at ${listingName}, ${formatRange(doc.checkIn, doc.checkOut)}: it left the ${label} calendar but is checked in or paid, so SFC kept it.`,
+    metadata: meta(id),
+  });
+  const newlyFlagged = (id: string, doc: StayDoc | null): doc is StayDoc =>
+    !!doc && doc.sync?.needsReview === true && applied.before[id]?.sync?.needsReview !== true;
   for (const id of plan.removals) {
     const doc = written(id);
-    if (!doc || doc.status !== 'removed_from_feed') continue;
-    out.push({
-      id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_REMOVED', stayId: id, version: versionOf(doc) }),
-      type: 'STAY_BOOKING_REMOVED',
-      message: `${label} booking at ${listingName}, ${formatRange(doc.checkIn, doc.checkOut)}, is no longer in the ${label} calendar. Its nights are free again.`,
-      metadata: meta(id),
-    });
+    if (doc && doc.status === 'removed_from_feed') {
+      out.push({
+        id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_REMOVED', stayId: id, version: versionOf(doc) }),
+        type: 'STAY_BOOKING_REMOVED',
+        message: `${label} booking at ${listingName}, ${formatRange(doc.checkIn, doc.checkOut)}, is no longer in the ${label} calendar. Its nights are free again.`,
+        metadata: meta(id),
+      });
+    } else if (newlyFlagged(id, doc)) {
+      // Checked in or paid between the plan and the write: kept instead.
+      out.push(review(id, doc, 'protected'));
+    }
   }
   for (const id of plan.reviews) {
     const doc = written(id);
-    if (!doc || doc.sync?.needsReview !== true) continue;
-    out.push({
-      id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_NEEDS_REVIEW', stayId: id, version: versionOf(doc) }),
-      type: 'STAY_BOOKING_NEEDS_REVIEW',
-      message: `Check the ${label} booking at ${listingName}, ${formatRange(doc.checkIn, doc.checkOut)}: it left the ${label} calendar but is checked in or paid, so SFC kept it.`,
-      metadata: meta(id),
-    });
+    if (newlyFlagged(id, doc)) out.push(review(id, doc, plan.reviewReasons[id] ?? 'protected'));
   }
   return out;
+}
+
+/** Bookings newly flagged for review by this run, whichever way they got there. */
+function newReviewCount(plan: FeedSyncPlan, applied: ApplyResult): number {
+  return [...plan.reviews, ...plan.removals].filter(
+    (id) => applied.written.has(id) && applied.after[id]?.sync?.needsReview === true && applied.before[id]?.sync?.needsReview !== true,
+  ).length;
+}
+
+function suspiciousNotice(ctx: SyncContext, reason: SuspiciousReason | null): StayNotificationInput {
+  const label = providerLabel(ctx.channel.provider);
+  const listingName = ctx.listing.name;
+  const message =
+    reason === 'mass_removal'
+      ? `The ${label} calendar for ${listingName} is suddenly missing many bookings. SFC removed nothing and will wait about 6 hours before removing any.`
+      : reason === 'empty_feed' || reason === 'future_dropped'
+        ? `The ${label} calendar for ${listingName} suddenly looks empty. SFC removed nothing and will not free any of its bookings' nights without you.`
+        : `The ${label} calendar for ${listingName} suddenly looks empty or is missing many bookings. SFC removed nothing and will wait longer before removing any.`;
+  return {
+    id: notificationId({ kind: 'feed', channelId: ctx.channel.id, status: 'suspicious', ymd: ctx.todayYmd }),
+    type: 'STAY_FEED_SUSPICIOUS',
+    message,
+    metadata: { listingId: ctx.channel.listingId, channelId: ctx.channel.id, route: channelsRoute(ctx.facilityId, ctx.channel.listingId) },
+  };
 }
 
 async function conflictNotifications(ctx: SyncContext, applied: ApplyResult): Promise<StayNotificationInput[]> {
@@ -854,12 +1002,18 @@ async function runUnchanged(ctx: SyncContext, fetched: SafeFetchResult): Promise
       todayYmd: ctx.todayYmd,
       suspicious,
       withIncome,
+      // The same bytes as the last full diff, so its event count still describes them.
+      feedEventCount: ctx.channel.sync.eventCount ?? undefined,
     }),
   );
   const changes = changesFromPlan(ctx, plan, existing);
   let applied: ApplyResult = { after: {}, before: {}, statusChanges: [], outcomes: {}, written: new Set() };
   if (changes.length) applied = await applyChanges(ctx, changes, null);
-  const health = successHealth(ctx, suspicious ? 'suspicious' : 'not_modified', fetched.status, fetched);
+  // The same verdict a full diff would reach: turning suspicious here sends the
+  // next run through a full, unconditional fetch.
+  const status: ChannelSyncStatus = plan.suspicious ? 'suspicious' : 'not_modified';
+  const health = successHealth(ctx, status, fetched.status, fetched);
+  if (plan.suspicious) health['sync.suspiciousSince'] = ctx.channel.sync.suspiciousSince ?? ctx.now;
   const advanced = plan.missesAdvanced.length > 0;
   const lastOk = ctx.channel.sync.lastSuccessAtMs;
   if (advanced || lastOk === null || ctx.nowMs - lastOk >= UNCHANGED_SUCCESS_WRITE_MS || ctx.channel.sync.lastStatus !== health['sync.lastStatus']) {
@@ -867,13 +1021,14 @@ async function runUnchanged(ctx: SyncContext, fetched: SafeFetchResult): Promise
   }
   if (applied.written.size > 0) health['sync.lastChangedAt'] = ctx.now;
   const notifications = [...stayNotifications(ctx, plan, applied, false), ...(await conflictNotifications(ctx, applied))];
+  if (plan.suspicious) notifications.push(suspiciousNotice(ctx, plan.suspiciousReason));
   return {
     result: {
-      ...emptyResult(ctx.channel.id, health['sync.lastStatus'] as ChannelSyncStatus),
+      ...emptyResult(ctx.channel.id, status),
       httpStatus: fetched.status,
       missesAdvanced: plan.missesAdvanced.filter((m) => applied.written.has(m.stayId)).length,
       removed: plan.removals.filter((id) => applied.after[id]?.status === 'removed_from_feed').length,
-      needsReview: plan.reviews.filter((id) => applied.after[id]?.sync?.needsReview === true).length,
+      needsReview: newReviewCount(plan, applied),
     },
     health,
     notifications,
@@ -965,26 +1120,56 @@ async function runChanged(ctx: SyncContext, fetched: SafeFetchResult, body: stri
   for (const [id, doc] of own) existing.set(id, toExistingFeedStay(id, doc));
   const unknownIds = [...new Set(feed.reservations.filter((r) => !own.has(r.stayId) && r.checkOut > horizon.clampFrom).map((r) => r.stayId))];
   const notOurs = new Set<string>();
+  /** Listed here, but SFC has it on another listing whose feed still lists it (or that a person owns): asked about, not moved. */
+  const clashes: { stayId: string; doc: StayDoc }[] = [];
+  const movers = new Map<string, StayDoc>();
   const channelActive = new Map<string, boolean>();
+  const isLive = async (channelId: string): Promise<boolean> => {
+    if (!channelActive.has(channelId)) {
+      const ch = await channelsCol(ctx.db, ctx.facilityId).doc(channelId).get();
+      channelActive.set(channelId, ch.exists && ch.get('active') === true);
+    }
+    return channelActive.get(channelId) === true;
+  };
   const col = staysCol(ctx.db, ctx.facilityId);
   for (let i = 0; i < unknownIds.length; i += 100) {
     const snaps = await ctx.db.getAll(...unknownIds.slice(i, i + 100).map((id) => col.doc(id)));
     for (const snap of snaps) {
       if (!snap.exists) continue;
       const doc = snap.data() as StayDoc;
-      const otherChannel = doc.sync && !doc.sync.detached && doc.sync.channelId !== ctx.channel.id ? doc.sync.channelId : null;
-      let foreign = doc.listingId !== ctx.channel.listingId || doc.status === 'cancelled';
-      if (!foreign && otherChannel) {
-        if (!channelActive.has(otherChannel)) {
-          const ch = await channelsCol(ctx.db, ctx.facilityId).doc(otherChannel).get();
-          channelActive.set(otherChannel, ch.exists && ch.get('active') === true);
-        }
-        // Another live feed owns it (two links to one Airbnb listing): leave it to that feed.
-        foreign = channelActive.get(otherChannel) === true;
+      if (doc.status === 'cancelled') {
+        notOurs.add(snap.id);
+        continue;
       }
-      if (foreign) notOurs.add(snap.id);
-      else existing.set(snap.id, toExistingFeedStay(snap.id, doc));
+      const otherChannel = doc.sync && !doc.sync.detached && doc.sync.channelId !== ctx.channel.id ? doc.sync.channelId : null;
+      const otherLive = otherChannel ? await isLive(otherChannel) : false;
+      if (doc.listingId === ctx.channel.listingId) {
+        // Another live feed owns it (two links to one Airbnb listing): leave it to that feed.
+        if (otherLive) notOurs.add(snap.id);
+        else existing.set(snap.id, toExistingFeedStay(snap.id, doc));
+        continue;
+      }
+      // An Airbnb code SFC has on another listing: Airbnb moved the reservation here.
+      notOurs.add(snap.id);
+      if (lettingGo(ctx, doc, otherLive)) movers.set(snap.id, doc);
+      else clashes.push({ stayId: snap.id, doc });
     }
+  }
+  // Income on a stay makes it a person's call, as it does for removal.
+  const moverIncome = movers.size > 0 ? await incomeStayIds(ctx, [...movers.keys()]) : new Set<string>();
+  for (const [id, doc] of movers) {
+    if (moverIncome.has(id)) {
+      clashes.push({ stayId: id, doc });
+      continue;
+    }
+    ctx.moves.set(id, {
+      fromListingId: doc.listingId,
+      fromListingName: doc.listingName || 'another listing',
+      fromChannelId: doc.sync?.channelId ?? null,
+      fromChannelLive: doc.sync?.channelId ? channelActive.get(doc.sync.channelId) === true : false,
+    });
+    notOurs.delete(id);
+    existing.set(id, toExistingFeedStay(id, doc));
   }
   if (notOurs.size > 0) {
     functions.logger.warn('stays: feed lists bookings another listing or feed owns; left alone', {
@@ -1045,12 +1230,15 @@ async function runChanged(ctx: SyncContext, fetched: SafeFetchResult, body: stri
       metadata: { listingId: ctx.channel.listingId, channelId: ctx.channel.id, route: channelsRoute(ctx.facilityId, ctx.channel.listingId) },
     });
   }
-  if (plan.suspicious) {
+  if (plan.suspicious) notifications.push(suspiciousNotice(ctx, plan.suspiciousReason));
+  for (const { stayId, doc } of clashes) {
+    const where = doc.listingName || 'another listing';
     notifications.push({
-      id: notificationId({ kind: 'feed', channelId: ctx.channel.id, status: 'suspicious', ymd: ctx.todayYmd }),
-      type: 'STAY_FEED_SUSPICIOUS',
-      message: `The ${label} calendar for ${listingName} suddenly looks empty or is missing many bookings. SFC removed nothing and will wait longer before removing any.`,
-      metadata: { listingId: ctx.channel.listingId, channelId: ctx.channel.id, route: channelsRoute(ctx.facilityId, ctx.channel.listingId) },
+      // Once per version of that stay; it is not touched, so repeats are no-ops.
+      id: notificationId({ kind: 'stay', type: 'STAY_BOOKING_NEEDS_REVIEW', stayId, version: versionOf(doc) }),
+      type: 'STAY_BOOKING_NEEDS_REVIEW',
+      message: `The ${label} calendar for ${listingName} lists a booking SFC has on ${where}, ${formatRange(doc.checkIn, doc.checkOut)}. SFC left it on ${where}: check which listing it is on in ${label}.`,
+      metadata: { stayId, listingId: doc.listingId, channelId: ctx.channel.id, route: stayRoute(ctx.facilityId, stayId) },
     });
   }
 
@@ -1067,6 +1255,13 @@ async function runChanged(ctx: SyncContext, fetched: SafeFetchResult, body: stri
     'sync.blockCount': ranges.length,
     'sync.suspiciousSince': plan.suspicious ? (ctx.channel.sync.suspiciousSince ?? ctx.now) : null,
   };
+  if (clashes.length > 0) {
+    // Left unresolved: the next run must diff again (the other listing's feed may let go of
+    // the booking by then), even if this feed's bytes never change.
+    health['sync.contentSha256'] = null;
+    health['sync.etag'] = null;
+    health['sync.lastModified'] = null;
+  }
   if (applied.written.size > 0 || blocksChanged) health['sync.lastChangedAt'] = ctx.now;
 
   const createdIds = plan.creates.map((p) => p.stayId).filter((id) => applied.written.has(id) && !applied.before[id]);
@@ -1079,7 +1274,7 @@ async function runChanged(ctx: SyncContext, fetched: SafeFetchResult, body: stri
       restored: plan.restores.filter((m) => applied.after[m.stayId]?.status !== 'removed_from_feed' && applied.written.has(m.stayId)).length,
       missesAdvanced: plan.missesAdvanced.filter((m) => applied.written.has(m.stayId)).length,
       removed: plan.removals.filter((id) => applied.after[id]?.status === 'removed_from_feed').length,
-      needsReview: plan.reviews.filter((id) => applied.after[id]?.sync?.needsReview === true).length,
+      needsReview: newReviewCount(plan, applied),
       conflicts,
       blocks: ranges.length,
     },
@@ -1142,6 +1337,7 @@ export async function syncChannel(
     now: Timestamp.fromMillis(startedMs),
     // Scheduled runs count misses on the slot's clock, so runs 30 minutes apart are exactly 30 minutes apart.
     missClock: Timestamp.fromMillis(Number.isFinite(slotMs) && slotMs <= startedMs ? slotMs : startedMs),
+    moves: new Map(),
   };
 
   let outcome: RunOutcome | null = null;
@@ -1191,7 +1387,7 @@ export async function syncChannel(
 
   const finishedMs = deps.now();
   outcome.result.durationMs = Math.max(0, finishedMs - startedMs);
-  await finishLease(db, chRef, runId, outcome.health);
+  await finishLease(db, chRef, runId, outcome.health, lease.channel);
 
   try {
     const logId = trigger === 'scheduled' && options.slot ? syncLogIdScheduled(options.slot, channelId) : syncLogIdManual(startedMs, channelId);

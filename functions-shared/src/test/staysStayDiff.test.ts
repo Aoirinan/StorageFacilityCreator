@@ -161,6 +161,19 @@ test('a missing stay that is checked in, paid or has income goes to review inste
   assert.deepEqual(plan.removals, []);
   // Already flagged: not flagged (or notified) again.
   assert.deepEqual(plan.reviews.sort(), ['ical_in', 'ical_inc', 'ical_paid', 'ical_part']);
+  assert.deepEqual(Object.values(plan.reviewReasons), ['protected', 'protected', 'protected', 'protected']);
+  // ...and its misses stop counting, so its doc is not rewritten every run until checkout.
+  assert.equal(plan.missesAdvanced.some((m) => m.stayId === 'ical_flagged'), false);
+  assert.equal(plan.missState.ical_flagged, undefined);
+});
+
+test('a stay waiting for review collects no more misses, on a full diff or an unchanged feed', () => {
+  const flagged = stay('ical_flagged', '2026-10-15', '2026-10-17', { needsReview: true, missCount: 4, firstMissAtMs: T0 - 3 * MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS });
+  const keep = stay('ical_keep', '2026-11-01', '2026-11-03');
+  const full = planFeedSync([flagged, keep], [res('ical_keep', '2026-11-01', '2026-11-03')], opts());
+  assert.deepEqual([full.missesAdvanced, full.removals, full.reviews], [[], [], []]);
+  const unchanged = advanceMissesOnUnchanged([flagged, keep], T0, { channelId: CH, todayYmd: TODAY, suspicious: false });
+  assert.deepEqual([unchanged.missesAdvanced, unchanged.removals, unchanged.reviews], [[], [], []]);
 });
 
 test('a feed that suddenly drops every future booking is suspicious and needs 12 misses', () => {
@@ -184,11 +197,26 @@ test('a feed that suddenly drops every future booking is suspicious and needs 12
   assert.equal(mass.suspiciousReason, 'mass_removal');
   assert.deepEqual(mass.removals, []);
 
-  // After 12 spaced misses they do go.
+  // After 12 spaced misses a feed that lost half its bookings does remove them...
   const late = { missCount: 11, firstMissAtMs: T0 - 12 * MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const massLate = planFeedSync([{ ...ours[0], ...late }, { ...ours[1], ...late }, ...keep], keep.map((k) => res(k.stayId, k.checkIn, k.checkOut)), opts({ prevFutureCount: 3 }));
+  assert.equal(massLate.suspiciousReason, 'mass_removal');
+  assert.deepEqual(massLate.removals.sort(), ['ical_1', 'ical_2']);
+  assert.deepEqual(massLate.reviews, []);
+
+  // ...but an empty or emptied feed never frees nights by itself: at 12 misses a person is asked instead.
   const finally_ = planFeedSync(ours.map((s) => ({ ...s, ...late })), [], opts({ prevFutureCount: 3, feedEventCount: 4 }));
-  assert.equal(finally_.suspicious, true);
-  assert.deepEqual(finally_.removals.sort(), ['ical_1', 'ical_2', 'ical_3']);
+  assert.equal(finally_.suspiciousReason, 'future_dropped');
+  assert.deepEqual(finally_.removals, []);
+  assert.deepEqual(finally_.reviews.sort(), ['ical_1', 'ical_2', 'ical_3']);
+  assert.deepEqual(finally_.reviewReasons, { ical_1: 'feed_suspicious', ical_2: 'feed_suspicious', ical_3: 'feed_suspicious' });
+  const emptyLate = planFeedSync(ours.map((s) => ({ ...s, ...late })), [], opts({ prevFutureCount: 1, feedEventCount: 0 }));
+  assert.equal(emptyLate.suspiciousReason, 'empty_feed');
+  assert.deepEqual(emptyLate.removals, []);
+  assert.deepEqual(emptyLate.reviews.sort(), ['ical_1', 'ical_2', 'ical_3']);
+  // Before the 12th miss nothing is flagged yet.
+  const early = { missCount: 10, firstMissAtMs: T0 - 11 * MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  assert.deepEqual(planFeedSync(ours.map((s) => ({ ...s, ...early })), [], opts({ prevFutureCount: 1, feedEventCount: 0 })).reviews, []);
 
   // A single cancellation among others is ordinary.
   const one = planFeedSync([ours[0], ...Array.from({ length: 3 }, (_, i) => stay(`ical_o${i}`, '2026-11-05', '2026-11-07'))], Array.from({ length: 3 }, (_, i) => res(`ical_o${i}`, '2026-11-05', '2026-11-07')), opts({ prevFutureCount: 4 }));
@@ -240,4 +268,47 @@ test('on an unchanged feed, misses keep advancing for stays already missing (and
   // Another channel's stays are not this feed's business.
   const other = advanceMissesOnUnchanged([{ ...missing, channelId: 'ch_b' }], T0, { channelId: CH, todayYmd: TODAY, suspicious: false });
   assert.deepEqual(other.missesAdvanced, []);
+});
+
+test('an unchanged feed runs the same mass-removal check as a full diff', () => {
+  // 2 of 4 future bookings missed twice already; this run would remove both.
+  const due = { missCount: 2, firstMissAtMs: T0 - REMOVAL_MIN_AGE_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const four = [
+    stay('ical_1', '2026-10-05', '2026-10-08', due),
+    stay('ical_2', '2026-10-10', '2026-10-12', due),
+    stay('ical_3', '2026-10-15', '2026-10-18'),
+    stay('ical_4', '2026-10-20', '2026-10-22'),
+  ];
+  const plan = advanceMissesOnUnchanged(four, T0, { channelId: CH, todayYmd: TODAY, suspicious: false });
+  assert.equal(plan.suspicious, true);
+  assert.equal(plan.suspiciousReason, 'mass_removal');
+  assert.equal(plan.requiredMisses, SUSPICIOUS_REQUIRED_MISSES);
+  assert.deepEqual(plan.removals, []);
+  assert.deepEqual(plan.missesAdvanced.map((m) => [m.stayId, m.missCount]), [
+    ['ical_1', 3],
+    ['ical_2', 3],
+  ]);
+  // The full diff of the same situation reaches the same verdict.
+  const full = planFeedSync(four, [res('ical_3', '2026-10-15', '2026-10-18'), res('ical_4', '2026-10-20', '2026-10-22')], opts({ prevFutureCount: 4 }));
+  assert.equal(full.suspiciousReason, 'mass_removal');
+  assert.deepEqual(full.removals, []);
+  // One of four is ordinary, unchanged feed or not.
+  const one = advanceMissesOnUnchanged([four[0], ...four.slice(2), stay('ical_5', '2026-11-01', '2026-11-03')], T0, { channelId: CH, todayYmd: TODAY, suspicious: false });
+  assert.equal(one.suspicious, false);
+  assert.deepEqual(one.removals, ['ical_1']);
+});
+
+test('an empty body that never changes asks at the 12th miss instead of freeing the nights', () => {
+  const late = { missCount: 11, firstMissAtMs: T0 - 12 * MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const two = [stay('ical_1', '2026-10-05', '2026-10-08', late), stay('ical_2', '2026-10-10', '2026-10-12', late)];
+  const empty = advanceMissesOnUnchanged(two, T0, { channelId: CH, todayYmd: TODAY, suspicious: true, feedEventCount: 0 });
+  assert.equal(empty.suspiciousReason, 'empty_feed');
+  assert.deepEqual(empty.removals, []);
+  assert.deepEqual(empty.reviews.sort(), ['ical_1', 'ical_2']);
+  assert.deepEqual(empty.reviewReasons, { ical_1: 'feed_suspicious', ical_2: 'feed_suspicious' });
+  // A body with events in it is not empty: a feed suspicious for another reason still removes at 12.
+  const listed = advanceMissesOnUnchanged(two, T0, { channelId: CH, todayYmd: TODAY, suspicious: true, feedEventCount: 3 });
+  assert.deepEqual(listed.removals.sort(), ['ical_1', 'ical_2']);
+  // Unknown (never recorded) is not taken as empty.
+  assert.deepEqual(advanceMissesOnUnchanged(two, T0, { channelId: CH, todayYmd: TODAY, suspicious: true }).removals.sort(), ['ical_1', 'ical_2']);
 });

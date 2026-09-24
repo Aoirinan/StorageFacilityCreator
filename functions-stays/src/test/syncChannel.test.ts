@@ -10,6 +10,7 @@ import { EMPLOYEE, OWNER, makeStay } from './support/staysFixtures';
 import {
   CHANNEL,
   FAC,
+  FeedServer,
   LISTING,
   MIN,
   NOW,
@@ -18,6 +19,7 @@ import {
   nightsOf,
   notificationTypes,
   seedChannel,
+  seedListing,
   slotOf,
   syncWorld,
 } from './support/syncFixtures';
@@ -318,33 +320,95 @@ test('the lease stops a second sync of the same channel from running alongside',
   assert.notEqual((await run(w)).skipped, true);
 });
 
-test('an empty feed removes nothing: it is suspicious, alerts once a day, and keeps the blocks', async () => {
+test('an empty feed removes nothing, however long it stays empty: suspicious, alerts once a day, asks at 12 misses, keeps the blocks', async () => {
   const w = world();
   w.feed.set(FIRST);
   await run(w);
   w.feed.set([]);
-  for (let i = 1; i <= 8; i++) {
+  // 16 runs is 8 hours: well past the 12 misses a suspicious feed needs.
+  for (let i = 1; i <= 16; i++) {
     w.now.ms += 30 * MIN;
     const r = await run(w);
-    assert.equal(r.status, 'suspicious');
-    assert.equal(r.removed, 0);
+    assert.equal(r.status, 'suspicious', `run ${i}`);
+    assert.equal(r.removed, 0, `run ${i}`);
+    assert.equal(r.needsReview, i === 12 ? 2 : 0, `run ${i}`);
   }
   for (const id of ['airbnb_HMFIRST001', 'airbnb_HMFIRST002']) {
     assert.equal(stayDoc(w, id)?.status, 'confirmed');
-    assert.equal(stayDoc(w, id)?.sync?.missCount, 8);
+    assert.equal(stayDoc(w, id)?.sync?.needsReview, true);
+    // Flagged at the 12th miss; after that the doc is left alone.
+    assert.equal(stayDoc(w, id)?.sync?.missCount, 12);
   }
-  assert.equal(w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_FEED_SUSPICIOUS').length, 1);
+  // Its nights are still held.
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-03'].s, 'airbnb_HMFIRST001');
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-06'].s, 'airbnb_HMFIRST002');
+  assert.equal(w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_REMOVED').length, 0);
+  const reviews = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_NEEDS_REVIEW');
+  assert.equal(reviews.length, 2);
+  assert.match(reviews[0].data.message as string, /looks empty, so SFC kept it and its nights\./);
+  const suspicious = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_FEED_SUSPICIOUS');
+  assert.equal(suspicious.length, 1);
+  assert.match(suspicious[0].data.message as string, /suddenly looks empty\. SFC removed nothing/);
   assert.equal(channelSync(w).futureReservationCount, 2);
   assert.ok(channelSync(w).suspiciousSince);
   assert.deepEqual(w.fake.read(`${P.blocks}/${CHANNEL}`)?.ranges, [{ checkIn: '2026-10-15', checkOut: '2026-10-22', echo: false }]);
 
-  // The feed comes back: the flag clears and the misses reset.
+  // The feed comes back: the flag clears and the misses and review reset.
   w.now.ms += 30 * MIN;
   w.feed.set(FIRST);
   const ok = await run(w);
   assert.equal(ok.status, 'ok');
   assert.equal(channelSync(w).suspiciousSince, null);
   assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.sync?.missCount, 0);
+  assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.sync?.needsReview, false);
+});
+
+test('a feed that drops half its bookings and then answers 304 turns suspicious instead of removing them', async () => {
+  const w = world();
+  const four = [
+    { code: 'HMMASS0001', checkIn: '2026-10-03', checkOut: '2026-10-06' },
+    { code: 'HMMASS0002', checkIn: '2026-10-08', checkOut: '2026-10-10' },
+    { code: 'HMMASS0003', checkIn: '2026-10-12', checkOut: '2026-10-14' },
+    { code: 'HMMASS0004', checkIn: '2026-10-16', checkOut: '2026-10-18' },
+  ];
+  w.feed.set(four);
+  await run(w);
+  // Two vanish once; after that the server honours our ETag and answers 304.
+  w.feed.set(four.slice(2));
+  const seen: [string, number | null, number][] = [];
+  for (let i = 1; i <= 6; i++) {
+    w.now.ms += 30 * MIN;
+    const r = await run(w);
+    seen.push([r.status, r.httpStatus, r.removed]);
+  }
+  assert.deepEqual(seen, [
+    ['ok', 200, 0],
+    ['not_modified', 304, 0],
+    ['not_modified', 304, 0],
+    // The 4th miss would remove both of them: half the feed's bookings at once.
+    ['suspicious', 304, 0],
+    // Suspicious feeds are fetched and diffed in full, and stay suspicious.
+    ['suspicious', 200, 0],
+    ['suspicious', 200, 0],
+  ]);
+  for (const id of ['airbnb_HMMASS0001', 'airbnb_HMMASS0002']) {
+    assert.equal(stayDoc(w, id)?.status, 'confirmed', id);
+    assert.equal(stayDoc(w, id)?.sync?.missCount, 6, id);
+  }
+  assert.ok(channelSync(w).suspiciousSince);
+  assert.equal(channelSync(w).lastStatus, 'suspicious');
+  const notes = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_FEED_SUSPICIOUS');
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].data.message as string, /suddenly missing many bookings\. SFC removed nothing and will wait about 6 hours/);
+  assert.equal(w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_REMOVED').length, 0);
+
+  // A feed that really lost half its bookings removes them at the 12th miss (spec §3.4.7).
+  for (let i = 7; i <= 12; i++) {
+    w.now.ms += 30 * MIN;
+    await run(w);
+  }
+  assert.equal(stayDoc(w, 'airbnb_HMMASS0001')?.status, 'removed_from_feed');
+  assert.equal(stayDoc(w, 'airbnb_HMMASS0003')?.status, 'confirmed');
 });
 
 test('a missing booking that is checked in or paid is flagged for review, never removed', async () => {
@@ -370,6 +434,132 @@ test('a missing booking that is checked in or paid is flagged for review, never 
   assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.arrivalState, 'checked_in');
   const reviews = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_NEEDS_REVIEW');
   assert.equal(reviews.length, 2);
+
+  // Waiting on a person: later runs leave them alone instead of rewriting them every 30 minutes.
+  const writes = w.fake.writesTo('stays').length;
+  const misses = stayDoc(w, 'airbnb_HMFIRST001')?.sync?.missCount;
+  for (let i = 1; i <= 4; i++) {
+    w.now.ms += 30 * MIN;
+    await run(w);
+  }
+  assert.equal(w.fake.writesTo('stays').length, writes);
+  assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.sync?.missCount, misses);
+});
+
+test('a guest checked in while a removal is being written is kept and flagged, not removed', async () => {
+  const w = world();
+  w.feed.set(FIRST);
+  await run(w);
+  w.feed.set(FIRST.slice(1));
+  const t0 = w.now.ms;
+  for (const offset of [30, 60, 90]) {
+    w.now.ms = t0 + offset * MIN;
+    await run(w);
+  }
+  // The next run removes it (4 misses, 90 minutes)... but staff check the guest in after the plan
+  // was read and before the write (a check-in does not change the stay's version).
+  const path = `${P.stays}/airbnb_HMFIRST001`;
+  let checkedIn = false;
+  w.fake.failReads = (p) => {
+    if (p === path && !checkedIn) {
+      checkedIn = true;
+      w.fake.seed(path, { ...w.fake.read(path), arrivalState: 'checked_in', checkedInAt: Timestamp.fromMillis(w.now.ms) });
+    }
+    return false;
+  };
+  w.now.ms = t0 + 120 * MIN;
+  const r = await run(w);
+  w.fake.failReads = null;
+  assert.ok(checkedIn);
+  assert.deepEqual([r.removed, r.needsReview], [0, 1]);
+  const s = stayDoc(w, 'airbnb_HMFIRST001')!;
+  assert.deepEqual([s.status, s.arrivalState, s.sync?.needsReview], ['confirmed', 'checked_in', true]);
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-03'].s, 'airbnb_HMFIRST001');
+  assert.deepEqual(
+    w.fake.list(P.notifications).filter((n) => /STAY_BOOKING_(REMOVED|NEEDS_REVIEW)/.test(n.data.type as string)).map((n) => n.data.type),
+    ['STAY_BOOKING_NEEDS_REVIEW'],
+  );
+});
+
+test('scheduled runs count misses on the slot clock, so a job that ran late still spaces the next miss', async () => {
+  const w = world();
+  w.feed.set(FIRST);
+  await run(w);
+  w.feed.set(FIRST.slice(1));
+  // The 18:30 slot's job runs 20 minutes late; the 19:00 slot's runs on time, 11 minutes after it.
+  w.now.ms = NOW + 50 * MIN;
+  await run(w);
+  assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.sync?.missCount, 1);
+  assert.equal((stayDoc(w, 'airbnb_HMFIRST001')?.sync?.lastMissAt as Timestamp).toMillis(), NOW + 30 * MIN);
+  w.now.ms = NOW + 61 * MIN;
+  await run(w);
+  assert.equal(stayDoc(w, 'airbnb_HMFIRST001')?.sync?.missCount, 2);
+});
+
+test('a new phone last 4 on an otherwise unchanged booking updates the private doc and door code at once', async () => {
+  const w = world();
+  w.feed.set(FIRST);
+  await run(w);
+  // The owner typed her own code for the second booking: that one stays hers.
+  w.fake.seed(`${P.access}/airbnb_HMFIRST002`, {
+    facilityId: FAC,
+    stayId: 'airbnb_HMFIRST002',
+    doorCode: '7788',
+    gateCode: null,
+    accessNotes: '',
+    source: 'manual',
+    updatedAt: null,
+    updatedBy: OWNER,
+  });
+  const stayWrites = w.fake.writesTo('stays').length;
+  w.now.ms += 30 * MIN;
+  w.feed.set([{ ...FIRST[0], phone: '2222' }, { ...FIRST[1], phone: '3333' }, ...FIRST.slice(2)]);
+  await run(w);
+  assert.equal(w.fake.read(`${P.private}/airbnb_HMFIRST001`)?.phoneLast4, '2222');
+  const access1 = w.fake.read(`${P.access}/airbnb_HMFIRST001`)!;
+  assert.deepEqual([access1.doorCode, access1.source], ['2222', 'phone_last4']);
+  assert.equal(w.fake.read(`${P.private}/airbnb_HMFIRST002`)?.phoneLast4, '3333');
+  const access2 = w.fake.read(`${P.access}/airbnb_HMFIRST002`)!;
+  assert.deepEqual([access2.doorCode, access2.source], ['7788', 'manual']);
+  // The bookings themselves did not change, so neither did their docs.
+  assert.equal(w.fake.writesTo('stays').length, stayWrites);
+  // The same phone again writes nothing.
+  const privateWrites = w.fake.writesTo('stayPrivate').length + w.fake.writesTo('stayAccess').length;
+  w.now.ms += 30 * MIN;
+  w.feed.setText(w.feed.body + '\r\n');
+  await run(w);
+  assert.equal(w.fake.writesTo('stayPrivate').length + w.fake.writesTo('stayAccess').length, privateWrites);
+});
+
+test('a sync in flight when block import is switched off does not write back its old content hash', async () => {
+  const w = world();
+  w.feed.set(FIRST);
+  await run(w);
+  w.now.ms += 30 * MIN;
+  w.feed.setText(w.feed.body + '\r\n');
+  let release: () => void = () => undefined;
+  w.feed.gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const inflight = run(w);
+  while (w.feed.calls.length < 2) await new Promise((r) => setImmediate(r));
+  // Meanwhile the owner turns block import off (staysUpsertChannel clears the hash and ETag).
+  w.fake.seed(`${P.channels}/${CHANNEL}`, {
+    ...channel(w),
+    importBlocks: false,
+    sync: { ...channelSync(w), etag: null, lastModified: null, contentSha256: null },
+  });
+  w.feed.gate = null;
+  release();
+  await inflight;
+  assert.equal(channelSync(w).contentSha256, null);
+  assert.equal(channelSync(w).etag, null);
+  assert.equal(channelSync(w).lease, null);
+  // So the next run diffs in full, without the blocks, even though the body has not changed.
+  w.now.ms += 30 * MIN;
+  await run(w);
+  assert.deepEqual(w.fake.read(`${P.blocks}/${CHANNEL}`)?.ranges, []);
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-16'], undefined);
 });
 
 test('a booking entered by hand with its Airbnb code is adopted by the feed, keeping what staff typed', async () => {
@@ -472,6 +662,106 @@ test('a booking another active feed already owns is left to that feed', async ()
   const r = await run(w);
   assert.equal(r.created, 0);
   assert.equal(stayDoc(w, 'airbnb_HMFIRST001')!.sync?.channelId, 'ch_other');
+});
+
+const LISTING_B = 'lst_airbnb2';
+const CHANNEL_B = 'ch_airbnb2';
+const URL_B = 'https://www.airbnb.com/calendar/ical/444555666.ics?s=fedcba9876543210';
+
+/** A second Airbnb listing with its own feed (the world's feed serves the first). */
+function secondListing(w: SyncWorld): FeedServer {
+  seedListing(w.fake, LISTING_B, { name: 'Airbnb 2', shortCode: 'A2' });
+  seedChannel(w.fake, CHANNEL_B, { listingId: LISTING_B }, URL_B);
+  const feedB = new FeedServer();
+  const fetchA = w.deps.fetchFeed;
+  w.deps.fetchFeed = (url, opts) => (url === URL_B ? feedB.fetchFeed(url, opts) : fetchA(url, opts));
+  return feedB;
+}
+
+const MOVE = { code: 'HMMOVE0001', checkIn: '2026-10-03', checkOut: '2026-10-06' };
+const KEEP_A = { code: 'HMKEEPA001', checkIn: '2026-10-20', checkOut: '2026-10-22' };
+const KEEP_B = { code: 'HMKEEPB001', checkIn: '2026-11-20', checkOut: '2026-11-22' };
+
+test('a reservation Airbnb moves to another listing follows it once the old feed lets go, and is never lost', async () => {
+  const w = world();
+  const feedB = secondListing(w);
+  w.feed.set([MOVE, KEEP_A]);
+  feedB.set([KEEP_B]);
+  await run(w);
+  await run(w, CHANNEL_B);
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.listingId, LISTING);
+
+  // Airbnb moves it to listing B. B happens to sync first, while A's feed has not yet dropped it.
+  w.feed.set([KEEP_A]);
+  feedB.set([KEEP_B, MOVE]);
+  w.now.ms += 30 * MIN;
+  await run(w, CHANNEL_B);
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.listingId, LISTING, 'still listed by A: left there for now');
+  assert.equal(nightsOf(w.fake, '2026-10', LISTING_B)['2026-10-03'], undefined);
+  const clash = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_NEEDS_REVIEW');
+  assert.equal(clash.length, 1);
+  assert.match(clash[0].data.message as string, /Airbnb calendar for Airbnb 2 lists a booking SFC has on Airbnb 1, Oct 3–6\. SFC left it on Airbnb 1/);
+  await run(w);
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.sync?.missCount, 1);
+
+  // Next slot: A has let go of it, so B takes it, nights and all.
+  w.now.ms += 30 * MIN;
+  await run(w, CHANNEL_B);
+  const moved = stayDoc(w, 'airbnb_HMMOVE0001')!;
+  assert.deepEqual(
+    [moved.listingId, moved.listingName, moved.status, moved.sync?.channelId, moved.sync?.missCount],
+    [LISTING_B, 'Airbnb 2', 'confirmed', CHANNEL_B, 0],
+  );
+  assert.equal(nightsOf(w.fake, '2026-10', LISTING_B)['2026-10-03'].s, 'airbnb_HMMOVE0001');
+  assert.equal(nightsOf(w.fake, '2026-10', LISTING)['2026-10-03'], undefined);
+  const change = w.fake.list(P.notifications).find((n) => n.data.type === 'STAY_BOOKING_CHANGED')!;
+  assert.equal(change.data.message, 'Airbnb moved the booking Oct 3–6 from Airbnb 1 to Airbnb 2. SFC moved it too.');
+
+  // A's feed no longer owns it: it is never "removed" there.
+  for (let i = 1; i <= 4; i++) {
+    w.now.ms += 30 * MIN;
+    const r = await run(w);
+    assert.equal(r.removed, 0);
+  }
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.status, 'confirmed');
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.listingId, LISTING_B);
+  assert.equal(w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_REMOVED').length, 0);
+  assert.equal(w.fake.list(P.stays).filter((s) => s.id === 'airbnb_HMMOVE0001').length, 1);
+});
+
+test('a reservation SFC has on another listing is not moved when it is checked in, typed in by hand, or still listed there', async () => {
+  const w = world();
+  const feedB = secondListing(w);
+  w.feed.set([MOVE, KEEP_A]);
+  feedB.set([KEEP_B]);
+  await run(w);
+  await run(w, CHANNEL_B);
+  // The guest is already checked in on listing A.
+  w.fake.seed(`${P.stays}/airbnb_HMMOVE0001`, {
+    ...(stayDoc(w, 'airbnb_HMMOVE0001') as unknown as Record<string, unknown>),
+    arrivalState: 'checked_in',
+    checkedInAt: Timestamp.fromMillis(w.now.ms),
+  });
+  // And a booking the owner typed in on A with its Airbnb code.
+  w.fake.seed(`${P.stays}/airbnb_HMHAND0001`, makeStay(LISTING, '2026-11-01', '2026-11-03', {
+    listingName: 'Airbnb 1',
+    source: 'airbnb',
+    origin: 'sfc',
+    external: { provider: 'airbnb', uid: null, uidHistory: [], confirmationCode: 'HMHAND0001', reservationUrl: null, summary: null },
+    createdAtMs: NOW - 1000,
+  }) as unknown as Record<string, unknown>);
+  w.feed.set([KEEP_A]);
+  feedB.set([KEEP_B, MOVE, { code: 'HMHAND0001', checkIn: '2026-11-01', checkOut: '2026-11-03' }]);
+  for (let i = 1; i <= 3; i++) {
+    w.now.ms += 30 * MIN;
+    await run(w);
+    await run(w, CHANNEL_B);
+  }
+  assert.equal(stayDoc(w, 'airbnb_HMMOVE0001')?.listingId, LISTING);
+  assert.equal(stayDoc(w, 'airbnb_HMHAND0001')?.listingId, LISTING);
+  assert.equal(nightsOf(w.fake, '2026-10', LISTING_B)['2026-10-03'], undefined);
+  const asked = w.fake.list(P.notifications).filter((n) => n.data.type === 'STAY_BOOKING_NEEDS_REVIEW' && /lists a booking SFC has on Airbnb 1/.test(n.data.message as string));
+  assert.deepEqual(asked.map((n) => (n.data.metadata as { stayId: string }).stayId).sort(), ['airbnb_HMHAND0001', 'airbnb_HMMOVE0001']);
 });
 
 test('skipped when Stays is paused, and a missing channel or URL never throws', async () => {

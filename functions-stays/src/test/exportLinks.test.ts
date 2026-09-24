@@ -57,6 +57,32 @@ test('creating a link stores the token only as a secret and a hash lookup; the U
   assert.deepEqual(audit.entry.metadata, { listingId: LISTING, targetProvider: 'airbnb', scope: 'blocks_only' });
 });
 
+test('a create sent twice with one requestId (a double tap or a retry) makes one link, not two live tokens', async () => {
+  const w = world();
+  const requestId = 'a'.repeat(32);
+  const first = await create(w, OWNER, { requestId });
+  assert.equal(first.linkId, `xl_${requestId}`);
+  assert.deepEqual(await create(w, OWNER, { requestId }), first);
+  // Two taps racing each other land on the same link too.
+  const [x, y] = await Promise.all([create(w, OWNER, { requestId: 'b'.repeat(32) }), create(w, OWNER, { requestId: 'b'.repeat(32) })]);
+  assert.deepEqual(x, y);
+  assert.equal(w.fake.list(P.links).length, 2);
+  assert.equal(w.fake.list('stayCalendarExportTokens').length, 2);
+  assert.equal(w.handle.audits.filter((a) => a.entry.eventType === 'stays.export_link.created').length, 2);
+  // Each repeat showed the URL again, and is audited as a view.
+  assert.equal(w.handle.audits.filter((a) => a.entry.eventType === 'stays.export_link.url_viewed').length, 2);
+  // Two more fit under the limit of four: the repeats took no slot.
+  await create(w);
+  await create(w);
+  assert.equal(await reasonOf(create(w)), 'limit_reached');
+
+  // One requestId cannot name two different links, and a revoked link is not brought back.
+  assert.equal(await reasonOf(create(w, OWNER, { requestId, targetProvider: 'vrbo' })), 'invalid_argument');
+  await revokeExportLinkHandler({ facilityId: FAC, linkId: first.linkId }, callableContext(OWNER), w.handle.deps);
+  assert.equal(await reasonOf(create(w, OWNER, { requestId })), 'not_found');
+  assert.equal(await reasonOf(create(w, OWNER, { requestId: 'NOT-HEX' })), 'invalid_argument');
+});
+
 test('four links per listing at most; archived or unknown listings take none; staff cannot create them', async () => {
   const w = world();
   for (let i = 0; i < 4; i++) await create(w, OWNER, { targetProvider: i % 2 ? 'vrbo' : 'airbnb' });

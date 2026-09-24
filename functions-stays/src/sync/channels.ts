@@ -313,6 +313,13 @@ export async function upsertChannelHandler(
       const patch: Record<string, unknown> = { provider, label, importBlocks, urlHost: validated.host, urlFingerprint: fingerprint, updatedAt: now };
       // A new link or a change to block import: the next sync diffs in full.
       if (existing.get('urlFingerprint') !== fingerprint || existing.get('importBlocks') !== importBlocks || existing.get('provider') !== provider) {
+        // A sync in flight read the old settings; its result would land on top of the reset
+        // (a rename is harmless and goes through).
+        const lease = existing.get('sync.lease') as { expiresAt?: Timestamp } | null | undefined;
+        const expires = lease?.expiresAt && typeof lease.expiresAt.toMillis === 'function' ? lease.expiresAt.toMillis() : null;
+        if (expires !== null && expires > ctx.nowMs) {
+          throw staysError('aborted', 'contention', 'This calendar is syncing right now. Try again in a minute.');
+        }
         patch['sync.etag'] = null;
         patch['sync.lastModified'] = null;
         patch['sync.contentSha256'] = null;

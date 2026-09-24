@@ -11,7 +11,6 @@ import {
 import {
   ChannelProvider,
   ChannelSyncStatus,
-  ExportTargetProvider,
   STAY_COLLECTIONS,
   StaySource,
   Ymd,
@@ -76,19 +75,6 @@ export function sourceForProvider(provider: ChannelProvider): StaySource {
       return provider;
     default:
       return 'other_channel';
-  }
-}
-
-/** The export target that sends to a channel of this provider (for echo marking). */
-export function exportTargetForProvider(provider: ChannelProvider): ExportTargetProvider {
-  switch (provider) {
-    case 'airbnb':
-    case 'vrbo':
-    case 'booking':
-    case 'google':
-      return provider;
-    default:
-      return 'other';
   }
 }
 

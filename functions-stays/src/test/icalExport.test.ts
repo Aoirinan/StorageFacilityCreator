@@ -6,7 +6,7 @@ import { parseIcs } from '@sfc/functions-shared/stays/ical';
 import type { StayDoc } from '@sfc/functions-shared/stays/contracts';
 
 import { resetStaysGateCacheForTests } from '../common/serverConfig';
-import { ExportRequest, createIcalExportHandler, fetcherFamily } from '../sync/icalExport';
+import { ExportRequest, clientIp, createIcalExportHandler, fetcherFamily } from '../sync/icalExport';
 import { createExportLinkHandler, revokeExportLinkHandler } from '../sync/exportLinks';
 import { FakeFirestore } from './support/fakeFirestore';
 import { OWNER, callableContext, makeStay, seedControls, seedGate } from './support/staysFixtures';
@@ -58,7 +58,11 @@ function seedLink(w: SyncWorld, opts: { scope?: string; target?: string; active?
   return token;
 }
 
-async function fetchFeed(w: SyncWorld, path: string, opts: { method?: string; ua?: string; ip?: string } = {}): Promise<Captured> {
+async function fetchFeed(
+  w: SyncWorld,
+  path: string,
+  opts: { method?: string; ua?: string; ip?: string; headers?: Record<string, string> } = {},
+): Promise<Captured> {
   const res: Captured & {
     status(c: number): typeof res;
     set(h: Record<string, string>): typeof res;
@@ -85,7 +89,12 @@ async function fetchFeed(w: SyncWorld, path: string, opts: { method?: string; ua
       this.ended = true;
     },
   };
-  const req: ExportRequest = { method: opts.method ?? 'GET', path, ip: opts.ip ?? '203.0.113.9', headers: { 'user-agent': opts.ua ?? 'Airbnb/1.0 (calendar sync)' } };
+  const req: ExportRequest = {
+    method: opts.method ?? 'GET',
+    path,
+    ip: opts.ip ?? '203.0.113.9',
+    headers: { 'user-agent': opts.ua ?? 'Airbnb/1.0 (calendar sync)', ...(opts.headers ?? {}) },
+  };
   await createIcalExportHandler({ db: () => w.fake.firestore(), now: () => w.now.ms })(req, res);
   return res;
 }
@@ -130,6 +139,68 @@ test('scope decides what goes out, and the target channel never gets its own boo
     ['2026-10-12', '2026-10-14'],
     ['2026-10-20', '2026-10-21'],
   ]);
+});
+
+test('a Hipcamp or Google feed never gets its own bookings back, though they are not source-named after it', async () => {
+  const w = world();
+  const ext = (provider: string) => ({ provider, uid: `${provider}-uid`, uidHistory: [], confirmationCode: null, reservationUrl: null, summary: null });
+  w.fake.seed(`${P.stays}/ical_hip`, makeStay(LISTING, '2026-11-03', '2026-11-05', { source: 'hipcamp', origin: 'feed', external: ext('hipcamp') as StayDoc['external'] }) as unknown as Record<string, unknown>);
+  w.fake.seed(`${P.stays}/ical_goog`, makeStay(LISTING, '2026-11-07', '2026-11-09', { source: 'other_channel', origin: 'feed', external: ext('google') as StayDoc['external'] }) as unknown as Record<string, unknown>);
+  // Hipcamp imports an 'other' link: Google's booking goes to it, Hipcamp's does not.
+  const toHipcamp = nightsIn((await fetchFeed(w, path(seedLink(w, { id: 'xl_hip', scope: 'all', target: 'other' })))).body!).map((n) => n[0]);
+  assert.equal(toHipcamp.includes('2026-11-03'), false);
+  assert.equal(toHipcamp.includes('2026-11-07'), true);
+  const toGoogle = nightsIn((await fetchFeed(w, path(seedLink(w, { id: 'xl_goog', scope: 'all', target: 'google' })))).body!).map((n) => n[0]);
+  assert.equal(toGoogle.includes('2026-11-07'), false);
+  assert.equal(toGoogle.includes('2026-11-03'), true);
+});
+
+test('a token whose lookup names another listing than its link is refused with 503', async () => {
+  const w = world();
+  const token = seedLink(w);
+  const lookup = `stayCalendarExportTokens/${exportTokenHash(token)}`;
+  w.fake.seed(lookup, { ...w.fake.read(lookup), listingId: 'lst_other' });
+  const res = await fetchFeed(w, path(token));
+  assert.equal(res.statusCode, 503);
+  assert.equal((res.body ?? '').includes('BEGIN:VCALENDAR'), false);
+});
+
+test('guessed tokens write nothing: only known tokens are rate-limited', async () => {
+  const w = world();
+  const before = w.fake.writesTo('rateLimits').length;
+  for (let i = 0; i < 20; i++) assert.equal((await fetchFeed(w, path(sha256Hex(`guess:${i}`).slice(0, 48)))).statusCode, 404);
+  assert.equal(w.fake.writesTo('rateLimits').length, before);
+  await fetchFeed(w, path(seedLink(w)));
+  assert.ok(w.fake.writesTo('rateLimits').length > before);
+});
+
+test('300 fetches a minute per client address across tokens, keyed on the address Hosting saw', async () => {
+  const w = world();
+  const tokens = Array.from({ length: 11 }, (_, i) => seedLink(w, { id: `xl_ip${i}` }));
+  const USER = '198.51.100.7';
+  // Behind the Hosting rewrite every caller arrives through the same Google hops.
+  const GOOGLE_HOP = '35.191.0.10';
+  const viaHosting = (user: string, claimed: string) => ({
+    'fastly-client-ip': user,
+    'x-forwarded-for': `${claimed}, ${GOOGLE_HOP}`,
+    'x-appengine-user-ip': GOOGLE_HOP,
+  });
+  let n = 0;
+  for (const token of tokens) {
+    for (let j = 0; j < 28 && n < 300; j++, n++) {
+      // The caller rotates what it claims in X-Forwarded-For (what Express reports as req.ip).
+      const claimed = `10.9.${j}.${n % 250}`;
+      assert.equal((await fetchFeed(w, path(token), { headers: viaHosting(USER, claimed), ip: claimed })).statusCode, 200, `fetch ${n}`);
+    }
+  }
+  const over = await fetchFeed(w, path(tokens[10]), { headers: viaHosting(USER, '1.2.3.4'), ip: '1.2.3.4' });
+  assert.equal(over.statusCode, 429);
+  assert.equal(over.headers['Retry-After'], '60');
+  // Another user behind the same Google hops is not held up by it.
+  assert.equal((await fetchFeed(w, path(tokens[10]), { headers: viaHosting('203.0.113.50', '1.2.3.4'), ip: '1.2.3.4' })).statusCode, 200);
+  // A direct call to the function URL (no CDN header) is keyed on the platform's view of the peer.
+  assert.equal(clientIp({ headers: { 'x-appengine-user-ip': '198.51.100.8', 'x-forwarded-for': '6.6.6.6' }, ip: '6.6.6.6' }), '198.51.100.8');
+  assert.equal(clientIp({ headers: {}, ip: '192.0.2.1' }), '192.0.2.1');
 });
 
 test('no guest data, stay ids, notes or imported blocks ever leave in the feed', async () => {

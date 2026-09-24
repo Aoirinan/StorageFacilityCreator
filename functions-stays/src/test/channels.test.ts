@@ -183,6 +183,32 @@ test('a feed cannot be removed while it is syncing', async () => {
   assert.equal(await reasonOf(removeChannelHandler({ facilityId: FAC, channelId: 'ch_nope' }, callableContext(OWNER), w.callableDeps)), 'not_found');
 });
 
+test('changing a feed link or block import waits for a sync in flight; a rename does not', async () => {
+  const w = world();
+  w.feed.set(EVENTS);
+  const saved = (await upsert(w, OWNER, { dryRun: false })) as StaysUpsertChannelCommitted;
+  const path = `${P.channels}/${saved.channelId}`;
+  const lease = (expiresAt: number) => {
+    const ch = w.fake.read(path)!;
+    w.fake.seed(path, { ...ch, sync: { ...(ch.sync as object), lease: { runId: 'r', expiresAt: Timestamp.fromMillis(expiresAt) } } });
+  };
+  lease(w.now.ms + MIN);
+  const sha = (w.fake.read(path)!.sync as { contentSha256: string }).contentSha256;
+  assert.equal(await reasonOf(upsert(w, OWNER, { dryRun: false, channelId: saved.channelId, importBlocks: false })), 'contention');
+  assert.equal(await reasonOf(upsert(w, OWNER, { dryRun: false, channelId: saved.channelId, url: `${FEED_URL}&n=2` })), 'contention');
+  assert.equal(w.fake.read(path)?.importBlocks, true);
+  assert.equal((w.fake.read(path)!.sync as { contentSha256: string }).contentSha256, sha);
+  const renamed = (await upsert(w, OWNER, { dryRun: false, channelId: saved.channelId, label: 'Main Airbnb' })) as StaysUpsertChannelCommitted;
+  assert.equal(renamed.firstSync.skipped, true, 'the rename saved; its sync gave way to the one in flight');
+  assert.equal(w.fake.read(path)?.label, 'Main Airbnb');
+
+  // Once that sync is over (or its lease lapsed), the switch goes through and the blocks go.
+  lease(w.now.ms - 1);
+  await upsert(w, OWNER, { dryRun: false, channelId: saved.channelId, label: 'Main Airbnb', importBlocks: false });
+  assert.equal(w.fake.read(path)?.importBlocks, false);
+  assert.deepEqual(w.fake.read(`${P.blocks}/${saved.channelId}`)?.ranges, []);
+});
+
 test('Sync now: once a minute per feed, 20 a day per facility', async () => {
   const w = world({ channel: true });
   w.feed.set(EVENTS);

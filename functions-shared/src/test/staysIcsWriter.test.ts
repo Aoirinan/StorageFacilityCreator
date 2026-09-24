@@ -2,7 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { ExportableStay } from '../stays/icsWriter';
-import { ICS_BUSY_SUMMARY, buildIcs, escapeText, exportUid, foldLine, inExportScope, staysForExport } from '../stays/icsWriter';
+import {
+  ICS_BUSY_SUMMARY,
+  buildIcs,
+  escapeText,
+  exportTargetForProvider,
+  exportUid,
+  foldLine,
+  inExportScope,
+  staysForExport,
+} from '../stays/icsWriter';
 import { parseIcs } from '../stays/ical';
 
 const NOW = Date.parse('2026-10-01T18:00:00Z');
@@ -103,6 +112,25 @@ test('scope: blocks only, then SFC bookings, then other channels; never the targ
   assert.deepEqual(ids('all', 'vrbo'), ['owner', 'maint', 'direct', 'phone', 'walkup', 'airbnb', 'booking']);
   assert.deepEqual(ids('all', 'google'), ['owner', 'maint', 'direct', 'phone', 'walkup', 'airbnb', 'vrbo', 'booking']);
   assert.equal(inExportScope({ kind: 'reservation', source: 'airbnb' }, 'all', 'airbnb'), false);
+});
+
+test('a feed whose bookings are not source-named after it never gets them back', () => {
+  // A Hipcamp feed's bookings are source 'hipcamp' and Hipcamp imports an 'other' link;
+  // a Google feed's are 'other_channel' and Google imports a 'google' link.
+  const hipcamp = stay('hipcamp', { source: 'hipcamp', external: { provider: 'hipcamp' } });
+  const google = stay('google', { source: 'other_channel', external: { provider: 'google' } });
+  const otherFeed = stay('otherFeed', { source: 'other_channel', external: { provider: 'other' } });
+  const handTyped = stay('handHipcamp', { source: 'hipcamp', external: null });
+  const all = [hipcamp, google, otherFeed, handTyped, stay('owner', { kind: 'owner_block', source: 'owner' })];
+  const ids = (target: 'airbnb' | 'google' | 'other') =>
+    staysForExport(all, { scope: 'all', targetProvider: target, todayYmd: '2026-10-01', lastCheckInYmd: '2028-03-24' }).map((s) => s.stayId);
+  assert.deepEqual(ids('other'), ['google', 'owner']);
+  assert.deepEqual(ids('google'), ['hipcamp', 'otherFeed', 'handHipcamp', 'owner']);
+  // Other targets still get them all.
+  assert.deepEqual(ids('airbnb'), ['hipcamp', 'google', 'otherFeed', 'handHipcamp', 'owner']);
+  assert.equal(exportTargetForProvider('hipcamp'), 'other');
+  assert.equal(exportTargetForProvider('google'), 'google');
+  assert.equal(exportTargetForProvider('other'), 'other');
 });
 
 test('only active stays from today to today+540 are sent', () => {

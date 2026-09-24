@@ -26,6 +26,7 @@ import {
   auditStays,
   defaultStaysDeps,
   requireDocId,
+  requireRequestId,
   runStaysGuards,
   staysCallable,
 } from '../common/guards';
@@ -80,12 +81,19 @@ interface NewLinkInput {
   label: string;
   scope: ExportScope;
   rotated: boolean;
+  /** `xl_{requestId}` when the caller sent one, so a retry finds the link it made. */
+  linkId?: string;
+}
+
+/** A create's link id from its requestId: a double tap or a retry lands on the same doc. */
+export function exportLinkIdForRequest(requestId: string): string {
+  return `xl_${requestId}`;
 }
 
 /** Writes a link, its secret token and the token lookup in a transaction; returns its id and URL. */
 function createLinkInTx(tx: Transaction, ctx: StaysCallContext, input: NewLinkInput): StaysCreateExportLinkResponse {
   const now = Timestamp.fromMillis(ctx.nowMs);
-  const linkId = randomId('xl');
+  const linkId = input.linkId ?? randomId('xl');
   const token = newExportToken();
   const ref = exportLinksCol(ctx.db, ctx.facilityId).doc(linkId);
   tx.create(ref, {
@@ -134,6 +142,7 @@ export async function createExportLinkHandler(
         requireDocId(d, 'listingId');
         asTarget(d.targetProvider);
         asScope(d.scope, 'blocks_only');
+        if (d.requestId !== undefined) requireRequestId(d);
       },
       rateLimit: { key: 'stays_export_create', windowSeconds: 3600, perFacility: 30 },
     },
@@ -144,11 +153,28 @@ export async function createExportLinkHandler(
   const targetProvider = asTarget(d.targetProvider);
   const scope = asScope(d.scope, 'blocks_only');
   const label = asLabel(d.label, `SFC to ${providerLabel(targetProvider)}`);
+  const requestId = d.requestId !== undefined ? requireRequestId(d) : null;
   const listing = await listingsCol(ctx.db, ctx.facilityId).doc(listingId).get();
   if (!listing.exists) throw staysError('not-found', 'not_found', 'That listing was not found.', { listingId });
   if (listing.get('archived') === true) throw staysError('failed-precondition', 'listing_inactive', 'That listing is archived.', { listingId });
 
-  const created = await ctx.db.runTransaction(async (tx) => {
+  const outcome = await ctx.db.runTransaction(async (tx) => {
+    const linkId = requestId ? exportLinkIdForRequest(requestId) : undefined;
+    if (linkId) {
+      const ref = exportLinksCol(ctx.db, ctx.facilityId).doc(linkId);
+      const [link, secret] = await tx.getAll(ref, ref.collection(STAYS_SECRET_SUBCOLLECTION).doc(STAYS_CURRENT_DOC_ID));
+      if (link.exists) {
+        // A double tap or a retry: the link this request already made, not a second live token.
+        const token = secret.exists ? secret.get('token') : null;
+        if (link.get('listingId') !== listingId || link.get('targetProvider') !== targetProvider) {
+          throw staysError('invalid-argument', 'invalid_argument', 'That request was already used for another link.', { field: 'requestId' });
+        }
+        if (link.get('active') !== true || !isValidExportToken(token)) {
+          throw staysError('not-found', 'not_found', 'That export link was revoked. Create a new one.', { linkId });
+        }
+        return { created: false, link: { linkId, url: exportUrlForToken(token) } };
+      }
+    }
     if ((await activeLinkCount(tx, ctx, listingId)) >= STAYS_LIMITS.exportLinksPerListing) {
       throw staysError(
         'failed-precondition',
@@ -156,15 +182,16 @@ export async function createExportLinkHandler(
         `A listing can have at most ${STAYS_LIMITS.exportLinksPerListing} export links. Revoke one first.`,
       );
     }
-    return createLinkInTx(tx, ctx, { listingId, targetProvider, label, scope, rotated: false });
+    return { created: true, link: createLinkInTx(tx, ctx, { listingId, targetProvider, label, scope, rotated: false, linkId }) };
   });
+  // A repeat hands the URL out again, so it is audited the way staysGetExportUrl is.
   await auditStays(ctx, {
-    eventType: 'stays.export_link.created',
+    eventType: outcome.created ? 'stays.export_link.created' : 'stays.export_link.url_viewed',
     targetType: 'stayExportLink',
-    targetId: created.linkId,
-    metadata: { listingId, targetProvider, scope },
+    targetId: outcome.link.linkId,
+    metadata: outcome.created ? { listingId, targetProvider, scope } : { listingId },
   });
-  return created;
+  return outcome.link;
 }
 
 export async function getExportUrlHandler(

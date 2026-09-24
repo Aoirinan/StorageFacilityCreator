@@ -11,6 +11,7 @@ import {
   SafeFetchError,
   SafeFetchLogEntry,
   allowedIcalHosts,
+  connectOrder,
   isAcceptableExtraHost,
   isBlockedAddress,
   normalizeAddress,
@@ -145,10 +146,21 @@ test('every private, loopback, link-local and reserved range is blocked, IPv4-ma
     '::ffff:169.254.169.254',
     '::127.0.0.1',
     '64:ff9b::10.0.0.1',
+    '64:ff9b:1::a00:1',
+    // IPv4-translated, 6to4 and Teredo carry an IPv4 address too.
+    '::ffff:0:7f00:1',
+    '::ffff:0:10.0.0.1',
+    '2002:7f00:1::',
+    '2002:a9fe:a9fe::1',
+    '2001:0:4136:e378:8000:63bf:3fff:fdd2',
+    'fec0::1',
+    'ff02::1',
+    '100::1',
+    '2001:db8::1',
     'not-an-ip',
   ];
   for (const a of blocked) assert.equal(isBlockedAddress(a), true, a);
-  const open = ['8.8.8.8', PUBLIC_IP, '172.32.0.1', '100.128.0.1', '198.20.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8'];
+  const open = ['8.8.8.8', PUBLIC_IP, '172.32.0.1', '100.128.0.1', '198.20.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8', '2a03:2880:f10d:83:face:b00c:0:25de', '2001:4860:4860::8888'];
   for (const a of open) assert.equal(isBlockedAddress(a), false, a);
   assert.deepEqual(normalizeAddress('::ffff:7f00:1'), { address: '127.0.0.1', family: 4 });
 });
@@ -176,6 +188,51 @@ test('the connection is pinned to the checked address, so a rebinding DNS answer
   call.lookup('www.airbnb.com', {}, (_e, address) => got.push(address));
   call.lookup('www.airbnb.com', { all: true }, (_e, address) => got.push(address));
   assert.deepEqual(got, [PUBLIC_IP, [{ address: PUBLIC_IP, family: 4 }]]);
+});
+
+test('IPv4 is tried first, and a checked address that will not connect falls through to the next', async () => {
+  const V6 = '2606:4700:4700::1111';
+  assert.deepEqual(
+    connectOrder([
+      { address: V6, family: 6 },
+      { address: PUBLIC_IP, family: 4 },
+      { address: '52.44.10.21', family: 4 },
+    ]).map((a) => a.address),
+    [PUBLIC_IP, '52.44.10.21', V6],
+  );
+
+  // The resolver lists IPv6 first and this egress has no IPv6 route.
+  const h = deps({ [`www.airbnb.com${SECRET_PATH}`]: calendarOk }, { 'www.airbnb.com': [V6, PUBLIC_IP] });
+  const res = await safeFetchText(FEED_URL, { allowedHosts: HOSTS }, h.deps);
+  assert.equal(res.status, 200);
+  assert.deepEqual(h.server.calls.map((c) => c.host), [PUBLIC_IP]);
+
+  // The first IPv4 address refuses the connection: the next checked one is used, never a fresh lookup.
+  const unreachable = new Set([PUBLIC_IP]);
+  const inner = fakeServer({ [`www.airbnb.com${SECRET_PATH}`]: calendarOk });
+  const request = ((options: Call, cb: never) => {
+    if (!unreachable.has(options.host)) return (inner.request as unknown as (o: Call, c: never) => unknown)(options, cb);
+    inner.calls.push(options);
+    const req = new EventEmitter() as EventEmitter & { end(): void; destroy(): void };
+    req.destroy = () => undefined;
+    req.end = () => setImmediate(() => req.emit('error', new Error('ENETUNREACH')));
+    return req;
+  }) as unknown as typeof https.request;
+  const r = resolver({ 'www.airbnb.com': [PUBLIC_IP, '52.44.10.21'] });
+  const fallback = await safeFetchText(FEED_URL, { allowedHosts: HOSTS }, { request, resolveAll: r.resolveAll });
+  assert.equal(fallback.status, 200);
+  assert.deepEqual(inner.calls.map((c) => c.host), [PUBLIC_IP, '52.44.10.21']);
+  assert.equal(r.counts['www.airbnb.com'], 1);
+
+  // No address connects: a network failure, after trying each once.
+  unreachable.add('52.44.10.21');
+  inner.calls.length = 0;
+  assert.equal(await codeOf(safeFetchText(FEED_URL, { allowedHosts: HOSTS }, { request, resolveAll: r.resolveAll })), 'network');
+  assert.equal(inner.calls.length, 2);
+  // An HTTP answer is final: an error status is not retried on another address.
+  const err = deps({ [`www.airbnb.com${SECRET_PATH}`]: { status: 503 } }, { 'www.airbnb.com': [PUBLIC_IP, '52.44.10.21'] });
+  assert.equal(await codeOf(safeFetchText(FEED_URL, { allowedHosts: HOSTS }, err.deps)), 'http_error');
+  assert.equal(err.server.calls.length, 1);
 });
 
 test('a redirect to a private or unlisted address is refused at the hop', async () => {

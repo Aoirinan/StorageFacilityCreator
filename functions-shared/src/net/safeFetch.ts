@@ -231,10 +231,21 @@ const BLOCKED = (() => {
     ['::1', 128],
     ['fc00::', 7],
     ['fe80::', 10],
-    // Beyond the spec's list, the same way: IPv4-compatible and NAT64 forms
-    // can carry an internal IPv4 address.
+    // Beyond the spec's list, the same way: forms that carry an IPv4 address
+    // (IPv4-compatible, NAT64, 6to4, Teredo), which could be an internal one,
+    // and ranges that are never a public web server (site-local, multicast,
+    // discard-only, documentation). IPv4-translated (::ffff:0:0/96) is
+    // checked in isBlockedAddress: BlockList reads that prefix as the
+    // IPv4-mapped range and would block every IPv4 address.
     ['::', 96],
     ['64:ff9b::', 96],
+    ['64:ff9b:1::', 48],
+    ['100::', 64],
+    ['2001::', 32],
+    ['2001:db8::', 32],
+    ['2002::', 16],
+    ['fec0::', 10],
+    ['ff00::', 8],
   ];
   for (const [net, prefix] of v6) list.addSubnet(net, prefix, 'ipv6');
   return list;
@@ -301,6 +312,8 @@ export function normalizeAddress(address: string): { address: string; family: 4 
 export function isBlockedAddress(address: string): boolean {
   const n = normalizeAddress(address);
   if (!n) return true;
+  // IPv4-translated (::ffff:0:a.b.c.d) carries an IPv4 address; never a public calendar server.
+  if (n.family === 6 && n.address.startsWith('0:0:0:0:ffff:0:')) return true;
   return BLOCKED.check(n.address, n.family === 4 ? 'ipv4' : 'ipv6');
 }
 
@@ -308,6 +321,19 @@ async function defaultResolveAll(host: string): Promise<ResolvedAddress[]> {
   const found = await dns.promises.lookup(host, { all: true, verbatim: true });
   return found.map((a) => ({ address: a.address, family: a.family }));
 }
+
+/**
+ * The order to try a host's checked addresses in: IPv4 first (stable
+ * otherwise), because the lookup keeps the resolver's order and the function's
+ * default egress may have no IPv6 route.
+ */
+export function connectOrder(addresses: readonly ResolvedAddress[]): ResolvedAddress[] {
+  const rank = (a: ResolvedAddress) => (a.family === 4 || isIP(a.address) === 4 ? 0 : 1);
+  return addresses.map((a, i) => ({ a, i })).sort((x, y) => rank(x.a) - rank(y.a) || x.i - y.i).map((x) => x.a);
+}
+
+/** Failures before any response arrived: another checked address of the same host may still answer. */
+const CONNECT_FAILURES = new WeakSet<SafeFetchError>();
 
 // ---------------------------------------------------------------------------
 // The fetch
@@ -383,6 +409,7 @@ export async function safeFetchText(
         if (opts.etag) headers['If-None-Match'] = opts.etag;
         if (opts.lastModified) headers['If-Modified-Since'] = opts.lastModified;
         let settled = false;
+        let responded = false;
         const fail = (error: SafeFetchError) => {
           if (settled) return;
           settled = true;
@@ -411,6 +438,7 @@ export async function safeFetchText(
             }) as never,
           },
           (res: IncomingMessage) => {
+            responded = true;
             const statusCode = res.statusCode ?? 0;
             if (statusCode !== 200) {
               res.resume();
@@ -450,7 +478,11 @@ export async function safeFetchText(
           settled = true;
           req.destroy();
         });
-        req.on('error', () => fail(new SafeFetchError('network', 'The calendar connection failed.', null, host)));
+        req.on('error', () => {
+          const error = new SafeFetchError('network', 'The calendar connection failed.', null, host);
+          if (!responded) CONNECT_FAILURES.add(error);
+          fail(error);
+        });
         req.end();
       }),
     );
@@ -474,7 +506,22 @@ export async function safeFetchText(
       if (addresses.some((a) => isBlockedAddress(a.address))) {
         throw new SafeFetchError('blocked_ip', 'That calendar site resolves to a private address.', null, host);
       }
-      const res = await hop(target, addresses[0]);
+      // Every candidate was checked above; each attempt is pinned to one of them.
+      let res: HopResult | null = null;
+      let connectError: SafeFetchError | null = null;
+      for (const address of connectOrder(addresses)) {
+        try {
+          res = await hop(target, address);
+          break;
+        } catch (error) {
+          if (error instanceof SafeFetchError && CONNECT_FAILURES.has(error)) {
+            connectError = error;
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!res) throw connectError ?? new SafeFetchError('network', 'The calendar connection failed.', null, host);
 
       if (REDIRECT_STATUSES.has(res.statusCode)) {
         const location = headerValue(res.headers, 'location');

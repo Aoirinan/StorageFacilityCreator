@@ -113,6 +113,8 @@ test('the daily brief is written once, in the first half hour of the chosen loca
   w.fake.seed(`facilities/${FAC}/stayTasks/turnover_man_rv_leave`, { category: 'turnover', status: 'todo', dueDate: '2026-10-01', assigneeUid: EMPLOYEE });
   w.fake.seed(`${P.channels}/${CHANNEL}`, { ...w.fake.read(`${P.channels}/${CHANNEL}`), sync: { consecutiveFailures: 4, lastStatus: 'timeout' } });
 
+  assert.equal(await processSyncJob(seedJob(w, '2026-10-01T12:00'), w.deps), 'completed');
+  assert.equal(w.fake.list(P.notifications).length, 0, 'not at 06:00 (the first half of the wrong hour)');
   assert.equal(await processSyncJob(seedJob(w, '2026-10-01T12:30'), w.deps), 'completed');
   assert.equal(w.fake.list(P.notifications).length, 0, 'not at 06:30');
   assert.equal(await processSyncJob(seedJob(w, '2026-10-01T13:30'), w.deps), 'completed');
@@ -152,9 +154,11 @@ test('at 03:00 local the drift rebuild heals a lock bucket that no longer matche
     nights: { '2026-10-05': { s: 'man_ghost', h: true, src: 'direct', k: 'reservation' } },
     digest: 'stale',
   });
-  // 09:00Z is 03:00 MDT; 09:30Z is the second half of that hour.
+  // 09:00Z is 03:00 MDT; 08:00Z is the first half of 02:00, and 09:30Z the second half of 03:00.
+  await processSyncJob(seedJob(w, '2026-10-01T08:00'), w.deps);
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-05'].s, 'man_ghost', 'not at 02:00');
   await processSyncJob(seedJob(w, '2026-10-01T09:30'), w.deps);
-  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-05'].s, 'man_ghost');
+  assert.equal(nightsOf(w.fake, '2026-10')['2026-10-05'].s, 'man_ghost', 'not at 03:30');
   await processSyncJob(seedJob(w, '2026-10-01T09:00'), w.deps);
   const nights = nightsOf(w.fake, '2026-10');
   assert.equal(nights['2026-10-05'].s, 'man_a');

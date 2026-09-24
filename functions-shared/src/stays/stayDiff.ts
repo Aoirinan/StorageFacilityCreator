@@ -19,11 +19,19 @@
  *    looks suspicious) and 90 minutes since the first one;
  *  - a stay that is checked in or out, has income, or is partly or fully
  *    paid is flagged for review instead, never removed;
+ *  - a stay already flagged for review stops collecting misses: it waits for
+ *    a person (or for the feed to list it again), and is not rewritten every
+ *    run;
  *  - a past stay that drops out ages out quietly;
  *  - a removed stay that comes back is restored.
  * A feed is suspicious when it is suddenly empty, when it had 3 or more
  * future bookings and now has none, or when this run would remove half or
- * more of this channel's future bookings (two or more of them).
+ * more of this channel's future bookings (two or more of them). Both
+ * planners (a full diff and an unchanged feed) run the same check.
+ * While suspicious 12 misses are needed. An empty or emptied feed never frees
+ * nights on its own: at 12 misses its bookings are flagged for review
+ * instead of removed (§12: an empty feed removes nothing), so an outage that
+ * serves empty calendars for hours cannot release every night.
  */
 import type { StayArrivalState, StayPaymentStatus, StayStatus, Ymd } from './contracts';
 import { isActiveStatus } from './nightLocks';
@@ -104,6 +112,13 @@ export interface MissUpdate {
 
 export type SuspiciousReason = 'empty_feed' | 'future_dropped' | 'mass_removal';
 
+/**
+ * Why a stay is flagged for review instead of removed: it is protected
+ * (checked in, paid, income), or it has been missing for 12 runs from a feed
+ * that looks empty.
+ */
+export type ReviewReason = 'protected' | 'feed_suspicious';
+
 export interface FeedSyncPlan {
   /** New stays. */
   creates: FeedReservation[];
@@ -117,8 +132,10 @@ export interface FeedSyncPlan {
   missesAdvanced: MissUpdate[];
   /** To become removed_from_feed. */
   removals: string[];
-  /** Newly flagged sync.needsReview (would be removed but is checked in, has income or is paid). */
+  /** Newly flagged sync.needsReview (would be removed, but is protected or its feed looks empty). */
   reviews: string[];
+  /** Why each stay in `reviews` is flagged. */
+  reviewReasons: Record<string, ReviewReason>;
   /** Past stays that left the feed. */
   agedOut: string[];
   uidRemaps: { stayId: string; fromUid: string | null; toUid: string }[];
@@ -146,6 +163,7 @@ function emptyPlan(): FeedSyncPlan {
     missesAdvanced: [],
     removals: [],
     reviews: [],
+    reviewReasons: {},
     agedOut: [],
     uidRemaps: [],
     adopted: [],
@@ -164,15 +182,18 @@ function codeOf(e: ExistingFeedStay): string | null {
   return e.stayId.startsWith('airbnb_') ? e.stayId.slice('airbnb_'.length) : null;
 }
 
-/** Checked in or out (the guest came), income, or money taken: a person must look. */
+/**
+ * Checked in or out (the guest came), or partly or fully paid: never removed
+ * automatically. Exported so the writer re-checks it on the stored doc at
+ * commit time (a check-in does not bump `version`).
+ */
+export function isProtectedState(arrivalState: StayArrivalState | undefined, paymentStatus: StayPaymentStatus | undefined): boolean {
+  return arrivalState === 'checked_in' || arrivalState === 'checked_out' || paymentStatus === 'partial' || paymentStatus === 'paid';
+}
+
+/** Protected, or has posted income: a person must look. */
 function isProtected(e: ExistingFeedStay, withIncome: ReadonlySet<string>): boolean {
-  return (
-    e.arrivalState === 'checked_in' ||
-    e.arrivalState === 'checked_out' ||
-    withIncome.has(e.stayId) ||
-    e.paymentStatus === 'partial' ||
-    e.paymentStatus === 'paid'
-  );
+  return isProtectedState(e.arrivalState, e.paymentStatus) || withIncome.has(e.stayId);
 }
 
 /** The miss state after one more (spaced) miss. */
@@ -193,23 +214,89 @@ interface MissOutcome {
   missState: Record<string, MissUpdate>;
   removals: string[];
   reviews: string[];
+  reviewReasons: Record<string, ReviewReason>;
 }
 
-/** Advances misses for the given stays and decides removals and reviews at `required`. */
-function applyMisses(missing: ExistingFeedStay[], now: number, required: number, withIncome: ReadonlySet<string>): MissOutcome {
-  const out: MissOutcome = { missesAdvanced: [], missState: {}, removals: [], reviews: [] };
+/**
+ * Advances misses for the given stays and decides removals and reviews at
+ * `required`. With `holdRemovals` (an empty or emptied feed) a stay that
+ * would be removed is flagged for review instead.
+ */
+function applyMisses(
+  missing: ExistingFeedStay[],
+  now: number,
+  required: number,
+  withIncome: ReadonlySet<string>,
+  holdRemovals: boolean,
+): MissOutcome {
+  const out: MissOutcome = { missesAdvanced: [], missState: {}, removals: [], reviews: [], reviewReasons: {} };
   for (const e of missing) {
+    // Already waiting on a person: counting on would only rewrite the doc (and fire its triggers) every run.
+    if (e.needsReview) continue;
     const { update, advanced } = nextMiss(e, now);
     out.missState[e.stayId] = update;
     if (advanced) out.missesAdvanced.push(update);
     if (!isActiveStatus(e.status) || !meetsRemoval(update, required, now)) continue;
     if (isProtected(e, withIncome)) {
-      if (!e.needsReview) out.reviews.push(e.stayId);
+      out.reviews.push(e.stayId);
+      out.reviewReasons[e.stayId] = 'protected';
+    } else if (holdRemovals) {
+      out.reviews.push(e.stayId);
+      out.reviewReasons[e.stayId] = 'feed_suspicious';
     } else {
       out.removals.push(e.stayId);
     }
   }
   return out;
+}
+
+/** Removing this many of a channel's active future bookings at once looks like a broken feed. */
+function isMassRemoval(removals: number, activeFutureOwn: number): boolean {
+  return removals >= 2 && removals * 2 >= activeFutureOwn;
+}
+
+interface MissDecision {
+  reason: SuspiciousReason | null;
+  required: number;
+  misses: MissOutcome;
+}
+
+/**
+ * The misses of a run, with the suspicion check both planners share: a
+ * full diff and an unchanged feed (304 or the same bytes) must reach the
+ * same verdict, or a byte-stable feed could remove half its bookings at once.
+ * `feedReason` is what the feed itself shows (empty, or its future bookings
+ * gone); `alreadySuspicious` carries a flag from an earlier run.
+ */
+function decideMisses(
+  missing: ExistingFeedStay[],
+  activeFutureOwn: number,
+  now: number,
+  withIncome: ReadonlySet<string>,
+  feedReason: SuspiciousReason | null,
+  alreadySuspicious = false,
+): MissDecision {
+  const tentative = applyMisses(missing, now, REQUIRED_MISSES, withIncome, false);
+  // Reviews remove nothing, so only real removals count towards "half of them".
+  const reason = feedReason ?? (isMassRemoval(tentative.removals.length, activeFutureOwn) ? 'mass_removal' : null);
+  if (!reason && !alreadySuspicious) return { reason: null, required: REQUIRED_MISSES, misses: tentative };
+  const hold = reason === 'empty_feed' || reason === 'future_dropped';
+  return {
+    reason,
+    required: SUSPICIOUS_REQUIRED_MISSES,
+    misses: applyMisses(missing, now, SUSPICIOUS_REQUIRED_MISSES, withIncome, hold),
+  };
+}
+
+function applyDecision(plan: FeedSyncPlan, d: MissDecision, alreadySuspicious = false): void {
+  plan.suspiciousReason = d.reason;
+  plan.suspicious = d.reason !== null || alreadySuspicious;
+  plan.requiredMisses = d.required;
+  plan.missesAdvanced = d.misses.missesAdvanced;
+  plan.missState = d.misses.missState;
+  plan.removals = d.misses.removals;
+  plan.reviews = d.misses.reviews;
+  plan.reviewReasons = d.misses.reviewReasons;
 }
 
 export function planFeedSync(existing: readonly ExistingFeedStay[], parsed: readonly FeedReservation[], opts: PlanFeedSyncOptions): FeedSyncPlan {
@@ -322,26 +409,15 @@ export function planFeedSync(existing: readonly ExistingFeedStay[], parsed: read
   // Is this feed suspicious?
   plan.futureReservationCount = feed.filter((p) => p.checkOut > today).length;
   const missingActive = missing.filter((e) => isActiveStatus(e.status));
-  const activeFutureOwn = usable.filter((e) => own(e) && isActiveStatus(e.status) && e.checkOut > today);
+  const activeFutureOwn = usable.filter((e) => own(e) && isActiveStatus(e.status) && e.checkOut > today).length;
   const eventCount = opts.feedEventCount ?? feed.length;
-  const tentative = applyMisses(missing, opts.now, REQUIRED_MISSES, withIncome);
-  // Reviews remove nothing, so only real removals count towards "half of them".
-  const wouldRemove = tentative.removals.length;
+  let feedReason: SuspiciousReason | null = null;
   if (missingActive.length > 0 && eventCount === 0) {
-    plan.suspiciousReason = 'empty_feed';
+    feedReason = 'empty_feed';
   } else if (missingActive.length > 0 && opts.prevFutureCount >= SUSPICIOUS_PREVIOUS_FUTURE && plan.futureReservationCount === 0) {
-    plan.suspiciousReason = 'future_dropped';
-  } else if (wouldRemove >= 2 && wouldRemove * 2 >= activeFutureOwn.length) {
-    plan.suspiciousReason = 'mass_removal';
+    feedReason = 'future_dropped';
   }
-  plan.suspicious = plan.suspiciousReason !== null;
-  plan.requiredMisses = plan.suspicious ? SUSPICIOUS_REQUIRED_MISSES : REQUIRED_MISSES;
-
-  const misses = plan.suspicious ? applyMisses(missing, opts.now, plan.requiredMisses, withIncome) : tentative;
-  plan.missesAdvanced = misses.missesAdvanced;
-  plan.missState = misses.missState;
-  plan.removals = misses.removals;
-  plan.reviews = misses.reviews;
+  applyDecision(plan, decideMisses(missing, activeFutureOwn, opts.now, withIncome, feedReason));
   return plan;
 }
 
@@ -353,32 +429,37 @@ export interface UnchangedFeedOptions {
   /** channel.sync.suspiciousSince is set: 12 misses are needed. */
   suspicious: boolean;
   withIncome?: ReadonlySet<string>;
+  /**
+   * Events in the unchanged body (channel.sync.eventCount from its last full
+   * diff). 0 is an empty feed, held as a full diff holds it; unknown when
+   * omitted.
+   */
+  feedEventCount?: number;
 }
 
 /**
  * A 304, or a body identical to the last one: nothing to diff, but the stays
  * already missing from it are still missing, so their misses keep counting
- * (and may reach removal or review). Past ones age out.
+ * (and may reach removal or review). Past ones age out. The suspicion checks
+ * run here too: a feed that dropped half its bookings and then went
+ * byte-stable must turn suspicious, not remove them three runs later, and
+ * an empty body that never changes must not free nights at the 12th miss.
  */
 export function advanceMissesOnUnchanged(existing: readonly ExistingFeedStay[], now: number, opts: Omit<UnchangedFeedOptions, 'now'>): FeedSyncPlan {
   const plan = emptyPlan();
-  plan.suspicious = opts.suspicious;
-  plan.suspiciousReason = null;
-  plan.requiredMisses = opts.suspicious ? SUSPICIOUS_REQUIRED_MISSES : REQUIRED_MISSES;
   const missing: ExistingFeedStay[] = [];
+  let activeFutureOwn = 0;
   for (const e of existing) {
-    if (e.channelId !== opts.channelId || e.detached) continue;
-    if (!(e.missCount > 0) || !isActiveStatus(e.status)) continue;
+    if (e.channelId !== opts.channelId || e.detached || !isActiveStatus(e.status)) continue;
+    if (e.checkOut > opts.todayYmd) activeFutureOwn++;
+    if (!(e.missCount > 0)) continue;
     if (e.checkOut <= opts.todayYmd) {
       if (!e.agedOut) plan.agedOut.push(e.stayId);
       continue;
     }
     missing.push(e);
   }
-  const misses = applyMisses(missing, now, plan.requiredMisses, opts.withIncome ?? new Set());
-  plan.missesAdvanced = misses.missesAdvanced;
-  plan.missState = misses.missState;
-  plan.removals = misses.removals;
-  plan.reviews = misses.reviews;
+  const feedReason: SuspiciousReason | null = missing.length > 0 && opts.feedEventCount === 0 ? 'empty_feed' : null;
+  applyDecision(plan, decideMisses(missing, activeFutureOwn, now, opts.withIncome ?? new Set(), feedReason, opts.suspicious), opts.suspicious);
   return plan;
 }

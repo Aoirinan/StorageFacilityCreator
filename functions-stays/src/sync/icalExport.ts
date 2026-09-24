@@ -26,7 +26,8 @@ import { exportLinksCol, listingsCol, staysCol, tsMillis } from './common';
  * the prod Hosting target rewrites to this function.
  *
  *  - 404 for anything that is not a known, active token (generic body);
- *  - 429 past 30 fetches a minute per token or 300 per client IP;
+ *  - 429 past 30 fetches a minute per token or 300 per client IP, counted
+ *    only for known tokens (the lookup comes first);
  *  - 503 with Retry-After: 900 when Stays is paused or not allowed here,
  *    the module or export is off, the link is not active, or any read
  *    fails. Never an empty 200: a channel that got an empty calendar would
@@ -76,10 +77,24 @@ function header(req: ExportRequest, name: string): string {
   return (Array.isArray(v) ? v[0] : v) ?? '';
 }
 
-function clientIp(req: ExportRequest): string {
-  if (req.ip) return req.ip;
-  const forwarded = header(req, 'x-forwarded-for').split(',')[0].trim();
-  return forwarded || 'unknown';
+/**
+ * The caller's address for the per-IP limit, from headers the hosting
+ * platform sets rather than the X-Forwarded-For chain Express reads for
+ * req.ip. Behind the Hosting rewrite, the CDN puts the end user's address in
+ * Fastly-Client-IP; the leftmost X-Forwarded-For entry is the caller's own
+ * claim or a Google front-end hop, and X-AppEngine-User-IP is the peer that
+ * reached the function, which through Hosting is a hop every caller shares.
+ * A direct call to the function URL has no CDN, so that peer is the caller
+ * and X-AppEngine-User-IP is used. A direct caller can still send its own
+ * Fastly-Client-IP: that only picks its bucket, and since only known tokens
+ * are counted, the per-token limit is the one that cannot be dodged.
+ */
+export function clientIp(req: ExportRequest): string {
+  for (const name of ['fastly-client-ip', 'x-appengine-user-ip']) {
+    const value = header(req, name).split(',')[0].trim();
+    if (value) return value;
+  }
+  return req.ip || 'unknown';
 }
 
 /** Which channel is fetching, from its User-Agent. */
@@ -160,6 +175,13 @@ export function createIcalExportHandler(deps: IcalExportDeps = defaultDeps()) {
     };
 
     try {
+      const tokenSnap = await db.collection(STAY_TOP_LEVEL_COLLECTIONS.exportTokens).doc(tokenHash).get();
+      if (!tokenSnap.exists || tokenSnap.get('active') !== true) {
+        notFound();
+        return;
+      }
+      // Only known tokens are counted: a guessed token costs one read and writes
+      // nothing, so spraying random ones cannot fill rateLimits.
       if (!(await allowFetch(db, `staysIcalTok_${tokenHash.slice(0, 24)}`, STAYS_LIMITS.exportFetchesPerMinutePerToken, nowMs))) {
         reply(429, 'Too many requests\n', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
         return;
@@ -167,12 +189,6 @@ export function createIcalExportHandler(deps: IcalExportDeps = defaultDeps()) {
       const ipKey = sha256Hex(clientIp(req)).slice(0, 24);
       if (!(await allowFetch(db, `staysIcalIp_${ipKey}`, STAYS_LIMITS.exportFetchesPerMinutePerIp, nowMs))) {
         reply(429, 'Too many requests\n', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
-        return;
-      }
-
-      const tokenSnap = await db.collection(STAY_TOP_LEVEL_COLLECTIONS.exportTokens).doc(tokenHash).get();
-      if (!tokenSnap.exists || tokenSnap.get('active') !== true) {
-        notFound();
         return;
       }
       const facilityId = tokenSnap.get('facilityId');

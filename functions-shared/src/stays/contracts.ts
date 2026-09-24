@@ -1563,6 +1563,8 @@ export interface StaysCreateExportLinkRequest extends FacilityScopedRequest {
   label: string;
   /** Defaults to 'blocks_only'. */
   scope?: ExportScope;
+  /** Optional; the link becomes `xl_{requestId}`, so a double tap or retry returns the link it made. */
+  requestId?: string;
 }
 export interface StaysCreateExportLinkResponse {
   linkId: string;
