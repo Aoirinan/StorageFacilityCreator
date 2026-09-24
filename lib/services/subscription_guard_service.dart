@@ -125,13 +125,13 @@ class SubscriptionGuardService {
       final account = await (accountProvider ?? _readAccount)(user.uid);
       if (account == null) {
         if (kDebugMode) {
-          print('⚠️ [SubscriptionGuard] No account found - allowing access');
+          print('⚠️ [SubscriptionGuard] No account of their own - deciding from their facilities');
         }
         // #region agent log
         DebugLogger.log(
           hypothesisId: 'H2',
           location: 'subscription_guard_service.dart:checkAccess',
-          message: 'No account found, allowing',
+          message: 'No account found, deciding from facilities',
           data: {'route': currentRoute, 'user': user.uid},
         );
         // #endregion
@@ -199,12 +199,13 @@ class SubscriptionGuardService {
 
   /// [checkAccess]'s rule for an account already read, without its logging.
   ///
-  /// [facilities] is read only when the account alone does not decide, and a
-  /// failed read reaches the caller. The route guard (through checkAccess) and
-  /// the shell's sidebar lock and lock overlay (through [shellLock]) share it.
-  /// The lock widgets had their own copy, which locked out everyone with no
-  /// account (invited staff) and cancelled accounts still inside their paid
-  /// period, both of which the guard lets in.
+  /// [facilities] is read only when the account alone does not decide (and
+  /// always for a user with no account), and a failed read reaches the
+  /// caller. The route guard (through checkAccess) and the shell's sidebar
+  /// lock and lock overlay (through [shellLock]) share it. The lock widgets
+  /// had their own copy, which locked out everyone with no account (invited
+  /// staff) and cancelled accounts still inside their paid period, both of
+  /// which the guard lets in.
   static Future<SubscriptionAccessResult> decideAccess(
     FacilityCreatorAccountModel? account, {
     required Future<List<FacilityModel>> Function() facilities,
@@ -212,10 +213,10 @@ class SubscriptionGuardService {
     bool allowSubscriptionRoutes = true,
     Future<bool> Function(List<FacilityModel> facilities)? activeSubscriptionChecker,
   }) async {
-    // No account yet: allowed (one is created with the first facility).
-    // Invited staff never get one of their own; they work in the owner's.
+    // No account of their own: invited staff (who work in the owner's), a
+    // new signup, or an owner whose account was never created.
     if (account == null) {
-      return const SubscriptionAccessResult(canAccess: true);
+      return accessWithoutAccount(await facilities());
     }
 
     // Accounts the platform does not bill are never locked out. Set by a
@@ -263,7 +264,12 @@ class SubscriptionGuardService {
       String message;
       String redirectRoute = '/subscription';
 
-      if (status == SubscriptionStatus.pendingApproval) {
+      if (account.suspended) {
+        // Before the cancelled branch below: suspending also cancels the
+        // account, and that branch let a cancelled account with a paid period
+        // still running straight back in.
+        message = 'This account is suspended. Contact support to restore access.';
+      } else if (status == SubscriptionStatus.pendingApproval) {
         message = 'Your account is pending approval.';
         redirectRoute = '/pending-approval';
       } else if (status == SubscriptionStatus.pastDue) {
@@ -280,8 +286,7 @@ class SubscriptionGuardService {
         message = 'Your trial has expired. Please subscribe to continue using the platform.';
         redirectRoute = '/subscription?trialExpired=1';
       } else if (status == SubscriptionStatus.cancelled) {
-        if (account.subscriptionCurrentPeriodEnd != null &&
-            DateTime.now().isBefore(account.subscriptionCurrentPeriodEnd!)) {
+        if (_insideCancelledPaidPeriod(account)) {
           message = 'Your subscription has been cancelled but you have access until ${account.subscriptionCurrentPeriodEnd!.toString().split(' ')[0]}.';
           // Allow access until period end
           return SubscriptionAccessResult(
@@ -322,6 +327,60 @@ class SubscriptionGuardService {
     );
   }
 
+  /// A cancelled account keeps access until the period it paid for ends.
+  /// Callers rule out a suspended account first: only an exempt account
+  /// overrides a suspension.
+  static bool _insideCancelledPaidPeriod(FacilityCreatorAccountModel account) {
+    final periodEnd = account.subscriptionCurrentPeriodEnd;
+    return account.subscriptionStatus == SubscriptionStatus.cancelled &&
+        periodEnd != null &&
+        DateTime.now().isBefore(periodEnd);
+  }
+
+  /// [decideAccess] for a user with no account of their own, from the
+  /// facilities they can see ([FacilityModel.currentUserOwnsFacility] tells
+  /// their own from the ones they reach through a role).
+  ///
+  /// An invited team member is let in only through a facility whose billing
+  /// is in good standing ([facilityCoversTeamMember]); staff of a lapsed or
+  /// suspended owner lose access like the owner does. They used to be let in
+  /// whatever the owner's standing, so a login the owner had invited kept
+  /// every facility after the owner's trial lapsed or the account was
+  /// suspended. A new signup (no facilities yet) and an owner whose account
+  /// was never created are let in as before.
+  static SubscriptionAccessResult accessWithoutAccount(List<FacilityModel> facilities) {
+    final ownsAny = facilities.any((f) => f.currentUserOwnsFacility != false);
+    final team = facilities.where((f) => f.currentUserOwnsFacility == false).toList();
+    if (ownsAny || team.isEmpty || team.any(facilityCoversTeamMember)) {
+      return const SubscriptionAccessResult(canAccess: true);
+    }
+    return const SubscriptionAccessResult(
+      canAccess: false,
+      redirectRoute: '/subscription',
+      message: "The facility owner's subscription is not active, so team access "
+          'is paused. Ask the owner to renew it.',
+    );
+  }
+
+  /// Whether the owner's billing for [facility] covers the team members who
+  /// work there: an active or trialing subscription on the facility, a
+  /// billing-exempt facility, or the owner's own account access, read from
+  /// the copy the backend keeps on the facility
+  /// ([FacilityModel.ownerAccountStanding]). A suspended owner covers no one
+  /// unless their account is exempt, the same as for the owner.
+  ///
+  /// No copy means the backend knows of no account for the owner, and an
+  /// owner with none is let in, so their staff are too.
+  static bool facilityCoversTeamMember(FacilityModel facility) {
+    final standing = facility.ownerAccountStanding;
+    if (standing == null) return true;
+    final owner = standing.toAccount(ownerUid: facility.ownerUid);
+    if (owner.billingExempt) return true;
+    if (owner.suspended) return false;
+    if (facility.billingExempt || facility.hasActivePlatformSubscription) return true;
+    return owner.canAccessPlatform || _insideCancelledPaidPeriod(owner);
+  }
+
   /// Where the shell's 1-minute background re-check sends the user for
   /// [result], or null to leave them where they are.
   ///
@@ -348,8 +407,10 @@ class SubscriptionGuardService {
   /// the account, the rule the route guard applies, without the guard's
   /// logging (the overlay asks every 10 s). `locked` is null when a read
   /// failed. No route is passed, so subscription pages get no exemption: the
-  /// sidebar stays locked on them.
-  static Future<({FacilityCreatorAccountModel? account, bool? locked})> shellLock(
+  /// sidebar stays locked on them. `message` says why, for a lock with no
+  /// account to explain it (a team member whose owner lapsed).
+  static Future<({FacilityCreatorAccountModel? account, bool? locked, String? message})>
+      shellLock(
     String uid, {
     Future<FacilityCreatorAccountModel?> Function(String uid)? accountProvider,
     Future<List<FacilityModel>> Function()? facilitiesProvider,
@@ -360,10 +421,10 @@ class SubscriptionGuardService {
         account,
         facilities: facilitiesProvider ?? _readFacilities,
       );
-      return (account: account, locked: shellLockFor(result));
+      return (account: account, locked: shellLockFor(result), message: result.message);
     } catch (e) {
       debugPrint('⚠️ [SubscriptionGuard] Shell lock check failed: $e');
-      return (account: null, locked: null);
+      return (account: null, locked: null, message: null);
     }
   }
 

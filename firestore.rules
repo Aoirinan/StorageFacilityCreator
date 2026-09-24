@@ -186,6 +186,11 @@ service cloud.firestore {
       // Exempts the facility from billing entirely. Super-admin only, for the
       // operator's own sites; self-granting it would be a free subscription.
       'billingExempt',
+      // The owner's account standing, copied here by functions-automation for
+      // invited staff, who cannot read the account. The app lets staff in on
+      // it, so an owner who could write it could keep their staff working
+      // after their own access lapsed or was suspended.
+      'ownerAccountStanding',
 
       // A2P 10DLC / Twilio registration state. Backend-only, and a genuine
       // privilege escalation if it is not: the SMS send path reads

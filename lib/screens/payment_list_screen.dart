@@ -164,31 +164,11 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
         
-        // CRITICAL: Ensure account exists BEFORE trying to load facilities
-        // Permission errors often occur because account doesn't exist yet
-        try {
-          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
-          if (kDebugMode) {
-            debugPrint('✅ Account verified/created for user: ${user.uid}');
-          }
-        } catch (accountError) {
-          // Account creation failed - show helpful error
-          if (mounted) {
-            debugPrint('❌ Could not ensure account exists: $accountError');
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Account setup error: $accountError. Please try again or contact support.'),
-                backgroundColor: AppTheme.warning,
-                duration: const Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'Retry',
-                  onPressed: () => _loadUserFacilities(),
-                ),
-              ),
-            );
-            return; // Don't try to load facilities if account creation failed
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop this list loading (it used to return here, blank).
+        // Facility reads never depended on it: the rules check ownerUid and
+        // roles on the facility itself.
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         ref.invalidate(userFacilitiesProvider(user.uid));
         // Prefer active facility so Payments and Stripe Connect page stay in sync.

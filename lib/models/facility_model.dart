@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/models/stripe_connect_status_model.dart';
 
 class FacilityModel {
@@ -79,6 +80,12 @@ class FacilityModel {
   /// it does not cancel anything in Stripe.
   final bool billingExempt;
 
+  /// The owner's account standing, copied here by the backend so invited
+  /// staff (who cannot read the account) are let in only while the owner's
+  /// billing covers them. Null when there is no copy. Read-only: never
+  /// written back by [toFirestore].
+  final OwnerAccountStanding? ownerAccountStanding;
+
   // Optional public website add-on ($25/mo), controlled by Stripe webhooks.
   final String? stripeWebsiteSubscriptionId;
   final String? websiteSubscriptionStatus;
@@ -149,6 +156,7 @@ class FacilityModel {
     this.platformSubscriptionTrialEnd,
     this.platformSubscriptionCancelAtPeriodEnd = false,
     this.billingExempt = false,
+    this.ownerAccountStanding,
     this.stripeWebsiteSubscriptionId,
     this.websiteSubscriptionStatus,
     this.websiteSubscriptionCurrentPeriodEnd,
@@ -229,6 +237,8 @@ class FacilityModel {
       platformSubscriptionStatus:
           data?['platformSubscriptionStatus'] as String?,
       billingExempt: data?['billingExempt'] == true,
+      ownerAccountStanding:
+          OwnerAccountStanding.fromFirestore(data?['ownerAccountStanding']),
       platformSubscriptionCurrentPeriodEnd:
           (data?['platformSubscriptionCurrentPeriodEnd'] as Timestamp?)
               ?.toDate(),
@@ -395,6 +405,8 @@ class FacilityModel {
     DateTime? platformSubscriptionCurrentPeriodEnd,
     DateTime? platformSubscriptionTrialEnd,
     bool? platformSubscriptionCancelAtPeriodEnd,
+    bool? billingExempt,
+    OwnerAccountStanding? ownerAccountStanding,
     String? stripeWebsiteSubscriptionId,
     String? websiteSubscriptionStatus,
     DateTime? websiteSubscriptionCurrentPeriodEnd,
@@ -469,6 +481,11 @@ class FacilityModel {
       platformSubscriptionCancelAtPeriodEnd:
           platformSubscriptionCancelAtPeriodEnd ??
               this.platformSubscriptionCancelAtPeriodEnd,
+      // Was missing, so every copy (the facility list marks each one owned or
+      // not with copyWith) came out not exempt, and an exempt facility never
+      // let anyone in.
+      billingExempt: billingExempt ?? this.billingExempt,
+      ownerAccountStanding: ownerAccountStanding ?? this.ownerAccountStanding,
       stripeWebsiteSubscriptionId:
           stripeWebsiteSubscriptionId ?? this.stripeWebsiteSubscriptionId,
       websiteSubscriptionStatus:

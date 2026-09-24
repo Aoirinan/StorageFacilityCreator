@@ -10,6 +10,7 @@ import 'permission_service.dart';
 import 'facility_creator_account_service.dart';
 import 'superadmin_service.dart';
 import 'debug_logger.dart';
+import 'package:sfcapp/services/error_reporter.dart';
 import 'facility_creation_policy.dart';
 import '../constants/facility_capacity.dart';
 import 'package:sfcapp/utils/single_flight.dart';
@@ -274,11 +275,7 @@ class FacilityService {
           // ✅ Phase 7: Check subscription status before creating facility
           // Superadmins bypass this check
           if (!skipSubscriptionCheck && !SuperAdminService.isSuperAdmin(user)) {
-            // Creating a facility makes the user an owner, so invited staff
-            // get an account here (and nowhere else).
-            final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser(
-              createForInvitedStaff: true,
-            );
+            final account = await accountForNewFacility();
             final currentFacilityCount = account.facilityIds.length;
 
             // Per-facility billing: each facility gets its own subscription
@@ -379,6 +376,25 @@ class FacilityService {
           rethrow;
         }
       }
+
+  /// The account a new facility is created under. Creating a facility makes
+  /// the user an owner, so invited staff get an account here (and nowhere
+  /// else); without the flag they were refused their first facility.
+  /// [getOrCreate] replaces the account service, for tests only.
+  @visibleForTesting
+  static Future<FacilityCreatorAccountModel> accountForNewFacility({
+    Future<FacilityCreatorAccountModel> Function({required bool createForInvitedStaff})?
+        getOrCreate,
+  }) {
+    return (getOrCreate ?? _getOrCreateAccount)(createForInvitedStaff: true);
+  }
+
+  static Future<FacilityCreatorAccountModel> _getOrCreateAccount({
+    required bool createForInvitedStaff,
+  }) =>
+      FacilityCreatorAccountService.getOrCreateAccountForCurrentUser(
+        createForInvitedStaff: createForInvitedStaff,
+      );
 
   /// Check if user can create a facility based on subscription status
   static _CanCreateFacilityResult _canCreateFacility(
@@ -653,6 +669,10 @@ class FacilityService {
     var roleIds = <String>{};
     var ownedLoaded = false;
     var rolesLoaded = false;
+    // How the owned or roles listener failed, while it has. A failed source
+    // counts as empty so the other keeps the list going.
+    (Object, StackTrace)? ownedFailure;
+    (Object, StackTrace)? rolesFailure;
 
     // Role facilities the user also owns come from the owned query already.
     Set<String> listenedRoleIds() => roleIds.difference(owned.keys.toSet());
@@ -672,7 +692,19 @@ class FacilityService {
           if (roleDocs[id] case final f? when f.active)
             f.copyWith(currentUserOwnsFacility: false),
       ]..sort((a, b) => a.name.compareTo(b.name));
+      // With nothing to show, a failure is the answer: never pass it off as
+      // "no facilities".
+      final failure = ownedFailure ?? rolesFailure;
+      if (list.isEmpty && failure != null) {
+        controller.addError(failure.$1, failure.$2);
+        return;
+      }
       controller.add(list);
+    }
+
+    void reportSourceFailure(String source, Object e, StackTrace st) {
+      ErrorReporter.reportError(e, st,
+          context: 'FacilityService.facilitiesForUserStream($source listener)');
     }
 
     void syncRoleListeners() {
@@ -712,16 +744,37 @@ class FacilityService {
       ownedSub = ownedFacilities(uid).listen((list) {
         owned = {for (final f in list) f.id: f};
         ownedLoaded = true;
+        ownedFailure = null;
         syncRoleListeners();
         emit();
-      }, onError: controller.addError);
+      }, onError: (Object e, StackTrace st) {
+        // Counted as owning nothing, so role facilities keep coming. Only
+        // the error used to reach the list, and nothing after it.
+        owned = {};
+        ownedLoaded = true;
+        ownedFailure = (e, st);
+        reportSourceFailure('owned', e, st);
+        syncRoleListeners();
+        emit();
+      });
 
       rolesSub = roleFacilityIds(uid).listen((ids) {
         roleIds = ids;
         rolesLoaded = true;
+        rolesFailure = null;
         syncRoleListeners();
         emit();
-      }, onError: controller.addError);
+      }, onError: (Object e, StackTrace st) {
+        // No role facilities, as when the one-off user_roles read fails.
+        // rolesLoaded used to stay false, so the owned facilities were never
+        // emitted again for the rest of the session.
+        roleIds = {};
+        rolesLoaded = true;
+        rolesFailure = (e, st);
+        reportSourceFailure('roles', e, st);
+        syncRoleListeners();
+        emit();
+      });
     }
 
     controller.onListen = start;

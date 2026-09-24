@@ -97,6 +97,14 @@ void main() {
     });
   });
 
+  test("a failed facility read is the dashboard's error, not an all-zero dashboard", () async {
+    // The real facility read (no Firebase app in tests, so it fails). Read
+    // without throwOnError it came back as [] and the dashboard showed zeros,
+    // as for an owner with no facilities.
+    await expectLater(dashboardFacilities(null), throwsA(anything));
+    await expectLater(dashboardFacilities('fac1'), throwsA(anything));
+  });
+
   group('positiveBalances', () {
     test('fetches a chunk together, drops failures and non-positive balances, keeps order', () async {
       final gates = <String, Completer<double>>{};

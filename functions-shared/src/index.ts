@@ -148,6 +148,18 @@ export type {
   AccountRollupResult,
   FacilitySubscriptionSnapshot,
 } from './subscription/accountRollup';
+export {
+  OWNER_ACCOUNT_READ_LIMIT,
+  OWNER_ACCOUNT_STANDING_FIELD,
+  accountWriteAffectsStanding,
+  buildOwnerAccountStanding,
+  findOwnerAccountDoc,
+  listOwnerAccountDocs,
+  preferredOwnerAccountDoc,
+  sameOwnerAccountStanding,
+  syncOwnerAccountStanding,
+} from './platform/ownerAccount';
+export type { AccountDocLike, OwnerAccountStanding, OwnerStandingSyncDeps } from './platform/ownerAccount';
 
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';

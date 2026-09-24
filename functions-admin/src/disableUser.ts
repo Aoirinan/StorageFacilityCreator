@@ -40,12 +40,16 @@ export async function disableUserHandler(
     throw new functions.https.HttpsError('permission-denied', 'Cannot disable a super admin account');
   }
   await deps.auth.updateUser(uid, { disabled: true });
+  // Recorded as soon as Auth has it, before the revoke: the login really is
+  // disabled now. Recorded after, a failed revoke left the console showing
+  // the user as enabled. The revoke failing still fails the call, so the
+  // super admin retries it; every step is safe to repeat.
+  await deps.mergeUserDoc(uid, { authDisabled: true, authDisabledAt: deps.serverTimestamp() });
   // Disabling alone left sessions already signed in to run on until the
   // client happened to re-check with Auth, and to resume if the account was
   // re-enabled. Revoked refresh tokens cannot mint a new ID token, so every
   // session ends within the hour at most and must sign in again afterwards.
   await deps.auth.revokeRefreshTokens(uid);
-  await deps.mergeUserDoc(uid, { authDisabled: true, authDisabledAt: deps.serverTimestamp() });
   functions.logger.info('superAdminDisableUser', { uid, disabledBy: callerEmail });
   return { success: true };
 }
