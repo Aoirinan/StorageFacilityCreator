@@ -63,6 +63,9 @@ class _FacilityWebsiteSetupScreenState
   ];
 
   bool _isLoading = true;
+  // Until [_load] succeeds the form holds defaults, not the saved website,
+  // and saving it would write them over the owner's content: Save is off.
+  bool _settingsLoaded = false;
   bool _isSaving = false;
   bool _subscriptionRequired = false;
   bool _isStartingCheckout = false;
@@ -318,6 +321,7 @@ class _FacilityWebsiteSetupScreenState
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
+      _settingsLoaded = false;
       _subscriptionRequired = false;
       _error = null;
     });
@@ -337,32 +341,34 @@ class _FacilityWebsiteSetupScreenState
         });
         return;
       }
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
+      // Throws when the saved settings cannot be read, rather than filling
+      // the form with defaults that a save would then write over them.
+      final settings = await FacilityPublicService.getPublicSettingsOrThrow(
+          widget.facilityId);
       final publicSlug = await FacilityMapV2Service.getPublicSlugForFacility(
           widget.facilityId);
 
-      final widgets = settings?.widgets ?? const <String, dynamic>{};
+      final widgets = settings.widgets ?? const <String, dynamic>{};
       final websiteConfig =
           (widgets['websiteConfig'] as Map<String, dynamic>?) ??
               const <String, dynamic>{};
-      final customStyles = settings?.customStyles ?? const <String, dynamic>{};
-      final featuredImages = settings?.featuredImages ?? const <String>[];
+      final customStyles = settings.customStyles ?? const <String, dynamic>{};
+      final featuredImages = settings.featuredImages ?? const <String>[];
 
       if (!mounted) return;
       setState(() {
         _facility = facility;
         _userFacilities = facilities;
-        _websiteEnabled = settings?.enabled ?? false;
-        _publicRentalsEnabled = settings?.publicRentalsEnabled ?? false;
+        _websiteEnabled = settings.enabled;
+        _publicRentalsEnabled = settings.publicRentalsEnabled;
         _slugController.text =
-            (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
-                ? settings!.publicRentalSlug!
+            (settings.publicRentalSlug?.trim().isNotEmpty ?? false)
+                ? settings.publicRentalSlug!
                 : (publicSlug ?? widget.facilityId.toLowerCase());
-        _customDomainController.text = settings?.customDomain ?? '';
+        _customDomainController.text = settings.customDomain ?? '';
         _pageTitleController.text =
-            settings?.pageTitle ?? '${facility.name} | Self Storage';
-        _pageDescriptionController.text = settings?.pageDescription ??
+            settings.pageTitle ?? '${facility.name} | Self Storage';
+        _pageDescriptionController.text = settings.pageDescription ??
             (facility.description ??
                 'Secure storage units with easy online rentals.');
         _heroHeadlineController.text =
@@ -377,7 +383,7 @@ class _FacilityWebsiteSetupScreenState
                 true
             ? websiteConfig['heroSubheadline'] as String
             : 'Secure, convenient, and reliable storage with online rentals.';
-        _marketingContentController.text = settings?.marketingContent ??
+        _marketingContentController.text = settings.marketingContent ??
             'Choose from a wide range of unit sizes and reserve online in minutes.';
         _addressController.text = (websiteConfig['address'] as String?) ?? '';
         _officeHoursController.text = (websiteConfig['officeHours']
@@ -505,12 +511,14 @@ class _FacilityWebsiteSetupScreenState
             (websiteConfig['ogImageUrl'] as String?) ?? '';
         _canonicalUrlController.text =
             (websiteConfig['canonicalUrl'] as String?) ?? '';
+        _settingsLoaded = true;
         _isLoading = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to load website settings: $e';
+        _error = 'Failed to load website settings: $e\n'
+            'Saving is off until they load. Press Refresh to try again.';
         _isLoading = false;
       });
     }
@@ -2390,7 +2398,7 @@ class _FacilityWebsiteSetupScreenState
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: _isSaving ? null : _save,
+                onPressed: _isSaving || !_settingsLoaded ? null : _save,
                 icon: _isSaving
                     ? const SizedBox(
                         width: 16,

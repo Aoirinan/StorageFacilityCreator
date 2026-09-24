@@ -54,6 +54,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   String? _errorMessage;
 
   bool _isLoadingPublicSettings = true;
+  // The rental form shows defaults until the saved settings load, and saving
+  // those would switch rentals off and clear the unit types, so the form and
+  // its save are hidden until then.
+  bool _publicSettingsLoaded = false;
   bool _isSavingPublicSettings = false;
   String? _publicSettingsError;
   final TextEditingController _publicRentalSlugController =
@@ -135,6 +139,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   Future<void> _loadPublicRentalSettings() async {
     setState(() {
       _isLoadingPublicSettings = true;
+      _publicSettingsLoaded = false;
       _publicSettingsError = null;
     });
     try {
@@ -142,28 +147,28 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       // together instead of paying two round trips in series. Future.wait
       // also listens to both, so a failure in either lands in the catch below.
       final settingsFuture =
-          FacilityPublicService.getPublicSettings(widget.facility.id);
+          FacilityPublicService.getPublicSettingsOrThrow(widget.facility.id);
       final mapSlugFuture =
           FacilityMapV2Service.getPublicSlugForFacility(widget.facility.id);
       await Future.wait([settingsFuture, mapSlugFuture]);
       final settings = await settingsFuture;
-      final slug = settings?.publicRentalSlug?.trim();
+      final slug = settings.publicRentalSlug?.trim();
       final fallbackSlug =
           await mapSlugFuture ?? widget.facility.id.toLowerCase();
       final safeSlug = (slug == null || slug.isEmpty) ? fallbackSlug : slug;
 
       if (!mounted) return;
       setState(() {
-        _publicRentalsEnabled = settings?.publicRentalsEnabled ?? false;
-        _publicPricingEnabled = settings?.publicPricingEnabled ?? true;
-        _publicUnitNumbersEnabled = settings?.publicUnitNumbersEnabled ?? true;
-        _allowAutoAssign = settings?.allowAutoAssign ?? true;
-        _allowUnitSelection = settings?.allowUnitSelection ?? true;
-        _showAvailabilityCount = settings?.showAvailabilityCount ?? true;
-        _hideUnavailableTypes = settings?.hideUnavailableTypes ?? true;
-        _enabledPublicUnitTypes =
-            settings?.enabledPublicUnitTypes.toSet() ?? <String>{};
+        _publicRentalsEnabled = settings.publicRentalsEnabled;
+        _publicPricingEnabled = settings.publicPricingEnabled;
+        _publicUnitNumbersEnabled = settings.publicUnitNumbersEnabled;
+        _allowAutoAssign = settings.allowAutoAssign;
+        _allowUnitSelection = settings.allowUnitSelection;
+        _showAvailabilityCount = settings.showAvailabilityCount;
+        _hideUnavailableTypes = settings.hideUnavailableTypes;
+        _enabledPublicUnitTypes = settings.enabledPublicUnitTypes.toSet();
         _publicRentalSlugController.text = safeSlug;
+        _publicSettingsLoaded = true;
         _isLoadingPublicSettings = false;
       });
     } catch (e) {
@@ -761,6 +766,15 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
                       child: LinearProgressIndicator(),
+                    )
+                  else if (!_publicSettingsLoaded)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: _loadPublicRentalSettings,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Load public rental settings again'),
+                      ),
                     )
                   else ...[
                     TextFormField(
