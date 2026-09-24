@@ -1410,10 +1410,23 @@ function timestampMillis(value: unknown): number | null {
   return typeof seconds === 'number' ? seconds * 1000 : null;
 }
 
+/**
+ * Whether a facility's public website is served: a live $25 Stripe add-on, an
+ * unexpired superadmin trial, or a billing-exempt facility.
+ *
+ * billingExempt is the operator's own facility. It already waives the $75
+ * platform plan, and it now waives this add-on too; without it the operator had
+ * to pay their own platform $25 a month, or be refused a trial, which requires a
+ * paid platform plan. Only exactly true counts. Owners cannot set it
+ * (facilityEntitlementWriteForbiddenKeys in the Firestore rules), so this is
+ * not a way to self-grant a website. Keep in step with
+ * FacilityModel.hasActiveWebsiteSubscription in the app.
+ */
 export function hasActiveWebsiteSubscription(
   data: Record<string, unknown>,
   nowMs = Date.now(),
 ): boolean {
+  if (data.billingExempt === true) return true;
   const status = String(data.websiteSubscriptionStatus || '').toLowerCase();
   const subscriptionId = String(data.stripeWebsiteSubscriptionId || '').trim();
   const stripeEntitled = subscriptionId.startsWith('sub_') &&
