@@ -8,6 +8,7 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/reminder_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 
 class ReminderListScreen extends ConsumerStatefulWidget {
   const ReminderListScreen({super.key});
@@ -545,7 +546,9 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen> {
             onPressed: () async {
               Navigator.of(ctx).pop();
               try {
-                await ref.read(reminderOperationsProvider.notifier).sendReminder(
+                final result = await ref
+                    .read(reminderOperationsProvider.notifier)
+                    .sendReminder(
                       facilityId: reminder.facilityId,
                       reminderId: reminder.id,
                       tenantEmail: reminder.tenantEmail ?? '',
@@ -553,13 +556,21 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen> {
                       message: reminder.message,
                       channels: reminder.channels,
                     );
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(reminderSentMessage(result))),
+                  );
+                }
               } catch (e) {
-                // The send now throws when nothing went out; say so rather
-                // than leave the row looking as if it was dealt with.
+                // The send throws when nothing went out, or when it went out
+                // and was not recorded; the errors explain themselves. This
+                // read "Reminder not sent: The reminder was not sent: ...",
+                // and a Firestore error as raw text.
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Reminder not sent: $e'),
+                      content:
+                          Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
                       backgroundColor: AppTheme.error,
                     ),
                   );

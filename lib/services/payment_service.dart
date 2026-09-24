@@ -20,23 +20,41 @@ class PaymentNotProcessableException implements UserFacingException {
 }
 
 /// Why a payment stored with [status] must not be marked paid, or null when
-/// it may be (pending, failed, or a status this app does not know).
+/// it may be.
+///
+/// An allowlist: only a payment still owed (no status yet, pending, or
+/// failed) can be processed. It listed the statuses to refuse instead, and
+/// the Stripe webhooks also write disputed and partially_refunded: Process
+/// on one of those overwrote it with paid and moved the tenant's paidThrough
+/// on a month nobody paid for. A status added later is refused until
+/// someone decides otherwise.
 String? paymentNotProcessableReason(Object? status) {
   switch (status) {
-    case 'paid':
-    case 'completed':
-      return 'This payment has already been paid.';
-    case 'refunded':
-      return 'This payment was refunded, so it cannot be processed.';
-    case 'cancelled':
-      return 'This payment was cancelled, so it cannot be processed.';
+    case null:
+    case 'pending':
+    case 'failed':
+      return null;
   }
-  return null;
+  final label = switch (status) {
+    'paid' || 'completed' || 'succeeded' => 'already paid',
+    'refunded' => 'refunded',
+    'cancelled' => 'cancelled',
+    'disputed' => 'disputed',
+    'partially_refunded' => 'partially refunded',
+    _ => 'marked "$status"',
+  };
+  return 'This payment is $label, so it cannot be processed.';
 }
 
 class PaymentService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so tests can sign a fake user in and run
+  // markPaymentAsPaid's real transaction (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// The payment doc [markPaymentAsPaid] reads and writes.
   static DocumentReference<Map<String, dynamic>> Function(
@@ -451,7 +469,7 @@ class PaymentService {
       if (method != null) updateData['method'] = method.name;
       if (dueDate != null) updateData['dueDate'] = Timestamp.fromDate(dueDate);
       if (notes != null) updateData['notes'] = notes;
-      if (status != null) updateData['status'] = status.name;
+      if (status != null) updateData['status'] = status.storedValue;
 
       await _firestore
           .collection('facilities')
@@ -494,6 +512,8 @@ class PaymentService {
     }
   }
 
+  static const _paymentNotFound = 'Payment not found';
+
   // Mark payment as paid
   static Future<void> markPaymentAsPaid({
     required String facilityId,
@@ -503,17 +523,6 @@ class PaymentService {
     String? notes,
   }) async {
     try {
-      // Read fresh, from the server. The pages act on the copy they opened
-      // with: a detail page left open while the payment was paid elsewhere
-      // still offered Process, and processing it again moved the tenant's
-      // paidThrough on another month and sent a second receipt.
-      final paymentDoc = _paymentDoc(facilityId, paymentId);
-      final stored =
-          await paymentDoc.get(const GetOptions(source: Source.server));
-      if (!stored.exists) throw Exception('Payment not found');
-      final refusal = paymentNotProcessableReason(stored.data()?['status']);
-      if (refusal != null) throw PaymentNotProcessableException(refusal);
-
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
 
@@ -521,19 +530,42 @@ class PaymentService {
         print('🔄 Marking payment as paid: $paymentId');
       }
 
-      final now = DateTime.now();
-      final nowTimestamp = Timestamp.fromDate(now);
+      final nowTimestamp = Timestamp.fromDate(DateTime.now());
+      final paymentDoc = _paymentDoc(facilityId, paymentId);
 
-      await paymentDoc.update({
-        'status': 'paid',
-        'method': method.name,
-        'transactionId': transactionId,
-        'paidDate': nowTimestamp,
-        'paidAt': nowTimestamp,
-        'paidBy': user.uid,
-        'notes': notes,
-        'updatedAt': nowTimestamp,
-      });
+      // The status is read and overwritten in one transaction, which reads
+      // from the server and retries if the doc changes before it commits.
+      // The pages act on the copy they opened with: a page left open while
+      // the payment was paid elsewhere still offered Process, and two
+      // Process clicks on two pages each read pending and both went through.
+      // Either way the tenant's paidThrough moved on a second month and a
+      // second receipt went out.
+      //
+      // The handler returns why it wrote nothing rather than throwing: on
+      // web a Dart error thrown inside a transaction comes back as an opaque
+      // JS error, so the pages could not say why.
+      final refusal = await paymentDoc.firestore.runTransaction<String?>(
+        (txn) async {
+          final stored = await txn.get(paymentDoc);
+          if (!stored.exists) return _paymentNotFound;
+          final reason =
+              paymentNotProcessableReason(stored.data()?['status']);
+          if (reason != null) return reason;
+          txn.update(paymentDoc, {
+            'status': 'paid',
+            'method': method.name,
+            'transactionId': transactionId,
+            'paidDate': nowTimestamp,
+            'paidAt': nowTimestamp,
+            'paidBy': user.uid,
+            'notes': notes,
+            'updatedAt': nowTimestamp,
+          });
+          return null;
+        },
+      );
+      if (refusal == _paymentNotFound) throw Exception('Payment not found');
+      if (refusal != null) throw PaymentNotProcessableException(refusal);
 
       // Update tenant's paidThrough date
       await _updateTenantPaidThrough(facilityId, paymentId);

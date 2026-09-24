@@ -558,8 +558,12 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.failed:
         return AppTheme.error;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return AppTheme.primaryBlue;
+      case PaymentStatus.disputed:
+        return AppTheme.error;
       case PaymentStatus.cancelled:
+      case PaymentStatus.other:
         return Theme.of(context).colorScheme.onSurfaceVariant;
     }
   }
@@ -574,9 +578,14 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
       case PaymentStatus.failed:
         return Icons.error_outline;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return Icons.refresh;
       case PaymentStatus.cancelled:
         return Icons.cancel_outlined;
+      case PaymentStatus.disputed:
+        return Icons.gavel;
+      case PaymentStatus.other:
+        return Icons.help_outline;
     }
   }
 
@@ -636,13 +645,20 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
                 popOrGo(context, AppRoute.payments);
               } catch (e) {
                 if (!mounted) return;
-                setState(() => _processing = false);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
                     backgroundColor: AppTheme.error,
                   ),
                 );
+                // Refused as no longer due: this page shows the copy it was
+                // opened with, and kept offering Process, so the operator
+                // could only retry. Back to the list, which reloads.
+                if (e is PaymentNotProcessableException) {
+                  popOrGo(context, AppRoute.payments);
+                  return;
+                }
+                setState(() => _processing = false);
               }
             },
             style: ElevatedButton.styleFrom(

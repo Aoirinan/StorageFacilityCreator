@@ -15,6 +15,7 @@ import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/autopay_service.dart';
+import 'package:sfcapp/services/payment_service.dart';
 import '../services/stripe_connect_service.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
@@ -1695,8 +1696,12 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       case PaymentStatus.failed:
         return AppTheme.error;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return AppTheme.primaryBlue;
+      case PaymentStatus.disputed:
+        return AppTheme.error;
       case PaymentStatus.cancelled:
+      case PaymentStatus.other:
         return AppTheme.textTertiary;
     }
   }
@@ -1712,9 +1717,14 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       case PaymentStatus.failed:
         return Icons.error;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return Icons.refresh;
       case PaymentStatus.cancelled:
         return Icons.cancel;
+      case PaymentStatus.disputed:
+        return Icons.gavel;
+      case PaymentStatus.other:
+        return Icons.help_outline;
     }
   }
 
@@ -1785,7 +1795,11 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
                 ref.invalidate(paymentStatsProvider(_selectedFacilityId));
               } catch (e) {
                 if (!mounted) return;
-                setState(() => _processingPaymentIds.remove(payment.id));
+                // A refusal (no longer due) keeps the row's Process off; the
+                // notifier has the list reloaded to show what it really is.
+                if (e is! PaymentNotProcessableException) {
+                  setState(() => _processingPaymentIds.remove(payment.id));
+                }
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),

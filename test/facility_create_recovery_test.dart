@@ -227,6 +227,127 @@ void main() {
     });
   });
 
+  // A timeout did not cancel the create: offline, Firestore sends the
+  // queued write on reconnect. The wizard turned Create back on, and a
+  // second Create made a second facility when both writes landed.
+  group('a create kept after a timeout', () {
+    late int starts;
+    late Completer<String> firstCreate;
+    late List<(String?, Object?)> settled;
+    late FacilityCreateInFlight inFlight;
+
+    // Called in each test body, not setUp: in the test's zone, so pump
+    // sees the create complete.
+    void start() {
+      starts = 0;
+      firstCreate = Completer<String>();
+      settled = [];
+      inFlight = FacilityCreateInFlight(
+        onSettled: (id, error) => settled.add((id, error)),
+      );
+    }
+
+    /// Create as the wizard does it: through [inFlight].
+    Future<String> create(
+      String name, {
+      Future<String> Function()? start,
+      List<FacilityModel> found = const [],
+    }) =>
+        createFacilityOrRecover(
+          name: name,
+          create: () {
+            starts++;
+            return start == null ? firstCreate.future : start();
+          },
+          reloadFacilities: () async => found,
+          inFlight: inFlight,
+          now: () => _now,
+        );
+
+    /// Starts a create that times out with nothing found, as offline.
+    Future<Object?> timeOut(WidgetTester tester, [String name = 'Oak Storage']) async {
+      Object? error;
+      unawaited(create(name).then((_) {}, onError: (Object e) => error = e));
+      await tester.pump(facilityCreateTimeout + const Duration(seconds: 1));
+      return error;
+    }
+
+    testWidgets('is still running, and a second Create waits for it',
+        (tester) async {
+      start();
+      expect(await timeOut(tester), isA<TimeoutException>());
+      expect(inFlight.isRunning, isTrue);
+
+      String? id;
+      unawaited(create('Oak Storage').then((v) => id = v));
+      await tester.pump();
+      expect(starts, 1);
+
+      firstCreate.complete('made');
+      await tester.pump();
+      expect(id, 'made');
+      expect(starts, 1);
+      expect(inFlight.isRunning, isFalse);
+      expect(settled, [('made', null)]);
+    });
+
+    testWidgets('finished late: the next Create takes its facility',
+        (tester) async {
+      start();
+      await timeOut(tester);
+      firstCreate.complete('made-late');
+      await tester.pump();
+      expect(inFlight.isRunning, isFalse);
+      expect(inFlight.createdId, 'made-late');
+      expect(settled, [('made-late', null)]);
+
+      String? id;
+      unawaited(create('Oak Storage').then((v) => id = v));
+      await tester.pump();
+      expect(id, 'made-late');
+      expect(starts, 1);
+    });
+
+    testWidgets('failed late: dropped, and the next Create starts afresh',
+        (tester) async {
+      start();
+      await timeOut(tester);
+      final refusal = _firestoreError('permission-denied');
+      firstCreate.completeError(refusal);
+      await tester.pump();
+      expect(inFlight.isRunning, isFalse);
+      expect(inFlight.createdId, isNull);
+      expect(settled, [(null, refusal)]);
+
+      String? id;
+      unawaited(
+        create('Oak Storage', start: () async => 'second').then((v) => id = v),
+      );
+      await tester.pump();
+      expect(id, 'second');
+      expect(starts, 2);
+    });
+
+    // The owner may have changed the name before trying again.
+    testWidgets('is looked for by the name it was started with',
+        (tester) async {
+      start();
+      await timeOut(tester, 'Oak Storage');
+      String? id;
+      unawaited(
+        create(
+          'Oak Storage Renamed',
+          found: [
+            _facility('made', 'Oak Storage', age: const Duration(seconds: 5)),
+          ],
+        ).then((v) => id = v),
+      );
+      await tester.pump(facilityCreateTimeout + const Duration(seconds: 1));
+      expect(id, 'made');
+      expect(starts, 1);
+    });
+  });
+
   group('facilityCreateMayHaveLanded', () {
     test('a timeout or lost connection may have written the facility', () {
       expect(facilityCreateMayHaveLanded(TimeoutException('slow')), isTrue);
@@ -266,5 +387,23 @@ void main() {
     expect(wizard, contains('getUserFacilities(forceRefresh: true)'));
     expect(wizard, contains('createUnconfirmed = facilityCreateMayHaveLanded(e);'));
     expect(wizard, isNot(contains('createUnconfirmed = true;')));
+  });
+
+  // FacilityCreationWizard needs Firebase to reach Create, so its use of
+  // FacilityCreateInFlight is checked in its source.
+  test('the wizard keeps its create, and Create is off while it runs', () {
+    final wizard =
+        File('lib/screens/facility_creation_wizard.dart').readAsStringSync();
+    expect(wizard, contains('inFlight: _inFlightCreate,'));
+    expect(
+      RegExp(r'onPressed: _isLoading \|\|\s+_createdFacilityId != null \|\|'
+              r'\s+_inFlightCreate\.isRunning\s+\? null')
+          .hasMatch(wizard),
+      isTrue,
+    );
+    expect(
+      RegExp(r'_inFlightCreate\.isRunning\)\s*\{\s*return;').hasMatch(wizard),
+      isTrue,
+    );
   });
 }

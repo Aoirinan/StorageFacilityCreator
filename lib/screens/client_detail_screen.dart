@@ -1778,14 +1778,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       );
 
       // Send reminder immediately
-      final sent = await ReminderService.sendReminder(
+      final sent = (await ReminderService.sendReminder(
         facilityId: tenant.facilityId,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
         message: 'This is a reminder about your storage unit. Please contact us if you have any questions.',
         channels: [ReminderChannel.email],
-      );
+      )).sent;
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1972,14 +1972,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         tenantPhone: tenant.phone,
       );
 
-      final sent = await ReminderService.sendReminder(
+      final sent = (await ReminderService.sendReminder(
         facilityId: tenant.facilityId,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
         message: message,
         channels: channels,
-      );
+      )).sent;
 
       if (mounted && messenger != null) {
         messenger.hideCurrentSnackBar();

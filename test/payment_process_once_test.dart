@@ -49,7 +49,10 @@ void main() {
   late _FakeOperations operations;
   late Completer<void> processing;
 
-  Future<GoRouter> pumpDetail(WidgetTester tester) async {
+  Future<GoRouter> pumpDetail(
+    WidgetTester tester, {
+    PaymentModel? payment,
+  }) async {
     // In the test's zone, so pump sees it complete.
     processing = Completer<void>();
     operations = _FakeOperations(() => processing.future);
@@ -62,7 +65,7 @@ void main() {
         ),
         GoRoute(
           path: AppRoute.paymentDetail,
-          builder: (_, __) => PaymentDetailScreen(payment: _payment),
+          builder: (_, __) => PaymentDetailScreen(payment: payment ?? _payment),
         ),
       ],
     );
@@ -160,9 +163,54 @@ void main() {
     await tester.tap(find.widgetWithText(ElevatedButton, 'Process'));
     await tester.pump();
     processing.completeError(
-      const PaymentNotProcessableException('This payment has already been paid.'),
+      const PaymentNotProcessableException(
+        'This payment is already paid, so it cannot be processed.',
+      ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('This payment has already been paid.'), findsOneWidget);
+    expect(
+      find.text('This payment is already paid, so it cannot be processed.'),
+      findsOneWidget,
+    );
+    // The page showed the copy it was opened with and kept offering
+    // Process, so the operator could only retry. Back to the list, which
+    // reloads.
+    expect(find.text('PAYMENTS'), findsOneWidget);
+    expect(processIcon(), findsNothing);
   });
+
+  // A failure that is not a refusal stays, so Process can be tried again.
+  testWidgets('a Process that fails for another reason stays on the page',
+      (tester) async {
+    await pumpDetail(tester);
+    await tester.tap(processIcon());
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Process'));
+    await tester.pump();
+    processing.completeError(Exception('offline'));
+    await tester.pumpAndSettle();
+    expect(find.text('PAYMENTS'), findsNothing);
+    expect(processIcon(), findsOneWidget);
+  });
+
+  // Disputed and part-refunded payments read as pending, so the page offered
+  // Process (and Cancel) on them.
+  for (final status in [
+    PaymentStatus.disputed,
+    PaymentStatus.partiallyRefunded,
+    PaymentStatus.other,
+  ]) {
+    testWidgets('no Process or Cancel on a ${status.name} payment',
+        (tester) async {
+      await pumpDetail(
+        tester,
+        payment: _payment.copyWith(status: status, storedStatus: 'on_hold'),
+      );
+      expect(processIcon(), findsNothing);
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text('Cancel'), findsNothing);
+      expect(find.text('Delete'), findsOneWidget);
+    });
+  }
 }
