@@ -244,5 +244,8 @@ void main() {
         );
     expect(stats(78, 82).internalUseUnits, 4);
     expect(stats(3, 0).internalUseUnits, 0);
+    // The Total Units card's note.
+    expect(dashboardInternalUseNote(stats(78, 82)), ' · 4 internal-use not counted');
+    expect(dashboardInternalUseNote(stats(78, 78)), '');
   });
 }

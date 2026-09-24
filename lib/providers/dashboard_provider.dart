@@ -65,6 +65,15 @@ class DashboardStats {
   }
 }
 
+/// " · 2 internal-use not counted" when there are internal-use units, else
+/// "". The dashboard's unit lines add it: Total/Occupied/Vacant leave those
+/// units out, so without it the dashboard shows fewer units than the Units
+/// list has rows. Here, not in the home screen, so a VM test can reach it.
+String dashboardInternalUseNote(DashboardStats stats) =>
+    stats.internalUseUnits > 0
+        ? ' · ${stats.internalUseUnits} internal-use not counted'
+        : '';
+
 /// Top delinquent tenant info for dashboard
 class TopDelinquentTenant {
   final String tenantId;

@@ -882,13 +882,6 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     );
   }
 
-  /// " · 2 internal-use not counted" when there are internal-use units, else
-  /// "". Total/Occupied/Vacant leave them out, so without this the dashboard
-  /// shows fewer units than the Units list has rows.
-  String _internalUseNote(DashboardStats stats) => stats.internalUseUnits > 0
-      ? ' · ${stats.internalUseUnits} internal-use not counted'
-      : '';
-
   Widget _buildMetricsGrid(DashboardStats stats) {
     final activeFacilityId = ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
     final linkedFacilityCount = ref.watch(userFacilitiesProvider(widget.user.uid)).whenOrNull(data: (l) => l.length) ?? 0;
@@ -942,7 +935,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               title: 'Total Units',
               value: stats.totalUnits.toString(),
               subtitle:
-                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant${_internalUseNote(stats)}',
+                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant${dashboardInternalUseNote(stats)}',
               icon: Icons.home_work,
               color: AppTheme.info,
             ),
@@ -1093,8 +1086,8 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       activities.add(activity.ActivityItem(
         title: 'Total Units',
         subtitle: multiFacility
-            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)${_internalUseNote(stats)}'
-            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total${_internalUseNote(stats)}',
+            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)${dashboardInternalUseNote(stats)}'
+            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total${dashboardInternalUseNote(stats)}',
         icon: Icons.home_work,
         iconColor: AppTheme.info,
         timestamp: DateTime.now().subtract(const Duration(minutes: 10)),
