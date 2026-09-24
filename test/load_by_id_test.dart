@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -34,6 +35,13 @@ int _flakyFailures = 0;
 Future<LienModel?> _loadLien(String facilityId, String id) async {
   _loads.add('$facilityId/$id');
   if (id == 'boom') throw StateError('read failed');
+  // What the rules answer for another account's facility.
+  if (id == 'denied') {
+    throw FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied');
+  }
+  if (id == 'offline') {
+    throw FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
+  }
   if (id == 'flaky' && _flakyFailures > 0) {
     _flakyFailures--;
     throw StateError('offline');
@@ -258,6 +266,23 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('LIEN flaky IN f1'), findsOneWidget);
       expect(_loads, ['f1/flaky', 'f1/flaky']);
+    });
+
+    // A link into another account's facility, or a role since removed. It
+    // said "Check your connection" and offered a Retry the rules refuse.
+    testWidgets('refused by the rules says so, with no Retry', (tester) async {
+      await pumpApp(tester, lienAt('denied'));
+      expect(find.text("You don't have access to this page"), findsOneWidget);
+      expect(find.text('Retry'), findsNothing);
+      expect(find.text("Couldn't load this page"), findsNothing);
+      expect(find.text('Page not found'), findsNothing);
+    });
+
+    testWidgets('other Firebase errors keep Retry', (tester) async {
+      await pumpApp(tester, lienAt('offline'));
+      expect(find.text("Couldn't load this page"), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+      expect(find.text("You don't have access to this page"), findsNothing);
     });
   });
 

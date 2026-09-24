@@ -1,3 +1,4 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -13,7 +14,8 @@ typedef LoadInFacility<T> = Future<T?> Function(String facilityId, String id);
 /// Reads `facilityId` and [idParam] from the query string ([id] overrides the
 /// latter, for ids in the path), loads the model with [load] and shows
 /// [page]. Shows "Page not found" when an id is missing or the load finds
-/// nothing, and [LoadByIdError] with Retry when the load fails.
+/// nothing, and [LoadByIdError] when the load fails: with Retry, or saying
+/// the user has no access when the rules refused the read.
 Widget loadByIdPage<T extends Object>(
   GoRouterState state, {
   required String idParam,
@@ -104,7 +106,14 @@ class _LoadByIdState<T extends Object> extends State<LoadById<T>> {
         // "Page not found" told the owner a real payment or tenant was gone,
         // with no way to try again but reloading the app.
         if (snapshot.hasError) {
-          debugPrint('LoadById(${widget.ids.join('/')}): ${snapshot.error}');
+          final error = snapshot.error;
+          debugPrint('LoadById(${widget.ids.join('/')}): $error');
+          // A link into another account's facility, or a role since
+          // removed: the rules will refuse every retry, so it said "check
+          // your connection" and offered one for nothing.
+          if (error is FirebaseException && error.code == 'permission-denied') {
+            return const LoadByIdError.noAccess();
+          }
           return LoadByIdError(onRetry: _retry);
         }
         final model = snapshot.data;
@@ -117,12 +126,17 @@ class _LoadByIdState<T extends Object> extends State<LoadById<T>> {
 
 /// Shown when a page opened by id could not be loaded.
 class LoadByIdError extends StatelessWidget {
-  const LoadByIdError({super.key, required this.onRetry});
+  const LoadByIdError({super.key, required VoidCallback this.onRetry});
 
-  final VoidCallback onRetry;
+  /// The read was refused: nothing to retry.
+  const LoadByIdError.noAccess({super.key}) : onRetry = null;
+
+  /// Null when retrying cannot help.
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
+    final retry = onRetry;
     return Scaffold(
       body: Center(
         child: Padding(
@@ -130,24 +144,35 @@ class LoadByIdError extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.cloud_off, size: 72, color: Colors.grey),
+              Icon(
+                retry == null ? Icons.lock_outline : Icons.cloud_off,
+                size: 72,
+                color: Colors.grey,
+              ),
               const SizedBox(height: 12),
-              const Text(
-                "Couldn't load this page",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+              Text(
+                retry == null
+                    ? "You don't have access to this page"
+                    : "Couldn't load this page",
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Check your connection and try again.',
+              Text(
+                retry == null
+                    ? 'It belongs to a facility your account cannot open.'
+                    : 'Check your connection and try again.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
+                style: const TextStyle(color: Colors.grey),
               ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
-              ),
+              if (retry != null) ...[
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: retry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ],
             ],
           ),
         ),
