@@ -51,6 +51,121 @@ function rotatedLinkData(current, replacementToken, rotatedFrom, rotatedAt) {
   return { ...data, token: replacementToken, rotatedFrom, rotatedAt };
 }
 
+/** Every Checkout Session id a link has issued, newest last, without repeats. */
+function linkSessionIds(link) {
+  const ids = Array.isArray(link.checkoutSessionIds) ? [...link.checkoutSessionIds] : [];
+  if (typeof link.checkoutSessionId === 'string' && link.checkoutSessionId) ids.push(link.checkoutSessionId);
+  return [...new Set(ids.filter((id) => typeof id === 'string' && id))];
+}
+
+function isMissingSession(error) {
+  return error && (error.code === 'resource_missing' || error.statusCode === 404);
+}
+
+/**
+ * Whether a pending link may be rotated, and which of its sessions are
+ * still open.
+ *
+ * Rotation drops the old token's checkout fields, so the new link offers a
+ * fresh Pay Now. That is only safe once none of the old sessions can still
+ * be, or has already been, paid. A link whose session is complete but not
+ * yet marked paid (checkout.session.completed unsubscribed or not yet
+ * processed) would otherwise charge the tenant twice. So each session is
+ * looked up on the facility's account: a complete one skips the link for a
+ * person to settle, an open one is expired before rotating, and anything
+ * that cannot be checked skips the link rather than guessing.
+ */
+async function planLinkRotation(link, { stripe, facilityAccountId }) {
+  const sessionIds = linkSessionIds(link);
+  if (sessionIds.length === 0) return { rotate: true, openSessionIds: [] };
+  if (!stripe) return { rotate: false, reason: 'stripe_not_checked', sessionIds };
+  if (!facilityAccountId) return { rotate: false, reason: 'facility_has_no_stripe_account', sessionIds };
+  const openSessionIds = [];
+  for (const id of sessionIds) {
+    let session;
+    try {
+      session = await stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: facilityAccountId });
+    } catch (error) {
+      if (isMissingSession(error)) continue;
+      return { rotate: false, reason: 'session_lookup_failed', sessionId: id, error: String(error && error.message) };
+    }
+    if (session.status === 'complete' || session.payment_status === 'paid') {
+      return { rotate: false, reason: 'session_completed', sessionId: id };
+    }
+    if (session.status === 'open') openSessionIds.push(id);
+  }
+  return { rotate: true, openSessionIds };
+}
+
+/**
+ * Rotates every pending link whose token is legacy/predictable, after
+ * [planLinkRotation] clears it. Reports every link: rotated, would rotate
+ * (dry run), or skipped with the reason. Exported for tests.
+ */
+async function rotatePendingPaymentLinks({ db, stripe, apply, report, fieldValue, newToken = randomToken }) {
+  const pendingLinks = await db.collection('publicPaymentLinks').where('status', '==', 'pending').get();
+  const facilityAccounts = new Map();
+  for (const doc of pendingLinks.docs) {
+    // Current server-generated tokens are 48 lowercase hex characters. Only
+    // rotate legacy/predictable tokens so this cleanup remains idempotent.
+    if (/^[a-f0-9]{48}$/.test(doc.id)) continue;
+    const link = doc.data();
+    const facilityId = link.facilityId || null;
+    if (facilityId && !facilityAccounts.has(facilityId)) {
+      const facility = await db.collection('facilities').doc(facilityId).get();
+      facilityAccounts.set(facilityId, (facility.exists && facility.get('stripeConnectAccountId')) || null);
+    }
+    const facilityAccountId = facilityId ? facilityAccounts.get(facilityId) : null;
+    const entry = { oldToken: doc.id, facilityId, tenantId: link.tenantId || null };
+    const plan = await planLinkRotation(link, { stripe, facilityAccountId });
+    if (!plan.rotate) {
+      report.paymentLinks.push({ ...entry, action: 'skipped', ...plan });
+      continue;
+    }
+
+    if (apply) {
+      let expireFailure = null;
+      for (const sessionId of plan.openSessionIds) {
+        try {
+          await stripe.checkout.sessions.expire(sessionId, {}, { stripeAccount: facilityAccountId });
+        } catch (error) {
+          // Most likely paid in the meantime: leave the link for a person.
+          expireFailure = { sessionId, error: String(error && error.message) };
+          break;
+        }
+      }
+      if (expireFailure) {
+        report.paymentLinks.push({ ...entry, action: 'skipped', reason: 'session_expire_failed', ...expireFailure });
+        continue;
+      }
+    }
+
+    const replacementToken = newToken();
+    const replacementRef = db.collection('publicPaymentLinks').doc(replacementToken);
+    report.paymentLinks.push({
+      ...entry,
+      action: apply ? 'rotated' : 'would_rotate',
+      replacementToken,
+      expiredSessionIds: plan.openSessionIds,
+    });
+    if (apply) {
+      await db.runTransaction(async (txn) => {
+        const current = await txn.get(doc.ref);
+        if (!current.exists || current.get('status') !== 'pending') return;
+        txn.create(
+          replacementRef,
+          rotatedLinkData(current.data(), replacementToken, doc.id, fieldValue.serverTimestamp()),
+        );
+        txn.update(doc.ref, {
+          status: 'revoked',
+          revokedAt: fieldValue.serverTimestamp(),
+          rotatedTo: replacementToken,
+        });
+      });
+    }
+  }
+}
+
 function exportJobIdFromFileName(name) {
   const match = /^exports\/([^/]+)\/(.+)_\d+\.csv$/.exec(name);
   return match ? { facilityId: match[1], jobId: match[2] } : null;
@@ -94,43 +209,23 @@ async function main() {
     suspiciousRoles: [],
   };
 
-  const pendingLinks = await db
-    .collection('publicPaymentLinks')
-    .where('status', '==', 'pending')
-    .get();
-  for (const doc of pendingLinks.docs) {
-    // Current server-generated tokens are 48 lowercase hex characters. Only
-    // rotate legacy/predictable tokens so this cleanup remains idempotent.
-    if (/^[a-f0-9]{48}$/.test(doc.id)) continue;
-    const replacementToken = randomToken();
-    const replacementRef = db.collection('publicPaymentLinks').doc(replacementToken);
-    report.paymentLinks.push({
-      oldToken: doc.id,
-      replacementToken,
-      facilityId: doc.get('facilityId') || null,
-      tenantId: doc.get('tenantId') || null,
-    });
-    if (apply) {
-      await db.runTransaction(async (txn) => {
-        const current = await txn.get(doc.ref);
-        if (!current.exists || current.get('status') !== 'pending') return;
-        txn.create(
-          replacementRef,
-          rotatedLinkData(
-            current.data(),
-            replacementToken,
-            doc.id,
-            admin.firestore.FieldValue.serverTimestamp(),
-          ),
-        );
-        txn.update(doc.ref, {
-          status: 'revoked',
-          revokedAt: admin.firestore.FieldValue.serverTimestamp(),
-          rotatedTo: replacementToken,
-        });
-      });
-    }
+  // The platform's Stripe key, to check each link's sessions on the
+  // facility's account before rotating it. Without it, links that ever
+  // started a checkout are skipped and reported, not rotated.
+  const stripeKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
+  const stripe = stripeKey
+    ? new (require('stripe').default)(stripeKey, { apiVersion: '2026-02-25.clover' })
+    : null;
+  if (!stripe) {
+    console.error('STRIPE_SECRET_KEY not set: payment links with a checkout session will be skipped.');
   }
+  await rotatePendingPaymentLinks({
+    db,
+    stripe,
+    apply,
+    report,
+    fieldValue: admin.firestore.FieldValue,
+  });
 
   const activeReservations = await db
     .collection('publicReservations')
@@ -287,4 +382,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { LINK_FIELDS_NOT_ROTATED, rotatedLinkData };
+module.exports = { LINK_FIELDS_NOT_ROTATED, planLinkRotation, rotatePendingPaymentLinks, rotatedLinkData };

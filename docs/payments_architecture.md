@@ -314,15 +314,41 @@ All new functions check feature flags before processing:
 
 - `charge.refunded` → Updates payment status, creates one ledger entry per refund (`refund_{refundId}`)
 - `charge.dispute.*` (`created`, `updated`, `closed`, `funds_withdrawn`, `funds_reinstated`) → records
-  `disputeStatus` on the payment (`created` also sets status `disputed`). The ledger only follows the money:
-  `dispute_{disputeId}` (+amount) once Stripe has withdrawn the funds (never for an inquiry, status `warning_*`),
-  and `dispute_{disputeId}_reinstated` (the same amount, negative) once they come back (`funds_reinstated`, or
-  closed as `won`). See `functions-integrations/src/stripeWebhookDisputeCreated.ts`.
+  `disputeStatus` on the payment (newest event wins; a same-second tie goes to the later stage). `created`
+  sets status `disputed` (the earlier status is kept in `statusBeforeDispute`); a win, a closed inquiry or the
+  money coming back restores it. The ledger only follows the money: `dispute_{disputeId}` (+amount) once Stripe
+  has withdrawn the funds or the dispute is lost (never for an inquiry, status `warning_*`), and
+  `dispute_{disputeId}_reinstated` (the same amount, negative) once they come back (`funds_reinstated`, or
+  closed as `won`). A reversed dispute row is marked settled (`metadata.allocatedAmount`) and any unpaid invoice
+  staff made from it is voided. See `functions-integrations/src/stripeWebhookDisputeCreated.ts`.
+- Dispute rows stay on the ledger and in the balance staff see (the ledger screen says how much of it is
+  disputes), but nothing automatic collects them: autopay, the delinquency job (late-fee basis, notices,
+  lockout), the payment reminder email and the rent reminder text all use the balance without them
+  (`functions-shared/src/ledger/disputeEntries.ts`, same rule in `lib/models/ledger_entry_model.dart`), and the
+  tenant portal's balance and Pay now count only payments still owed (no status, `pending`, `failed`), not
+  `disputed` ones. Charging a disputed amount back to the same card is re-billing without consent; staff
+  collect it by hand.
 
-Connected-account events (`event.account` set) for `payment_intent.succeeded`, `charge.refunded` and
-`charge.dispute.*` only write to the facility whose `stripeConnectAccountId` is that account; anything else is
-refused and logged as an error (Sentry when configured). The PaymentIntent metadata that names the facility is
-written by whoever created it, which on a Standard account can be the account owner.
+Connected-account events (`event.account` set) for `payment_intent.succeeded`, `payment_intent.payment_failed`,
+`setup_intent.succeeded`, `charge.refunded`, `charge.dispute.*`, link `checkout.session.completed` and
+`account.updated` only write to the facility whose `stripeConnectAccountId` is that account; anything else is
+refused and logged as an error (Sentry when configured). The metadata that names the facility is written by
+whoever created the object, which on a Standard account can be the account owner. Refused money events
+(payments, refunds, disputes, link checkouts) are also recorded in `stripeWebhookRefusals`, one row per account
+and object with the facility, tenant, amount, reason (`previous_account`, `unknown_account`,
+`facility_has_no_account`) and what to do (`action`); Stripe does not resend a refused event, so a genuine one
+is posted by hand. A facility's previous account is refused too: only a person can tell a late refund on it
+from a former owner's forgery. Platform-only events (owner subscriptions and their invoices, subscription
+checkouts) from a connected account are ignored.
+
+Connected accounts' test-mode events (`livemode: false`) are ignored: Stripe sends them to live Connect
+endpoints too, and anyone with the account's test key makes them for free. The emulator accepts them, and a
+test-mode deployment sets `STRIPE_ACCEPT_TEST_MODE_EVENTS=true` in the integrations codebase's environment;
+production never sets it.
+
+Before deploying these handlers, run the read-only check `npm run stripe:predeploy-check --prefix
+functions-admin -- --project=<id>` (old dispute rows on ledgers, money events from accounts that will be
+refused, refusals already recorded).
 
 The Connect webhook destination must subscribe to `payment_intent.succeeded`, `checkout.session.completed`,
 `charge.refunded` and all five `charge.dispute.*` events above.

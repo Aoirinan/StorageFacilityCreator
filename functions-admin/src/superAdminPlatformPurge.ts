@@ -6,6 +6,7 @@ import {
   PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
   PUBLIC_PAYMENT_LINKS_COLLECTION,
 } from '@sfc/functions-shared/stripe/completePublicLinkPayment';
+import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '@sfc/functions-shared/stripe/webhookRefusals';
 import { adminDeleteDocumentTree, adminDeleteEntireCollection } from './admin_delete_document_tree';
 import { STRIPE_SECRETS } from './secrets';
 
@@ -21,6 +22,8 @@ export const PURGE_ROOT_COLLECTIONS = [
   // Server-only records of link payments staff must look at: tenant ids,
   // amounts and connected-account ids, so customer data like the links.
   PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  // Refused Stripe money events: tenant ids, amounts and account ids too.
+  STRIPE_WEBHOOK_REFUSALS_COLLECTION,
   'marketing_leads',
   'referralLookup',
   'referralRewardsPending',
