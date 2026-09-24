@@ -62,7 +62,10 @@ class UnitModel {
   /// Office, manager residence or personal-use space the owner does not rent
   /// out. Left out of Total/Occupied/Vacant everywhere
   /// (`FacilityStatsService.countsTowardOccupancy`, and `countsTowardOccupancy`
-  /// in functions-facility-ops). Only an exact `true` counts; missing is false.
+  /// in functions-facility-ops), and never offered online whatever
+  /// [publicListingEnabled] says (`isUnitOfferedOnline` in functions-shared,
+  /// `FacilityMapV2Service.buildPublicUnitInventoryMaps`). Only an exact
+  /// `true` counts; missing is false.
   final bool internalUse;
 
   const UnitModel({

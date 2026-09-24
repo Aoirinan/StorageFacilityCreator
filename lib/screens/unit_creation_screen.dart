@@ -759,9 +759,11 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                 if (mounted) {
                                   setState(() {
                                     _internalUse = enabled;
-                                    // Space that is not rented should not be
-                                    // offered online either; the owner can
-                                    // turn listing back on above.
+                                    // Space that is not rented is not
+                                    // offered online either: the public map
+                                    // and the online rental callables refuse
+                                    // internal-use units whatever the
+                                    // listing switch says.
                                     if (enabled) _publicListingEnabled = false;
                                   });
                                 }

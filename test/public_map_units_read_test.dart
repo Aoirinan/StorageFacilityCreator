@@ -93,12 +93,14 @@ void main() {
     );
   });
 
-  test('the public map follows the website switch, not internal use', () {
+  test('the public map offers only listed units that are not internal use',
+      () {
     final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
       units: [
         _model('listed'),
         _model('unlisted', publicListingEnabled: false),
         _model('office', internalUse: true, publicListingEnabled: false),
+        _model('residence', internalUse: true),
       ],
       publicSettings: null,
     );
@@ -107,5 +109,13 @@ void main() {
     expect(byId['unlisted']!['isRentable'], isFalse);
     expect(byId['unlisted']!['status'], 'unavailable');
     expect(byId['office']!['isRentable'], isFalse);
+    expect(byId['office']!['status'], 'unavailable');
+    // Before: only the website switch counted, so internal-use space left
+    // listed was advertised as rentable and the online hold then refused it
+    // (isUnitOfferedOnline). It reads as unlisted, and still publishes its
+    // own switch.
+    expect(byId['residence']!['isRentable'], isFalse);
+    expect(byId['residence']!['status'], 'unavailable');
+    expect(byId['residence']!['publicListingEnabled'], isTrue);
   });
 }

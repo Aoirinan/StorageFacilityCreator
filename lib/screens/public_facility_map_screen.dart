@@ -69,7 +69,7 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
         if (u['unitId'] is String) u['unitId'] as String: u,
     };
     // isRentable already folds in status, tenant links, unit-type visibility, and the
-    // per-unit publicListingEnabled flag — do not re-derive from raw status here, or
+    // per-unit publicListingEnabled and internalUse flags — do not re-derive from raw status here, or
     // units the owner has not listed (an office, or every unit before the rental page
     // goes live) leak into the public map's rentable list while internally `available`.
     final rentableUnits =

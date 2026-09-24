@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   fitUnitsToDocument,
   readEveryDoc,
   syncPublicFacilityMapInventoryForFacility,
+  syncPublicFacilityMapInventoryOnUnitWrite,
 } from '../publicFacilityMapInventorySync';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
 
@@ -167,4 +170,96 @@ test('archived units are left off the public map by the same test the app uses',
   const units = await publishedUnits(inMemory);
 
   assert.deepEqual(Object.keys(units).sort(), ['A1', 'A4']);
+});
+
+type FixtureDoc = { id: string; data: Record<string, unknown> };
+type PublicMapCase = {
+  name: string;
+  units: FixtureDoc[];
+  tenants: FixtureDoc[];
+  expected: Record<string, { isRentable: boolean; status: string }>;
+};
+
+/** Cases the app's test (test/public_map_units_parity_test.dart) runs too. */
+function publicMapParityCases(): PublicMapCase[] {
+  const file = path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'public_map_units.json');
+  return (JSON.parse(fs.readFileSync(file, 'utf8')) as { cases: PublicMapCase[] }).cases;
+}
+
+test('the sync publishes every shared parity case as the app does', async () => {
+  const cases = publicMapParityCases();
+  assert.ok(cases.length >= 7, 'the shared fixture was not read');
+  for (const c of cases) {
+    const inMemory = new InMemoryFirestore();
+    inMemory.seed(`facilities/${MAP_FACILITY}/mapEngine/meta`, { publicSlug: MAP_SLUG });
+    inMemory.seed(`publicFacilityMaps/${MAP_SLUG}`, { facilityId: MAP_FACILITY, units: [] });
+    for (const u of c.units) inMemory.seed(`facilities/${MAP_FACILITY}/units/${u.id}`, u.data);
+    for (const t of c.tenants) inMemory.seed(`facilities/${MAP_FACILITY}/tenants/${t.id}`, t.data);
+    installInMemoryFirestore(inMemory);
+
+    await syncPublicFacilityMapInventoryForFacility(MAP_FACILITY);
+
+    const units = inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.units as Array<Record<string, any>>;
+    assert.deepEqual(
+      Object.fromEntries(units.map((u) => [u.unitId, { isRentable: u.isRentable, status: u.status }])),
+      c.expected,
+      c.name,
+    );
+  }
+});
+
+test('an internal-use unit left listed is not offered, as the online hold refuses it', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPublishedMap(inMemory);
+  inMemory.seed(`facilities/${MAP_FACILITY}/units/A2`, {
+    unitNumber: 'A2', status: 'available', unitType: 'standard', internalUse: true, publicListingEnabled: true,
+  });
+
+  const units = await publishedUnits(inMemory);
+
+  // Before: only publicListingEnabled counted, so this office was published as rentable and
+  // createPublicReservationHold (isUnitOfferedOnline) then turned the renter away.
+  assert.equal(units.A2.isRentable, false);
+  assert.equal(units.A2.status, 'unavailable');
+  assert.equal(units.A2.publicListingEnabled, true, 'its own switch is still published as set');
+  assert.equal(units.A1.isRentable, true);
+});
+
+/** A unit doc write as the v1 onWrite trigger receives it: only `exists` and `data()` are read. */
+function unitChange(before: Record<string, unknown>, after: Record<string, unknown>) {
+  return {
+    before: { exists: true, data: () => before },
+    after: { exists: true, data: () => after },
+  } as unknown as Parameters<typeof syncPublicFacilityMapInventoryOnUnitWrite.run>[0];
+}
+
+test('turning internal use on or off resyncs the public map', async () => {
+  const office = { unitNumber: 'A2', status: 'available', unitType: 'standard' };
+  const trigger = (before: Record<string, unknown>, after: Record<string, unknown>) =>
+    syncPublicFacilityMapInventoryOnUnitWrite.run(unitChange(before, after), {
+      params: { facilityId: MAP_FACILITY, unitId: 'A2' },
+    });
+
+  for (const [from, to] of [[false, true], [true, false], [undefined, true]]) {
+    const inMemory = new InMemoryFirestore();
+    seedPublishedMap(inMemory);
+    inMemory.seed(`facilities/${MAP_FACILITY}/units/A2`, { ...office, internalUse: to });
+    installInMemoryFirestore(inMemory);
+
+    await trigger({ ...office, internalUse: from }, { ...office, internalUse: to });
+
+    // Before: internalUse was not an inventory key, so this change was ignored and the list kept
+    // offering (or kept hiding) the unit until some other field changed.
+    const map = inMemory.read(`publicFacilityMaps/${MAP_SLUG}`);
+    assert.ok(map?.inventorySyncedAt, `internalUse ${from} -> ${to} resynced`);
+    const a2 = (map?.units as Array<Record<string, any>>).find((u) => u.unitId === 'A2');
+    assert.equal(a2?.isRentable, to !== true, `internalUse ${from} -> ${to}`);
+  }
+
+  // The control: a change to a field the public list does not carry leaves it alone.
+  const inMemory = new InMemoryFirestore();
+  seedPublishedMap(inMemory);
+  installInMemoryFirestore(inMemory);
+  await trigger({ ...office, notes: 'a' }, { ...office, notes: 'b' });
+  assert.equal(inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.inventorySyncedAt, undefined);
 });
