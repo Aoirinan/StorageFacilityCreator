@@ -19,6 +19,7 @@ import '../services/facility_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
+import 'package:sfcapp/widgets/website_style_hub_preview.dart';
 import 'package:sfcapp/utils/save_then_publish.dart';
 
 class OnlineRentalsManagementScreen extends ConsumerStatefulWidget {
@@ -476,6 +477,7 @@ class _OnlineRentalsManagementScreenState
       facility: _facility,
       slug: _slugPreview,
       linkBaseUrl: _linkBaseUrl,
+      onlineRentalsEnabled: _publicRentalsEnabled,
     );
   }
 
@@ -665,10 +667,11 @@ class _OnlineRentalsManagementScreenState
           style: TextStyle(color: AppTheme.textSecondary),
         ),
         const SizedBox(height: 16),
-        _WebsiteStyleHubPreview(
+        WebsiteStyleHubPreview(
           facilityName: _facility?.name ?? 'Your Facility',
           marketingText: _marketingContentController.text.trim(),
           logoUrl: _logoUrlController.text.trim(),
+          rentalsEnabled: _publicRentalsEnabled,
           onViewUnits: () => context.push(_publicUnitsPath),
           onViewMap: () => context.push(_publicMapPath),
           onRentNow: () => context.push(_publicRentPath),
@@ -1565,122 +1568,6 @@ class _ColorFieldRow extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _WebsiteStyleHubPreview extends StatelessWidget {
-  final String facilityName;
-  final String marketingText;
-  final String logoUrl;
-  final VoidCallback onViewUnits;
-  final VoidCallback onViewMap;
-  final VoidCallback onRentNow;
-
-  const _WebsiteStyleHubPreview({
-    required this.facilityName,
-    required this.marketingText,
-    required this.logoUrl,
-    required this.onViewUnits,
-    required this.onViewMap,
-    required this.onRentNow,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final headline = marketingText.isEmpty
-        ? 'Reserve storage online in minutes'
-        : marketingText;
-
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      margin: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xFF0E3A8A), Color(0xFF1D4ED8)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    if (logoUrl.isNotEmpty)
-                      Container(
-                        width: 56,
-                        height: 56,
-                        margin: const EdgeInsets.only(right: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.network(
-                            logoUrl,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(Icons.store),
-                          ),
-                        ),
-                      ),
-                    Expanded(
-                      child: Text(
-                        facilityName,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 26,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  headline,
-                  style: const TextStyle(
-                    color: Color(0xFFE5EDFF),
-                    fontSize: 15,
-                    height: 1.3,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: onViewUnits,
-                  icon: const Icon(Icons.view_list),
-                  label: const Text('View Units'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: onViewMap,
-                  icon: const Icon(Icons.map_outlined),
-                  label: const Text('View Map'),
-                ),
-                FilledButton.icon(
-                  onPressed: onRentNow,
-                  icon: const Icon(Icons.shopping_cart_checkout),
-                  label: const Text('Rent Now'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
