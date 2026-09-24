@@ -79,8 +79,9 @@ const RULES = [
     why: 'Stays never builds a path into a storage collection',
     // A path segment inside a string: '/tenants/', `.../${id}/units`, or a
     // relative 'ledgers/' + id. A bare 'reservations' (a CSV kind, a JSON
-    // field) is not a path, and Airbnb's /hosting/reservations/ URLs are not storage.
-    re: new RegExp(`(?<!hosting)/(?:${STORAGE_NAMES})(?:/|['"\`])|['"\`](?:${STORAGE_NAMES})/`),
+    // field) is not a path, Airbnb's /hosting/reservations/ URLs are not
+    // storage, and neither is a relative module such as './payments'.
+    re: new RegExp(`(?<!hosting)(?<!['"\`]\\.{1,2})/(?:${STORAGE_NAMES})(?:/|['"\`])|['"\`](?:${STORAGE_NAMES})/`),
   },
   { id: 'tenant-id', why: 'No stay doc carries a tenant id', re: /tenantId|tenant_id/i },
   { id: 'vpc-connector', why: 'functions-stays has no VPC connector (the Intuit NAT IP)', re: /vpcConnector|VPC_CONNECTOR/ },
@@ -312,6 +313,7 @@ function selfTest() {
     [dart, "final p = 'facilities/$fid/payments/$id';", 'storage-path'],
     [dart, "final c = db.collection('facilities/$fid/reservations');", 'storage-path'],
     [ts, 'const p = `facilities/${f}/invoices/${i}`;', 'storage-path'],
+    [ts, "const p = fid + '/payments';", 'storage-path'],
     [ts, 'const row = { tenantId: null };', 'tenant-id'],
     [dart, "final m = {'tenantId': t};", 'tenant-id'],
     [ts, "functions.runWith({ vpcConnector: 'x' })", 'vpc-connector'],
@@ -378,6 +380,8 @@ function selfTest() {
     [ts, "import { StayDoc } from '@sfc/functions-shared/stays/contracts';"],
     [ts, 'const perUnit = total / units / 2;'],
     [ts, "const kind = 'reservation';"],
+    [ts, "import { staysRecordPayment } from './payments';"],
+    [ts, "export { staysVoidIncome } from '../payments';"],
     [dart, "import 'package:sfcapp/services/stays/stays_repository.dart';"],
   ];
   const outOfScope = [
