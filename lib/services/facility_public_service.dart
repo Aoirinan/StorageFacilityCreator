@@ -7,8 +7,20 @@ import '../utils/renter_account_message.dart' show normalizeCustomDomain;
 
 /// Service for managing public facility pages and widgets
 class FacilityPublicService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so tests can run the real settings writes
+  // against a fake Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// Get public settings for a facility
   static Future<FacilityPublicSettings?> getPublicSettings(
@@ -202,6 +214,37 @@ class FacilityPublicService {
       rethrow;
     }
   }
+
+  /// Saves what Website Setup edits. There is no online-rentals parameter,
+  /// so the facility keeps the rentals setting it has: [updatePublicSettings]
+  /// keeps every field it is not given. Website Setup used to pass
+  /// `publicRentalsEnabled: true`, so every website save turned rentals back
+  /// on for an owner who had switched them off in Edit Facility, and the
+  /// public move-in callables then took holds and payments again.
+  static Future<void> updateWebsiteSettings({
+    required String facilityId,
+    required bool enabled,
+    required String publicRentalSlug,
+    String? customDomain,
+    String? pageTitle,
+    String? pageDescription,
+    String? marketingContent,
+    List<String>? featuredImages,
+    Map<String, dynamic>? customStyles,
+    Map<String, dynamic>? widgets,
+  }) =>
+      updatePublicSettings(
+        facilityId: facilityId,
+        enabled: enabled,
+        publicRentalSlug: publicRentalSlug,
+        customDomain: customDomain,
+        pageTitle: pageTitle,
+        pageDescription: pageDescription,
+        marketingContent: marketingContent,
+        featuredImages: featuredImages,
+        customStyles: customStyles,
+        widgets: widgets,
+      );
 
   /// Get facility by custom domain
   static Future<FacilityModel?> getFacilityByDomain(String domain) async {

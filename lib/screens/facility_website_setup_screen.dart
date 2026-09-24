@@ -154,6 +154,7 @@ class _FacilityWebsiteSetupScreenState
   final TextEditingController _canonicalUrlController = TextEditingController();
 
   bool _websiteEnabled = false;
+  bool _publicRentalsEnabled = false;
   bool _showPaymentLoginButtonInHeader = true;
   bool _useStructuredOfficeHours = false;
   String? _uploadingFieldKey;
@@ -353,6 +354,7 @@ class _FacilityWebsiteSetupScreenState
         _facility = facility;
         _userFacilities = facilities;
         _websiteEnabled = settings?.enabled ?? false;
+        _publicRentalsEnabled = settings?.publicRentalsEnabled ?? false;
         _slugController.text =
             (settings?.publicRentalSlug?.trim().isNotEmpty ?? false)
                 ? settings!.publicRentalSlug!
@@ -593,6 +595,17 @@ class _FacilityWebsiteSetupScreenState
     final domain = normalizeCustomDomain(_customDomainController.text);
     if (domain.isEmpty) return null;
     return 'https://$domain';
+  }
+
+  /// Opens Edit Facility, where online rentals are switched, then re-reads
+  /// only the rentals setting: a full [_load] would drop unsaved edits here.
+  Future<void> _openRentalSettings() async {
+    await context
+        .push('${AppRoute.facilityEdit}?facilityId=${widget.facilityId}');
+    final settings =
+        await FacilityPublicService.getPublicSettings(widget.facilityId);
+    if (!mounted || settings == null) return;
+    setState(() => _publicRentalsEnabled = settings.publicRentalsEnabled);
   }
 
   Future<void> _copy(String label, String value) async {
@@ -918,10 +931,9 @@ class _FacilityWebsiteSetupScreenState
       };
 
       await saveThenPublish(
-        save: () => FacilityPublicService.updatePublicSettings(
+        save: () => FacilityPublicService.updateWebsiteSettings(
           facilityId: widget.facilityId,
           enabled: _websiteEnabled,
-          publicRentalsEnabled: true,
           publicRentalSlug: slug,
           customDomain: customDomain.isEmpty ? null : customDomain,
           pageTitle: _pageTitleController.text.trim().isEmpty
@@ -1213,6 +1225,36 @@ class _FacilityWebsiteSetupScreenState
               value: _websiteEnabled,
               onChanged: (v) => setState(() => _websiteEnabled = v),
               title: const Text('Website Enabled'),
+            ),
+            // Shown, not switched: online rentals take holds and payments,
+            // and Edit Facility switches them beside the pricing and unit
+            // choices that go with them. Saving this page leaves them as
+            // they are; it used to turn them on.
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                _publicRentalsEnabled
+                    ? Icons.shopping_cart_checkout
+                    : Icons.remove_shopping_cart_outlined,
+                color: _publicRentalsEnabled
+                    ? AppTheme.success
+                    : AppTheme.textSecondary,
+              ),
+              title: Text(
+                _publicRentalsEnabled
+                    ? 'Online rentals are on'
+                    : 'Online rentals are off',
+              ),
+              subtitle: Text(
+                _publicRentalsEnabled
+                    ? 'Renters can reserve and pay for a unit from your site.'
+                    : 'Renters can see your units, but cannot reserve or pay '
+                        'online.',
+              ),
+              trailing: TextButton(
+                onPressed: _openRentalSettings,
+                child: const Text('Change in Edit Facility'),
+              ),
             ),
             const SizedBox(height: 8),
             TextField(
