@@ -7,11 +7,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/feature_flag_model.dart';
+import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/route_guards.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
+
+import 'support/fake_facility_collection.dart';
 
 /// Hands the test a Riverpod [Ref], which is what the router passes the guard.
 final _refProvider = Provider<Ref>((ref) => ref);
@@ -90,6 +95,8 @@ class _Tab {
     Object? accessError,
     Object? accountReadError,
     DateTime? at,
+    Future<bool> Function(User user)? ensureOwnerAccount,
+    bool productionEnsure = false,
   }) {
     final uri = Uri.parse(location);
     return evaluateRouteGuard(
@@ -100,6 +107,9 @@ class _Tab {
       isSuperAdmin: (_) => superAdmin,
       isTwoFactorEnabled: () async => twoFactorEnabled,
       clock: at == null ? null : () => at,
+      // The account ensure has its own tests below; elsewhere it is a no-op.
+      ensureOwnerAccount:
+          productionEnsure ? null : ensureOwnerAccount ?? (_) async => false,
       // The real access rules, with their existing injected seams.
       checkAccess: (path) {
         accessChecks += 1;
@@ -131,7 +141,9 @@ void main() {
   setUp(() {
     SubscriptionGuardService.routeGuardCache.clear();
     verifiedUserRecheck.reset();
+    FacilityCreatorAccountService.resetEnsuredForTesting();
   });
+  tearDown(() => FacilityCreatorAccountService.overrideForTesting());
 
   test('needsVerificationReload only for accounts that are not verified yet', () {
     expect(needsVerificationReload(MockUser(isEmailVerified: true)), isFalse);
@@ -559,5 +571,321 @@ void main() {
     await ownerFacilities();
     expect(facilityReads, 2, reason: 'the cached list was dropped');
     expect(SubscriptionGuardService.routeGuardCache.freshFor('owner'), isNull);
+  });
+
+  group("a new signup's account is made on the first authenticated load", () {
+    // It used to be created only when they opened a screen that created it,
+    // so the onboarding and admin-alert emails went out late (or never), and
+    // the signup sat on an unlocked, empty dashboard.
+    test('guardEnsuresOwnerAccount: signed-in, verified, non-super-admin pages only', () {
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: false, emailVerified: true),
+        isTrue,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: true, isSuperAdmin: false, emailVerified: true),
+        isFalse,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: true, emailVerified: true),
+        isFalse,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: false, emailVerified: false),
+        isFalse,
+      );
+    });
+
+    test('the account is ensured before access is checked, so the check sees it', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'new-owner', email: 'new@example.com', isEmailVerified: true);
+      final order = <String>[];
+      FacilityCreatorAccountModel? account;
+
+      final redirect = await evaluateRouteGuard(
+        matchedLocation: '/dashboard',
+        uri: Uri.parse('/dashboard'),
+        ref: tab.container.read(_refProvider),
+        currentUser: () => user,
+        isSuperAdmin: (_) => false,
+        isTwoFactorEnabled: () async => false,
+        ensureOwnerAccount: (u) async {
+          order.add('ensure:${u.uid}');
+          account = _account(u.uid, status: SubscriptionStatus.pendingApproval);
+          return true;
+        },
+        checkAccess: (path) {
+          order.add('check');
+          return SubscriptionGuardService.checkAccess(
+            currentRoute: path,
+            userOverride: user,
+            authOverride: MockFirebaseAuth(mockUser: user),
+            superAdminResolver: () => false,
+            accountProvider: (_) async => account,
+            facilitiesProvider: () async => const [],
+          );
+        },
+      );
+      expect(order.first, 'ensure:new-owner');
+      expect(order, contains('check'));
+      // The new pendingApproval account, not "no account yet, allowed".
+      expect(redirect, AppRoute.pendingApproval);
+    });
+
+    test('a created account drops an answer cached before it existed', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'new-owner', email: 'new@example.com', isEmailVerified: true);
+      // No account yet: allowed, and cached.
+      expect(await tab.go('/dashboard', user: user, account: null), isNull);
+      expect(SubscriptionGuardService.routeGuardCache.freshFor('new-owner'), isNotNull);
+
+      final pending = _account('new-owner', status: SubscriptionStatus.pendingApproval);
+      expect(
+        await tab.go('/tenants', user: user, account: pending, ensureOwnerAccount: (_) async => true),
+        AppRoute.pendingApproval,
+      );
+    });
+
+    test('not on public pages, and not for super admins', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'someone', email: 'someone@example.com', isEmailVerified: true);
+      final ensured = <String>[];
+      Future<bool> record(User u) async {
+        ensured.add(u.uid);
+        return false;
+      }
+
+      await tab.go('/privacy', user: user, ensureOwnerAccount: record);
+      await tab.go('/dashboard', user: user, superAdmin: true, ensureOwnerAccount: record);
+      expect(ensured, isEmpty);
+      await tab.go('/dashboard', user: user, ensureOwnerAccount: record);
+      expect(ensured, ['someone']);
+    });
+
+    test('a failed ensure does not block the navigation', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'owner', email: 'owner@example.com', isEmailVerified: true);
+      // The production default, which fails here (no Firebase app) and must
+      // report rather than throw.
+      final redirect = await tab.go(
+        '/dashboard',
+        user: user,
+        account: _account('owner', status: SubscriptionStatus.active),
+        ensureOwnerAccount: (u) => FacilityCreatorAccountService.ensureAccountOnce(u),
+      );
+      expect(redirect, isNull);
+    });
+  });
+
+  group("the guard's own ensure (production wiring, the account service on fakes)", () {
+    // No ensureOwnerAccount seam: the guard makes its real call, and the
+    // account service's reads, invite acceptance and create run on fakes.
+    late List<FakeDoc> accountDocs;
+    late FakeQueryLog accountWrites;
+    late List<FakeDoc> roles;
+    late List<FakeDoc> owned;
+    late List<FakeDoc> invites;
+    late List<List<FacilityModel>> facilitiesSeen;
+
+    const paidOwner = OwnerAccountStanding(
+      accountId: 'acct_keepsake',
+      subscriptionStatus: SubscriptionStatus.active,
+    );
+
+    setUp(() {
+      accountDocs = [];
+      accountWrites = FakeQueryLog();
+      roles = [];
+      owned = [];
+      invites = [];
+      facilitiesSeen = [];
+    });
+
+    /// Accepts [user]'s pending invites the way PermissionService does: an
+    /// active role row, and the invite marked accepted.
+    Future<void> acceptInvites(User user, String emailLower) async {
+      for (final invite in invites) {
+        final data = invite.data();
+        if (data['emailLower'] != emailLower || data['status'] != 'pending') continue;
+        data['status'] = 'accepted';
+        roles.add(FakeDoc('role_${invite.id}', {
+          'userId': user.uid,
+          'facilityId': data['facilityId'],
+          'roleType': data['roleType'],
+          'isActive': true,
+        }));
+      }
+    }
+
+    void serve(User user, {Future<void> Function(User user, String emailLower)? fulfil}) {
+      FacilityCreatorAccountService.overrideForTesting(
+        collection: (name) => switch (name) {
+          'facilityCreatorAccounts' => FakeCollection(accountDocs, log: accountWrites),
+          'user_roles' => FakeCollection(roles),
+          'facilities' => FakeCollection(owned),
+          _ => throw StateError('unexpected collection $name'),
+        },
+        collectionGroup: (name) {
+          expect(name, 'invites');
+          return FakeCollection(invites);
+        },
+        currentUser: () => user,
+        fulfillPendingInvites: fulfil ?? acceptInvites,
+      );
+    }
+
+    /// What the facility list gives [user] from the fakes: their own
+    /// facilities, and the ones an active role reaches (Keepsake's, paid).
+    List<FacilityModel> facilitiesOf(User user) => [
+          for (final f in owned)
+            FacilityModel(
+              id: f.id,
+              name: 'Mine',
+              ownerUid: user.uid,
+              createdAt: DateTime(2026),
+              currentUserOwnsFacility: true,
+            ),
+          for (final r in roles)
+            if (r.data()['isActive'] == true && !owned.any((f) => f.id == r.data()['facilityId']))
+              FacilityModel(
+                id: r.data()['facilityId'] as String,
+                name: 'Keepsake Storage',
+                ownerUid: 'keepsake-owner',
+                createdAt: DateTime(2026),
+                facilityCreatorAccountId: 'acct_keepsake',
+                ownerAccountStanding: paidOwner,
+                currentUserOwnsFacility: false,
+              ),
+        ];
+
+    Future<String?> go(_Tab tab, String location, User user, {DateTime? at}) {
+      final uri = Uri.parse(location);
+      return evaluateRouteGuard(
+        matchedLocation: uri.path,
+        uri: uri,
+        ref: tab.container.read(_refProvider),
+        currentUser: () => user,
+        isSuperAdmin: (_) => false,
+        isTwoFactorEnabled: () async => false,
+        clock: at == null ? null : () => at,
+        checkAccess: (path) => SubscriptionGuardService.checkAccess(
+          currentRoute: path,
+          allowSubscriptionRoutes: true,
+          userOverride: user,
+          authOverride: MockFirebaseAuth(mockUser: user as MockUser),
+          superAdminResolver: () => false,
+          accountProvider: FacilityCreatorAccountService.getAccountByOwnerUidOrThrow,
+          facilitiesProvider: () async {
+            final list = facilitiesOf(user);
+            facilitiesSeen.add(list);
+            return list;
+          },
+        ),
+      );
+    }
+
+    FakeDoc pendingInvite(String email) => FakeDoc('inv_1', {
+          'facilityId': 'keepsake',
+          'email': email,
+          'emailLower': email.toLowerCase(),
+          'roleType': 'employee',
+          'status': 'pending',
+          'invitedBy': 'keepsake-owner',
+        });
+
+    test('a verified invitee with a pending invite and no roles gets no account, and lands with their role',
+        () async {
+      // The invite query was refused, so the signup had no role when the
+      // guard ran; it gave them a pendingApproval account, and once they
+      // accepted the invite the access check sent them to /pending-approval.
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'invitee', email: 'Invitee@Example.com', isEmailVerified: true);
+      invites.add(pendingInvite('Invitee@Example.com'));
+      serve(user);
+
+      expect(await go(tab, '/dashboard', user), isNull);
+      expect(accountWrites.writes, isEmpty, reason: 'no account for an invited team member');
+      expect(roles.single.data(), containsPair('facilityId', 'keepsake'));
+      expect(invites.single.data()['status'], 'accepted');
+      // The access check already saw them as Keepsake's staff.
+      expect(facilitiesSeen.last.map((f) => (f.id, f.currentUserOwnsFacility)), [
+        ('keepsake', false),
+      ]);
+    });
+
+    test('an invite that could not be accepted still keeps them from an account', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'invitee', email: 'invitee@example.com', isEmailVerified: true);
+      invites.add(pendingInvite('invitee@example.com'));
+      serve(user, fulfil: (_, __) async => throw StateError('permission-denied'));
+
+      final redirect = await go(tab, '/dashboard', user);
+      expect(redirect, isNot(AppRoute.pendingApproval));
+      expect(accountWrites.writes, isEmpty);
+    });
+
+    test('an owner with facilities but no account is not given one, and is let in as before',
+        () async {
+      // superAdminCreateFacilityForOwner makes exactly these owners. The
+      // guard gave them a pendingApproval account with nothing linked to it
+      // and held them on /pending-approval.
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'owner-1', email: 'owner1@example.com', isEmailVerified: true);
+      owned.add(FakeDoc('mine', {'ownerUid': 'owner-1'}));
+      roles.add(FakeDoc('role_owner', {'userId': 'owner-1', 'facilityId': 'mine', 'isActive': true}));
+      serve(user);
+
+      expect(await go(tab, '/dashboard', user), isNull);
+      expect(accountWrites.writes, isEmpty);
+    });
+
+    test('a genuinely new signup gets their pendingApproval account on the first load', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'new-owner', email: 'new@example.com', isEmailVerified: true);
+      serve(user);
+
+      expect(await go(tab, '/dashboard', user), AppRoute.pendingApproval);
+      expect(accountWrites.writes.single.$3, containsPair('subscriptionStatus', 'pendingApproval'));
+    });
+
+    test('a failing ensure is not run again on every navigation', () async {
+      // The guard awaits the ensure; while it kept failing, every click paid
+      // the account read (and the staff queries) again.
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'owner-2', email: 'owner2@example.com', isEmailVerified: true);
+      var accountReads = 0;
+      FacilityCreatorAccountService.overrideForTesting(
+        collection: (name) {
+          if (name == 'facilityCreatorAccounts') accountReads += 1;
+          throw FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
+        },
+        currentUser: () => user,
+      );
+      final t0 = DateTime(2026, 9, 23, 12);
+      Future<String?> goAt(String location, Duration after) => tab.go(
+            location,
+            user: user,
+            at: t0.add(after),
+            account: _account('owner-2', status: SubscriptionStatus.active),
+            productionEnsure: true,
+          );
+
+      await goAt('/dashboard', Duration.zero);
+      expect(accountReads, 1);
+      await goAt('/tenants', const Duration(seconds: 10));
+      await goAt('/units', const Duration(seconds: 50));
+      expect(accountReads, 1);
+      await goAt('/tenants', FacilityCreatorAccountService.ensureRetryAfter);
+      expect(accountReads, 2);
+    });
   });
 }

@@ -116,7 +116,12 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
   const tenantClaimed = new Set<string>();
   for (const tdoc of tenantDocs) {
     const td = tdoc.data();
-    if (td.isActive === false) continue;
+    // Active means `isActive` exactly true, as in the app's TenantModel, the
+    // stats function and every server job. This skipped only `=== false`, so
+    // a doc with no isActive claimed its unit here but not in the app's own
+    // publish (FacilityMapV2Service), and the two writers of this list
+    // disagreed about that unit.
+    if (td.isActive !== true) continue;
     const n = String(td.unitNumber || '').trim().toLowerCase();
     if (n.length > 0) tenantClaimed.add(n);
   }
@@ -126,7 +131,10 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
 
   for (const doc of unitDocs) {
     const d = doc.data();
-    if (d.archived === true) continue;
+    // The app's unit read (UnitService.readFacilityUnits) and the stats
+    // function keep a unit only when `(archived ?? false) === false`; this
+    // kept a stray non-boolean such as 'true' that the app's publish drops.
+    if ((d.archived ?? false) !== false) continue;
 
     const unitType = String(d.unitType || '');
     const categorySlug = slugify(unitType);

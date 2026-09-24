@@ -15,6 +15,9 @@ final gateAccessOperationsProvider =
   return GateAccessOperationsNotifier();
 });
 
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so the editor closed and Delete said "deleted" when the
+/// access code had not changed.
 class GateAccessOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   GateAccessOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -49,6 +52,7 @@ class GateAccessOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 
@@ -85,6 +89,7 @@ class GateAccessOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 
@@ -101,6 +106,7 @@ class GateAccessOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 }

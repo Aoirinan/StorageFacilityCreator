@@ -59,6 +59,31 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   /// account linking that follows turned _isLoading off, and the wizard
   /// stays open when it was opened with go, so Create made a second one.
   String? _createdFacilityId;
+
+  /// The create itself, kept after a timeout: Create stays off while it
+  /// runs, and the next Create takes the facility it made rather than
+  /// making another.
+  late final _inFlightCreate = FacilityCreateInFlight(
+    onSettled: _onCreateSettled,
+  );
+
+  /// A create that finished after the wizard stopped waiting for it: say
+  /// what happened, and Create is back on (the rebuild).
+  void _onCreateSettled(String? id, Object? error) {
+    // A Create that is waiting handles the outcome itself.
+    if (!mounted || _isLoading) return;
+    setState(() {
+      if (id != null) {
+        _errorMessage = 'The facility was created after all. '
+            'Press Create Facility to finish setting it up.';
+      } else if (error != null) {
+        final message = ErrorMessageHelper.getUserFriendlyMessage(error);
+        _errorMessage = facilityCreateMayHaveLanded(error)
+            ? '$message $facilityCreateUnconfirmedHint'
+            : message;
+      }
+    });
+  }
   
   // Common time zones
   final List<String> _timeZones = [
@@ -92,7 +117,11 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
   Future<void> _createFacility() async {
     // A second tap in the same frame, before the rebuild disables Create,
     // would make a second facility.
-    if (_isLoading || _createdFacilityId != null) return;
+    if (_isLoading ||
+        _createdFacilityId != null ||
+        _inFlightCreate.isRunning) {
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
@@ -109,8 +138,12 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
 
       // Check facility count and subscription before creating
       // Superadmins bypass this check
+      // Not again for a facility a kept create already made: it passed them
+      // when it started, and is not linked to the account yet.
       final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser != null && !SuperAdminService.isSuperAdmin(currentUser)) {
+      if (currentUser != null &&
+          !SuperAdminService.isSuperAdmin(currentUser) &&
+          _inFlightCreate.createdId == null) {
         try {
           final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
           final currentFacilityCount = account.facilityIds.length;
@@ -541,11 +574,11 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             paymentProcessor: _paymentProcessor,
             totalUnits: totalUnits,
           ),
-          // From the server: the cached list is up to 2 minutes old.
-          reloadFacilities: () {
-            FacilityService.clearFacilitiesCache();
-            return FacilityService.getUserFacilities();
-          },
+          // From the server. Clearing the cache was not enough: a plain read
+          // could join a load that started before the create and miss it.
+          reloadFacilities: () =>
+              FacilityService.getUserFacilities(forceRefresh: true),
+          inFlight: _inFlightCreate,
         );
         // So the facility lists show it now, not when the cache expires.
         FacilityService.clearFacilitiesCache();
@@ -554,7 +587,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         if (kDebugMode) {
           print('⚠️ Facility creation failed and no facility it made was found: $e');
         }
-        createUnconfirmed = true;
+        // Only a timeout or lost connection can have written anything; a
+        // refusal told the owner to check for a facility never made.
+        createUnconfirmed = facilityCreateMayHaveLanded(e);
         rethrow;
       }
 
@@ -726,6 +761,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
           _errorMessage = createUnconfirmed
               ? '$message $facilityCreateUnconfirmedHint'
               : message;
+          if (_inFlightCreate.isRunning) {
+            _errorMessage = '$_errorMessage $facilityCreateStillRunningHint';
+          }
         });
 
         // Stay on the wizard so the owner sees the error above the Create
@@ -1193,7 +1231,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                     
                     // Create Button
                     ElevatedButton(
-                      onPressed: _isLoading || _createdFacilityId != null
+                      onPressed: _isLoading ||
+                              _createdFacilityId != null ||
+                              _inFlightCreate.isRunning
                           ? null
                           : _createFacility,
                       style: ElevatedButton.styleFrom(
@@ -1205,7 +1245,7 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
                         ),
                         elevation: 0,
                       ),
-                      child: _isLoading
+                      child: _isLoading || _inFlightCreate.isRunning
                           ? const Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [

@@ -84,6 +84,11 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stripe: { amountReceived?
   };
 }
 
+/** The public hold is refused unless the owner has turned online rentals on. */
+function seedOnlineRentalsOn(inMemory: InMemoryFirestore) {
+  inMemory.seed(`facilities/${FACILITY}/settings/public`, { publicRentalsEnabled: true });
+}
+
 function seedUnit(inMemory: InMemoryFirestore) {
   inMemory.seed(`facilities/${FACILITY}/units/${UNIT}`, {
     status: 'available',
@@ -145,6 +150,7 @@ test('a hold is refused at a facility at its active tenant cap, before the unit 
   const inMemory = new InMemoryFirestore();
   inMemory.seed(`facilities/${FACILITY}`, { name: 'Cap Storage' });
   seedUnit(inMemory);
+  seedOnlineRentalsOn(inMemory);
   seedTenants(inMemory, { active: MAX_ACTIVE_TENANTS_PER_FACILITY });
   const { hold } = loadPublicMoveIn(inMemory);
 
@@ -158,12 +164,31 @@ test('archived tenants do not count toward the cap for a hold', async () => {
   const inMemory = new InMemoryFirestore();
   inMemory.seed(`facilities/${FACILITY}`, { name: 'Cap Storage' });
   seedUnit(inMemory);
+  seedOnlineRentalsOn(inMemory);
   // 300 tenants over the facility's life, 249 of them still active.
   seedTenants(inMemory, { active: MAX_ACTIVE_TENANTS_PER_FACILITY - 1, archived: 46, noFlag: 5 });
   const { hold } = loadPublicMoveIn(inMemory);
 
   const result = (await hold(holdRequest)) as { success?: boolean };
 
+  assert.equal(result.success, true);
+  assert.equal(inMemory.listCollection('publicReservations').length, 1);
+});
+
+test('a failed active-tenant count lets the hold through', async () => {
+  const inMemory = new InMemoryFirestore();
+  inMemory.seed(`facilities/${FACILITY}`, { name: 'Cap Storage' });
+  seedUnit(inMemory);
+  seedOnlineRentalsOn(inMemory);
+  // At the cap, so only the fail-open path can let this renter through.
+  seedTenants(inMemory, { active: MAX_ACTIVE_TENANTS_PER_FACILITY });
+  inMemory.countError = Object.assign(new Error('deadline-exceeded'), { code: 4 });
+  const { hold } = loadPublicMoveIn(inMemory);
+
+  const result = (await hold(holdRequest)) as { success?: boolean };
+
+  // A transient read error must not turn every online renter away; the cap
+  // controls cost and abuse, and the next count decides the next renter.
   assert.equal(result.success, true);
   assert.equal(inMemory.listCollection('publicReservations').length, 1);
 });

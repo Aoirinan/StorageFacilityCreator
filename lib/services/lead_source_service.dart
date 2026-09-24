@@ -7,6 +7,28 @@ import 'package:sfcapp/models/tenant_model.dart';
 class LeadSourceService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  /// Tenants per lead source, and how many of those are active (converted).
+  ///
+  /// Active is [TenantModel.isActiveField] (`isActive` exactly true), the
+  /// rule the dashboard, the stats Cloud Function and the public map use.
+  /// This read a missing `isActive` as active, so a partial tenant doc
+  /// counted as a conversion here and as inactive everywhere else.
+  @visibleForTesting
+  static ({Map<String, int> total, Map<String, int> converted})
+      tallyLeadSources(Iterable<Map<String, dynamic>> tenants) {
+    final total = <String, int>{};
+    final converted = <String, int>{};
+    for (final tenantData in tenants) {
+      final leadSource = tenantData['leadSource'] as String?;
+      if (leadSource == null || leadSource.isEmpty) continue;
+      total[leadSource] = (total[leadSource] ?? 0) + 1;
+      if (TenantModel.isActiveField(tenantData['isActive'])) {
+        converted[leadSource] = (converted[leadSource] ?? 0) + 1;
+      }
+    }
+    return (total: total, converted: converted);
+  }
+
   /// Get lead source statistics for a facility
   static Future<List<LeadSourceStats>> getLeadSourceStats({
     required String facilityId,
@@ -28,24 +50,11 @@ class LeadSourceService {
           .get();
 
       // Group tenants by lead source
-      final sourceCounts = <String, int>{};
-      final convertedCounts = <String, int>{};
-
-      for (final doc in tenantsSnapshot.docs) {
-        final tenantData = doc.data();
-        final leadSource = tenantData['leadSource'] as String?;
-        
-        if (leadSource != null && leadSource.isNotEmpty) {
-          // Count total tenants with this lead source
-          sourceCounts[leadSource] = (sourceCounts[leadSource] ?? 0) + 1;
-          
-          // Count converted (active tenants)
-          final isActive = tenantData['isActive'] ?? true;
-          if (isActive) {
-            convertedCounts[leadSource] = (convertedCounts[leadSource] ?? 0) + 1;
-          }
-        }
-      }
+      final tally = tallyLeadSources(
+        tenantsSnapshot.docs.map((doc) => doc.data()),
+      );
+      final sourceCounts = tally.total;
+      final convertedCounts = tally.converted;
 
       // Build statistics list
       final stats = <LeadSourceStats>[];

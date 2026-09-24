@@ -40,6 +40,16 @@ class AppRoute {
         'facilityId': facilityId,
       }).toString();
 
+  /// A tenant's ledger by id (the tenant is read fresh).
+  static String tenantLedgerFor({
+    required String tenantId,
+    required String facilityId,
+  }) =>
+      Uri(
+        path: '/tenants/$tenantId/ledger',
+        queryParameters: {'facilityId': facilityId},
+      ).toString();
+
   static const tenantCsvImport = '/tenants/import-csv';
   static const units = '/units';
   static const unitsMap = '/units/map';

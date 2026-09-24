@@ -602,7 +602,10 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Error archiving facility: $e'),
+              content: Text(
+                '${facility.name} was not archived: '
+                '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+              ),
               backgroundColor: AppTheme.error,
             ),
           );

@@ -15,12 +15,44 @@ class SubscriptionLockOverlay extends StatefulWidget {
 
   const SubscriptionLockOverlay({super.key, required this.child});
 
+  /// What the lock says: [accessMessage], the reason the access rule gave
+  /// ([SubscriptionGuardService.shellLock]), whenever there is one. It used to
+  /// be read only with no account, so a suspended account (status cancelled)
+  /// was told to reactivate its subscription, which does not lift a
+  /// suspension, instead of that it is suspended. The account's own status is
+  /// the fallback.
+  @visibleForTesting
+  static String lockMessage({
+    required FacilityCreatorAccountModel? account,
+    required String? accessMessage,
+  }) {
+    if (accessMessage != null) return accessMessage;
+    if (account == null) return 'Please subscribe to continue.';
+
+    if (account.hasTrial && account.isTrialExpired) {
+      return 'Your trial has expired. Please subscribe to continue using the app.';
+    }
+
+    if (account.subscriptionStatus == SubscriptionStatus.pastDue) {
+      return 'Your subscription payment is past due. Please renew your subscription to continue.';
+    }
+
+    if (account.subscriptionStatus == SubscriptionStatus.cancelled) {
+      return 'Your subscription has been cancelled. Please reactivate to continue.';
+    }
+
+    return 'Please subscribe to continue using the app.';
+  }
+
   @override
   State<SubscriptionLockOverlay> createState() => _SubscriptionLockOverlayState();
 }
 
 class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
   FacilityCreatorAccountModel? _account;
+  // Why the access rule locked (a suspension, a lapsed trial, a team
+  // member's owner whose billing lapsed); see SubscriptionLockOverlay.lockMessage.
+  String? _lockMessage;
   bool _isLoading = true;
   bool _isLocked = false;
 
@@ -98,6 +130,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
           // rather than locking a paying owner out; the guard fails closed.
           if (locked != null) {
             _account = lock.account;
+            _lockMessage = lock.message;
             _isLocked = locked;
           }
           _isLoading = false;
@@ -119,23 +152,8 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
   }
 
 
-  String _getLockMessage() {
-    if (_account == null) return 'Please subscribe to continue.';
-    
-    if (_account!.hasTrial && _account!.isTrialExpired) {
-      return 'Your trial has expired. Please subscribe to continue using the app.';
-    }
-    
-    if (_account!.subscriptionStatus == SubscriptionStatus.pastDue) {
-      return 'Your subscription payment is past due. Please renew your subscription to continue.';
-    }
-    
-    if (_account!.subscriptionStatus == SubscriptionStatus.cancelled) {
-      return 'Your subscription has been cancelled. Please reactivate to continue.';
-    }
-    
-    return 'Please subscribe to continue using the app.';
-  }
+  String _getLockMessage() =>
+      SubscriptionLockOverlay.lockMessage(account: _account, accessMessage: _lockMessage);
 
   @override
   Widget build(BuildContext context) {

@@ -31,7 +31,9 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
   String? _selectedContractId;
   String? _selectedPaymentId;
   ReminderType _selectedType = ReminderType.custom;
-  List<ReminderChannel> _selectedChannels = [ReminderChannel.inApp];
+  // Email, not in-app: in-app reminders were never built, so a reminder
+  // made with the default and sent was marked sent with nothing sent.
+  final List<ReminderChannel> _selectedChannels = [ReminderChannel.email];
   DateTime _selectedScheduledFor = DateTime.now().add(const Duration(hours: 1));
 
   @override
@@ -278,18 +280,22 @@ class _ReminderCreationScreenState extends ConsumerState<ReminderCreationScreen>
                 spacing: 8,
                 children: ReminderChannel.values.map((channel) {
                   final isSelected = _selectedChannels.contains(channel);
+                  // Off, as on the schedule page: these cannot send yet.
                   return FilterChip(
                     label: Text(channel.displayName),
                     selected: isSelected,
-                    onSelected: (selected) {
-                      setState(() {
-                        if (selected) {
-                          _selectedChannels.add(channel);
-                        } else {
-                          _selectedChannels.remove(channel);
-                        }
-                      });
-                    },
+                    tooltip: channel.canSend ? null : 'Not available yet',
+                    onSelected: channel.canSend
+                        ? (selected) {
+                            setState(() {
+                              if (selected) {
+                                _selectedChannels.add(channel);
+                              } else {
+                                _selectedChannels.remove(channel);
+                              }
+                            });
+                          }
+                        : null,
                   );
                 }).toList(),
               ),

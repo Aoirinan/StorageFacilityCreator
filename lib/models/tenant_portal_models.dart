@@ -114,17 +114,15 @@ class PortalPaymentSummary {
 
   factory PortalPaymentSummary.fromMap(Map<String, dynamic> data) {
     final amountValue = (data['amount'] ?? 0).toDouble();
-    final statusName = data['status'] as String? ?? PaymentStatus.pending.name;
     return PortalPaymentSummary(
       id: data['id'] as String,
       tenantId: data['tenantId'] as String?,
       unitNumber: data['unitNumber'] as String?,
       amount: amountValue,
       dueDate: _parseTimestamp(data['dueDate']) ?? DateTime.now(),
-      status: PaymentStatus.values.firstWhere(
-        (status) => status.name == statusName,
-        orElse: () => PaymentStatus.pending,
-      ),
+      // Not "pending" for a disputed or part-refunded payment: the tenant
+      // was shown one they had disputed as still owed.
+      status: paymentStatusFromStored(data['status']),
       paidAt: _parseTimestamp(data['paidAt']),
       method: data['method'] as String?,
     );

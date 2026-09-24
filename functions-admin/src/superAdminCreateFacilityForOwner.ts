@@ -6,6 +6,7 @@ import {
   FacilityForOwnerError,
   buildFacilityForOwner,
   buildOwnerRoleRow,
+  findOwnerAccountDoc,
 } from '@sfc/functions-shared';
 
 interface CreateFacilityForOwnerRequest {
@@ -103,16 +104,13 @@ export const superAdminCreateFacilityForOwner = functions.https.onCall(
     });
 
     // Without this the facility exists but does not count against, or appear
-    // on, the owner's platform account.
-    const accountSnap = await db
-      .collection('facilityCreatorAccounts')
-      .where('ownerUid', '==', ownerUid)
-      .limit(1)
-      .get();
+    // on, the owner's platform account. The owner's preferred account, not
+    // whichever duplicate limit(1) happened to return.
+    const accountDoc = await findOwnerAccountDoc(db, ownerUid);
     let accountId: string | null = null;
-    if (!accountSnap.empty) {
-      accountId = accountSnap.docs[0].id;
-      await accountSnap.docs[0].ref.update({
+    if (accountDoc) {
+      accountId = accountDoc.id;
+      await accountDoc.ref.update({
         facilityIds: admin.firestore.FieldValue.arrayUnion(facilityRef.id),
         updatedAt: now,
       });

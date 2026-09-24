@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/services/error_reporter.dart';
+import 'package:sfcapp/widgets/facilities_load_error.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_service.dart';
@@ -29,6 +31,7 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
   // null = loading; _kAllFacilitiesIns = all; otherwise a real facility id
   String? _selectedFacilityId;
   bool _loadingFacilities = true;
+  Object? _facilitiesError;
 
   // Per-facility insurance settings stored in Firestore
   bool _savingSettings = false;
@@ -53,12 +56,18 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
     super.dispose();
   }
 
-  Future<void> _loadFacilities() async {
+  Future<void> _loadFacilities({bool retry = false}) async {
+    // Only creation flows need the account, so a failed account read must not
+    // stop the facilities loading.
+    FacilityCreatorAccountService.ensureAccountInBackground();
     try {
-      await FacilityCreatorAccountService.ensureAccountForCurrentUser();
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final uid = (await ref.read(authStateProvider.future))?.uid;
+      if (!mounted) return;
+      if (retry && uid != null) {
+        ref.invalidate(cached_facility_providers.userFacilitiesProvider(uid));
+      }
       final facilities = uid == null
-          ? await FacilityService.getUserFacilities()
+          ? await FacilityService.getUserFacilities(throwOnError: true)
           : await ref.read(cached_facility_providers.userFacilitiesProvider(uid).future);
       if (mounted) {
         // Respect global picker if already set, otherwise default to All Facilities
@@ -70,14 +79,30 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
           _facilities = facilities;
           _selectedFacilityId = initialId;
           _loadingFacilities = false;
+          _facilitiesError = null;
         });
         if (!_isAllFacilities && _selectedFacilityId != null) {
           await _loadInsuranceSettings(_selectedFacilityId!);
         }
       }
-    } catch (e) {
-      if (mounted) setState(() => _loadingFacilities = false);
+    } catch (e, st) {
+      // Shown with a Retry: it used to fall through to "No Facilities Found".
+      ErrorReporter.reportError(e, st, context: 'InsuranceScreen._loadFacilities');
+      if (mounted) {
+        setState(() {
+          _loadingFacilities = false;
+          _facilitiesError = e;
+        });
+      }
     }
+  }
+
+  void _retryLoadFacilities() {
+    setState(() {
+      _loadingFacilities = true;
+      _facilitiesError = null;
+    });
+    _loadFacilities(retry: true);
   }
 
   Future<void> _loadInsuranceSettings(String facilityId) async {
@@ -155,6 +180,10 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
 
     if (_loadingFacilities) {
       return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_facilitiesError != null) {
+      return FacilitiesLoadError(onRetry: _retryLoadFacilities);
     }
 
     if (_facilities.isEmpty) {

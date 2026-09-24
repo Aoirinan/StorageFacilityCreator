@@ -13,6 +13,7 @@ import '../services/invoice_service.dart';
 import '../services/tenant_service.dart';
 import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/invoice_edit_rules.dart';
 import 'package:sfcapp/utils/print_util.dart';
 import '../widgets/invoice_pdf_viewer.dart';
@@ -605,7 +606,11 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error sending invoice: $e'),
+            // A refusal (no email address, a closed invoice) or an emailed
+            // invoice not marked sent explains itself.
+            content: Text(
+              'Error sending invoice: ${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+            ),
             backgroundColor: AppTheme.error,
           ),
         );

@@ -97,54 +97,58 @@ class FacilityStatsService {
     ).length;
   }
 
-  /// Units that count toward rentable-inventory stats (Total/Occupied/Vacant/
-  /// Available Units). Excludes staff-only spaces (manager residence, office,
-  /// personal-use) that have `publicListingEnabled == false` — the same flag
-  /// that already keeps them off the public map/website, so an operator's
-  /// internal-use tracking entries don't inflate their own dashboard numbers.
-  static List<UnitModel> _rentableUnits(List<UnitModel> units) {
-    return units.where((u) => u.publicListingEnabled).toList();
-  }
+  /// The one test for whether a unit counts toward Total/Occupied/Vacant:
+  /// every unit except internal-use space (office, manager residence,
+  /// personal use). Callers pass non-archived units.
+  ///
+  /// This used to be `publicListingEnabled`, the "List on public website"
+  /// switch. Owners whose rental page is not live turn that off for most
+  /// units (86 of 89 at one facility), so the counts showed 3 units. The
+  /// Cloud Function applies the same test (`countsTowardOccupancy` in
+  /// facility_stats.ts); test/fixtures/unit_occupancy_counts.json holds the
+  /// cases both sides must agree on.
+  static bool countsTowardOccupancy(UnitModel unit) => !unit.internalUse;
 
   /// The one definition of Total and Occupied units, used by every screen.
   ///
-  /// - TOTAL: [nonArchivedUnits] that are not staff-only
-  ///   (`publicListingEnabled != false`, see [_rentableUnits]).
+  /// - TOTAL: [nonArchivedUnits] that are not internal-use
+  ///   (see [countsTowardOccupancy]).
   /// - OCCUPIED: of those, status occupied with a tenantId in [allTenantIds].
   ///   Pass every tenant doc id, active or archived: archiving a tenant does
   ///   not free their unit, so the unit still reads Occupied in the list.
   /// - VACANT is TOTAL − OCCUPIED (reserved and maintenance count as vacant).
   ///
-  /// The dashboard used to count staff-only units and only active tenants, so
-  /// it disagreed with the Units list and the facility cards (82/74 against
-  /// 78/72 at one facility). The Cloud Function applies the same rule to the
-  /// facility-doc mirror (`isRentableUnit` in facility_stats.ts).
+  /// The dashboard used to count only active tenants, so it disagreed with
+  /// the Units list and the facility cards (82/74 against 78/72 at one
+  /// facility). The Cloud Function applies the same rule to the facility-doc
+  /// mirror.
   static ({int totalUnits, int occupiedUnits}) countUnits(
     List<UnitModel> nonArchivedUnits,
     Set<String> allTenantIds,
   ) {
-    final rentable = _rentableUnits(nonArchivedUnits);
+    final counted = nonArchivedUnits.where(countsTowardOccupancy).toList();
     return (
-      totalUnits: rentable.length,
-      occupiedUnits: _canonicalOccupiedCount(rentable, allTenantIds),
+      totalUnits: counted.length,
+      occupiedUnits: _canonicalOccupiedCount(counted, allTenantIds),
     );
   }
 
   /// Whether a cached stats `totalUnits` disagrees with the live unit list.
   ///
-  /// Compares against the rentable count, which is what the writer stores.
-  /// Comparing with every unit meant any facility with a staff-only unit
+  /// Compares against the counted total, which is what the writer stores.
+  /// Comparing with every unit meant any facility with an internal-use unit
   /// looked stale on every read and recomputed forever.
   static bool cachedUnitTotalDrifted(
     int cachedTotalUnits,
     List<UnitModel> nonArchivedUnits,
   ) {
-    return cachedTotalUnits != _rentableUnits(nonArchivedUnits).length;
+    return cachedTotalUnits != countUnits(nonArchivedUnits, const {}).totalUnits;
   }
 
   /// Compute total and occupied unit counts with [countUnits] (no heal).
-  /// `totalUnits` is the count of rentable unit documents that actually exist
-  /// for the facility — the user-set capacity max is never used here.
+  /// `totalUnits` is the count of unit documents that actually exist for the
+  /// facility (internal-use left out) — the user-set capacity max is never
+  /// used here.
   static Future<({int totalUnits, int occupiedUnits})> computeUnitCounts(String facilityId) async {
     try {
       final results = await Future.wait<Object>([
@@ -331,7 +335,7 @@ class FacilityStatsService {
               .data();
         }
 
-        // Cached `totalUnits` is the rentable unit-document count. Compare
+        // Cached `totalUnits` is the counted unit-document total. Compare
         // against the live count and refresh if the cache drifted (e.g. unit
         // docs were added/removed without triggering a recompute yet).
         final cachedTotalUnits = (cached['totalUnits'] as int?) ?? 0;
@@ -339,7 +343,7 @@ class FacilityStatsService {
         if (cachedUnitTotalDrifted(cachedTotalUnits, units)) {
           if (kDebugMode) {
             print(
-              '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != live rentable count, recomputing...',
+              '🔄 [FacilityStatsService] Cached totalUnits $cachedTotalUnits != live counted total, recomputing...',
             );
           }
           await _tryServerRecompute(facilityId);

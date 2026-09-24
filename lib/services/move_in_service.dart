@@ -47,27 +47,66 @@ const _tenantInUnitStatuses = {
   UnitStatus.auction,
 };
 
+/// A move-in refused because the unit already has a tenant in it.
+///
+/// Thrown typed so the wizard can tell a move-in of this same tenant
+/// ([sameTenant]) from a unit someone else rents, and so its message does not
+/// reach the screen as "Exception: ...".
+class MoveInUnitConflict implements Exception {
+  const MoveInUnitConflict({
+    required this.unitNumber,
+    required this.holderName,
+    required this.sameTenant,
+  });
+
+  final String unitNumber;
+
+  /// The name the unit shows for its tenant; may be empty.
+  final String holderName;
+
+  /// The unit shows the tenant being moved in.
+  final bool sameTenant;
+
+  String get message {
+    if (sameTenant) {
+      final who = holderName.isEmpty ? 'this tenant' : holderName;
+      return 'This move-in was partly completed: Unit $unitNumber already '
+          "shows $who in it. Open $who's ledger to review before trying "
+          'again.';
+    }
+    return 'Unit $unitNumber is already occupied'
+        '${holderName.isEmpty ? '' : ' by $holderName'}.';
+  }
+
+  @override
+  String toString() => message;
+}
+
 /// Why a move-in of [tenantId] into [unit] (as just read from Firestore) must
 /// not run, or null when it may.
 ///
 /// A move-in submitted twice, or retried after it had in fact finished, wrote
 /// a second contract, second charges, a second payment allocation and a
-/// second gate code: nothing checked the unit before writing. The unit is
-/// the last thing a move-in writes, so it reads as occupied once one is done.
+/// second gate code: nothing checked the unit before writing. The unit is not
+/// the last thing a move-in writes: step 1 (the tenant's unit) already marks
+/// it occupied by the tenant, before the contract, charges and payment. So
+/// the same tenant in the unit means a move-in at least partly done, maybe
+/// one that failed partway, and running it again could charge them twice.
 /// [unit] null (it could not be read) lets the move-in run as before.
-String? moveInUnitConflict({required UnitModel? unit, required String tenantId}) {
+MoveInUnitConflict? moveInUnitConflict({
+  required UnitModel? unit,
+  required String tenantId,
+}) {
   if (unit == null) return null;
   final holder = unit.tenantId ?? '';
   if (holder.isEmpty || !_tenantInUnitStatuses.contains(unit.status)) {
     return null;
   }
-  if (holder == tenantId) {
-    return 'This tenant has already moved into Unit ${unit.unitNumber}. '
-        'Check their ledger before trying again.';
-  }
-  final name = unit.tenantName ?? '';
-  return 'Unit ${unit.unitNumber} is already occupied'
-      '${name.isEmpty ? '' : ' by $name'}.';
+  return MoveInUnitConflict(
+    unitNumber: unit.unitNumber,
+    holderName: unit.tenantName ?? '',
+    sameTenant: holder == tenantId,
+  );
 }
 
 /// Service for managing move-in workflow
@@ -292,7 +331,7 @@ class MoveInService {
         unit: await UnitService.getUnit(facilityId, moveInData.unit.id),
         tenantId: moveInData.existingTenant?.id ?? '',
       );
-      if (conflict != null) throw Exception(conflict);
+      if (conflict != null) throw conflict;
 
       // Step 1: Create or update tenant
       if (moveInData.existingTenant != null) {
@@ -479,6 +518,7 @@ class MoveInService {
       return MoveInResult(
         success: false,
         error: e.toString(),
+        conflict: e is MoveInUnitConflict ? e : null,
       );
     }
   }
@@ -496,6 +536,10 @@ class MoveInResult {
   /// rent when the unit was added to others they rent.
   final String? notice;
 
+  /// Set when the unit already had a tenant, so the wizard can point the
+  /// owner at the ledger instead of inviting a retry.
+  final MoveInUnitConflict? conflict;
+
   MoveInResult({
     required this.success,
     this.tenantId,
@@ -503,6 +547,7 @@ class MoveInResult {
     this.ledgerEntryIds = const [],
     this.error,
     this.notice,
+    this.conflict,
   });
 }
 

@@ -43,8 +43,8 @@ test('disabling a user also revokes their refresh tokens', async () => {
   assert.deepEqual(calls, [
     'getUser:owner-1',
     'updateUser:owner-1:disabled=true',
-    'revokeRefreshTokens:owner-1',
     'mergeUserDoc:owner-1',
+    'revokeRefreshTokens:owner-1',
   ]);
   assert.deepEqual(userDocs['owner-1'], {
     authDisabled: true,
@@ -52,13 +52,33 @@ test('disabling a user also revokes their refresh tokens', async () => {
   });
 });
 
-test('a failed revoke is reported, not recorded as done', async () => {
-  const { deps, calls } = fakeDeps();
+test('a failed revoke still records the disable, and fails so it is retried', async () => {
+  // The login is disabled in Auth by then. Recording it only after the revoke
+  // left the console showing a disabled user as enabled when the revoke failed.
+  const { deps, calls, userDocs } = fakeDeps();
   deps.auth.revokeRefreshTokens = async () => {
     throw new Error('auth unavailable');
   };
   await assert.rejects(disableUserHandler({ uid: 'owner-1' }, asAdmin, deps), /auth unavailable/);
-  assert.ok(!calls.includes('mergeUserDoc:owner-1'));
+  assert.deepEqual(calls, ['getUser:owner-1', 'updateUser:owner-1:disabled=true', 'mergeUserDoc:owner-1']);
+  assert.deepEqual(userDocs['owner-1'], { authDisabled: true, authDisabledAt: 'SERVER_TIMESTAMP' });
+
+  // The retry goes through: every step is safe to repeat.
+  deps.auth.revokeRefreshTokens = async (uid) => {
+    calls.push(`revokeRefreshTokens:${uid}`);
+  };
+  assert.deepEqual(await disableUserHandler({ uid: 'owner-1' }, asAdmin, deps), { success: true });
+  assert.equal(calls[calls.length - 1], 'revokeRefreshTokens:owner-1');
+});
+
+test('a failed Auth disable records nothing', async () => {
+  const { deps, calls, userDocs } = fakeDeps();
+  deps.auth.updateUser = async () => {
+    throw new Error('auth unavailable');
+  };
+  await assert.rejects(disableUserHandler({ uid: 'owner-1' }, asAdmin, deps), /auth unavailable/);
+  assert.deepEqual(calls, ['getUser:owner-1']);
+  assert.equal(userDocs['owner-1'], undefined);
 });
 
 test('only a super admin may disable, and never another super admin', async () => {

@@ -31,6 +31,7 @@ class UnitService {
     double? securityDeposit,
     Map<String, dynamic>? customFields,
     bool publicListingEnabled = true,
+    bool internalUse = false,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -52,23 +53,17 @@ class UnitService {
         print('🔄 Creating unit: $unitNumber for facility: $facilityId');
       }
 
-      // Check if unit number already exists in facility
-      final existingUnit = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .where('unitNumber', isEqualTo: unitNumber)
-          .get();
+      // Check if unit number already exists in facility. Through
+      // FacilitySubcollections, like the reads, so tests run this write.
+      final unitsRef = FacilitySubcollections.units(facilityId);
+      final existingUnit =
+          await unitsRef.where('unitNumber', isEqualTo: unitNumber).get();
 
       if (existingUnit.docs.isNotEmpty) {
         throw Exception('Unit number $unitNumber already exists in this facility');
       }
 
-      final ref = _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .doc();
+      final ref = unitsRef.doc();
 
       final unitData = {
         'facilityId': facilityId,
@@ -88,6 +83,7 @@ class UnitService {
         'isActive': true,
         'archived': false, // Default to not archived
         'publicListingEnabled': publicListingEnabled,
+        'internalUse': internalUse,
       };
 
       await ref.set(unitData);
@@ -119,8 +115,9 @@ class UnitService {
 
   /// A facility's non-archived units by unit number, from one unordered read.
   ///
-  /// No auth check: callers check the signed-in user first. Used by the
-  /// public map sync too, so every unit list applies the same rule.
+  /// No auth check: callers check the signed-in user first. The public map
+  /// publish and inventory refresh (FacilityMapV2Service) read through it
+  /// too, so every unit list applies the same rule.
   static Future<List<UnitModel>> readFacilityUnits(String facilityId) async {
     final snapshot = await FacilitySubcollections.units(facilityId)
         .limit(facilityUnitReadLimit)
@@ -133,7 +130,7 @@ class UnitService {
   /// unordered so docs without a unitNumber are not left out).
   ///
   /// `(archived ?? false) == false` is the test the facility stats Cloud
-  /// Function applies (`isRentableUnit`), so a stray non-boolean is dropped
+  /// Function applies (`countsTowardOccupancy`), so a stray non-boolean is dropped
   /// by both.
   static List<UnitModel> _unitsFromRead(
     String facilityId,
@@ -257,6 +254,7 @@ class UnitService {
     double? mapWidth,
     double? mapHeight,
     bool? publicListingEnabled,
+    bool? internalUse,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -312,6 +310,7 @@ class UnitService {
       if (publicListingEnabled != null) {
         updateData['publicListingEnabled'] = publicListingEnabled;
       }
+      if (internalUse != null) updateData['internalUse'] = internalUse;
       // Handle map layout updates - merge with existing layout if only partial update
       if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
         // Get existing layout data if available (we'll merge it)
@@ -325,30 +324,19 @@ class UnitService {
         };
       }
 
+      // Through FacilitySubcollections, like the reads, so tests run this
+      // write.
+      final unitRef = FacilitySubcollections.units(facilityId).doc(unitId);
+
       // Get before snapshot for audit log (especially for status changes)
-      final beforeDoc = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .doc(unitId)
-          .get();
+      final beforeDoc = await unitRef.get();
       final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
       final beforeStatus = beforeData?['status'] as String?;
 
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .doc(unitId)
-          .update(updateData);
+      await unitRef.update(updateData);
 
       // Get after snapshot for audit log
-      final afterDoc = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .doc(unitId)
-          .get();
+      final afterDoc = await unitRef.get();
       final afterData = afterDoc.exists ? afterDoc.data() : null;
       final afterStatus = afterData?['status'] as String?;
 

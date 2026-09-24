@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
+import 'package:go_router/go_router.dart';
 import '../models/tenant_model.dart';
 import '../models/unit_model.dart';
 import '../models/contract_model.dart';
@@ -152,6 +153,11 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   bool _isLoading = false;
   bool _isCreatingContract = false;
   String? _errorMessage;
+
+  /// Set when the move-in was refused because the unit already shows this
+  /// tenant: an earlier attempt got partway. The error then offers the
+  /// tenant's ledger rather than a retry that could charge them twice.
+  bool _partlyMovedIn = false;
 
   Future<TenantModel?> _pickTenant() async {
     final tenants = await widget.services.getTenants(widget.facilityId);
@@ -365,6 +371,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _partlyMovedIn = false;
     });
 
     MoveInResult? completed;
@@ -454,7 +461,10 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         completed = result;
       } else if (mounted) {
         setState(() {
-          _errorMessage = result.error ?? 'Failed to complete move-in';
+          _errorMessage = _withoutExceptionPrefix(
+            result.error ?? 'Failed to complete move-in',
+          );
+          _partlyMovedIn = result.conflict?.sameTenant ?? false;
           _isLoading = false;
         });
       }
@@ -464,7 +474,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       }
       if (mounted) {
         setState(() {
-          _errorMessage = e.toString();
+          _errorMessage = _withoutExceptionPrefix(e.toString());
           _isLoading = false;
         });
       }
@@ -478,6 +488,25 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       facilityId: widget.facilityId,
       tenantId: completed.tenantId ?? _selectedTenant?.id,
       notice: completed.notice,
+    );
+  }
+
+  /// Errors reached the owner as "Exception: Unit A1 is ...".
+  static String _withoutExceptionPrefix(String error) =>
+      error.startsWith('Exception: ')
+          ? error.substring('Exception: '.length)
+          : error;
+
+  /// Opens the tenant's ledger over the wizard, read fresh, so the owner can
+  /// see what the earlier attempt wrote.
+  void _openLedgerOfTenant() {
+    final tenant = _selectedTenant;
+    if (tenant == null) return;
+    context.push(
+      AppRoute.tenantLedgerFor(
+        tenantId: tenant.id,
+        facilityId: widget.facilityId,
+      ),
     );
   }
 
@@ -1168,16 +1197,29 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
               color: AppTheme.error.withOpacity(0.1),
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.error, color: AppTheme.error),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _errorMessage!,
-                        style: const TextStyle(color: AppTheme.error),
-                      ),
+                    Row(
+                      children: [
+                        const Icon(Icons.error, color: AppTheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: const TextStyle(color: AppTheme.error),
+                          ),
+                        ),
+                      ],
                     ),
+                    if (_partlyMovedIn && _selectedTenant != null) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _openLedgerOfTenant,
+                        icon: const Icon(Icons.receipt_long),
+                        label: Text("Open ${_selectedTenant!.name}'s ledger"),
+                      ),
+                    ],
                   ],
                 ),
               ),

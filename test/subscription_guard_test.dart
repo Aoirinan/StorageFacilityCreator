@@ -1,9 +1,15 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
+import 'package:sfcapp/widgets/subscription_lock_overlay.dart';
+
+import 'support/fake_facility_collection.dart';
 
 FacilityCreatorAccountModel _account({
   required SubscriptionStatus status,
@@ -563,6 +569,387 @@ void main() {
               'exempt=${account?.billingExempt} facilities=${facilities.length}',
         );
       }
+    });
+  });
+
+  group("a suspended account's paid period does not override the suspension", () {
+    // Suspending cancels the account, and the cancelled branch let a
+    // cancelled account whose paid period was still running straight back in:
+    // the shell stayed unlocked and the guard let every page through.
+    final suspendedInPaidPeriod = _account(
+      status: SubscriptionStatus.cancelled,
+      periodEnd: DateTime.now().add(const Duration(days: 10)),
+      suspended: true,
+    );
+
+    test('checkAccess refuses it, and says why', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => suspendedInPaidPeriod,
+        facilitiesProvider: () async => const [],
+      );
+      expect(result.canAccess, isFalse);
+      expect(result.verified, isTrue);
+      expect(result.redirectRoute, '/subscription');
+      expect(result.message, contains('suspended'));
+    });
+
+    test('shellLock locks it', () async {
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => suspendedInPaidPeriod,
+        facilitiesProvider: () async => const [],
+      );
+      expect(lock.locked, isTrue);
+    });
+
+    test('and the lock overlay says it is suspended, not "reactivate"', () async {
+      // The overlay read the rule's reason only when there was no account, so
+      // a suspended account (status cancelled) was told to reactivate its
+      // subscription, and paying does not lift a suspension.
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => suspendedInPaidPeriod,
+        facilitiesProvider: () async => const [],
+      );
+      final shown = SubscriptionLockOverlay.lockMessage(
+        account: lock.account,
+        accessMessage: lock.message,
+      );
+      expect(shown, contains('suspended'));
+      expect(shown, isNot(contains('reactivate')));
+    });
+
+    test("the overlay falls back to the account's status only without a reason", () {
+      final lapsed = _account(
+        status: SubscriptionStatus.cancelled,
+        periodEnd: DateTime.now().subtract(const Duration(days: 10)),
+      );
+      expect(
+        SubscriptionLockOverlay.lockMessage(account: lapsed, accessMessage: null),
+        contains('cancelled'),
+      );
+      expect(
+        SubscriptionLockOverlay.lockMessage(account: null, accessMessage: null),
+        'Please subscribe to continue.',
+      );
+    });
+
+    test('an unsuspended cancelled account still keeps its paid period', () async {
+      final result = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().add(const Duration(days: 10)),
+        ),
+        facilitiesProvider: () async => const [],
+      );
+      expect(result.canAccess, isTrue);
+    });
+
+    test('only an exempt account overrides a suspension', () async {
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => _account(
+          status: SubscriptionStatus.cancelled,
+          periodEnd: DateTime.now().add(const Duration(days: 10)),
+          suspended: true,
+          billingExempt: true,
+        ),
+        facilitiesProvider: () async => const [],
+      );
+      expect(lock.locked, isFalse);
+    });
+  });
+
+  group('an invited team member (no account of their own)', () {
+    // Staff are let in only through a facility whose billing is in good
+    // standing. They used to be let in whatever the owner's standing, so an
+    // invited login kept every facility after the owner lapsed or was
+    // suspended. The owner's account is read from the copy the backend keeps
+    // on each facility (staff cannot read the account itself).
+    final now = DateTime.now();
+    OwnerAccountStanding owner(
+      SubscriptionStatus status, {
+      DateTime? trialEnd,
+      DateTime? periodEnd,
+      bool suspended = false,
+      bool billingExempt = false,
+    }) =>
+        OwnerAccountStanding(
+          accountId: 'acct_owner',
+          subscriptionStatus: status,
+          subscriptionTrialEnd: trialEnd,
+          subscriptionCurrentPeriodEnd: periodEnd,
+          suspended: suspended,
+          billingExempt: billingExempt,
+        );
+
+    FacilityModel teamFacility({
+      String id = 'fac_team',
+      OwnerAccountStanding? standing,
+      String? platformStatus,
+      DateTime? platformTrialEnd,
+      bool billingExempt = false,
+    }) =>
+        FacilityModel(
+          id: id,
+          name: 'Owner Storage',
+          ownerUid: 'owner_1',
+          createdAt: DateTime(2026),
+          facilityCreatorAccountId: 'acct_owner',
+          platformSubscriptionStatus: platformStatus,
+          platformSubscriptionTrialEnd: platformTrialEnd,
+          billingExempt: billingExempt,
+          ownerAccountStanding: standing,
+          currentUserOwnsFacility: false,
+        );
+
+    final lapsedOwner = owner(SubscriptionStatus.cancelled,
+        periodEnd: now.subtract(const Duration(days: 40)));
+
+    final cases = <(String, List<FacilityModel>, bool)>[
+      (
+        'a paid owner (active facility subscription)',
+        [teamFacility(standing: owner(SubscriptionStatus.active), platformStatus: 'active')],
+        true,
+      ),
+      (
+        'a paid owner whose account pays for the facility',
+        [teamFacility(standing: owner(SubscriptionStatus.active))],
+        true,
+      ),
+      (
+        'a trialing facility',
+        [
+          teamFacility(
+            standing: lapsedOwner,
+            platformStatus: 'trialing',
+            platformTrialEnd: now.add(const Duration(days: 5)),
+          ),
+        ],
+        true,
+      ),
+      (
+        "an owner on the account's own trial",
+        [teamFacility(standing: owner(SubscriptionStatus.trialing, trialEnd: now.add(const Duration(days: 5))))],
+        true,
+      ),
+      ('an exempt facility', [teamFacility(standing: lapsedOwner, billingExempt: true)], true),
+      (
+        'an exempt owner account',
+        [teamFacility(standing: owner(SubscriptionStatus.cancelled, suspended: true, billingExempt: true))],
+        true,
+      ),
+      (
+        'a cancelled owner inside the paid period',
+        [teamFacility(standing: owner(SubscriptionStatus.cancelled, periodEnd: now.add(const Duration(days: 3))))],
+        true,
+      ),
+      ('a lapsed owner', [teamFacility(standing: lapsedOwner)], false),
+      (
+        'an owner whose trial ended',
+        [teamFacility(standing: owner(SubscriptionStatus.trialing, trialEnd: now.subtract(const Duration(days: 1))))],
+        false,
+      ),
+      (
+        'a lapsed facility trial',
+        [
+          teamFacility(
+            standing: lapsedOwner,
+            platformStatus: 'trialing',
+            platformTrialEnd: now.subtract(const Duration(days: 1)),
+          ),
+        ],
+        false,
+      ),
+      ('an owner still pending approval', [teamFacility(standing: owner(SubscriptionStatus.pendingApproval))], false),
+      (
+        'a suspended owner, even with a paying facility',
+        [teamFacility(standing: owner(SubscriptionStatus.active, suspended: true), platformStatus: 'active')],
+        false,
+      ),
+      (
+        'a suspended owner, even with an exempt facility',
+        [teamFacility(standing: owner(SubscriptionStatus.cancelled, suspended: true), billingExempt: true)],
+        false,
+      ),
+      (
+        'a suspended owner inside a paid period',
+        [
+          teamFacility(
+            standing: owner(SubscriptionStatus.cancelled,
+                periodEnd: now.add(const Duration(days: 10)), suspended: true),
+          ),
+        ],
+        false,
+      ),
+      (
+        'one facility in good standing among lapsed ones',
+        [
+          teamFacility(id: 'a', standing: lapsedOwner),
+          teamFacility(id: 'b', standing: owner(SubscriptionStatus.active), platformStatus: 'active'),
+        ],
+        true,
+      ),
+      (
+        'a facility the backend has no copy for yet (the owner has no account)',
+        [teamFacility()],
+        true,
+      ),
+      ('a new signup with no facilities at all', const [], true),
+      (
+        'an owner with no account (a facility of their own) who is also staff elsewhere',
+        [
+          teamFacility(standing: lapsedOwner),
+          FacilityModel(
+            id: 'mine',
+            name: 'Mine',
+            ownerUid: 'user_1',
+            createdAt: DateTime(2026),
+            currentUserOwnsFacility: true,
+          ),
+        ],
+        true,
+      ),
+    ];
+
+    for (final (name, facilities, allowed) in cases) {
+      test('${allowed ? 'let in' : 'kept out'}: $name (checkAccess and shellLock)', () async {
+        final access = await SubscriptionGuardService.checkAccess(
+          authOverride: mockAuth,
+          userOverride: mockUser,
+          currentRoute: '/dashboard',
+          superAdminResolver: () => false,
+          accountProvider: (_) async => null,
+          facilitiesProvider: () async => facilities,
+        );
+        expect(access.canAccess, allowed);
+        expect(access.verified, isTrue);
+        if (!allowed) {
+          expect(access.redirectRoute, '/subscription');
+          expect(access.message, contains('owner'));
+        }
+
+        final lock = await SubscriptionGuardService.shellLock(
+          'user_1',
+          accountProvider: (_) async => null,
+          facilitiesProvider: () async => facilities,
+        );
+        expect(lock.locked, !allowed);
+        if (!allowed) expect(lock.message, contains('owner'));
+      });
+    }
+
+    test('a failed facilities read is unverified, never a lapse', () async {
+      final access = await SubscriptionGuardService.checkAccess(
+        authOverride: mockAuth,
+        userOverride: mockUser,
+        currentRoute: '/dashboard',
+        superAdminResolver: () => false,
+        accountProvider: (_) async => null,
+        facilitiesProvider: () async => throw StateError('offline'),
+      );
+      expect(access.canAccess, isFalse);
+      expect(access.verified, isFalse);
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => null,
+        facilitiesProvider: () async => throw StateError('offline'),
+      );
+      expect(lock.locked, isNull);
+    });
+
+    test("the facility doc's copy reaches the rule through the facility list", () async {
+      // What production runs: the facility doc is parsed, and the facility
+      // list marks each entry owned or not with copyWith. copyWith used to
+      // drop billingExempt, so an exempt facility never let anyone in.
+      FakeDoc doc(String id, Map<String, dynamic> extra) => FakeDoc(id, {
+            'name': 'Owner Storage',
+            'ownerUid': 'owner_1',
+            'active': true,
+            ...extra,
+          });
+      final suspendedCopy = <String, dynamic>{
+        'accountId': 'acct_owner',
+        'subscriptionStatus': 'active',
+        'suspended': true,
+        'billingExempt': false,
+      };
+      final paidCopy = <String, dynamic>{
+        'accountId': 'acct_owner',
+        'subscriptionStatus': 'cancelled',
+        'subscriptionCurrentPeriodEnd':
+            Timestamp.fromDate(now.add(const Duration(days: 3))),
+      };
+      List<FacilityModel> listed(FakeDoc d) => FacilityService.mergeUserFacilities(
+            owned: const [],
+            fromRoles: [FacilityModel.fromFirestore(d)],
+            includeArchived: false,
+          );
+
+      expect(
+        SubscriptionGuardService.accessWithoutAccount(
+            listed(doc('f1', {'ownerAccountStanding': suspendedCopy, 'platformSubscriptionStatus': 'active'}))).canAccess,
+        isFalse,
+      );
+      expect(
+        SubscriptionGuardService.accessWithoutAccount(listed(doc('f2', {'ownerAccountStanding': paidCopy}))).canAccess,
+        isTrue,
+      );
+      expect(
+        SubscriptionGuardService.accessWithoutAccount(listed(doc('f3', {
+          'ownerAccountStanding': {'accountId': 'acct_owner', 'subscriptionStatus': 'cancelled'},
+          'billingExempt': true,
+        }))).canAccess,
+        isTrue,
+      );
+      expect(
+        SubscriptionGuardService.accessWithoutAccount(listed(doc('f4', {
+          'ownerAccountStanding': {'accountId': 'acct_owner', 'subscriptionStatus': 'cancelled'},
+        }))).canAccess,
+        isFalse,
+      );
+    });
+
+    test('a facility the list did not mark either way counts as their own', () {
+      // Only a facility marked someone else's (currentUserOwnsFacility false)
+      // is a team facility. One read without the mark (null) is taken as the
+      // user's own, as every facility was before the team rule, so an owner
+      // with no account is not locked out because a lapsed owner also
+      // invited them.
+      final lapsedTeam = FacilityModel(
+        id: 'theirs',
+        name: 'Lapsed Storage',
+        ownerUid: 'owner_2',
+        createdAt: DateTime(2026),
+        ownerAccountStanding: const OwnerAccountStanding(
+          accountId: 'acct_lapsed',
+          subscriptionStatus: SubscriptionStatus.cancelled,
+        ),
+        currentUserOwnsFacility: false,
+      );
+      final unmarked = FacilityModel(
+        id: 'mine',
+        name: 'My Storage',
+        ownerUid: 'user_1',
+        createdAt: DateTime(2026),
+      );
+      expect(unmarked.currentUserOwnsFacility, isNull);
+      expect(
+        SubscriptionGuardService.accessWithoutAccount([lapsedTeam]).canAccess,
+        isFalse,
+      );
+      expect(
+        SubscriptionGuardService.accessWithoutAccount([unmarked, lapsedTeam]).canAccess,
+        isTrue,
+      );
     });
   });
 

@@ -43,19 +43,9 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
         
-        try {
-          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
-        } catch (accountError) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Account setup error: $accountError'),
-                backgroundColor: AppTheme.warning,
-              ),
-            );
-            return;
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop this list loading (it used to return here, blank).
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         ref.invalidate(userFacilitiesProvider(user.uid));
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);

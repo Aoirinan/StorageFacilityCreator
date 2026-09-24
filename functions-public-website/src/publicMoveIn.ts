@@ -7,6 +7,7 @@ import {
   enforceRateLimit,
   escapeHtml,
   getStripeClient,
+  isUnitOfferedOnline,
   sendFacilityEmailWithCompliance,
 } from '@sfc/functions-shared';
 import {
@@ -238,6 +239,27 @@ function callerFingerprint(context: functions.https.CallableContext): string {
   return `ip_${crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16)}`;
 }
 
+export const ONLINE_RENTALS_OFF_MESSAGE =
+  'This facility is not taking online rentals right now. Please contact the facility.';
+
+/**
+ * The public rental page offers a unit only when the owner has turned online
+ * rentals on (FacilityPublicSettings.publicRentalsEnabled, off by default), so
+ * a direct call is held to the same switch. The setting is already public in
+ * the facility's publicFacilityMaps doc, so saying so leaks nothing.
+ */
+async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<void> {
+  const settingsSnap = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('settings')
+    .doc('public')
+    .get();
+  if (settingsSnap.data()?.publicRentalsEnabled !== true) {
+    throw new functions.https.HttpsError('failed-precondition', ONLINE_RENTALS_OFF_MESSAGE);
+  }
+}
+
 /**
  * Creates a short-lived public reservation hold for a unit.
  * This reduces obvious double-booking races before move-in completion.
@@ -283,6 +305,8 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     userId: context.auth?.uid || null,
   });
 
+  await assertFacilityTakesOnlineRentals(String(facilityId));
+
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name ? String(name).trim() : '',
     email: String(email).trim().toLowerCase(),
@@ -323,7 +347,9 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     }
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
-    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+    // One refusal for both, so a caller cannot tell an unlisted or
+    // internal-use unit from a rented one.
+    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isUnitOfferedOnline(unitData)) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 
@@ -540,6 +566,31 @@ export const createPublicMoveInCheckout = functions
     windowSeconds: 60,
     userId: context.auth?.uid || null,
   });
+
+  // The unit can be rented, unlisted, archived or set to internal use while it
+  // is held (up to 15 minutes for a public hold, 60 for a tenant-portal one).
+  // completePublicMoveIn refuses such a unit too, but only after Checkout has
+  // taken the payment, leaving the owner to refund it by hand. Same test and
+  // refusal as both holds; trimmed as loadPublicMoveInChargeQuote does, so the
+  // unit checked is the unit priced.
+  const reservedUnitId = String(reservation.unitId || '').trim();
+  if (reservedUnitId) {
+    const unitSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('units')
+      .doc(reservedUnitId)
+      .get();
+    const unitData = unitSnap.exists ? (unitSnap.data() as Record<string, any>) : null;
+    const unitStatus = String(unitData?.status || '').toLowerCase();
+    if (
+      !unitData ||
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isUnitOfferedOnline(unitData)
+    ) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+  }
 
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
@@ -1002,6 +1053,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const unitStatus = String(preloadedUnitData.status || '').toLowerCase();
     if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
+    }
+    // Both hold callables (this codebase's and the tenant portal's) check this
+    // too. Checked again for a unit unlisted, archived or set to internal use
+    // since the hold. As with the status check above, the renter may already
+    // have paid through Checkout by now.
+    if (!isUnitOfferedOnline(preloadedUnitData)) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
     const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
     if (numFromUnit) {
