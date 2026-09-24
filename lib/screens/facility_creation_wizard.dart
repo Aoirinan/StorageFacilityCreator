@@ -541,11 +541,10 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
             paymentProcessor: _paymentProcessor,
             totalUnits: totalUnits,
           ),
-          // From the server: the cached list is up to 2 minutes old.
-          reloadFacilities: () {
-            FacilityService.clearFacilitiesCache();
-            return FacilityService.getUserFacilities();
-          },
+          // From the server. Clearing the cache was not enough: a plain read
+          // could join a load that started before the create and miss it.
+          reloadFacilities: () =>
+              FacilityService.getUserFacilities(forceRefresh: true),
         );
         // So the facility lists show it now, not when the cache expires.
         FacilityService.clearFacilitiesCache();
@@ -554,7 +553,9 @@ class _FacilityCreationWizardState extends ConsumerState<FacilityCreationWizard>
         if (kDebugMode) {
           print('⚠️ Facility creation failed and no facility it made was found: $e');
         }
-        createUnconfirmed = true;
+        // Only a timeout or lost connection can have written anything; a
+        // refusal told the owner to check for a facility never made.
+        createUnconfirmed = facilityCreateMayHaveLanded(e);
         rethrow;
       }
 
