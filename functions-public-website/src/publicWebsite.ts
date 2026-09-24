@@ -1528,7 +1528,7 @@ export const getPublicWebsiteConfig = functions.runWith({ minInstances: 1 }).htt
     }
     const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
     // isRentable already folds in status, tenant links, unit-type visibility, and the
-    // per-unit publicListingEnabled flag — do not re-derive availability from raw status
+    // per-unit publicListingEnabled and internalUse flags — do not re-derive availability from raw status
     // here, or staff-only units (manager residence, office, personal-use, etc.) that are
     // internally `available` (to avoid billing implications) leak into the public storefront.
     const available = units.filter((u) => u.isRentable === true);
@@ -1699,7 +1699,7 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
     .filter((v) => v.length > 0);
   const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
   // isRentable already folds in status, tenant links, unit-type visibility, and the
-  // per-unit publicListingEnabled flag — do not re-derive availability from raw status
+  // per-unit publicListingEnabled and internalUse flags — do not re-derive availability from raw status
   // here, or staff-only units (manager residence, office, personal-use, etc.) that are
   // internally `available` (to avoid billing implications) leak into the public storefront.
   const available = units.filter((u) => u.isRentable === true);

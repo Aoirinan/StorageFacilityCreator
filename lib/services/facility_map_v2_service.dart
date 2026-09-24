@@ -303,8 +303,8 @@ class FacilityMapV2Service {
   /// on a failed read, and the publish or inventory refresh then wrote an
   /// empty unit list over the live one. A failure now throws: publish reports
   /// it, and the refresh logs it and writes nothing. Which units the public
-  /// sees is still decided per unit by `publicListingEnabled`
-  /// ([buildPublicUnitInventoryMaps]).
+  /// can rent is still decided per unit, by `publicListingEnabled` and
+  /// `internalUse` ([buildPublicUnitInventoryMaps]).
   static Future<List<UnitModel>> _fetchActiveUnitsOrdered(
       String facilityId) async {
     try {
@@ -370,13 +370,20 @@ class FacilityMapV2Service {
           tenantClaimedUnitNumbers.contains(unitNumNorm);
       final statusAllowsRental = unit.status == UnitStatus.available ||
           unit.status == UnitStatus.reserved;
+      // The online rental callables rent only what isUnitOfferedOnline
+      // (functions-shared) allows: listed and not internal use. This looked at
+      // the listing switch alone, so an office or residence left listed was
+      // advertised as rentable and then refused at the hold. Archived units
+      // never get here (UnitService.readFacilityUnits drops them). Keep in step
+      // with syncPublicFacilityMapInventoryForFacility.
+      final offeredOnline = unit.publicListingEnabled && !unit.internalUse;
       final isRentable = statusAllowsRental &&
           !hasTenantLink &&
           !claimedByActiveTenant &&
           isPubliclyEnabledType &&
-          unit.publicListingEnabled;
+          offeredOnline;
 
-      final publicStatus = !unit.publicListingEnabled
+      final publicStatus = !offeredOnline
           ? 'unavailable'
           : (hasTenantLink || claimedByActiveTenant)
               ? 'rented'
