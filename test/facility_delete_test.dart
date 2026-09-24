@@ -2,8 +2,11 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/screens/facility_management_screen.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
@@ -170,6 +173,53 @@ void main() {
     testWidgets('nothing active, or a check that fails: the delete goes on', (tester) async {
       expect((await press(tester, (_) async => null))(), isTrue);
       expect((await press(tester, (_) async => throw StateError('offline')))(), isTrue);
+    });
+
+    testWidgets('Facilities > Delete Permanently asks the gate before the typed confirmation', (tester) async {
+      // The screen's own menu, not a stand-in button: without the gate in
+      // _deleteFacility the typed confirmation and the email code came
+      // first, and the refusal only after them.
+      final archived = FacilityModel(
+        id: 'fac-1',
+        name: 'Acme Storage',
+        ownerUid: 'owner-1',
+        createdAt: DateTime(2026, 1, 1),
+        active: false,
+      );
+      final checked = <String>[];
+      tester.view.physicalSize = const Size(1200, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          authStateProvider.overrideWith((ref) => Stream.value(MockUser(uid: 'owner-1'))),
+          facilitiesActiveProvider('owner-1')
+              .overrideWith((ref) => Stream.value([archived])),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: FacilityManagementScreen(
+              deleteBlocker: (facilityId) async {
+                checked.add(facilityId);
+                return 'Nothing was deleted: this facility still has 1 active tenant.';
+              },
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      // The card menu's own handler for Delete Permanently. (Opening the
+      // menu itself overflows in the test font.)
+      final menu = tester.widget<PopupMenuButton<String>>(
+          find.byType(PopupMenuButton<String>));
+      menu.onSelected!('delete');
+      await tester.pumpAndSettle();
+      expect(checked, ['fac-1']);
+      expect(find.text("Can't delete Acme Storage yet"), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      // Stopped: no typed confirmation follows.
+      expect(find.byType(AlertDialog), findsNothing);
     });
   });
 

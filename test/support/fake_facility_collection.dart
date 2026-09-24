@@ -52,6 +52,9 @@ class FakeCollection extends Fake
   final FakeQueryLog log;
   final int? _limit;
 
+  /// The docs as stored now, writes included.
+  List<FakeDoc> get stored => List.unmodifiable(_docs);
+
   List<FakeDoc> get _served {
     final limit = _limit;
     return limit == null ? _docs : _docs.take(limit).toList();

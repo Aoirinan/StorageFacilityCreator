@@ -382,13 +382,21 @@ class UnitService {
     }
   }
 
-  // Assign tenant to unit
-  static Future<void> assignTenantToUnit({
+  // Assign tenant to unit (Units > unit > Assign Tenant, and a tenant picked
+  // in Edit Unit). Through TenantService.assignUnit, which gives the tenant
+  // the unit in the same transaction: its rate added to theirs, their unit
+  // number set. It used to write the unit only, so the tenant was never
+  // billed for it. Returns the rent notice for the screen, or null.
+  // [records] and [effects] are for tests.
+  static Future<String?> assignTenantToUnit({
     required String facilityId,
     required String unitId,
     required String tenantId,
     required String tenantName,
     DateTime? moveInDate,
+    UnitStatus status = UnitStatus.occupied,
+    TenantRecordsStore? records,
+    TenantUpdateEffects? effects,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -400,13 +408,15 @@ class UnitService {
         print('🔄 Assigning tenant $tenantName to unit $unitId');
       }
 
-      await updateUnit(
+      final notice = await TenantService.assignUnit(
+        records ?? TenantService.recordsFor(facilityId),
         facilityId: facilityId,
         unitId: unitId,
-        status: UnitStatus.occupied,
         tenantId: tenantId,
-        tenantName: tenantName,
+        uid: user.uid,
+        status: status,
         moveInDate: moveInDate ?? DateTime.now(),
+        effects: effects,
       );
 
       if (kDebugMode) {
@@ -415,6 +425,8 @@ class UnitService {
       // No client stats refresh: the unit write above fires the onUnitWrite
       // Cloud Function, which recomputes. The awaited client recompute here
       // cost ~6 reads per save and its stats write was always denied.
+      _schedulePublicMapInventorySync(facilityId);
+      return notice;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error assigning tenant to unit: $e');
@@ -444,9 +456,9 @@ class UnitService {
   }
 
   // Remove tenant from unit (Unassign Tenant). The tenant's side changes in
-  // the same transaction: see TenantService.unassignUnit. [records] is for
-  // tests.
-  static Future<void> removeTenantFromUnit({
+  // the same transaction: see TenantService.unassignUnit. Returns the rent
+  // notice for the screen, or null. [records] is for tests.
+  static Future<String?> removeTenantFromUnit({
     required String facilityId,
     required String unitId,
     DateTime? moveOutDate,
@@ -462,7 +474,7 @@ class UnitService {
         print('🔄 Removing tenant from unit $unitId');
       }
 
-      await TenantService.unassignUnit(
+      final notice = await TenantService.unassignUnit(
         records ?? TenantService.recordsFor(facilityId),
         unitId: unitId,
         uid: user.uid,
@@ -474,6 +486,7 @@ class UnitService {
       }
       // Stats: recomputed by the onUnitWrite Cloud Function, as above.
       _schedulePublicMapInventorySync(facilityId);
+      return notice;
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error removing tenant from unit: $e');

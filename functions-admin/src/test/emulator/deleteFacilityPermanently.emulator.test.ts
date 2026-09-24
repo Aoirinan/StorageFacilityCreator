@@ -10,6 +10,7 @@ import {
   deleteFacilityPermanently,
   deleteFacilityPermanentlyHandler,
   facilityHasActiveTenantsMessage,
+  facilityHasAutopayTenantsMessage,
 } from '../../deleteFacilityPermanently';
 import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
@@ -237,6 +238,72 @@ test('an active tenant refuses the owner before the email code is spent; nothing
   await t2.update({ isActive: false });
   await run(OWNER, fakePurge(newCalls()));
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test("a tenant's autopay refuses the owner before the email code is spent; nothing goes", { skip: skipWithoutEmulator }, async () => {
+  // The purge cancels the facility's own subscriptions only: an archived
+  // tenant's autopay went on charging them with no record left anywhere.
+  await seedFacility();
+  const db = emulatorDb();
+  const fac = db.collection('facilities').doc(FACILITY);
+  const adaBilling = fac.collection('tenants').doc('t1').collection('billing').doc('default');
+  await adaBilling.set({ autopayEnabled: true });
+  // The legacy form, on the legacy tenants collection.
+  const oldBilling = fac.collection('oldTenants').doc('o1').collection('billing').doc('default');
+  await oldBilling.set({ autopayEnabled: false, stripeSubscriptionId: 'sub_tenant' });
+  const user = db.collection('users').doc(OWNER);
+  await user.set({ twoFactorEnabled: true });
+  const code = user.collection('otpCodes').doc('ok');
+  await code.set({ purpose: 'delete_facility', used: true, expiresAt: admin.firestore.Timestamp.fromMillis(NOW + 60_000) });
+
+  const calls = newCalls();
+  await assert.rejects(run(OWNER, fakePurge(calls)), (err: unknown) => {
+    const e = err as functions.https.HttpsError;
+    assert.equal(e.code, 'failed-precondition');
+    assert.equal(e.message, facilityHasAutopayTenantsMessage(['Ada Park', 'Old']));
+    assert.deepEqual(e.details, { reason: 'tenant-autopay', tenants: 2 });
+    return true;
+  });
+  assert.equal(
+    facilityHasAutopayTenantsMessage(['Ada Park', 'Old']),
+    'Nothing was deleted: autopay is still set up for 2 tenants (Ada Park, Old), ' +
+      "and deleting the facility wouldn't stop it. Open each tenant and press " +
+      'Disable autopay, then delete the facility.',
+  );
+  assert.deepEqual(calls, newCalls());
+  await assertNothingDeleted();
+  assert.deepEqual(await keyedRowsLeft(), ALL_KEYED_ROWS);
+  assert.equal((await code.get()).get('consumedAt'), undefined, 'code not spent');
+
+  // Disable autopay deletes the id and switches the flag off: then it goes.
+  await adaBilling.set({ autopayEnabled: false });
+  await oldBilling.set({ autopayEnabled: false });
+  await run(OWNER, fakePurge(newCalls()));
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test('a super admin (the claim) deletes a facility whose tenants have autopay', { skip: skipWithoutEmulator }, async () => {
+  await seedFacility();
+  await emulatorDb()
+    .collection('facilities')
+    .doc(FACILITY)
+    .collection('tenants')
+    .doc('t1')
+    .collection('billing')
+    .doc('default')
+    .set({ stripeSubscriptionId: 'sub_tenant' });
+  await run('admin-1', fakePurge(newCalls()), { superadmin: true });
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test('more than a few tenants with autopay: five are named, the rest counted', () => {
+  assert.equal(
+    facilityHasAutopayTenantsMessage(['A', 'B', 'C', 'D', 'E', 'F', 'G']),
+    'Nothing was deleted: autopay is still set up for 7 tenants (A, B, C, D, E and 2 more), ' +
+      "and deleting the facility wouldn't stop it. Open each tenant and press " +
+      'Disable autopay, then delete the facility.',
+  );
+  assert.match(facilityHasAutopayTenantsMessage(['Ada Park']), /set up for 1 tenant \(Ada Park\),/);
 });
 
 test('a super admin (the claim) deletes a facility with active tenants', { skip: skipWithoutEmulator }, async () => {

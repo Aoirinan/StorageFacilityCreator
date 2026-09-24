@@ -112,7 +112,13 @@ MoveInUnitConflict? moveInUnitConflict({
 /// Service for managing move-in workflow
 class MoveInService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so a test can sign a fake user in and run
+  // the real move-in (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// Calculate move-in charges
   /// Returns list of invoice line items with prorated amounts

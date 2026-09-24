@@ -9,6 +9,7 @@ import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/screens/tenant_edit_screen.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 
 /// Stands in for the save: asks the screen's question about unit 101, as
 /// TenantService.updateTenant does when the unit number changes while the
@@ -138,5 +139,44 @@ void main() {
     await settle(tester);
     expect(ops.freeAnswer, isTrue);
     expect(find.text('Ada Park updated successfully!'), findsOneWidget);
+  });
+
+  testWidgets("the tenant page's Contact Information edit asks too, and shows the new rent",
+      (tester) async {
+    // The same save from the tenant page's pencil: without the question
+    // the old unit stayed assigned, unasked.
+    tester.view.physicalSize = const Size(1200, 4000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final ops = _FakeOperations();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        tenantOperationsProvider.overrideWith((ref) => ops),
+        facilityProvider('f1').overrideWith((ref) async => null as FacilityModel?),
+        facilityUnitsProvider('f1').overrideWith((ref) => Stream.value(const <UnitModel>[])),
+      ],
+      child: MaterialApp(
+        home: Scaffold(
+          body: Consumer(
+            builder: (context, ref, _) => TextButton(
+              onPressed: () => editTenantContactInfo(context, ref, tenant),
+              child: const Text('edit'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('edit'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextFormField, 'Unit Number *'), '102');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await settle(tester);
+    expect(ops.asked, isTrue);
+    expect(find.text('Also free unit 101?'), findsOneWidget);
+    await tester.tap(find.text('Keep both'));
+    await settle(tester);
+    expect(ops.savedUnitNumber, '102');
+    expect(find.text(r'Contact info updated. Monthly rent is now $220.00 for units 101 and 102.'),
+        findsOneWidget);
   });
 }

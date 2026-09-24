@@ -173,6 +173,18 @@ typedef ConfirmUnitsFreed = Future<bool> Function(List<TenantDeletePlan> freeing
 /// unit [unitNumber]: true frees it, false keeps both.
 typedef ConfirmFreeUnit = Future<bool> Function(String unitNumber);
 
+/// A unit's number and monthly rate, as [TenantService.rentAfterUnitChange]
+/// sums them.
+typedef UnitRent = ({String unitNumber, double rate});
+
+/// The rent side of a unit change [TenantService.rentAfterUnitChange] works
+/// out once the tenant is read in the transaction that makes it.
+typedef _RentPlan = ({
+  List<UnitRent> heldBefore,
+  List<UnitRent> released,
+  UnitRent? added,
+});
+
 /// A bulk permanent delete over [TenantService.maxTenantsPerDelete]. Each
 /// call is all or nothing, so it is refused rather than split. It used to
 /// reach the callable after the pre-check and come back as
@@ -995,7 +1007,7 @@ class TenantService {
       }
       if (unitNumber != null) updateData['unitNumber'] = unitNumber;
       if (monthlyRate != null) {
-        updateData['monthlyRate'] = monthlyRate;
+        updateData['monthlyRate'] = cents(monthlyRate);
       }
       if (paidThrough != null) {
         updateData['paidThrough'] = Timestamp.fromDate(paidThrough);
@@ -1105,6 +1117,7 @@ class TenantService {
       // tenant off (below).
       _UnitLink? link;
       var release = const <UnitModel>[];
+      _RentPlan? rent;
       String? notice;
       if (unitNumber != null && beforeData != null && !deactivating) {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
@@ -1127,17 +1140,17 @@ class TenantService {
             final change = await _planUnitChange(
               store,
               tenantId: tenantId,
-              before: beforeData,
               oldNum: oldNum,
               link: planned,
               requestedRate: monthlyRate,
               confirmFree: confirmFreeOldUnit,
             );
             release = change.release;
-            if (change.monthlyRate != null) {
-              updateData['monthlyRate'] = change.monthlyRate;
-              notice = change.notice;
-            }
+            rent = change.rent;
+            // Worked out in the transaction below instead. The form's rate
+            // is their old total, or the picked unit's rate: saved as it
+            // is, it double-counted or dropped a unit they keep.
+            if (rent != null) updateData.remove('monthlyRate');
           }
         } else if (newNum.isEmpty && oldNum.isNotEmpty && nowActive) {
           // Clearing the number of a unit they still hold would stop their
@@ -1157,6 +1170,8 @@ class TenantService {
       }
 
       ({int unitsFreed, int gateCodesOff})? deactivation;
+      var unitsChanged = false;
+      var written = updateData;
       if (deactivating) {
         // Every deactivation is checked, not only the Active switch: the edit
         // screen always passes a unit number ('' for a tenant assigned from
@@ -1169,6 +1184,40 @@ class TenantService {
           requestedUnitNumber: unitNumber,
           updateData: updateData,
           uid: uid,
+        );
+      } else if (beforeData != null &&
+          ((link?.write ?? false) || release.isNotEmpty)) {
+        // Keep facilities/{id}/units in step (createTenant does this too),
+        // freeing the old unit when the owner said to. The tenant's fields
+        // commit in the same transaction: written first, a unit taken
+        // meanwhile left them billed for it with "Nothing was saved".
+        final displayName = name ?? _displayName(beforeData, tenantId);
+        unitsChanged = await _commitUnitLink(
+          store,
+          link,
+          tenantId: tenantId,
+          tenantName: name ?? (beforeData['name'] as String?)?.trim() ?? '',
+          monthlyRate: monthlyRate ?? _rateOf(beforeData),
+          release: [for (final u in release) u.id],
+          uid: uid,
+          tenantUpdate: (tenant) {
+            written = {...updateData};
+            final plan = rent;
+            if (plan != null) {
+              final change = rentAfterUnitChange(
+                tenantName: displayName,
+                current: _rateOf(tenant),
+                heldBefore: plan.heldBefore,
+                released: plan.released,
+                added: plan.added,
+              );
+              if (change.monthlyRate != null) {
+                written['monthlyRate'] = change.monthlyRate;
+              }
+              notice = change.notice;
+            }
+            return written;
+          },
         );
       } else {
         await store.updateTenant(tenantId, updateData);
@@ -1184,7 +1233,7 @@ class TenantService {
         before: beforeData != null ? Map<String, dynamic>.from(beforeData) : null,
         after: afterData != null ? Map<String, dynamic>.from(afterData) : null,
         metadata: {
-          'fieldsChanged': updateData.keys.toList(),
+          'fieldsChanged': written.keys.toList(),
           if (deactivation != null) ...{
             'unitsFreed': deactivation.unitsFreed,
             'gateAccessDeactivated': deactivation.gateCodesOff,
@@ -1198,22 +1247,8 @@ class TenantService {
         await fx.refreshFacilityStats(facilityId);
         fx.syncPublicMap(facilityId);
       }
-
-      // Keep facilities/{id}/units in step (createTenant does this too),
-      // freeing the old unit when the owner said to.
-      if ((link != null || release.isNotEmpty) && beforeData != null) {
-        final changed = await _commitUnitLink(
-          store,
-          link,
-          tenantId: tenantId,
-          tenantName: name ?? (beforeData['name'] as String?)?.trim() ?? '',
-          monthlyRate: monthlyRate ?? _rateOf(beforeData),
-          release: [for (final u in release) u.id],
-          uid: uid,
-        );
-        if (changed) await fx.refreshFacilityStats(facilityId);
-        if (release.isNotEmpty) fx.syncPublicMap(facilityId);
-      }
+      if (unitsChanged) await fx.refreshFacilityStats(facilityId);
+      if (release.isNotEmpty) fx.syncPublicMap(facilityId);
 
       if (kDebugMode) {
         print('✅ Tenant updated successfully: $tenantId');
@@ -1230,8 +1265,8 @@ class TenantService {
   /// Move-in of [unitNumber] for an existing tenant (MoveInService). Links
   /// the unit and never releases another: move-in used to call
   /// updateTenant(unitNumber: new), which freed the unit the tenant still
-  /// rented and listed it as rentable. Returns the new-rent notice the
-  /// wizard shows when the unit is added to units they already hold.
+  /// rented and listed it as rentable. Returns the rent notice the wizard
+  /// shows when the unit is added to units they already hold.
   ///
   /// Their first unit (or a returning tenant's): the unit number becomes
   /// [unitNumber] and the rate [monthlyRate] (the prorated first month), as
@@ -1240,12 +1275,14 @@ class TenantService {
   /// isActive an archived tenant who moved back in stayed inactive, and
   /// rent, autopay and lockout all skipped them.
   ///
-  /// Another unit: the rent job bills one monthlyRate per tenant, and it is
-  /// the sum of the rates of the units they hold, so this unit's rate is
-  /// added to theirs. It used to be left alone, so the new unit was never
-  /// billed. A unitNumber naming a unit they still hold is kept (it is the
-  /// unit lists and statements show). [records], [effects] and [actingUid]
-  /// are for tests.
+  /// Another unit: the rent job bills one monthlyRate per tenant, so this
+  /// unit's full rate is added to theirs, under [rentAfterUnitChange]'s
+  /// rule. It used to be left alone, so the new unit was never billed. A
+  /// unitNumber naming a unit they still hold is kept (it is the unit lists
+  /// and statements show). The tenant's fields and the unit link commit in
+  /// one transaction: the raised rate used to be written first, so a unit
+  /// taken meanwhile left them billed for it, and a retry added it again.
+  /// [records], [effects] and [actingUid] are for tests.
   static Future<String?> recordMoveInUnit({
     required String facilityId,
     required String tenantId,
@@ -1258,8 +1295,9 @@ class TenantService {
     final store = records ?? _records(facilityId);
     final before = await store.tenant(tenantId);
     final newNum = unitNumber.trim();
+    final held = _heldUnitModels(tenantId, await store.linkedUnits(tenantId));
     final others = [
-      for (final u in _heldUnitModels(tenantId, await store.linkedUnits(tenantId)))
+      for (final u in held)
         if (u.unitNumber.trim() != newNum) u
     ];
     if (others.isEmpty) {
@@ -1279,48 +1317,160 @@ class TenantService {
     final fx = effects ?? const TenantUpdateEffects();
     final link =
         await _planUnitLink(store, tenantId: tenantId, unitNumber: newNum);
-    final rate = rentAfterUnitChange(_rateOf(before),
-        added: link.unitRate ?? monthlyRate ?? 0);
-    final current = (before?['unitNumber'] as Object?)?.toString().trim() ?? '';
-    final fields = <String, dynamic>{
-      'monthlyRate': rate,
-      'isActive': true,
-      'updatedAt': FieldValue.serverTimestamp(),
-      if (!others.any((u) => u.unitNumber.trim() == current))
-        'unitNumber': newNum,
-    };
-    await store.updateTenant(tenantId, fields);
+    // Already theirs (a move-in that went through): nothing to add.
+    final adding = held.length == others.length;
+    final name = _displayName(before, tenantId);
+    String? notice;
+    var written = const <String, dynamic>{};
+    final linked = await _commitUnitLink(
+      store,
+      link,
+      tenantId: tenantId,
+      tenantName: name,
+      monthlyRate: monthlyRate ?? 0,
+      uid: uid,
+      tenantUpdate: (tenant) {
+        final change = adding
+            ? rentAfterUnitChange(
+                tenantName: name,
+                current: _rateOf(tenant),
+                heldBefore: [for (final u in others) unitRent(u)],
+                added: (
+                  unitNumber: newNum,
+                  rate: link.unitRate ?? monthlyRate ?? 0,
+                ),
+              )
+            : null;
+        notice = change?.notice;
+        final current =
+            (tenant?['unitNumber'] as Object?)?.toString().trim() ?? '';
+        return written = {
+          if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
+          'isActive': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+          if (!others.any((u) => u.unitNumber.trim() == current))
+            'unitNumber': newNum,
+        };
+      },
+    );
     await fx.audit(
       facilityId: facilityId,
       tenantId: tenantId,
       before: before == null ? null : Map<String, dynamic>.from(before),
       after: await store.tenant(tenantId),
       metadata: {
-        'fieldsChanged': fields.keys.toList(),
+        'fieldsChanged': written.keys.toList(),
         'unitAdded': newNum,
       },
     );
-    final linked = await _commitUnitLink(
-      store,
-      link,
-      tenantId: tenantId,
-      tenantName: _displayName(before, tenantId),
-      monthlyRate: monthlyRate ?? 0,
-      uid: uid,
-    );
     if (linked) await fx.refreshFacilityStats(facilityId);
-    return rentNotice(rate, [for (final u in others) u.unitNumber, newNum]);
+    return notice;
+  }
+
+  /// Units > unit > Assign Tenant, and picking a tenant for a unit in Edit
+  /// Unit: puts [tenantId] in [unitId] (as [status]) and, in the same
+  /// transaction, gives them the unit as a move-in of another unit does: its
+  /// rate is added to theirs under [rentAfterUnitChange]'s rule, they are
+  /// made active, and their unitNumber becomes this unit when it names none
+  /// they hold. It used to write the unit only, so the tenant was never
+  /// billed for it, and freeing it later took its rate off a rent that never
+  /// had it. Returns the rent notice, or null. Refused when another tenant
+  /// holds the unit. [effects] is for tests.
+  static Future<String?> assignUnit(
+    TenantRecordsStore store, {
+    required String facilityId,
+    required String unitId,
+    required String tenantId,
+    required String uid,
+    UnitStatus status = UnitStatus.occupied,
+    DateTime? moveInDate,
+    TenantUpdateEffects? effects,
+  }) async {
+    final unit = await store.unit(unitId);
+    if (unit == null) throw Exception('That unit no longer exists.');
+    final seen = unit.tenantId?.trim() ?? '';
+    // A stale link on an available unit is not a holder (as in
+    // unitsHeldByTenant): nobody occupies it.
+    if (seen.isNotEmpty &&
+        seen != tenantId &&
+        unit.status != UnitStatus.available) {
+      throw UnitHeldByAnotherTenantException(
+          unitNumber: unit.unitNumber, holderName: unit.tenantName);
+    }
+    final before = await store.tenant(tenantId);
+    if (before == null) throw Exception('That tenant no longer exists.');
+    final name = _displayName(before, tenantId);
+    final held = _heldUnitModels(tenantId, await store.linkedUnits(tenantId));
+    final others = [
+      for (final u in held)
+        if (u.id != unitId) u
+    ];
+    final adding = held.length == others.length;
+    final number = unit.unitNumber.trim();
+    String? notice;
+    var written = const <String, dynamic>{};
+    await store.transaction((txn) async {
+      final holder = await txn.unitTenantId(unitId);
+      final tenant = await txn.tenant(tenantId);
+      if (holder != null &&
+          holder.isNotEmpty &&
+          holder != tenantId &&
+          holder != unit.tenantId) {
+        throw UnitHeldByAnotherTenantException(unitNumber: unit.unitNumber);
+      }
+      if (tenant == null) throw Exception('That tenant no longer exists.');
+      final change = adding
+          ? rentAfterUnitChange(
+              tenantName: name,
+              current: _rateOf(tenant),
+              heldBefore: [for (final u in others) unitRent(u)],
+              added: unitRent(unit),
+            )
+          : null;
+      notice = change?.notice;
+      final current = (tenant['unitNumber'] as Object?)?.toString().trim() ?? '';
+      txn.update('units', unitId, {
+        'status': status.name,
+        'tenantId': tenantId,
+        'tenantName': (before['name'] as String?)?.trim() ?? '',
+        'moveInDate': Timestamp.fromDate(moveInDate ?? DateTime.now()),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': uid,
+      });
+      written = {
+        if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
+        // Rent, autopay and lockout skip inactive tenants.
+        if (!TenantModel.isActiveField(tenant['isActive'])) 'isActive': true,
+        if (number.isNotEmpty &&
+            !others.any((u) => u.unitNumber.trim() == current))
+          'unitNumber': number,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      txn.update('tenants', tenantId, written);
+    });
+    await (effects ?? const TenantUpdateEffects()).audit(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      before: Map<String, dynamic>.from(before),
+      after: await store.tenant(tenantId),
+      metadata: {
+        'fieldsChanged': written.keys.toList(),
+        'unitAssigned': number,
+      },
+    );
+    return notice;
   }
 
   /// The tenant's side of a move-out whose unit [movedOutUnitId] has already
   /// been freed. Only a tenant left holding no unit is switched off (which
-  /// also turns their gate codes off); one who still rents another unit
-  /// stays active, since rent, autopay and lockout skip inactive tenants,
-  /// the unit they left comes off their monthlyRate (the sum of their
-  /// units' rates; it used to stay, billing them for it), and their
-  /// unitNumber moves to a unit they hold if it named the one they left.
-  /// [records], [effects] and [actingUid] are for tests.
-  static Future<void> recordMoveOut({
+  /// also turns their gate codes off), their rate kept as history; one who
+  /// still rents another unit stays active, since rent, autopay and lockout
+  /// skip inactive tenants, the unit they left comes off their monthlyRate
+  /// under [rentAfterUnitChange]'s rule (it used to stay, billing them for
+  /// it), and their unitNumber moves to a unit they hold if it named the one
+  /// they left. Returns the rent notice, or null. [records], [effects] and
+  /// [actingUid] are for tests.
+  static Future<String?> recordMoveOut({
     required String facilityId,
     required String tenantId,
     required String movedOutUnitId,
@@ -1331,7 +1481,7 @@ class TenantService {
     final store = records ?? _records(facilityId);
     final before = await store.tenant(tenantId);
     final units = await store.linkedUnits(tenantId);
-    final stillHeld = unitsHeldByTenant(
+    final stillHeld = _heldUnitModels(
         tenantId, [for (final u in units) if (u.id != movedOutUnitId) u]);
     if (stillHeld.isEmpty) {
       await updateTenant(
@@ -1343,15 +1493,24 @@ class TenantService {
         effects: effects,
         actingUid: actingUid,
       );
-      return;
+      return null;
     }
     final current = (before?['unitNumber'] as Object?)?.toString().trim() ?? '';
     final keepsNumber = stillHeld.any((u) => u.unitNumber.trim() == current);
     final left = await store.unit(movedOutUnitId);
-    final rate = left == null
-        ? null
-        : rentAfterUnitChange(_rateOf(before), released: [left.monthlyRate]);
-    if (keepsNumber && rate == null) return;
+    // Freed by this move-out (or still theirs if that step failed); a unit
+    // someone else holds was never theirs to take off.
+    final leftHolder = left?.tenantId?.trim() ?? '';
+    final change = left != null && (leftHolder.isEmpty || leftHolder == tenantId)
+        ? rentAfterUnitChange(
+            tenantName: _displayName(before, tenantId),
+            current: _rateOf(before),
+            heldBefore: [for (final u in [...stillHeld, left]) unitRent(u)],
+            released: [unitRent(left)],
+          )
+        : null;
+    final rate = change?.monthlyRate;
+    if (keepsNumber && rate == null) return change?.notice;
     await updateTenant(
       facilityId: facilityId,
       tenantId: tenantId,
@@ -1361,16 +1520,21 @@ class TenantService {
       effects: effects,
       actingUid: actingUid,
     );
+    return change?.notice;
   }
 
   /// Unassign Tenant (Units > unit > Unassign Tenant): frees [unitId] and,
-  /// in the same transaction, takes it off the tenant it showed. Its rate
-  /// comes off their monthlyRate (never below 0), and a unitNumber naming
-  /// it moves to another unit they hold, or is cleared. It used to free the
-  /// unit only: the tenant went on being billed for it, and kept a unit
-  /// number that, once the unit was given to someone else, made every save
-  /// of either tenant fail.
-  static Future<void> unassignUnit(
+  /// in the same transaction, takes it off the tenant it showed. It used to
+  /// free the unit only: the tenant went on being billed for it, and kept a
+  /// unit number that, once the unit was given to someone else, made every
+  /// save of either tenant fail.
+  ///
+  /// Their last unit ends the tenancy as a move-out does: switched off,
+  /// unit number cleared, rate kept as history, gate codes off. It used to
+  /// set the rate to 0 and leave them active. Otherwise the unit's rate comes
+  /// off theirs under [rentAfterUnitChange]'s rule, and a unitNumber naming
+  /// it moves to another unit they hold. Returns the rent notice, or null.
+  static Future<String?> unassignUnit(
     TenantRecordsStore store, {
     required String unitId,
     required String uid,
@@ -1378,15 +1542,22 @@ class TenantService {
   }) async {
     final unit = await store.unit(unitId);
     final tenantId = unit?.tenantId?.trim() ?? '';
+    final held = unit != null && unit.status != UnitStatus.available;
     final others = tenantId.isEmpty
-        ? const <HeldUnit>[]
-        : unitsHeldByTenant(tenantId, [
+        ? const <UnitModel>[]
+        : _heldUnitModels(tenantId, [
             for (final u in await store.linkedUnits(tenantId))
               if (u.id != unitId) u
           ]);
+    final endsTenancy = held && tenantId.isNotEmpty && others.isEmpty;
+    final gateIds = endsTenancy
+        ? await store.activeGateAccessIds(tenantId)
+        : const <String>[];
     final unitOff =
         UnitService.tenantUnlinkFields(updatedBy: uid, moveOutDate: moveOutDate);
+    String? notice;
     await store.transaction((txn) async {
+      notice = null;
       final holder = await txn.unitTenantId(unitId);
       // Only the tenant read above: their other units were read for them.
       final tenant = unit != null && tenantId.isNotEmpty && holder == tenantId
@@ -1394,30 +1565,99 @@ class TenantService {
           : null;
       txn.update('units', unitId, unitOff);
       if (unit == null || tenant == null) return;
+      if (endsTenancy) {
+        txn.update('tenants', tenantId, {
+          'isActive': false,
+          'unitNumber': '',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        final gateOff = _gateAccessOffFields(uid);
+        for (final accessId in gateIds) {
+          txn.update('gateAccess', accessId, gateOff);
+        }
+        return;
+      }
+      final change = held
+          ? rentAfterUnitChange(
+              tenantName: _displayName(tenant, tenantId),
+              current: _rateOf(tenant),
+              heldBefore: [for (final u in [unit, ...others]) unitRent(u)],
+              released: [unitRent(unit)],
+            )
+          : null;
+      notice = change?.notice;
       final vacated = unit.unitNumber.trim();
       final current = (tenant['unitNumber'] as Object?)?.toString().trim() ?? '';
-      txn.update('tenants', tenantId, {
-        'monthlyRate':
-            rentAfterUnitChange(_rateOf(tenant), released: [unit.monthlyRate]),
+      final fields = <String, dynamic>{
+        if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
         if (vacated.isNotEmpty && current == vacated)
           'unitNumber': others.isEmpty ? '' : others.first.unitNumber,
+      };
+      if (fields.isEmpty) return;
+      txn.update('tenants', tenantId, {
+        ...fields,
         'updatedAt': FieldValue.serverTimestamp(),
       });
     });
+    return notice;
   }
 
-  /// A tenant's monthly rent once units renting at [released] are freed and
-  /// one renting at [added] is added. Decided rule: a tenant's monthlyRate
-  /// is the sum of the rates of the units they hold, since the rent job
-  /// bills that one number. Never below 0 (a prorated first month can leave
-  /// it under the unit's full rate); rounded to the cent.
-  static double rentAfterUnitChange(
-    double current, {
-    Iterable<double> released = const [],
-    double added = 0,
+  /// [x] rounded to the cent. Every rate this service works out is: sums of
+  /// doubles drift (100.1 + 150.2 is 250.29999999999998).
+  static double cents(double x) => (x * 100).round() / 100;
+
+  /// A unit's number and monthly rate, for [rentAfterUnitChange].
+  static UnitRent unitRent(UnitModel unit) =>
+      (unitNumber: unit.unitNumber.trim(), rate: unit.monthlyRate);
+
+  /// A tenant's monthly rent once the units in [released] (some of
+  /// [heldBefore], the units they held) are freed and [added] is added.
+  ///
+  /// Decided rule: a tenant's monthlyRate is the sum of the rates of the
+  /// units they hold, since the rent job bills that one number. It is only
+  /// kept that way automatically for a tenant it already describes: [current]
+  /// equal, to the cent, to the rates of [heldBefore]. Before this was
+  /// checked, a tenant billed one rate for two units (as every multi-unit
+  /// tenant was before the rule) dropped to $0 when one unit was freed. For
+  /// anyone else [monthlyRate] is null (leave it alone) and [notice] asks the
+  /// owner to check it, unless it already is the sum of the units they hold
+  /// afterwards. An automatic rate is never 0 or less while they hold a
+  /// unit, and is rounded to the cent. Both null when they hold none
+  /// afterwards: the caller ends the tenancy, keeping the rate as history.
+  ///
+  /// PARITY: rentAfterUnitChange in
+  /// functions-tenant-lifecycle/src/moveOutTenantFields.ts, which processMoveOut
+  /// uses; both test suites run
+  /// functions-tenant-lifecycle/src/test/fixtures/rentAfterUnitChange.json.
+  static ({double? monthlyRate, String? notice}) rentAfterUnitChange({
+    required String tenantName,
+    required double current,
+    required List<UnitRent> heldBefore,
+    List<UnitRent> released = const [],
+    UnitRent? added,
   }) {
-    final kept = math.max(0.0, released.fold(current, (r, x) => r - x));
-    return ((kept + added) * 100).round() / 100;
+    final after = [...heldBefore];
+    for (final unit in released) {
+      after.remove(unit);
+    }
+    if (added != null) after.add(added);
+    if (after.isEmpty) return (monthlyRate: null, notice: null);
+    double sum(Iterable<UnitRent> units) =>
+        cents(units.fold(0.0, (total, u) => total + u.rate));
+    final numbers = [for (final u in after) u.unitNumber];
+    final rate = sum(after);
+    if (cents(current) == sum(heldBefore) && rate > 0) {
+      return (monthlyRate: rate, notice: rentNotice(rate, numbers));
+    }
+    if (cents(current) == rate && rate > 0) {
+      return (monthlyRate: null, notice: null);
+    }
+    return (
+      monthlyRate: null,
+      notice: "Check $tenantName's rent: they now hold "
+          '${numbers.length == 1 ? 'unit' : 'units'} ${joinReadable(numbers)}; '
+          'their rent is \$${cents(current).toStringAsFixed(2)}.',
+    );
   }
 
   /// "Monthly rent is now $250.00 for units 101 and 102."
@@ -1452,17 +1692,19 @@ class TenantService {
   /// differently from [oldNum]). The unit they leave is freed only if the
   /// owner says so ([confirmFree]; none means keep it): it used to stay
   /// assigned unannounced, overstating occupancy and blocking a later
-  /// archive. When they still hold another unit afterwards, their rate
-  /// becomes the old rate less the freed unit plus [requestedRate] for the
-  /// new one (the picker fills in its rate), with a notice. Otherwise, a
-  /// first unit, the rate is left as the caller passed it. Nothing added or
-  /// freed (the new unit was already theirs): left alone too.
-  static Future<
-      ({List<UnitModel> release, double? monthlyRate, String? notice})>
-      _planUnitChange(
+  /// archive.
+  ///
+  /// [rent] is null when the rate stays as the caller passed it: a first
+  /// unit, a straight swap of their only unit, or nothing added or freed.
+  /// Otherwise the new unit's own rate is added (not [requestedRate], the
+  /// form's field, which holds their total unless the picker filled in the
+  /// unit's rate: added, a typed unit number counted the total twice) and a
+  /// freed unit's rate comes off, including when the unit they switch to is
+  /// one they already hold (that used to leave the rate alone, still billing
+  /// the freed unit).
+  static Future<({List<UnitModel> release, _RentPlan? rent})> _planUnitChange(
     TenantRecordsStore store, {
     required String tenantId,
-    required Map<String, dynamic> before,
     required String oldNum,
     required _UnitLink link,
     required double? requestedRate,
@@ -1483,18 +1725,18 @@ class TenantService {
       for (final u in held)
         if (!release.contains(u) && u.unitNumber.trim() != newNum) u
     ];
-    if ((!adding && release.isEmpty) || kept.isEmpty) {
-      return (release: release, monthlyRate: null, notice: null);
+    if ((!adding && release.isEmpty) || (adding && kept.isEmpty)) {
+      return (release: release, rent: null);
     }
-    final rate = rentAfterUnitChange(
-      _rateOf(before),
-      released: [for (final u in release) u.monthlyRate],
-      added: adding ? (requestedRate ?? link.unitRate ?? 0) : 0,
-    );
     return (
       release: release,
-      monthlyRate: rate,
-      notice: rentNotice(rate, [for (final u in kept) u.unitNumber, newNum]),
+      rent: (
+        heldBefore: [for (final u in held) unitRent(u)],
+        released: [for (final u in release) unitRent(u)],
+        added: adding
+            ? (unitNumber: newNum, rate: link.unitRate ?? requestedRate ?? 0)
+            : null,
+      ),
     );
   }
 
@@ -1717,7 +1959,8 @@ class TenantService {
   static TenantRecordsStore _records(String facilityId) =>
       _FirestoreTenantRecords(_firestore.collection('facilities').doc(facilityId));
 
-  /// One facility's tenant records in Firestore, for [unassignUnit].
+  /// One facility's tenant records in Firestore, for [assignUnit] and
+  /// [unassignUnit].
   static TenantRecordsStore recordsFor(String facilityId) => _records(facilityId);
 
   static String _statusOf(Map<String, dynamic> row) =>
@@ -2419,8 +2662,10 @@ class TenantService {
 
   /// Links [link]'s unit to the tenant: occupied, their id and name. Creates
   /// the unit when none had the number. Frees each unit in [release] that
-  /// still shows the tenant, in the same transaction. Returns whether it
-  /// wrote. Refuses if the linked unit changed hands since [_planUnitLink]
+  /// still shows the tenant, and writes what [tenantUpdate] returns for the
+  /// tenant doc as read in the same transaction, so the tenant's side and the
+  /// units commit together or not at all. Returns whether a unit was
+  /// written. Refuses if the linked unit changed hands since [_planUnitLink]
   /// looked.
   static Future<bool> _commitUnitLink(
     TenantRecordsStore store,
@@ -2430,9 +2675,12 @@ class TenantService {
     required double monthlyRate,
     List<String> release = const [],
     required String uid,
+    Map<String, dynamic>? Function(Map<String, dynamic>? tenant)? tenantUpdate,
   }) async {
     final linking = link != null && link.write ? link : null;
-    if (linking == null && release.isEmpty) return false;
+    if (linking == null && release.isEmpty && tenantUpdate == null) {
+      return false;
+    }
     final unitId = linking == null
         ? null
         : linking.unitId ??
@@ -2449,6 +2697,7 @@ class TenantService {
       // Every read before the first write, as Firestore requires.
       final holder = unitId == null ? null : await txn.unitTenantId(unitId);
       final releaseHolders = await Future.wait(release.map(txn.unitTenantId));
+      final tenant = tenantUpdate == null ? null : await txn.tenant(tenantId);
       if (linking != null &&
           linking.unitId != null &&
           holder != null &&
@@ -2463,8 +2712,10 @@ class TenantService {
         }
       }
       if (unitId != null) txn.update('units', unitId, fields);
+      final tenantFields = tenantUpdate?.call(tenant);
+      if (tenantFields != null) txn.update('tenants', tenantId, tenantFields);
     });
-    return true;
+    return linking != null || release.isNotEmpty;
   }
 
 }

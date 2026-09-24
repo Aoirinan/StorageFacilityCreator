@@ -435,11 +435,13 @@ class MoveOutService {
 
   /// Steps 5 and 6 of [completeMoveOut]: [TenantService.recordMoveOut],
   /// which switches the tenant (and their gate codes) off only when they
-  /// hold no other unit. Returns a warning instead of throwing: it runs
-  /// after fees and refunds are posted. The old step set every tenant
-  /// inactive and turned every gate code off, even for one still renting
-  /// another unit, and its failure read as "Error completing move-out".
-  /// [records], [effects] and [actingUid] are for tests.
+  /// hold no other unit. Returns what the owner is shown with the finished
+  /// move-out: the tenant's new rent or a request to check it, or a warning
+  /// instead of throwing, since it runs after fees and refunds are posted.
+  /// The old step set every tenant inactive and turned every gate code off,
+  /// even for one still renting another unit, and its failure read as
+  /// "Error completing move-out". [records], [effects] and [actingUid] are
+  /// for tests.
   @visibleForTesting
   static Future<String?> settleTenantAfterMoveOut({
     required String facilityId,
@@ -450,7 +452,7 @@ class MoveOutService {
     String? actingUid,
   }) async {
     try {
-      await TenantService.recordMoveOut(
+      return await TenantService.recordMoveOut(
         facilityId: facilityId,
         tenantId: tenantId,
         movedOutUnitId: unitId,
@@ -458,7 +460,6 @@ class MoveOutService {
         effects: effects,
         actingUid: actingUid,
       );
-      return null;
     } catch (e) {
       if (kDebugMode) {
         print('⚠️ [MoveOut] Tenant record not updated after move-out: $e');
@@ -504,17 +505,13 @@ class MoveOutService {
         'refundReferenceId': refundReferenceId,
       });
 
-      final data = result.data as Map<String, dynamic>;
+      final data = Map<String, dynamic>.from(result.data as Map);
 
       if (kDebugMode) {
         print('✅ [MoveOut] Cloud Function completed successfully');
       }
 
-      return MoveOutResult(
-        success: data['success'] ?? false,
-        charges: calculation.newCharges,
-        refund: calculation.refundAmount,
-      );
+      return moveOutResultFromServer(data, calculation);
     } on FirebaseFunctionsException catch (e) {
       if (kDebugMode) {
         print('❌ [MoveOut] Cloud Function error: ${e.code} - ${e.message}');
@@ -532,6 +529,28 @@ class MoveOutService {
         error: 'Failed to process move-out: $e',
       );
     }
+  }
+
+  /// What processMoveOut answered, for the screen. A move-out that had
+  /// already been completed (a retry after a dropped connection) charged
+  /// and freed nothing this time: its charges are not shown as posted
+  /// again, and the owner is told. The tenant's new rent, or a request to
+  /// check it, comes with the result.
+  @visibleForTesting
+  static MoveOutResult moveOutResultFromServer(
+    Map<String, dynamic> data,
+    MoveOutCalculation calculation,
+  ) {
+    final repeat = data['alreadyCompleted'] == true;
+    String? text(Object? value) =>
+        value is String && value.trim().isNotEmpty ? value.trim() : null;
+    return MoveOutResult(
+      success: data['success'] == true,
+      charges: repeat ? null : calculation.newCharges,
+      refund: repeat ? null : calculation.refundAmount,
+      notice: text(data['rentNotice']),
+      warning: repeat ? text(data['message']) : text(data['rentWarning']),
+    );
   }
 
   /// Process refund via Stripe Cloud Function
@@ -590,6 +609,9 @@ class MoveOutResult {
   /// The move-out went through but a later step needs a look.
   final String? warning;
 
+  /// For the owner with the finished move-out: the tenant's new rent.
+  final String? notice;
+
   MoveOutResult({
     required this.success,
     this.ledgerEntryIds = const [],
@@ -597,6 +619,7 @@ class MoveOutResult {
     this.refund,
     this.error,
     this.warning,
+    this.notice,
   });
 }
 
