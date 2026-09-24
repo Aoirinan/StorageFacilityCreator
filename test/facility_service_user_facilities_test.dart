@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/services/facility_service.dart';
 
 FacilityModel _facility(String id, String name, {bool active = true}) {
@@ -405,6 +407,159 @@ void main() {
       expect(latest(), ['Keepsake']);
       expect(errors, isEmpty);
     });
+
+    test('a failed roles listener does not wedge the list: owned facilities keep coming', () async {
+      // rolesLoaded used to stay false after the error, so no owned update
+      // was emitted again for the rest of the session.
+      final errors = <Object>[];
+      sub.onError(errors.add);
+      roles.addError(StateError('user_roles listener failed'));
+      owned.add([_facility('o1', 'Mine')]);
+      await pumpEventQueue();
+      expect(latest(), ['Mine']);
+      owned.add([_facility('o1', 'Mine'), _facility('o2', 'Second')]);
+      await pumpEventQueue();
+      expect(latest(), ['Mine', 'Second']);
+      expect(errors, isEmpty);
+    });
+
+    test('a failed owned listener does not wedge it either: role facilities keep coming', () async {
+      final errors = <Object>[];
+      sub.onError(errors.add);
+      owned.addError(StateError('owned listener failed'));
+      roles.add({'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+      expect(latest(), ['Theirs']);
+      docs['f1']!.add(roleFacility('f1', 'Renamed'));
+      await pumpEventQueue();
+      expect(latest(), ['Renamed']);
+      expect(errors, isEmpty);
+    });
+
+    test("a failed owned listener keeps the owner's facilities, still marked theirs", () async {
+      // It set owned to nothing, so the owner's facilities came back through
+      // their owner role rows as someone else's for the rest of the session.
+      final mine = FacilityModel(
+        id: 'o1',
+        name: 'Mine',
+        ownerUid: 'staff-1',
+        createdAt: DateTime(2026),
+      );
+      owned.add([mine]);
+      roles.add({'o1', 'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+
+      owned.addError(StateError('owned listener failed'));
+      await pumpEventQueue();
+      expect(
+        {for (final f in emitted.last) f.id: f.currentUserOwnsFacility},
+        {'o1': true, 'f1': false},
+      );
+      expect(docs.containsKey('o1'), isFalse, reason: 'still served by the owned query');
+    });
+
+    test('a role facility the user owns is marked theirs, even with no owned answer', () async {
+      // The owned listener failed before its first answer, so the owner's
+      // facilities reached the list only through their owner role rows.
+      owned.addError(StateError('owned listener failed'));
+      roles.add({'o1', 'f1'});
+      await pumpEventQueue();
+      docs['o1']!.add(FacilityModel(
+        id: 'o1',
+        name: 'Mine',
+        ownerUid: 'staff-1',
+        createdAt: DateTime(2026),
+      ));
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+      expect(
+        {for (final f in emitted.last) f.id: f.currentUserOwnsFacility},
+        {'o1': true, 'f1': false},
+      );
+    });
+
+    test('with nothing left to show, a failure is an error, not "no facilities"', () async {
+      final errors = <Object>[];
+      sub.onError(errors.add);
+      owned.addError(StateError('owned listener failed'));
+      roles.add(const {});
+      await pumpEventQueue();
+      expect(emitted, isEmpty);
+      expect(errors, hasLength(1));
+
+      // The owner's list comes back as soon as the listener does.
+      owned.add([_facility('o1', 'Mine')]);
+      await pumpEventQueue();
+      expect(latest(), ['Mine']);
+    });
+
+    test('cancelling the list stops every listener it started, role facilities included', () async {
+      owned.add(const []);
+      roles.add({'f1', 'f2'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'One'));
+      docs['f2']!.add(roleFacility('f2', 'Two'));
+      await pumpEventQueue();
+      expect(docs['f1']!.hasListener, isTrue);
+
+      await sub.cancel();
+      await pumpEventQueue();
+      expect(owned.hasListener, isFalse);
+      expect(roles.hasListener, isFalse);
+      expect(docs['f1']!.hasListener, isFalse);
+      expect(docs['f2']!.hasListener, isFalse);
+    });
+  });
+
+  test('mergeUserFacilities keeps billing exemption and the owner standing copy', () {
+    // copyWith dropped billingExempt, so every facility in the list came out
+    // not exempt and an exempt facility never let anyone in.
+    final standing = OwnerAccountStanding(
+      accountId: 'acct_1',
+      subscriptionStatus: SubscriptionStatus.cancelled,
+      suspended: true,
+    );
+    final exempt = FacilityModel(
+      id: 'f1',
+      name: 'Exempt',
+      ownerUid: 'owner-2',
+      createdAt: DateTime(2026),
+      billingExempt: true,
+      ownerAccountStanding: standing,
+    );
+    final merged = FacilityService.mergeUserFacilities(
+      owned: [exempt.copyWith(id: 'o1', name: 'Mine')],
+      fromRoles: [exempt],
+      includeArchived: false,
+    );
+    expect(merged.map((f) => f.billingExempt), [true, true]);
+    expect(merged.map((f) => f.ownerAccountStanding), [same(standing), same(standing)]);
+  });
+
+  test('a new facility is created under an account made for invited staff too', () async {
+    // Creating a facility makes the user an owner. Without the flag, staff
+    // were refused their first facility of their own.
+    bool? asked;
+    final account = await FacilityService.accountForNewFacility(
+      getOrCreate: ({required bool createForInvitedStaff}) async {
+        asked = createForInvitedStaff;
+        return FacilityCreatorAccountModel(
+          accountId: 'acct_new',
+          ownerUid: 'staff-1',
+          ownerEmail: 'staff@example.com',
+          ownerName: 'Staff',
+          subscriptionStatus: SubscriptionStatus.pendingApproval,
+          createdAt: DateTime(2026, 9, 23),
+          updatedAt: DateTime(2026, 9, 23),
+        );
+      },
+    );
+    expect(asked, isTrue);
+    expect(account.accountId, 'acct_new');
   });
 
   test('facilitiesForUserStream: signed out is one empty list', () async {

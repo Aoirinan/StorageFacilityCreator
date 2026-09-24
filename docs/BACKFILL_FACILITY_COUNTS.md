@@ -4,10 +4,12 @@
 
 Bring a facility's cached counts up to date:
 
-- `facilities/{id}/stats/current`: rentable `totalUnits`, `occupiedUnits`, `availableUnits`, `totalTenantsActive`, revenue and past-due counts.
+- `facilities/{id}/stats/current`: `totalUnits` (internal-use and archived units left out), `occupiedUnits`, `availableUnits`, `totalTenantsActive`, revenue and past-due counts.
 - The facility-doc mirror, `facility.occupiedUnits` and `facility.unitDocCount`, which search, super admin and the Facilities card fallback read.
 
-Counts follow the one rule in [OCCUPANCY_SYNC_VERIFICATION.md](OCCUPANCY_SYNC_VERIFICATION.md): archived and staff-only units are not counted, and a unit held by an archived tenant is occupied. `facility.totalUnits` (the capacity an owner types in) is never read or written.
+Counts follow the one rule in [OCCUPANCY_SYNC_VERIFICATION.md](OCCUPANCY_SYNC_VERIFICATION.md): archived and internal-use (`internalUse == true`) units are not counted, units with "List on public website" off are, and a unit held by an archived tenant is occupied. `facility.totalUnits` (the capacity an owner types in) is never read or written.
+
+After deploying a change to the counting rule, the mirror keeps the old numbers for a facility until its next unit or tenant write or the 2 AM nightly run. Run Option 2 (or 3) for each facility to bring it up to date at once.
 
 Safe to run more than once. It is not read-only: a pass also **heals orphan units** (an `occupied` unit whose tenant doc is missing is set to `available`, and its `tenantId` and `tenantName` are cleared). Each heal is conditional on the unit not having changed since the pass read it, so a move-in that lands mid-pass is left alone.
 
@@ -31,4 +33,4 @@ The callable requires access to the facility (owner, `roles` map, `managers` map
 ## After backfill
 
 - Dashboard, Units list header and Facilities card show the same Total and Occupied for each facility.
-- `facility.unitDocCount` equals the facility's rentable unit count.
+- `facility.unitDocCount` equals the facility's counted unit total (non-archived, not internal-use).

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -83,5 +84,64 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     // Live again afterwards: resending is a deliberate choice.
     expect(tester.widget<ElevatedButton>(send).onPressed, isNotNull);
+  });
+
+  // The real InvoiceOperationsNotifier and InvoiceService: with no Firebase
+  // app in tests the send fails, as it does offline. The notifier swallowed
+  // that, so the page said "Invoice sent successfully".
+  testWidgets('a failed send is not reported as sent', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: Scaffold(
+            body: InvoiceDetailScreen(invoice: _invoice, facilityId: 'f1'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Send to tenant'));
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    expect(find.text('Invoice sent successfully'), findsNothing);
+    expect(find.textContaining('Error sending invoice'), findsOneWidget);
+  });
+
+  // The page showed the error raw, e.g. "[cloud_firestore/permission-denied]
+  // The caller does not have permission...".
+  testWidgets('a refused send is explained, not shown raw', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final operations = _FakeOperations(
+      () async => throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+        message: 'The caller does not have permission.',
+      ),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          invoiceOperationsProvider.overrideWith((ref) => operations),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: InvoiceDetailScreen(invoice: _invoice, facilityId: 'f1'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Send to tenant'));
+    await tester.pump();
+
+    expect(find.textContaining('Error sending invoice: You don'), findsOneWidget);
+    expect(find.textContaining('cloud_firestore'), findsNothing);
   });
 }

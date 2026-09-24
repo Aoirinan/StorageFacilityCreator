@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,7 @@ import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/detail_routes.dart';
 import 'package:sfcapp/screens/move_in_wizard_screen.dart';
 import 'package:sfcapp/services/move_in_service.dart';
 
@@ -114,6 +116,13 @@ void main() {
               'TENANT ${state.uri.queryParameters['tenantId']}',
             ),
           ),
+          // The app's ledger route, with the tenant read and the page
+          // swapped for stand-ins.
+          tenantLedgerRoute(
+            load: (facilityId, tenantId) async =>
+                tenantId == _tenant.id ? _tenant : null,
+            page: (tenant) => Text('LEDGER ${tenant.id} IN ${tenant.facilityId}'),
+          ),
         ],
       );
       addTearDown(router.dispose);
@@ -181,6 +190,100 @@ void main() {
       expect(moveIns, 2);
       // The lease from the first attempt is reused.
       expect(leases, 1);
+    });
+
+    // A move-in that failed partway had already put the tenant in the unit,
+    // so the retry was refused with "Exception: This tenant has already
+    // moved into Unit A1", as if it had finished.
+    testWidgets('a partly done move-in points to the ledger, not a retry',
+        (tester) async {
+      final router = await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      final conflict = moveInUnitConflict(
+        unit: _unit(
+          status: UnitStatus.occupied,
+          tenantId: 't1',
+          tenantName: 'Pat Renter',
+        ),
+        tenantId: 't1',
+      )!;
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: conflict.toString(),
+          conflict: conflict,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'This move-in was partly completed: Unit A1 already shows Pat '
+          "Renter in it. Open Pat Renter's ledger to review before trying "
+          'again.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Exception'), findsNothing);
+
+      await tester.tap(find.text("Open Pat Renter's ledger"));
+      await tester.pumpAndSettle();
+      expect(find.text('LEDGER t1 IN f1'), findsOneWidget);
+
+      // Back on the wizard, with the move-in not run again.
+      router.pop();
+      await tester.pumpAndSettle();
+      expect(find.text("Open Pat Renter's ledger"), findsOneWidget);
+      expect(moveIns, 1);
+    });
+
+    testWidgets('a unit someone else rents offers no ledger', (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      final conflict = moveInUnitConflict(
+        unit: _unit(
+          status: UnitStatus.occupied,
+          tenantId: 't2',
+          tenantName: 'Sam',
+        ),
+        tenantId: 't1',
+      )!;
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: conflict.toString(),
+          conflict: conflict,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unit A1 is already occupied by Sam.'), findsOneWidget);
+      expect(find.textContaining('ledger'), findsNothing);
+    });
+
+    testWidgets('other errors are shown without "Exception: "',
+        (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: Exception('Failed to retrieve created contract').toString(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Failed to retrieve created contract'), findsOneWidget);
+      expect(find.textContaining('Exception'), findsNothing);
     });
   });
 
@@ -269,13 +372,19 @@ void main() {
       );
     });
 
-    test('refuses a move-in this tenant has already finished', () {
+    test('refuses a move-in this tenant has already started', () {
+      final conflict = moveInUnitConflict(
+        unit: _unit(status: UnitStatus.occupied, tenantId: 't1'),
+        tenantId: 't1',
+      );
+      expect(conflict?.sameTenant, isTrue);
+      // Not "already moved in": step 1 marks the unit occupied, so a
+      // move-in that failed at the charges or payment looks like this too.
       expect(
-        moveInUnitConflict(
-          unit: _unit(status: UnitStatus.occupied, tenantId: 't1'),
-          tenantId: 't1',
-        ),
-        contains('already moved into Unit A1'),
+        conflict.toString(),
+        'This move-in was partly completed: Unit A1 already shows this '
+        "tenant in it. Open this tenant's ledger to review before trying "
+        'again.',
       );
     });
 
@@ -286,15 +395,27 @@ void main() {
         UnitStatus.lockout,
         UnitStatus.auction,
       ]) {
+        final conflict = moveInUnitConflict(
+          unit: _unit(status: status, tenantId: 't2', tenantName: 'Sam'),
+          tenantId: 't1',
+        );
+        expect(conflict?.sameTenant, isFalse, reason: status.name);
+        // Typed, so it no longer reads "Exception: Unit A1 ...".
         expect(
-          moveInUnitConflict(
-            unit: _unit(status: status, tenantId: 't2', tenantName: 'Sam'),
-            tenantId: 't1',
-          ),
+          conflict.toString(),
           'Unit A1 is already occupied by Sam.',
           reason: status.name,
         );
       }
+    });
+
+    // completeMoveIn needs Firebase (it checks the signed-in user first), so
+    // its hand-off of the conflict to the wizard is checked in its source:
+    // thrown typed, not wrapped in Exception(...), and passed on typed.
+    test('completeMoveIn passes the conflict on typed', () {
+      final source = File('lib/services/move_in_service.dart').readAsStringSync();
+      expect(source, contains('if (conflict != null) throw conflict;'));
+      expect(source, contains('conflict: e is MoveInUnitConflict ? e : null,'));
     });
   });
 }

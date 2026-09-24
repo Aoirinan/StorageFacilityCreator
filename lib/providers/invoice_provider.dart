@@ -27,6 +27,9 @@ final invoiceOperationsProvider = StateNotifierProvider<InvoiceOperationsNotifie
   return InvoiceOperationsNotifier();
 });
 
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so "Send to tenant", the ledger's Generate Invoice and
+/// Generate PDF said they had worked when they had not.
 class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   InvoiceOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -51,6 +54,7 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -69,6 +73,7 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -85,6 +90,7 @@ class InvoiceOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 }

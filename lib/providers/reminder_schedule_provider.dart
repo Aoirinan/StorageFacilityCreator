@@ -16,6 +16,9 @@ final reminderScheduleOperationsProvider =
   return ReminderScheduleOperationsNotifier();
 });
 
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so pausing a schedule said "paused" while it went on
+/// sending reminders to tenants.
 class ReminderScheduleOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   ReminderScheduleOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -50,6 +53,7 @@ class ReminderScheduleOperationsNotifier extends StateNotifier<AsyncValue<void>>
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 
@@ -86,6 +90,7 @@ class ReminderScheduleOperationsNotifier extends StateNotifier<AsyncValue<void>>
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 
@@ -102,6 +107,7 @@ class ReminderScheduleOperationsNotifier extends StateNotifier<AsyncValue<void>>
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 
@@ -120,6 +126,7 @@ class ReminderScheduleOperationsNotifier extends StateNotifier<AsyncValue<void>>
       state = const AsyncValue.data(null);
     } catch (error, stackTrace) {
       state = AsyncValue.error(error, stackTrace);
+      rethrow;
     }
   }
 }

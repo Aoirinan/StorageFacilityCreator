@@ -779,11 +779,23 @@ class _ContractListScreenState extends ConsumerState<ContractListScreen> {
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.of(context).pop();
-              ref.read(contractOperationsProvider.notifier).deleteContract(contract.facilityId, contract.id).then((_) {
-                _invalidateContractsList(contract);
-              });
+              try {
+                await ref
+                    .read(contractOperationsProvider.notifier)
+                    .deleteContract(contract.facilityId, contract.id);
+                if (mounted) _invalidateContractsList(contract);
+              } catch (e) {
+                // The delete now throws on failure; it used to fail silently.
+                if (!mounted) return;
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  SnackBar(
+                    content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),
+                    backgroundColor: AppTheme.error,
+                  ),
+                );
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.error,

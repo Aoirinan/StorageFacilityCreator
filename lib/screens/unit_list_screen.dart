@@ -15,18 +15,18 @@ import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/utils/bulk_action.dart';
 
-/// "72 / 78 rentable units occupied (4 staff-only not counted)".
+/// "72 / 78 units occupied (2 internal-use not counted)".
 ///
 /// Counts come from [FacilityStatsService.countUnits], the same numbers as the
-/// dashboard and facility cards. The table below lists staff-only units too,
-/// so the note says why there are more rows than the total.
+/// dashboard and facility cards. The table below lists internal-use units
+/// too, so the note says why there are more rows than the total.
 String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantIds) {
   final counts = FacilityStatsService.countUnits(nonArchivedUnits, allTenantIds);
-  final staffOnly = nonArchivedUnits.length - counts.totalUnits;
-  final label =
-      '${counts.occupiedUnits} / ${counts.totalUnits} rentable units occupied';
-  return staffOnly > 0 ? '$label ($staffOnly staff-only not counted)' : label;
+  final internalUse = nonArchivedUnits.length - counts.totalUnits;
+  final label = '${counts.occupiedUnits} / ${counts.totalUnits} units occupied';
+  return internalUse > 0 ? '$label ($internalUse internal-use not counted)' : label;
 }
 
 /// The tenants the Units list matches units against: the latest list the
@@ -34,7 +34,7 @@ String unitCountsHeader(List<UnitModel> nonArchivedUnits, Set<String> allTenantI
 ///
 /// `whenOrNull(data:)` gave null for an error that still holds the previous
 /// list, while the header is shown whenever a list exists, so after an
-/// auto-retried stream error it read "0 / 78 rentable units occupied" and
+/// auto-retried stream error it read "0 / 78 units occupied" and
 /// every rented unit was hidden as a ghost.
 List<TenantModel> unitListTenants(AsyncValue<List<TenantModel>> tenantsAsync) =>
     tenantsAsync.value ?? const <TenantModel>[];
@@ -472,7 +472,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             // From the unit and tenant streams already on screen, so it is
             // current with the rows below. It used to run its own unit and
             // tenant reads, keyed on the filtered counts: it re-read on every
-            // search or filter change yet missed a unit's staff-only toggle.
+            // search or filter change yet missed a unit's internal-use toggle.
             // Shown once tenants load: before that every unit reads as vacant.
             if (tenantsAsync.hasValue)
               Padding(
@@ -727,35 +727,41 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
-    try {
-      final notifier = ref.read(unitOperationsProvider.notifier);
-      for (final id in unitIds) {
-        await notifier.archiveUnit(_selectedFacilityId!, id);
-      }
-      if (mounted) {
-        setState(() {
-          for (final id in unitIds) {
-            _selectedUnitIds.remove(id);
-          }
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${unitIds.length} unit(s) archived'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error archiving units: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
+    if (confirmed != true || !mounted || _selectedFacilityId == null) return;
+    final facilityId = _selectedFacilityId!;
+    final notifier = ref.read(unitOperationsProvider.notifier);
+    final result = await runBulkAction(
+      unitIds,
+      (id) => notifier.archiveUnit(facilityId, id),
+    );
+    _showBulkResult(
+      result,
+      verb: 'Archived',
+      allDone: '${unitIds.length} unit(s) archived',
+    );
+  }
+
+  /// Deselects the units [result] was done to, leaving the failed ones
+  /// selected to try again, and says how many of how many.
+  void _showBulkResult(
+    BulkActionResult result, {
+    required String verb,
+    required String allDone,
+  }) {
+    if (!mounted) return;
+    setState(() => _selectedUnitIds.removeAll(result.done));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(bulkActionMessage(
+          result,
+          verb: verb,
+          noun: 'units',
+          allDone: allDone,
+        )),
+        backgroundColor:
+            result.failed.isEmpty ? AppTheme.success : AppTheme.error,
+      ),
+    );
   }
 
   Future<void> _handleBulkPermanentDelete(
@@ -859,34 +865,17 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       ),
     );
     if (confirmed != true || !mounted || _selectedFacilityId == null) return;
-    try {
-      final notifier = ref.read(unitOperationsProvider.notifier);
-      for (final id in unitIds) {
-        await notifier.deleteUnit(_selectedFacilityId!, id);
-      }
-      if (mounted) {
-        setState(() {
-          for (final id in unitIds) {
-            _selectedUnitIds.remove(id);
-          }
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${unitIds.length} unit(s) deleted permanently'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error deleting units: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
+    final facilityId = _selectedFacilityId!;
+    final notifier = ref.read(unitOperationsProvider.notifier);
+    final result = await runBulkAction(
+      unitIds,
+      (id) => notifier.deleteUnit(facilityId, id),
+    );
+    _showBulkResult(
+      result,
+      verb: 'Deleted',
+      allDone: '${unitIds.length} unit(s) deleted permanently',
+    );
   }
 
   Future<void> _handleArchiveUnit(

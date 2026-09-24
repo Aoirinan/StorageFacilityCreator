@@ -43,27 +43,9 @@ class _InvoiceListScreenState extends ConsumerState<InvoiceListScreen> {
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
         
-        try {
-          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
-        } catch (accountError) {
-          if (mounted) {
-            if (kDebugMode) {
-              debugPrint('❌ Could not ensure account exists: $accountError');
-            }
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Account setup error: $accountError. Please try again or contact support.'),
-                backgroundColor: AppTheme.warning,
-                duration: const Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'Retry',
-                  onPressed: () => _loadUserFacilities(),
-                ),
-              ),
-            );
-            return;
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop this list loading (it used to return here, blank).
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         ref.invalidate(userFacilitiesProvider(user.uid));
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);

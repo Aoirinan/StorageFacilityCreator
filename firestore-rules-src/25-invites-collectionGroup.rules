@@ -1,0 +1,14 @@
+    // A signed-in user with a verified email may list the invites addressed to
+    // that email across facilities: collectionGroup('invites') filtered on
+    // emailLower (PermissionService.fulfillPendingInvitesForUser, and the
+    // account service's check for a pending invite). Without it that query was
+    // refused, a fresh invited signup got no role, and the app took them for a
+    // new owner. Verified only: an unverified account can carry anyone's
+    // address, and listing would hand it invites it never received the link
+    // for. Owner/manager listing and every write stay with the facility rule.
+    match /{path=**}/invites/{inviteId} {
+      allow list: if authEmailLower() != null &&
+        request.auth.token.email_verified == true &&
+        resource.data.emailLower == authEmailLower();
+    }
+

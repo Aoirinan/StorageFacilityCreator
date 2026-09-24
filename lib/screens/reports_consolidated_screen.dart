@@ -16,7 +16,6 @@ import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/services/reports_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
-import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 // Conditional import for web-only CSV download
 import 'package:sfcapp/screens/reports_consolidated_stub.dart'
@@ -70,19 +69,9 @@ class _ReportsConsolidatedScreenState extends ConsumerState<ReportsConsolidatedS
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
 
-        try {
-          await FacilityCreatorAccountService.ensureAccountForCurrentUser();
-        } catch (accountError) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(ErrorMessageHelper.getUserFriendlyMessage(accountError)),
-                backgroundColor: AppTheme.warning,
-              ),
-            );
-            return;
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop this list loading (it used to return here, blank).
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         ref.invalidate(userFacilitiesProvider(user.uid));
         final facilitiesAsync = await ref.read(userFacilitiesProvider(user.uid).future);

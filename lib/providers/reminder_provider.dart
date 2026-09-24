@@ -4,6 +4,7 @@ import 'package:state_notifier/state_notifier.dart';
 import '../models/reminder_model.dart';
 import '../services/reminder_automation_service.dart';
 import '../services/reminder_service.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 
 // Reminder list provider (real-time stream)
 final reminderListProvider = StreamProvider.family<List<ReminderModel>, String>((ref, facilityId) {
@@ -54,6 +55,87 @@ final reminderOperationsProvider = StateNotifierProvider<ReminderOperationsNotif
   return ReminderOperationsNotifier();
 });
 
+/// A send that reached no channel: nothing went to the tenant.
+class ReminderNotSentException implements UserFacingException {
+  const ReminderNotSentException();
+
+  @override
+  String get message =>
+      'The reminder was not sent: no channel (email, SMS) went through.';
+
+  @override
+  String toString() => message;
+}
+
+/// A send only on channels that cannot send yet (push, in-app): nothing
+/// was tried. They used to count as delivered, so the page said "Reminder
+/// sent successfully" and the reminder was marked sent via in-app with
+/// nothing sent to the tenant.
+class ReminderChannelNotAvailable implements UserFacingException {
+  const ReminderChannelNotAvailable(this.channels);
+
+  final List<ReminderChannel> channels;
+
+  @override
+  String get message =>
+      '${_channelNames(channels)} reminders are not available yet, so '
+      'nothing was sent. Send it by email or SMS instead.';
+
+  @override
+  String toString() => message;
+}
+
+/// A send that went out, but recording it as sent failed. It is not "not
+/// sent": that invited a resend, a duplicate email or text to the tenant.
+class ReminderNotRecordedException implements UserFacingException {
+  const ReminderNotRecordedException(this.delivered);
+
+  /// How it went out, e.g. ['email'].
+  final List<String> delivered;
+
+  @override
+  String get message =>
+      'The reminder went out (${delivered.join(', ')}), but saving it as '
+      'sent failed, so it may still show as not sent. Check the '
+      "reminder's status before sending it again.";
+
+  @override
+  String toString() => message;
+}
+
+String _channelNames(List<ReminderChannel> channels) {
+  final names = channels.map((c) => c.displayName).toSet().toList();
+  if (names.length <= 1) return names.join();
+  return '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}';
+}
+
+/// Throws unless [result] went out and was recorded.
+void throwUnlessReminderSent(ReminderSendResult result) {
+  if (!result.sent) {
+    if (result.failed.isEmpty && result.unavailable.isNotEmpty) {
+      throw ReminderChannelNotAvailable(result.unavailable);
+    }
+    throw const ReminderNotSentException();
+  }
+  if (result.recordError != null) {
+    throw ReminderNotRecordedException(result.delivered);
+  }
+}
+
+/// What to tell the operator about a send that went out: how, and any
+/// channel it did not go out on.
+String reminderSentMessage(ReminderSendResult result) => [
+      'Reminder sent (${result.delivered.join(', ')}).',
+      if (result.failed.isNotEmpty)
+        '${_channelNames(result.failed)} did not go through.',
+      if (result.unavailable.isNotEmpty)
+        '${_channelNames(result.unavailable)} reminders are not available '
+            'yet, so it did not go out that way.',
+    ].join(' ');
+
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so a page that awaited one and then said "sent",
+/// "cancelled" or "deleted" said so when nothing had happened.
 class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   ReminderOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -86,6 +168,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -116,6 +199,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -132,10 +216,14 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
-  Future<void> sendReminder({
+  /// Sends the reminder and returns what went out. Throws when nothing
+  /// went out ([ReminderNotSentException], [ReminderChannelNotAvailable])
+  /// or it went out but was not recorded ([ReminderNotRecordedException]).
+  Future<ReminderSendResult> sendReminder({
     required String facilityId,
     required String reminderId,
     required String tenantEmail,
@@ -145,7 +233,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   }) async {
     state = const AsyncValue.loading();
     try {
-      await ReminderService.sendReminder(
+      final result = await ReminderService.sendReminder(
         facilityId: facilityId,
         reminderId: reminderId,
         tenantEmail: tenantEmail,
@@ -153,9 +241,14 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         message: message,
         channels: channels,
       );
+      // sendReminder catches its own failures, and its false was ignored:
+      // the page said "Reminder sent" when nothing went out.
+      throwUnlessReminderSent(result);
       state = const AsyncValue.data(null);
+      return result;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -166,6 +259,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -176,6 +270,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -189,6 +284,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -203,6 +299,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -217,6 +314,7 @@ class ReminderOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 

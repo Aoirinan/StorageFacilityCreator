@@ -13,6 +13,33 @@ import 'package:sfcapp/services/sms_service.dart';
 import 'package:sfcapp/services/template_integration_service.dart';
 import 'package:sfcapp/services/audit_service.dart';
 
+/// What [ReminderService.sendReminder] got to the tenant.
+class ReminderSendResult {
+  const ReminderSendResult({
+    this.delivered = const [],
+    this.failed = const [],
+    this.unavailable = const [],
+    this.recordError,
+  });
+
+  /// How it went out ('email', 'email (digest)', 'sms'), as recorded in
+  /// the reminder's sentVia. Empty when it reached the tenant no way.
+  final List<String> delivered;
+
+  /// Channels it was tried on that did not go through.
+  final List<ReminderChannel> failed;
+
+  /// Channels asked for that cannot send ([ReminderChannelExtension.canSend]);
+  /// never tried, never counted as delivered.
+  final List<ReminderChannel> unavailable;
+
+  /// Why recording it as sent failed after it went out, or null. It went
+  /// out all the same, so sending it again sends the tenant a duplicate.
+  final Object? recordError;
+
+  bool get sent => delivered.isNotEmpty;
+}
+
 class ReminderService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -696,8 +723,16 @@ class ReminderService {
     }
   }
 
-  /// Send reminder with new email system
-  static Future<bool> sendReminder({
+  /// Sends a reminder on each of [channels] it can go out on, then records
+  /// it as sent if any went through.
+  ///
+  /// Push and in-app are never tried ([ReminderChannelExtension.canSend]):
+  /// they were mocks that counted as delivered, so a reminder on them was
+  /// marked sent with nothing sent. The result says what went out. It used
+  /// to be one bool, false also when a channel had delivered and only
+  /// recording it failed, and the page then invited a resend: a duplicate
+  /// email or text to the tenant.
+  static Future<ReminderSendResult> sendReminder({
     required String facilityId,
     required String reminderId,
     required String tenantEmail,
@@ -707,171 +742,205 @@ class ReminderService {
     ReminderSendMode mode = ReminderSendMode.immediate,
     String? digestKey,
   }) async {
-    try {
-      if (kDebugMode) {
-        print('🔄 Sending reminder: $reminderId via ${channels.map((c) => c.name).join(', ')} (mode: ${mode.name})');
-      }
+    if (kDebugMode) {
+      print('🔄 Sending reminder: $reminderId via ${channels.map((c) => c.name).join(', ')} (mode: ${mode.name})');
+    }
 
-      // Check billing limits before sending
-      final canSend = await BillingService.canSendEmails(facilityId);
-      if (!canSend) {
-        final warning = await BillingService.getUsageWarning(facilityId);
-        if (kDebugMode) {
-          print('⚠️ [ReminderService] Email limit exceeded: $warning');
-        }
-        // Still allow sending but log the warning
-      }
-
-      bool success = false;
-      final sentChannels = <String>[];
-
-      // Process each channel
-      for (final channel in channels) {
+    final result = await deliverAndRecord(
+      channels: channels,
+      deliver: (channel) async {
         switch (channel) {
           case ReminderChannel.email:
+            await _warnIfOverEmailLimit(facilityId);
             if (mode == ReminderSendMode.digest && digestKey != null) {
-              // Queue for digest
               await _queueEmailForDigest(
                 facilityId: facilityId,
                 tenantEmail: tenantEmail,
                 message: message,
                 digestKey: digestKey,
               );
-              sentChannels.add('email (digest)');
-              success = true;
-            } else {
-              // Send immediately
-              final emailSuccess = await _sendEmailReminder(
-                facilityId: facilityId,
-                tenantEmail: tenantEmail,
-                message: message,
-                reminderId: reminderId,
-                templateId: 'due_default',
-              );
-              if (emailSuccess) {
-                sentChannels.add('email');
-                success = true;
-              }
+              return 'email (digest)';
             }
-            break;
-            
+            final emailSuccess = await _sendEmailReminder(
+              facilityId: facilityId,
+              tenantEmail: tenantEmail,
+              message: message,
+              reminderId: reminderId,
+              templateId: 'due_default',
+            );
+            return emailSuccess ? 'email' : null;
           case ReminderChannel.sms:
-            if (tenantPhone.isNotEmpty) {
-              try {
-                // Get tenant and facility for language-aware SMS template
-                final tenantSnapshot = await _firestore
-                    .collection('facilities')
-                    .doc(facilityId)
-                    .collection('tenants')
-                    .where('phone', isEqualTo: tenantPhone)
-                    .limit(1)
-                    .get();
-                
-                String? smsMessage = message;
-                String? languageCode;
-                
-                if (tenantSnapshot.docs.isNotEmpty) {
-                  final tenant = TenantModel.fromFirestore(tenantSnapshot.docs.first);
-                  final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
-                  
-                  if (facilityDoc.exists) {
-                    final facility = FacilityModel.fromFirestore(facilityDoc);
-                    
-                    // Extract language code
-                    languageCode = TemplateIntegrationService.extractLanguageCode(
-                      tenant.preferredLocale ?? facility.defaultLocale,
-                    );
-                    
-                    // Try to get language-aware SMS template
-                    final templateResult = await TemplateIntegrationService.getSMSTemplate(
-                      category: 'reminder',
-                      facilityId: facilityId,
-                      variables: {
-                        'tenantName': tenant.name,
-                        'facilityName': facility.name,
-                        'message': message,
-                        'amount': tenant.monthlyRate.toStringAsFixed(2),
-                        'unitNumber': tenant.unitNumber,
-                      },
-                      language: languageCode,
-                    );
-                    
-                    if (templateResult != null) {
-                      smsMessage = templateResult.message;
-                      if (kDebugMode) {
-                        print('✅ [ReminderService] Using language-aware SMS template (language: ${languageCode ?? "default"})');
-                      }
-                    }
-                  }
-                }
-                
-                final smsResult = await SMSService.sendSMS(
-                  to: tenantPhone,
-                  message: smsMessage,
-                  facilityId: facilityId,
-                );
-                if (smsResult.success) {
-                  sentChannels.add('sms');
-                  success = true;
-                } else {
-                  if (kDebugMode) {
-                    print('❌ Failed to send SMS: ${smsResult.error}');
-                  }
-                }
-              } catch (e) {
-                if (kDebugMode) {
-                  print('❌ Error sending SMS: $e');
-                }
-              }
-            } else {
-              if (kDebugMode) {
-                print('⚠️ Cannot send SMS: tenant phone number not available');
-              }
-            }
-            break;
-            
+            final smsSuccess = await _sendSmsReminder(
+              facilityId: facilityId,
+              tenantPhone: tenantPhone,
+              message: message,
+            );
+            return smsSuccess ? 'sms' : null;
           case ReminderChannel.push:
-            // Push notifications still use mock implementation
-            if (kDebugMode) {
-              print('🔔 Mock push notification sent');
-              print('🔔 Message: $message');
-            }
-            sentChannels.add('push');
-            success = true;
-            break;
-            
           case ReminderChannel.inApp:
-            // In-app notifications still use mock implementation
-            if (kDebugMode) {
-              print('📱 Mock in-app notification sent');
-              print('📱 Message: $message');
-            }
-            sentChannels.add('in-app');
-            success = true;
-            break;
+            // Never reached: deliverAndRecord skips what cannot send.
+            return null;
         }
+      },
+      record: (delivered) => markReminderAsSent(
+        facilityId: facilityId,
+        reminderId: reminderId,
+        sentVia: delivered.join(', '),
+        sentTo: tenantEmail,
+      ),
+    );
+
+    if (kDebugMode) {
+      print('${result.sent ? '✅' : '❌'} Reminder $reminderId: '
+          'delivered ${result.delivered}, '
+          'failed ${result.failed.map((c) => c.name).toList()}, '
+          'unavailable ${result.unavailable.map((c) => c.name).toList()}'
+          '${result.recordError != null ? ', not recorded: ${result.recordError}' : ''}');
+    }
+    return result;
+  }
+
+  /// [sendReminder]'s order of work, apart from how each channel sends:
+  /// every channel that [ReminderChannelExtension.canSend] is tried with
+  /// [deliver] (which returns how it went out, or null when it did not), a
+  /// failure on one does not stop the rest, and [record] runs once, only
+  /// when something went out. A failed [record] does not undo a delivery:
+  /// it comes back in [ReminderSendResult.recordError].
+  @visibleForTesting
+  static Future<ReminderSendResult> deliverAndRecord({
+    required List<ReminderChannel> channels,
+    required Future<String?> Function(ReminderChannel channel) deliver,
+    required Future<void> Function(List<String> delivered) record,
+  }) async {
+    final delivered = <String>[];
+    final failed = <ReminderChannel>[];
+    final unavailable = <ReminderChannel>[];
+    for (final channel in channels) {
+      if (!channel.canSend) {
+        unavailable.add(channel);
+        continue;
       }
-
-      // Mark as sent if any channel succeeded
-      if (success) {
-        await markReminderAsSent(
-          facilityId: facilityId,
-          reminderId: reminderId,
-          sentVia: sentChannels.join(', '),
-          sentTo: tenantEmail,
-        );
-
-        // Billing count is now handled by Cloud Functions
-
+      try {
+        final how = await deliver(channel);
+        if (how != null) {
+          delivered.add(how);
+        } else {
+          failed.add(channel);
+        }
+      } catch (e) {
         if (kDebugMode) {
-          print('✅ Reminder sent successfully: $reminderId via ${sentChannels.join(', ')}');
+          print('❌ [ReminderService] ${channel.name} failed: $e');
+        }
+        failed.add(channel);
+      }
+    }
+    if (delivered.isEmpty) {
+      return ReminderSendResult(failed: failed, unavailable: unavailable);
+    }
+    try {
+      await record(delivered);
+    } catch (e) {
+      return ReminderSendResult(
+        delivered: delivered,
+        failed: failed,
+        unavailable: unavailable,
+        recordError: e,
+      );
+    }
+    return ReminderSendResult(
+      delivered: delivered,
+      failed: failed,
+      unavailable: unavailable,
+    );
+  }
+
+  /// Logs a warning when the facility is over its email limit. It does not
+  /// stop the send: the email function enforces the limit.
+  static Future<void> _warnIfOverEmailLimit(String facilityId) async {
+    final canSend = await BillingService.canSendEmails(facilityId);
+    if (!canSend) {
+      final warning = await BillingService.getUsageWarning(facilityId);
+      if (kDebugMode) {
+        print('⚠️ [ReminderService] Email limit exceeded: $warning');
+      }
+    }
+  }
+
+  /// Texts [message] to [tenantPhone], in the tenant's language when a
+  /// template has one. Whether the text went out.
+  static Future<bool> _sendSmsReminder({
+    required String facilityId,
+    required String tenantPhone,
+    required String message,
+  }) async {
+    if (tenantPhone.isEmpty) {
+      if (kDebugMode) {
+        print('⚠️ Cannot send SMS: tenant phone number not available');
+      }
+      return false;
+    }
+    try {
+      // Get tenant and facility for language-aware SMS template
+      final tenantSnapshot = await _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('tenants')
+          .where('phone', isEqualTo: tenantPhone)
+          .limit(1)
+          .get();
+
+      String? smsMessage = message;
+      String? languageCode;
+
+      if (tenantSnapshot.docs.isNotEmpty) {
+        final tenant = TenantModel.fromFirestore(tenantSnapshot.docs.first);
+        final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
+
+        if (facilityDoc.exists) {
+          final facility = FacilityModel.fromFirestore(facilityDoc);
+
+          // Extract language code
+          languageCode = TemplateIntegrationService.extractLanguageCode(
+            tenant.preferredLocale ?? facility.defaultLocale,
+          );
+
+          // Try to get language-aware SMS template
+          final templateResult = await TemplateIntegrationService.getSMSTemplate(
+            category: 'reminder',
+            facilityId: facilityId,
+            variables: {
+              'tenantName': tenant.name,
+              'facilityName': facility.name,
+              'message': message,
+              'amount': tenant.monthlyRate.toStringAsFixed(2),
+              'unitNumber': tenant.unitNumber,
+            },
+            language: languageCode,
+          );
+
+          if (templateResult != null) {
+            smsMessage = templateResult.message;
+            if (kDebugMode) {
+              print('✅ [ReminderService] Using language-aware SMS template (language: ${languageCode ?? "default"})');
+            }
+          }
         }
       }
 
-      return success;
+      final smsResult = await SMSService.sendSMS(
+        to: tenantPhone,
+        message: smsMessage,
+        facilityId: facilityId,
+      );
+      if (!smsResult.success) {
+        if (kDebugMode) {
+          print('❌ Failed to send SMS: ${smsResult.error}');
+        }
+      }
+      return smsResult.success;
     } catch (e) {
       if (kDebugMode) {
-        print('❌ Error sending reminder: $e');
+        print('❌ Error sending SMS: $e');
       }
       return false;
     }

@@ -186,6 +186,11 @@ service cloud.firestore {
       // Exempts the facility from billing entirely. Super-admin only, for the
       // operator's own sites; self-granting it would be a free subscription.
       'billingExempt',
+      // The owner's account standing, copied here by functions-automation for
+      // invited staff, who cannot read the account. The app lets staff in on
+      // it, so an owner who could write it could keep their staff working
+      // after their own access lapsed or was suspended.
+      'ownerAccountStanding',
 
       // A2P 10DLC / Twilio registration state. Backend-only, and a genuine
       // privilege escalation if it is not: the SMS send path reads
@@ -1813,6 +1818,20 @@ service cloud.firestore {
     match /platformEmailLogs/{logId} {
       allow read: if isSuperAdmin();
       allow write: if false; // All writes go through Cloud Functions.
+    }
+
+    // A signed-in user with a verified email may list the invites addressed to
+    // that email across facilities: collectionGroup('invites') filtered on
+    // emailLower (PermissionService.fulfillPendingInvitesForUser, and the
+    // account service's check for a pending invite). Without it that query was
+    // refused, a fresh invited signup got no role, and the app took them for a
+    // new owner. Verified only: an unverified account can carry anyone's
+    // address, and listing would hand it invites it never received the link
+    // for. Owner/manager listing and every write stay with the facility rule.
+    match /{path=**}/invites/{inviteId} {
+      allow list: if authEmailLower() != null &&
+        request.auth.token.email_verified == true &&
+        resource.data.emailLower == authEmailLower();
     }
 
     

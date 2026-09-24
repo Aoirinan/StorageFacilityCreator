@@ -70,8 +70,8 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
     };
     // isRentable already folds in status, tenant links, unit-type visibility, and the
     // per-unit publicListingEnabled flag — do not re-derive from raw status here, or
-    // staff-only units (manager residence, office, personal-use, etc.) leak into the
-    // public map's rentable list even though they're internally `available`.
+    // units the owner has not listed (an office, or every unit before the rental page
+    // goes live) leak into the public map's rentable list while internally `available`.
     final rentableUnits =
         _snapshot!.units.where((u) => u['isRentable'] == true).toList();
 

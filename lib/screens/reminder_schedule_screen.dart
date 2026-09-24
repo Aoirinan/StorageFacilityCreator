@@ -415,8 +415,7 @@ class _ReminderScheduleScreenState extends ConsumerState<ReminderScheduleScreen>
                   Wrap(
                     spacing: 8,
                     children: ReminderChannel.values.map((channel) {
-                      final enabled = channel != ReminderChannel.push &&
-                          channel != ReminderChannel.inApp;
+                      final enabled = channel.canSend;
                       final selected = selectedChannels.contains(channel);
                       return FilterChip(
                         label: Text(channel.displayName),

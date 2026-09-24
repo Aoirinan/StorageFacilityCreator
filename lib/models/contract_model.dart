@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/facility_doc_path.dart';
 
 enum ContractStatus {
   draft,
@@ -184,7 +185,7 @@ class ContractModel {
     final data = doc.data() as Map<String, dynamic>;
     return ContractModel(
       id: doc.id,
-      facilityId: data['facilityId'] ?? '',
+      facilityId: facilityIdOf(doc, data['facilityId']),
       facilityOwnerUid: data['facilityOwnerUid'] ?? '',
       tenantId: data['tenantId'] ?? '',
       title: data['title'] ?? '',

@@ -7,6 +7,7 @@ const {
   shouldClaimStatsRecompute,
   recomputeFacilityStatsCoalesced,
   claimStatsRecompute,
+  consumeStatsDirtyFlag,
   releaseStatsClaim,
   STATS_COALESCE_WINDOW_MS,
   STATS_MAX_DRAIN_PASSES,
@@ -273,4 +274,97 @@ test('a failed pass releases its claim to a short backoff, not to zero', async (
   assert.equal(shouldClaimStatsRecompute(releasedAt, now + STATS_FAILED_PASS_BACKOFF_MS), true);
   // Still well short of a full window.
   assert.ok(STATS_FAILED_PASS_BACKOFF_MS < STATS_COALESCE_WINDOW_MS);
+});
+
+/**
+ * One facility's claim doc, held in memory, behind the calls the production
+ * claim and drain make (facility get, stats/recompute, transactions).
+ */
+function claimStore(initial?: Record<string, unknown>) {
+  let claimDoc: Record<string, unknown> | undefined = initial ? { ...initial } : undefined;
+  const claimRef = { path: 'facilities/fac-1/stats/recompute' };
+  const db = {
+    collection: (name: string) => {
+      assert.equal(name, 'facilities');
+      return {
+        doc: () => ({
+          get: async () => ({ exists: true }),
+          collection: (sub: string) => {
+            assert.equal(sub, 'stats');
+            return { doc: (id: string) => (assert.equal(id, 'recompute'), claimRef) };
+          },
+        }),
+      };
+    },
+    runTransaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        get: async (ref: unknown) => {
+          assert.equal(ref, claimRef);
+          const current = claimDoc;
+          return { exists: current !== undefined, data: () => (current ? { ...current } : undefined) };
+        },
+        set: (ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }) => {
+          assert.equal(ref, claimRef);
+          claimDoc = options?.merge ? { ...(claimDoc ?? {}), ...data } : { ...data };
+        },
+        update: (ref: unknown, data: Record<string, unknown>) => {
+          assert.equal(ref, claimRef);
+          if (!claimDoc) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+          claimDoc = { ...claimDoc, ...data };
+        },
+      }),
+  };
+  return { db: db as unknown as admin.firestore.Firestore, doc: () => claimDoc };
+}
+
+test('a drain that finds nothing waiting ends the claim, so the next write recomputes', async () => {
+  const now = Date.now();
+  const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: false });
+
+  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db, () => now), false);
+
+  // Before: the claim stayed live for the rest of its window, so this write
+  // only marked the facility dirty, and the holder had already stopped
+  // draining. The mirror kept the old counts until another write.
+  assert.equal(await claimStatsRecompute('fac-1', store.db), 'claimed');
+});
+
+test('a drain that finds writes waiting consumes them and keeps the claim', async () => {
+  const now = Date.now();
+  const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: true });
+
+  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db, () => now), true);
+  assert.equal(store.doc()?.dirty, false);
+  assert.equal((store.doc()?.claimedAt as admin.firestore.Timestamp).toMillis(), now);
+  // Still coalescing: the holder runs another pass for these writes.
+  assert.equal(await claimStatsRecompute('fac-1', store.db), 'coalesced');
+});
+
+test('a drain does not recreate a claim doc deleted with its facility', async () => {
+  const store = claimStore();
+  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db), false);
+  assert.equal(store.doc(), undefined);
+});
+
+test('a write after the holder finished is recomputed, not stranded in the window', async () => {
+  const store = claimStore();
+  let recomputes = 0;
+  const h: StatsCoalesceHooks = {
+    claim: (facilityId) => claimStatsRecompute(facilityId, store.db),
+    consumeDirty: (facilityId) => consumeStatsDirtyFlag(facilityId, store.db),
+    recompute: async () => {
+      recomputes++;
+    },
+    release: async () => {},
+  };
+
+  // Create a tenant, then assign it a unit a few seconds later, well inside
+  // the window the first write claimed.
+  await recomputeFacilityStatsCoalesced('fac-1', 'tenant change', h);
+  await recomputeFacilityStatsCoalesced('fac-1', 'unit change', h);
+
+  // Before: 1. The second write found a live claim, set dirty and returned;
+  // nothing drained it.
+  assert.equal(recomputes, 2);
+  assert.notEqual(store.doc()?.dirty, true);
 });

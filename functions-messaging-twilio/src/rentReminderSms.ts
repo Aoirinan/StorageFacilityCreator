@@ -274,6 +274,26 @@ async function sendReminderSms(params: {
   return 'sent';
 }
 
+/**
+ * A tenant doc as [decideRentReminder] reads it. Active is `isActive` exactly
+ * true, as in the app's TenantModel and every other server job; this read a
+ * missing isActive as active.
+ */
+export function rentReminderTenantFromDoc(id: string, data: Record<string, any>): RentReminderTenant {
+  return {
+    id,
+    name: data.name,
+    phone: data.phone,
+    isActive: data.isActive === true,
+    paidThrough: toDate(data.paidThrough),
+    smsOptOut: data.smsOptOut === true,
+    smsOptInDate: toDate(data.smsOptInDate),
+    smsConsentStatus: data.smsConsentStatus ?? null,
+    monthlyRate: Number(data.monthlyRate) || 0,
+    lastSmsPaymentReminderDate: toDate(data.lastSmsPaymentReminderDate),
+  };
+}
+
 export const processRentDueTextReminders = functions
   .runWith({
     secrets: [...TWILIO_SECRETS, ...SENDGRID_SECRETS],
@@ -306,18 +326,7 @@ export const processRentDueTextReminders = functions
 
       for (const tenantDoc of tenants.docs) {
         const data = tenantDoc.data() as Record<string, any>;
-        const tenant: RentReminderTenant = {
-          id: tenantDoc.id,
-          name: data.name,
-          phone: data.phone,
-          isActive: data.isActive !== false,
-          paidThrough: toDate(data.paidThrough),
-          smsOptOut: data.smsOptOut === true,
-          smsOptInDate: toDate(data.smsOptInDate),
-          smsConsentStatus: data.smsConsentStatus ?? null,
-          monthlyRate: Number(data.monthlyRate) || 0,
-          lastSmsPaymentReminderDate: toDate(data.lastSmsPaymentReminderDate),
-        };
+        const tenant = rentReminderTenantFromDoc(tenantDoc.id, data);
 
         // Balance is the expensive read, so only ask for it once the cheap
         // checks have passed.

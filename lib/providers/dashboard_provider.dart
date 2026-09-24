@@ -23,14 +23,14 @@ import '../utils/chunked_parallel.dart';
 class DashboardStats {
   final int totalFacilities;
   final int totalTenants;
-  /// Rentable units: non-archived and not staff-only. See
+  /// Counted units: non-archived and not internal-use. See
   /// [FacilityStatsService.countUnits].
   final int totalUnits;
   final int occupiedUnits;
   final int availableUnits;
-  /// Every non-archived unit doc, staff-only included. "Has this owner added
-  /// units yet?" checks use this: [totalUnits] leaves staff-only units out, so
-  /// a facility of only office units would read as having none.
+  /// Every non-archived unit doc, internal-use included. "Has this owner
+  /// added units yet?" checks use this: [totalUnits] leaves internal-use
+  /// units out, so a facility of only office units would read as having none.
   final int totalUnitDocs;
   final double occupancyRate;
   final double monthlyRevenue;
@@ -57,13 +57,22 @@ class DashboardStats {
     this.upcomingMoveOuts = const [],
   });
 
-  /// Staff-only units (office, manager residence, personal use) that exist but
-  /// are left out of [totalUnits], [occupiedUnits] and [availableUnits].
-  int get staffOnlyUnits {
+  /// Internal-use units (office, manager residence, personal use) that exist
+  /// but are left out of [totalUnits], [occupiedUnits] and [availableUnits].
+  int get internalUseUnits {
     final n = totalUnitDocs - totalUnits;
     return n > 0 ? n : 0;
   }
 }
+
+/// " · 2 internal-use not counted" when there are internal-use units, else
+/// "". The dashboard's unit lines add it: Total/Occupied/Vacant leave those
+/// units out, so without it the dashboard shows fewer units than the Units
+/// list has rows. Here, not in the home screen, so a VM test can reach it.
+String dashboardInternalUseNote(DashboardStats stats) =>
+    stats.internalUseUnits > 0
+        ? ' · ${stats.internalUseUnits} internal-use not counted'
+        : '';
 
 /// Top delinquent tenant info for dashboard
 class TopDelinquentTenant {
@@ -165,14 +174,7 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
     print('🔍 [Dashboard] User ID: $userId, active facility: $activeFacilityId');
   }
 
-  // Get all facilities for user
-  final allFacilities =
-      await FacilityService.getUserFacilities(throwOnError: true);
-
-  // null = "All Facilities" (aggregate across all). Non-null = single facility.
-  final facilities = activeFacilityId == null
-      ? allFacilities
-      : allFacilities.where((f) => f.id == activeFacilityId).toList();
+  final facilities = await dashboardFacilities(activeFacilityId);
 
   if (facilities.isEmpty) {
     if (kDebugMode) {
@@ -183,6 +185,17 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
 
   return loadDashboardStats(facilities, DateTime.now());
 });
+
+/// The facilities [dashboardStatsProvider] counts: [activeFacilityId]'s, or
+/// all of them when it is null ("All Facilities"). A failed read is an
+/// error, not "no facilities", which showed an owner an all-zero dashboard.
+@visibleForTesting
+Future<List<FacilityModel>> dashboardFacilities(String? activeFacilityId) async {
+  final all = await FacilityService.getUserFacilities(throwOnError: true);
+  return activeFacilityId == null
+      ? all
+      : all.where((f) => f.id == activeFacilityId).toList();
+}
 
 /// The dashboard numbers for [facilities]; [dashboardStatsProvider] picks
 /// which (the active facility, or all). Tests call this so the real tenant
@@ -336,7 +349,7 @@ Future<_FacilityDashboard> _loadFacilityDashboard(
 
   if (kDebugMode) {
     print('📊 [Dashboard] ${facility.name}: ${activeTenants.length} active tenants, '
-        '${counts.occupiedUnits}/${counts.totalUnits} rentable units occupied '
+        '${counts.occupiedUnits}/${counts.totalUnits} units occupied '
         '(${counts.unitDocs} unit docs), past due $pastDue');
   }
 
@@ -355,13 +368,13 @@ Future<_FacilityDashboard> _loadFacilityDashboard(
   );
 }
 
-/// One facility's unit numbers for the dashboard: rentable total and
+/// One facility's unit numbers for the dashboard: counted total and
 /// occupied by [FacilityStatsService.countUnits], plus every unit doc.
 ///
 /// [tenants] is every tenant doc, archived included: archiving a tenant does
 /// not free the unit. The dashboard used to count only units held by active
-/// tenants, and staff-only units too, so it disagreed with the Units list and
-/// the facility cards (82/74 against 78/72 at one facility).
+/// tenants, so it disagreed with the Units list and the facility cards
+/// (82/74 against 78/72 at one facility).
 ({int totalUnits, int occupiedUnits, int unitDocs}) facilityUnitCounts(
   List<UnitModel> units,
   List<TenantModel> tenants,

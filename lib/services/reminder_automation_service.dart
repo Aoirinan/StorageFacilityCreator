@@ -418,7 +418,7 @@ class ReminderAutomationService {
       return reminder.id;
     }
 
-    final success = await ReminderService.sendReminder(
+    final result = await ReminderService.sendReminder(
       facilityId: facilityId,
       reminderId: reminder.id,
       tenantEmail: tenant.email,
@@ -429,7 +429,7 @@ class ReminderAutomationService {
       digestKey: _digestKeyFor(schedule.type),
     );
 
-    if (!success) {
+    if (!result.sent) {
       if (kDebugMode) {
         print('⚠️ [ReminderAutomation] sendReminder failed for reminder ${reminder.id}');
       }

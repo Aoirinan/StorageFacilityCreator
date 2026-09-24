@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as admin from 'firebase-admin';
 import { facilityStatsTestUtils } from '../facility_stats';
 
@@ -7,7 +9,7 @@ const {
   tenantAutopayOn,
   calculateDaysLate,
   countCanonicalOccupied,
-  isRentableUnit,
+  countsTowardOccupancy,
   summarizeFacilityStats,
   computeFacilityStats,
   recomputeAndPersistFacilityStats,
@@ -76,22 +78,28 @@ test('countCanonicalOccupied ignores orphan occupied units', () => {
   assert.deepEqual(orphanIds, ['u2']);
 });
 
-test('isRentableUnit excludes only units explicitly marked publicListingEnabled=false', () => {
-  assert.equal(isRentableUnit({ id: 'u1', status: 'available', publicListingEnabled: true }), true);
-  assert.equal(isRentableUnit({ id: 'u2', status: 'available', publicListingEnabled: false }), false);
-  // Field absent (legacy unit docs predating this flag) must default to rentable.
-  assert.equal(isRentableUnit({ id: 'u3', status: 'available' }), true);
+test('countsTowardOccupancy leaves out only internal-use units, not unlisted ones', () => {
+  assert.equal(countsTowardOccupancy({ id: 'u1', status: 'available', internalUse: true }), false);
+  assert.equal(countsTowardOccupancy({ id: 'u2', status: 'available', internalUse: false }), true);
+  // Missing (every unit doc before this field) counts.
+  assert.equal(countsTowardOccupancy({ id: 'u3', status: 'available' }), true);
+  // Before: `publicListingEnabled === false` was left out, and an owner whose
+  // rental page is not live yet had 86 of 89 units unlisted: the mirror said 3.
+  assert.equal(
+    countsTowardOccupancy({ id: 'u4', status: 'available', publicListingEnabled: false } as any),
+    true,
+  );
 });
 
-test('isRentableUnit excludes archived units with the same test Flutter uses', () => {
+test('countsTowardOccupancy excludes archived units with the same test Flutter uses', () => {
   // Before: archived units counted here but not in the app, so the facility
   // mirror (cards, search, super admin) ran higher than every live count.
-  assert.equal(isRentableUnit({ id: 'u1', status: 'available', archived: true }), false);
-  assert.equal(isRentableUnit({ id: 'u2', status: 'available', archived: false }), true);
-  assert.equal(isRentableUnit({ id: 'u3', status: 'available' }), true);
+  assert.equal(countsTowardOccupancy({ id: 'u1', status: 'available', archived: true }), false);
+  assert.equal(countsTowardOccupancy({ id: 'u2', status: 'available', archived: false }), true);
+  assert.equal(countsTowardOccupancy({ id: 'u3', status: 'available' }), true);
   // Flutter keeps a unit only when `(archived ?? false) == false`; a stray
   // non-boolean is dropped there, so it must be dropped here too.
-  assert.equal(isRentableUnit({ id: 'u4', status: 'available', archived: 'true' as any }), false);
+  assert.equal(countsTowardOccupancy({ id: 'u4', status: 'available', archived: 'true' as any }), false);
 });
 
 type StatsInputs = Parameters<typeof summarizeFacilityStats>[0];
@@ -112,7 +120,7 @@ test('an archived occupied unit with a real tenant is left out of total and occu
       units: [
         { id: 'live', status: 'occupied', tenantId: 't1' },
         { id: 'gone', status: 'occupied', tenantId: 't1', archived: true },
-        { id: 'office', status: 'occupied', tenantId: 't1', publicListingEnabled: false },
+        { id: 'office', status: 'occupied', tenantId: 't1', internalUse: true },
         { id: 'free', status: 'available' },
       ],
       allTenantIds: new Set(['t1']),
@@ -131,7 +139,7 @@ test('computeFacilityStats still heals an archived orphan unit', async () => {
         units: [
           { id: 'ok', status: 'occupied', tenantId: 't1' },
           { id: 'archived-orphan', status: 'occupied', tenantId: 'deleted', archived: true },
-          { id: 'staff-orphan', status: 'occupied', tenantId: null, publicListingEnabled: false },
+          { id: 'internal-orphan', status: 'occupied', tenantId: null, internalUse: true },
         ],
         allTenantIds: new Set(['t1']),
       }),
@@ -139,7 +147,7 @@ test('computeFacilityStats still heals an archived orphan unit', async () => {
       healed.push(orphans.map((o) => o.id));
     },
   });
-  assert.deepEqual(healed, [['archived-orphan', 'staff-orphan']]);
+  assert.deepEqual(healed, [['archived-orphan', 'internal-orphan']]);
   assert.equal(stats?.totalUnits, 1);
   assert.equal(stats?.occupiedUnits, 1);
 });
@@ -407,4 +415,35 @@ test('persisting updates the facility doc before writing stats/current', async (
   await assert.rejects(persistFacilityStats('fac-gone', { occupiedUnits: 1, totalUnits: 2 }, db), /NOT_FOUND/);
   // A facility deleted mid-pass no longer gets stats/current recreated.
   assert.deepEqual(writes, ['facility']);
+});
+
+type ParityCase = {
+  name: string;
+  units: FakeDocInput[];
+  tenants: FakeDocInput[];
+  expected: { totalUnits: number; occupiedUnits: number };
+};
+
+/** Cases the app's test (test/unit_occupancy_parity_test.dart) runs too. */
+function unitOccupancyParityCases(): ParityCase[] {
+  const file = path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'unit_occupancy_counts.json');
+  return (JSON.parse(fs.readFileSync(file, 'utf8')) as { cases: ParityCase[] }).cases;
+}
+
+test('the stats pass counts every shared parity case as the app does', async () => {
+  const cases = unitOccupancyParityCases();
+  assert.ok(cases.length >= 5, 'the shared fixture was not read');
+  for (const c of cases) {
+    const { db } = statsReadDb({ facility: {}, units: c.units, tenants: c.tenants });
+    // The production read and compute; only the heal is stubbed.
+    const stats = await computeFacilityStats('fac-1', {
+      load: (facilityId) => loadFacilityStatsInputs(facilityId, db),
+      healOrphans: async () => {},
+    });
+    assert.deepEqual(
+      { totalUnits: stats?.totalUnits, occupiedUnits: stats?.occupiedUnits },
+      c.expected,
+      c.name,
+    );
+  }
 });

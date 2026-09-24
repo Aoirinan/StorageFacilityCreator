@@ -12,6 +12,7 @@ UnitModel _unit(
   UnitStatus status = UnitStatus.available,
   String? tenantId,
   bool publicListingEnabled = true,
+  bool internalUse = false,
 }) {
   return UnitModel(
     id: id,
@@ -25,25 +26,39 @@ UnitModel _unit(
     updatedAt: DateTime(2026, 1, 1),
     createdBy: 'test',
     publicListingEnabled: publicListingEnabled,
+    internalUse: internalUse,
   );
 }
 
 void main() {
-  test('says the count is of rentable units and how many staff-only rows are not in it', () {
-    // The table lists staff-only units, so a bare "1 / 2 units occupied" over
-    // three rows read as a miscount.
+  test('says how many internal-use rows are not in the count', () {
+    // The table lists internal-use units, so a bare "1 / 2 units occupied"
+    // over three rows read as a miscount.
     final header = unitCountsHeader(
       [
         _unit('1', status: UnitStatus.occupied, tenantId: 't1'),
         _unit('2'),
-        _unit('office', status: UnitStatus.occupied, tenantId: 't1', publicListingEnabled: false),
+        _unit('office', status: UnitStatus.occupied, tenantId: 't1', internalUse: true),
       ],
       {'t1'},
     );
-    expect(header, '1 / 2 rentable units occupied (1 staff-only not counted)');
+    expect(header, '1 / 2 units occupied (1 internal-use not counted)');
   });
 
-  test('no note when there are no staff-only units', () {
+  test('units kept off the public website are counted, with no note', () {
+    // Before: "0 / 1 rentable units occupied (2 staff-only not counted)".
+    final header = unitCountsHeader(
+      [
+        _unit('1', status: UnitStatus.occupied, tenantId: 't1', publicListingEnabled: false),
+        _unit('2', publicListingEnabled: false),
+        _unit('3'),
+      ],
+      {'t1'},
+    );
+    expect(header, '1 / 3 units occupied');
+  });
+
+  test('no note when there are no internal-use units', () {
     final header = unitCountsHeader(
       [
         _unit('1', status: UnitStatus.occupied, tenantId: 'archived-tenant'),
@@ -52,7 +67,7 @@ void main() {
       {'archived-tenant'},
     );
     // Archived tenant's unit counts; the orphan does not.
-    expect(header, '1 / 2 rentable units occupied');
+    expect(header, '1 / 2 units occupied');
   });
 
   test('a stream error after the first list keeps that list for the header and rows', () async {
@@ -92,14 +107,14 @@ void main() {
 
     final tenants = unitListTenants(tenantsAsync);
     // Before: whenOrNull(data:) gave null here, so the header read
-    // "0 / 2 rentable units occupied" and the rented unit was hidden.
+    // "0 / 2 units occupied" and the rented unit was hidden.
     expect(tenants.map((t) => t.id), ['t1']);
     expect(
       unitCountsHeader(
         [_unit('1', status: UnitStatus.occupied, tenantId: 't1'), _unit('2')],
         tenants.map((t) => t.id).toSet(),
       ),
-      '1 / 2 rentable units occupied',
+      '1 / 2 units occupied',
     );
   });
 }

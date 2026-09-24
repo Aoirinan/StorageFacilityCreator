@@ -10,6 +10,9 @@ function joinPath(...segments: string[]): string {
 export class InMemoryFirestore {
   private readonly store = new Map<string, DocData>();
 
+  /** When set, every `count()` query rejects with it (a failed aggregate read). */
+  countError: Error | null = null;
+
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
   }
@@ -34,6 +37,8 @@ export class InMemoryFirestore {
 
   private buildFirestore(): Record<string, unknown> {
     const store = this.store;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const owner = this;
 
     const FieldValue = {
       serverTimestamp: () => Timestamp.now(),
@@ -125,7 +130,12 @@ export class InMemoryFirestore {
         return this;
       }
 
-      async get(): Promise<{ empty: boolean; docs: DocSnapshot[] }> {
+      /** Cursors are ignored: limits are too, so one page holds every doc. */
+      startAfter(): Query {
+        return this;
+      }
+
+      async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
         const prefix = `${this.path}/`;
         const docs = [...store.keys()]
           .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
@@ -134,12 +144,13 @@ export class InMemoryFirestore {
             return this.equals.every(([field, value]) => field in data && data[field] === value);
           })
           .map((key) => new DocSnapshot(new DocRef(key), key));
-        return { empty: docs.length === 0, docs };
+        return { empty: docs.length === 0, size: docs.length, docs };
       }
 
       count(): { get: () => Promise<{ data: () => { count: number } }> } {
         return {
           get: async () => {
+            if (owner.countError) throw owner.countError;
             const { docs } = await this.get();
             return { data: () => ({ count: docs.length }) };
           },
@@ -177,6 +188,9 @@ export class InMemoryFirestore {
       collection(name: string): CollectionRef {
         return new CollectionRef(name);
       },
+      doc(path: string): DocRef {
+        return new DocRef(path);
+      },
       collectionGroup(): CollectionRef {
         return new CollectionRef('');
       },
@@ -203,10 +217,12 @@ export function installInMemoryFirestore(inMemory: InMemoryFirestore): void {
   }
   const TimestampStatic = admin.firestore.Timestamp;
   const FieldValueStatic = admin.firestore.FieldValue;
+  const FieldPathStatic = admin.firestore.FieldPath;
   const fs = inMemory.firestore();
   const firestoreFn = Object.assign(() => fs, {
     Timestamp: TimestampStatic,
     FieldValue: FieldValueStatic,
+    FieldPath: FieldPathStatic,
   });
   Object.defineProperty(admin, 'firestore', {
     configurable: true,

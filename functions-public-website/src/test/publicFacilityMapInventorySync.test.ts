@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   fitUnitsToDocument,
   readEveryDoc,
+  syncPublicFacilityMapInventoryForFacility,
 } from '../publicFacilityMapInventorySync';
+import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
 
 /**
  * Cover for the two caps this replaced.
@@ -102,4 +104,67 @@ test('trimming terminates even when a single unit is over the ceiling', () => {
   const { published, omitted } = fitUnitsToDocument(units, 10);
   assert.equal(published.length, 1, 'stops at one rather than looping to nothing');
   assert.equal(omitted, 7);
+});
+
+const MAP_FACILITY = 'fac-map';
+const MAP_SLUG = 'fac-map-slug';
+
+/** A published map for MAP_FACILITY with available, unlinked units A1..A4. */
+function seedPublishedMap(inMemory: InMemoryFirestore) {
+  inMemory.seed(`facilities/${MAP_FACILITY}/mapEngine/meta`, { publicSlug: MAP_SLUG });
+  inMemory.seed(`publicFacilityMaps/${MAP_SLUG}`, { facilityId: MAP_FACILITY, units: [] });
+  for (const n of ['A1', 'A2', 'A3', 'A4']) {
+    inMemory.seed(`facilities/${MAP_FACILITY}/units/${n}`, {
+      unitNumber: n,
+      status: 'available',
+      unitType: 'standard',
+      monthlyRate: 100,
+    });
+  }
+}
+
+async function publishedUnits(inMemory: InMemoryFirestore): Promise<Record<string, Record<string, any>>> {
+  installInMemoryFirestore(inMemory);
+  await syncPublicFacilityMapInventoryForFacility(MAP_FACILITY);
+  const units = inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.units as Array<Record<string, any>>;
+  return Object.fromEntries(units.map((u) => [String(u.unitNumber), u]));
+}
+
+test('only a tenant with isActive exactly true claims its unit, as in the app', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPublishedMap(inMemory);
+  inMemory.seed(`facilities/${MAP_FACILITY}/tenants/active`, { name: 'Al', isActive: true, unitNumber: 'A1' });
+  inMemory.seed(`facilities/${MAP_FACILITY}/tenants/archived`, { name: 'Bo', isActive: false, unitNumber: 'A2' });
+  // A partial doc with no isActive, e.g. recreated by a server merge-write.
+  inMemory.seed(`facilities/${MAP_FACILITY}/tenants/partial`, { unitNumber: 'A3' });
+
+  const units = await publishedUnits(inMemory);
+
+  assert.equal(units.A1.status, 'rented');
+  assert.equal(units.A1.isRentable, false);
+  assert.equal(units.A2.isRentable, true);
+  // Before: skipped only isActive === false, so the partial doc claimed A3
+  // here while the app (TenantModel reads a missing isActive as inactive)
+  // published A3 as rentable: the two writers of this list disagreed.
+  assert.equal(units.A3.isRentable, true);
+  assert.equal(units.A4.isRentable, true);
+});
+
+test('archived units are left off the public map by the same test the app uses', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPublishedMap(inMemory);
+  inMemory.seed(`facilities/${MAP_FACILITY}/units/A2`, {
+    unitNumber: 'A2', status: 'available', unitType: 'standard', archived: true,
+  });
+  // A stray string: the app's unit read drops it, so this sync must too.
+  inMemory.seed(`facilities/${MAP_FACILITY}/units/A3`, {
+    unitNumber: 'A3', status: 'available', unitType: 'standard', archived: 'true',
+  });
+  inMemory.seed(`facilities/${MAP_FACILITY}/units/A4`, {
+    unitNumber: 'A4', status: 'available', unitType: 'standard', archived: false,
+  });
+
+  const units = await publishedUnits(inMemory);
+
+  assert.deepEqual(Object.keys(units).sort(), ['A1', 'A4']);
 });

@@ -44,6 +44,9 @@ export { sweepAccountTrialExpiry } from './accountTrialExpirySweep';
 export { cleanupExpiredExports, getExportDownloadUrl, processExportJob } from './processExportJob';
 export { processFacilityOffboarding } from './facilityOffboardingScheduled';
 export { onFacilityCreatorAccountWrite } from './ownerOnboardingEmails';
+// Invited staff cannot read the owner's account, so each facility carries a
+// backend-written copy of its standing. See ownerAccountStanding.ts.
+export { mirrorOwnerAccountStanding, syncOwnerAccountStandingNightly } from './ownerAccountStanding';
 // Backstop for the delete/offboard paths: nothing should still be billing for
 // a facility or account that no longer exists.
 export { sweepOrphanedSubscriptions } from './orphanedSubscriptionSweep';

@@ -54,10 +54,16 @@ class UnitModel {
   /// Manager overlock state (auditable). If absent, treat as not overlocked.
   final OverlockInfo? overlock;
   /// Whether this unit can appear as rentable on the facility's public website.
-  /// Defaults to true; set false for staff-only spaces (manager residence,
-  /// office, personal-use units) that are `available` internally but must
-  /// never be publicly rentable.
+  /// Defaults to true. Only the public map and website read it; it has no
+  /// effect on Total/Occupied/Vacant (see [internalUse]). Owners whose rental
+  /// page is not live yet turn it off for most of their units.
   final bool publicListingEnabled;
+
+  /// Office, manager residence or personal-use space the owner does not rent
+  /// out. Left out of Total/Occupied/Vacant everywhere
+  /// (`FacilityStatsService.countsTowardOccupancy`, and `countsTowardOccupancy`
+  /// in functions-facility-ops). Only an exact `true` counts; missing is false.
+  final bool internalUse;
 
   const UnitModel({
     required this.id,
@@ -91,6 +97,7 @@ class UnitModel {
     this.mapHeight,
     this.overlock,
     this.publicListingEnabled = true,
+    this.internalUse = false,
   });
 
   factory UnitModel.fromFirestore(DocumentSnapshot doc) {
@@ -139,6 +146,7 @@ class UnitModel {
           ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
           : null,
       publicListingEnabled: data['publicListingEnabled'] as bool? ?? true,
+      internalUse: data['internalUse'] == true,
     );
   }
 
@@ -169,6 +177,7 @@ class UnitModel {
       'createdBy': createdBy,
       'updatedBy': updatedBy,
       'publicListingEnabled': publicListingEnabled,
+      'internalUse': internalUse,
     };
     if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
       map['mapLayout'] = {
@@ -213,6 +222,7 @@ class UnitModel {
     double? mapHeight,
     OverlockInfo? overlock,
     bool? publicListingEnabled,
+    bool? internalUse,
   }) {
     return UnitModel(
       id: id ?? this.id,
@@ -246,6 +256,7 @@ class UnitModel {
       mapHeight: mapHeight ?? this.mapHeight,
       overlock: overlock ?? this.overlock,
       publicListingEnabled: publicListingEnabled ?? this.publicListingEnabled,
+      internalUse: internalUse ?? this.internalUse,
     );
   }
 

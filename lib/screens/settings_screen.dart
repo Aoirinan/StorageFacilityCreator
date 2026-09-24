@@ -861,8 +861,8 @@ class SettingsOnboardingTab extends ConsumerWidget {
           data: (progress) => _buildChecklist(
             context,
             hasFacility: hasFacility,
-            // Any unit doc, staff-only included: a facility whose units are
-            // all staff-only has still added units.
+            // Any unit doc, internal-use included: a facility whose units
+            // are all internal-use has still added units.
             hasUnits: progress.hasUnits,
             hasTenants: progress.hasTenants,
             facilitySubscribed: facilitySubscribed,

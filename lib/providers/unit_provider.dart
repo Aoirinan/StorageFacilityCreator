@@ -130,6 +130,9 @@ final unitMinPriceProvider = StateProvider<double?>((ref) => null);
 final unitMaxPriceProvider = StateProvider<double?>((ref) => null);
 
 // Unit Operations Provider
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so the Units list said units were archived or deleted
+/// when they were not.
 class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   UnitOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -162,6 +165,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -214,6 +218,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -224,6 +229,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -246,6 +252,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -264,6 +271,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -274,6 +282,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 }
