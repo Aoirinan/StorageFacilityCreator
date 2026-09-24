@@ -33,6 +33,15 @@ export const FACILITY_BILLING_NOT_STOPPED_MESSAGE =
 export const FACILITY_DELETE_FAILED_MESSAGE =
   "The facility couldn't be fully deleted. Refresh the list to see what changed, then try again.";
 
+/** The refusal while tenants are active; the app's pre-check words it the same way. */
+export function facilityHasActiveTenantsMessage(count: number): string {
+  const tenants = count === 1 ? '1 active tenant' : `${count} active tenants`;
+  return (
+    `Nothing was deleted: this facility still has ${tenants}. ` +
+    'Move them out or archive them first, then delete the facility.'
+  );
+}
+
 export function parseDeleteFacilityRequest(data: unknown): { facilityId: string } {
   const input = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
   const facilityId = typeof input.facilityId === 'string' ? input.facilityId.trim() : '';
@@ -80,6 +89,22 @@ export async function deleteFacilityPermanentlyHandler(
   // Owner only, as the old delete rule: managers can't delete a facility.
   if (!superAdmin && facility.ownerUid !== uid) {
     throw new functions.https.HttpsError('permission-denied', 'Only the facility owner can delete it.');
+  }
+
+  // An owner's delete took every active tenant's ledger, invoices, liens and
+  // contracts with it in one click, while a single tenant with any history
+  // can't be deleted at all. Active tenants are moved out or archived first.
+  // Checked before the email code is spent. Active is exactly true, as in
+  // TenantModel and the server jobs.
+  if (!superAdmin) {
+    const active = await facilityRef.collection('tenants').where('isActive', '==', true).count().get();
+    const count = active.data().count;
+    if (count > 0) {
+      throw new functions.https.HttpsError('failed-precondition', facilityHasActiveTenantsMessage(count), {
+        reason: 'active-tenants',
+        activeTenants: count,
+      });
+    }
   }
 
   await consumeRecentTwoFactor(db, uid, DELETE_FACILITY_OTP_PURPOSE, 'deleteFacilityPermanently', deps.nowMs());

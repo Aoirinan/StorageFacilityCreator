@@ -9,8 +9,9 @@ import {
   FACILITY_DELETE_FAILED_MESSAGE,
   deleteFacilityPermanently,
   deleteFacilityPermanentlyHandler,
+  facilityHasActiveTenantsMessage,
 } from '../../deleteFacilityPermanently';
-import { FacilityPurgeDeps } from '../../facilityPurge';
+import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
 
@@ -82,7 +83,13 @@ async function seedFacility(): Promise<void> {
     stripePlatformSubscriptionId: 'sub_platform',
     stripeWebsiteSubscriptionId: 'sub_website',
   });
-  await fac.collection('tenants').doc('t1').set({ name: 'Ada Park', governmentIdNumber: 'D123', portalAccessCode: '4242' });
+  // Moved out: isActive false. Only active tenants block an owner's delete.
+  await fac
+    .collection('tenants')
+    .doc('t1')
+    .set({ name: 'Ada Park', governmentIdNumber: 'D123', portalAccessCode: '4242', isActive: false });
+  // No isActive at all counts as inactive, as in TenantModel and the jobs.
+  await fac.collection('tenants').doc('t0').set({ name: 'Legacy Row' });
   await fac.collection('tenants').doc('t1').collection('billing').doc('default').set({ autopayEnabled: false });
   await fac.collection('tenants').doc('t1').collection('paymentMethods').doc('pm1').set({ isActive: true });
   await fac.collection('units').doc('u1').set({ unitNumber: '101', tenantId: 't1', status: 'occupied' });
@@ -97,7 +104,43 @@ async function seedFacility(): Promise<void> {
     referralRewardPreferredFacilityId: FACILITY,
     stripeSubscriptionId: 'sub_account',
   });
+  // Rows keyed by facility outside its subtree, this facility's and another's.
+  for (const [facilityId, suffix] of [
+    [FACILITY, 'mine'],
+    ['fac-2', 'theirs'],
+  ]) {
+    await db.collection('user_roles').doc(`role-${suffix}`).set({ userId: 'manager-1', facilityId, roleType: 'manager' });
+    await db.collection('publicReservations').doc(`res-${suffix}`).set({ facilityId, unitId: 'u1', status: 'pending' });
+    await db
+      .collection('publicPaymentLinks')
+      .doc(`token-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
+    await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
+  }
 }
+
+/** The keyed rows left, as 'collection/id'. */
+async function keyedRowsLeft(): Promise<string[]> {
+  const left: string[] = [];
+  for (const collection of FACILITY_KEYED_COLLECTIONS) {
+    for (const doc of (await emulatorDb().collection(collection).get()).docs) left.push(`${collection}/${doc.id}`);
+  }
+  return left.sort();
+}
+
+const THEIR_KEYED_ROWS = [
+  'customDomainClaims/theirs.example.com',
+  'publicPaymentLinks/token-theirs',
+  'publicReservations/res-theirs',
+  'user_roles/role-theirs',
+];
+const ALL_KEYED_ROWS = [
+  ...THEIR_KEYED_ROWS,
+  'customDomainClaims/mine.example.com',
+  'publicPaymentLinks/token-mine',
+  'publicReservations/res-mine',
+  'user_roles/role-mine',
+].sort();
 
 async function docsUnder(path: string): Promise<string[]> {
   const db = emulatorDb();
@@ -154,7 +197,58 @@ test('the owner deletes the whole facility: tenants, nested records and all', { 
     ['sub_platform', 'sub_website'],
   );
   assert.deepEqual(calls.aligned, [['sub_account', 1]]);
-  assert.deepEqual(calls.storage, [`facilities/${FACILITY}/`]);
+  // The CSV exports (tenant lists) too: the daily cleanup finds them through
+  // exportJobs, which the subtree delete removes.
+  assert.deepEqual(calls.storage, [`facilities/${FACILITY}/`, `exports/${FACILITY}/`]);
+  // Its roles, public reservations, payment links and domain claims go;
+  // another facility's stay.
+  assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
+});
+
+test('an active tenant refuses the owner before the email code is spent; nothing goes', { skip: skipWithoutEmulator }, async () => {
+  await seedFacility();
+  const db = emulatorDb();
+  const t2 = db.collection('facilities').doc(FACILITY).collection('tenants').doc('t2');
+  await t2.set({ name: 'Bo Diaz', isActive: true });
+  const user = db.collection('users').doc(OWNER);
+  await user.set({ twoFactorEnabled: true });
+  const code = user.collection('otpCodes').doc('ok');
+  await code.set({ purpose: 'delete_facility', used: true, expiresAt: admin.firestore.Timestamp.fromMillis(NOW + 60_000) });
+
+  const calls = newCalls();
+  await assert.rejects(run(OWNER, fakePurge(calls)), (err: unknown) => {
+    const e = err as functions.https.HttpsError;
+    assert.equal(e.code, 'failed-precondition');
+    assert.equal(e.message, facilityHasActiveTenantsMessage(1));
+    assert.deepEqual(e.details, { reason: 'active-tenants', activeTenants: 1 });
+    return true;
+  });
+  assert.equal(
+    facilityHasActiveTenantsMessage(1),
+    'Nothing was deleted: this facility still has 1 active tenant. ' +
+      'Move them out or archive them first, then delete the facility.',
+  );
+  assert.deepEqual(calls, newCalls());
+  await assertNothingDeleted();
+  assert.deepEqual(await keyedRowsLeft(), ALL_KEYED_ROWS);
+  assert.equal((await code.get()).get('consumedAt'), undefined, 'code not spent');
+
+  // Archived: the same owner, with the same code, now deletes it.
+  await t2.update({ isActive: false });
+  await run(OWNER, fakePurge(newCalls()));
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+});
+
+test('a super admin (the claim) deletes a facility with active tenants', { skip: skipWithoutEmulator }, async () => {
+  await seedFacility();
+  await emulatorDb()
+    .collection('facilities')
+    .doc(FACILITY)
+    .collection('tenants')
+    .doc('t2')
+    .set({ name: 'Bo Diaz', isActive: true });
+  await run('admin-1', fakePurge(newCalls()), { superadmin: true });
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
 });
 
 test("a public map entry that now points at another facility is left alone", { skip: skipWithoutEmulator }, async () => {
@@ -260,6 +354,7 @@ test('billing that will not stop: nothing is deleted', { skip: skipWithoutEmulat
   await rejectsWith(run(OWNER, purge), 'failed-precondition', FACILITY_BILLING_NOT_STOPPED_MESSAGE);
   await assertNothingDeleted();
   assert.equal((await emulatorDb().collection('publicFacilityMaps').doc('acme').get()).exists, true);
+  assert.deepEqual(await keyedRowsLeft(), ALL_KEYED_ROWS);
 });
 
 test('an unexpected failure is reported as internal with a message an owner can act on', { skip: skipWithoutEmulator }, async () => {
@@ -289,6 +384,12 @@ test('the deployed callable, production deps and all, deletes an unbilled facili
     run: (data: unknown, context: functions.https.CallableContext) => Promise<unknown>;
   };
   await rejectsWith(callable.run({ facilityId: FACILITY }, context('manager-1')), 'permission-denied');
+  // An active tenant refuses the deployed callable too.
+  const active = emulatorDb().collection('facilities').doc(FACILITY).collection('tenants').doc('t2');
+  await active.set({ name: 'Bo Diaz', isActive: true });
+  await rejectsWith(callable.run({ facilityId: FACILITY }, context(OWNER)), 'failed-precondition', /1 active tenant/);
+  await active.update({ isActive: false });
   assert.deepEqual(await callable.run({ facilityId: FACILITY }, context(OWNER)), { success: true });
   assert.deepEqual(await docsUnder(`facilities/${FACILITY}`), []);
+  assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
 });
