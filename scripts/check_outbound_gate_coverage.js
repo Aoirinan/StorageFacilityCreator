@@ -27,9 +27,11 @@ const SEND_PATTERNS = [
 
 // A client bound once and used further down. orphanedSubscriptionSweep.ts does
 // `const mail = getSgMail() as {...}` and calls mail.send inside a loop a few
-// lines later, past the reach of the proximity pattern above. The check then
-// reported the file as no longer sending and asked for its allowlist entry to
-// be removed, which would have left a real send path unlisted and unseen.
+// lines later: exactly 120 characters on, the edge of the proximity pattern
+// above. A Windows checkout's CRLF endings pushed it to 123, the check reported
+// the file as no longer sending, and it asked for the allowlist entry to be
+// removed, which would have left a real send path unlisted. Following the
+// binding does not depend on how far away the send is.
 const SEND_CLIENT_BINDING = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*getSgMail\(\)/g;
 
 /** Names bound to a SendGrid client anywhere in [text]. */
@@ -272,7 +274,9 @@ const staleAllowlist = new Set(ALLOWLIST.keys());
 for (const src of packages) {
   for (const file of listSourceFiles(src)) {
     const rel = path.relative(repoRoot, file).split(path.sep).join('/');
-    const text = stripCommentsAndStrings(fs.readFileSync(file, 'utf8'));
+    // CRLF on a Windows checkout lengthens every gap the proximity pattern
+    // measures, so a local run could pass what CI's LF checkout fails.
+    const text = stripCommentsAndStrings(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'));
     const clientNames = sendClientNames(text);
     if (!sendsIn(text, clientNames)) continue;
     staleAllowlist.delete(rel);
