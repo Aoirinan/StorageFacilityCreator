@@ -6,11 +6,66 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/services/email_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+
+/// Marking a payment paid refused, because as stored it is no longer due.
+class PaymentNotProcessableException implements UserFacingException {
+  const PaymentNotProcessableException(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Why a payment stored with [status] must not be marked paid, or null when
+/// it may be (pending, failed, or a status this app does not know).
+String? paymentNotProcessableReason(Object? status) {
+  switch (status) {
+    case 'paid':
+    case 'completed':
+      return 'This payment has already been paid.';
+    case 'refunded':
+      return 'This payment was refunded, so it cannot be processed.';
+    case 'cancelled':
+      return 'This payment was cancelled, so it cannot be processed.';
+  }
+  return null;
+}
 
 class PaymentService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
-  
+
+  /// The payment doc [markPaymentAsPaid] reads and writes.
+  static DocumentReference<Map<String, dynamic>> Function(
+    String facilityId,
+    String paymentId,
+  ) _paymentDoc = _paymentDocInFirestore;
+
+  static DocumentReference<Map<String, dynamic>> _paymentDocInFirestore(
+    String facilityId,
+    String paymentId,
+  ) =>
+      _firestore
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('payments')
+          .doc(paymentId);
+
+  /// Serves [markPaymentAsPaid]'s payment doc from [open] instead of
+  /// Firestore; null restores Firestore.
+  @visibleForTesting
+  static void overridePaymentDocForTesting(
+    DocumentReference<Map<String, dynamic>> Function(
+      String facilityId,
+      String paymentId,
+    )? open,
+  ) {
+    _paymentDoc = open ?? _paymentDocInFirestore;
+  }
+
   // Mock Square API configuration
   static const String _mockSquareApiKey = 'mock_square_api_key';
   static const String _mockSquareEnvironment = 'sandbox'; // or 'production'
@@ -448,6 +503,17 @@ class PaymentService {
     String? notes,
   }) async {
     try {
+      // Read fresh, from the server. The pages act on the copy they opened
+      // with: a detail page left open while the payment was paid elsewhere
+      // still offered Process, and processing it again moved the tenant's
+      // paidThrough on another month and sent a second receipt.
+      final paymentDoc = _paymentDoc(facilityId, paymentId);
+      final stored =
+          await paymentDoc.get(const GetOptions(source: Source.server));
+      if (!stored.exists) throw Exception('Payment not found');
+      final refusal = paymentNotProcessableReason(stored.data()?['status']);
+      if (refusal != null) throw PaymentNotProcessableException(refusal);
+
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
 
@@ -458,12 +524,7 @@ class PaymentService {
       final now = DateTime.now();
       final nowTimestamp = Timestamp.fromDate(now);
 
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('payments')
-          .doc(paymentId)
-          .update({
+      await paymentDoc.update({
         'status': 'paid',
         'method': method.name,
         'transactionId': transactionId,

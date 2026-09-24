@@ -3,6 +3,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'network_timeout_helper.dart';
 
+/// An error whose [message] is already written for the operator, such as a
+/// refusal that explains itself. Shown as it is.
+abstract interface class UserFacingException implements Exception {
+  String get message;
+}
+
 /// Helper class to convert technical error messages into user-friendly messages
 class ErrorMessageHelper {
   /// Convert any error to a user-friendly message
@@ -10,6 +16,9 @@ class ErrorMessageHelper {
     if (error == null) {
       return 'An unexpected error occurred. Please try again.';
     }
+
+    // Otherwise the generic "An error occurred" hid why it was refused.
+    if (error is UserFacingException) return error.message;
 
     final errorString = error.toString().toLowerCase();
 
