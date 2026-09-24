@@ -336,6 +336,40 @@ void main() {
       expect(log.writes.single.$3['publicListingEnabled'], isFalse);
     });
 
+    testWidgets(
+        'a stored internal-use unit whose listing is on opens with the listing switch off',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'OFF',
+          'status': 'available',
+          'internalUse': true,
+          'publicListingEnabled': true,
+        }),
+      ]);
+      // An office saved before the switch was locked, with listing left on.
+      await _openScreen(
+        tester,
+        unit: _unit(internalUse: true, publicListingEnabled: true),
+      );
+
+      // The website and online rentals leave it out whatever the field says,
+      // so showing the switch on would tell the owner it is listed.
+      final listing = tester.widget<SwitchListTile>(
+          find.widgetWithText(SwitchListTile, 'List on public website'));
+      expect(listing.value, isFalse);
+      expect(listing.onChanged, isNull);
+
+      // Turning internal use off offers the unit online again: the listing
+      // it was saved with comes back.
+      await _tapVisible(tester, find.text(_internalUseLabel));
+      expect(_switchValue(tester, 'List on public website'), isTrue);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+      expect(log.writes.single.$3['internalUse'], isFalse);
+      expect(log.writes.single.$3['publicListingEnabled'], isTrue);
+    });
+
     testWidgets('editing can mark a unit internal use', (tester) async {
       final log = _serveUnits([
         FakeDoc('u1', {'unitNumber': 'OFF', 'status': 'available'}),
@@ -348,5 +382,45 @@ void main() {
 
       expect(log.writes.single.$3['internalUse'], isTrue);
     });
+  });
+
+  group('UnitCreationScreen amounts', () {
+    test('only finite amounts of at least zero are accepted', () {
+      expect(parseUnitAmount('129.5'), 129.5);
+      expect(parseUnitAmount(' 0 '), 0);
+      // double.tryParse accepts all of these, and none is below zero.
+      for (final bad in ['Infinity', 'NaN', '1e999', '-Infinity', '-1', 'abc']) {
+        expect(parseUnitAmount(bad), isNull, reason: bad);
+      }
+    });
+
+    for (final (field, value, error) in [
+      ('Monthly Rate *', 'Infinity', 'Please enter a valid monthly rate'),
+      ('Monthly Rate *', 'NaN', 'Please enter a valid monthly rate'),
+      ('Security Deposit', '1e999', 'Please enter a valid security deposit'),
+      ('Width (ft)', 'Infinity', 'Enter a valid width'),
+      ('Depth/Length (ft)', 'NaN', 'Enter a valid depth'),
+      ('Height (ft)', 'Infinity', 'Enter a valid height'),
+    ]) {
+      testWidgets('$field "$value" is refused and nothing is saved',
+          (tester) async {
+        final log = _serveUnits([]);
+        await _openScreen(tester);
+
+        await tester.enterText(
+            find.widgetWithText(TextFormField, 'Unit Number *'), 'A1');
+        await tester.enterText(
+            find.widgetWithText(TextFormField, 'Monthly Rate *'), '100');
+        await tester.enterText(find.widgetWithText(TextFormField, field), value);
+        await _tapVisible(
+            tester, find.widgetWithText(ElevatedButton, 'Create Unit'));
+
+        // Before: saved; a rate of Infinity or NaN then read back as $0 and
+        // went on the public map at that price.
+        expect(find.text(error), findsOneWidget);
+        expect(log.writes, isEmpty);
+        expect(find.byType(UnitCreationScreen), findsOneWidget);
+      });
+    }
   });
 }

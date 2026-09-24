@@ -9,6 +9,26 @@ import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
+/// The amount typed into a unit's rate, deposit or size field, or null when
+/// it is not a finite number of at least zero.
+///
+/// double.tryParse accepts 'Infinity', 'NaN' and '1e999', and neither
+/// infinity nor NaN is below zero, so the editor saved them. UnitModel reads
+/// a stored non-finite rate back as 0, so the unit went on the public map at
+/// $0 (and, before that read, made fitUnitsToDocument's jsonEncode throw).
+double? parseUnitAmount(String value) {
+  final amount = double.tryParse(value.trim());
+  if (amount == null || !amount.isFinite || amount < 0) return null;
+  return amount;
+}
+
+/// [message] when an optional amount field holds something other than a
+/// valid amount ([parseUnitAmount]); null when it is empty or valid.
+String? _optionalAmountError(String? value, String message) {
+  if (value == null || value.trim().isEmpty) return null;
+  return parseUnitAmount(value) == null ? message : null;
+}
+
 class UnitCreationScreen extends ConsumerStatefulWidget {
   final String facilityId;
   final UnitModel? unit; // For editing existing unit
@@ -517,8 +537,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                           value.trim().isEmpty) {
                                         return 'Monthly rate is required';
                                       }
-                                      final rate = double.tryParse(value);
-                                      if (rate == null || rate < 0) {
+                                      if (parseUnitAmount(value) == null) {
                                         return 'Please enter a valid monthly rate';
                                       }
                                       return null;
@@ -535,15 +554,9 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       prefixIcon: Icon(Icons.security),
                                     ),
                                     keyboardType: TextInputType.number,
-                                    validator: (value) {
-                                      if (value != null && value.isNotEmpty) {
-                                        final deposit = double.tryParse(value);
-                                        if (deposit == null || deposit < 0) {
-                                          return 'Please enter a valid security deposit';
-                                        }
-                                      }
-                                      return null;
-                                    },
+                                    validator: (value) =>
+                                        _optionalAmountError(value,
+                                            'Please enter a valid security deposit'),
                                   ),
                                 ),
                               ],
@@ -585,6 +598,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Width (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid width'),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -595,6 +610,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Depth/Length (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid depth'),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -605,6 +622,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Height (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid height'),
                                   ),
                                 ),
                               ],

@@ -6,10 +6,12 @@ import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
+import 'package:sfcapp/models/permission_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
@@ -315,16 +317,49 @@ class FacilityMapV2Service {
   /// instead of escaping. The map builder starts it unawaited, so a failure
   /// (a failed unit read now fails the publish rather than publishing no
   /// units) was an uncaught async error the owner never saw.
+  ///
+  /// Only a user who can publish the map ([canPublish], by default
+  /// [currentUserCanPublishMap]) is told: for anyone else the migration
+  /// always fails on the rules, and staff opening a map with no version yet
+  /// got a red permission-denied snackbar every time.
   static Future<void> migrateLegacyMapReportingFailure(
     String facilityId,
     void Function(Object error) onError, {
     @visibleForTesting Future<void> Function(String facilityId)? migrate,
+    @visibleForTesting Future<bool> Function(String facilityId)? canPublish,
   }) async {
     try {
       await (migrate ?? migrateLegacyMapToInitialVersion)(facilityId);
     } catch (e) {
-      onError(e);
+      var tell = false;
+      try {
+        tell = await (canPublish ?? currentUserCanPublishMap)(facilityId);
+      } catch (roleError) {
+        debugPrint('⚠️ [FacilityMapV2] Could not check who may publish: '
+            '$roleError');
+      }
+      if (tell) {
+        onError(e);
+      } else {
+        debugPrint('⚠️ [FacilityMapV2] Legacy map migration failed for a '
+            'user who cannot publish: $e');
+      }
     }
+  }
+
+  /// Permission an owner or manager holds and staff do not; the map is
+  /// published only by owners and managers (mapEngine and publicFacilityMaps
+  /// rules, isFacilityOwnerOrManager).
+  static const PermissionType publishMapPermission =
+      PermissionType.editFacility;
+
+  /// Whether the signed-in user may publish [facilityId]'s map.
+  static Future<bool> currentUserCanPublishMap(String facilityId) async {
+    final check = await PermissionService.hasPermission(
+      permission: publishMapPermission,
+      facilityId: facilityId,
+    );
+    return check.hasPermission;
   }
 
   /// Every non-archived unit, sorted by number, for the public map.
