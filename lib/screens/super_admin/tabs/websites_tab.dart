@@ -51,7 +51,7 @@ class _WebsitesTabState extends ConsumerState<WebsitesTab> {
             'entitled' => facility.hasActiveWebsiteSubscription,
             'paid' => facility.hasActiveStripeWebsiteSubscription,
             'adminTrial' => facility.hasActiveWebsiteAdminTrial,
-            'needsBase' => !row.hasActiveBaseSubscription,
+            'needsBase' => !row.hasActiveBaseSubscription && !row.billingExempt,
             'inactive' => !facility.hasActiveWebsiteSubscription,
             _ => true,
           };
@@ -335,17 +335,21 @@ class _WebsiteRowState extends ConsumerState<_WebsiteRow> {
             _StatusChip(
               label: row.hasActiveBaseSubscription
                   ? '\$75 base active'
-                  : '\$75 base missing',
-              color: row.hasActiveBaseSubscription
+                  : row.billingExempt
+                      ? 'Billing exempt'
+                      : '\$75 base missing',
+              color: row.hasActiveBaseSubscription || row.billingExempt
                   ? AppTheme.success
                   : AppTheme.error,
             ),
             _StatusChip(
               label: facility.hasActiveStripeWebsiteSubscription
                   ? '\$25 Stripe active'
-                  : facility.hasActiveWebsiteAdminTrial
-                      ? 'Admin trial'
-                      : 'No website access',
+                  : facility.billingExempt
+                      ? 'Billing exempt'
+                      : facility.hasActiveWebsiteAdminTrial
+                          ? 'Admin trial'
+                          : 'No website access',
               color: facility.hasActiveWebsiteSubscription
                   ? AppTheme.info
                   : AppTheme.textSecondary,
@@ -415,11 +419,14 @@ class _WebsiteRowState extends ConsumerState<_WebsiteRow> {
                   runSpacing: 8,
                   children: [
                     FilledButton.tonalIcon(
-                      onPressed:
-                          _busy || facility.hasActiveStripeWebsiteSubscription
-                              ? null
-                              : () => _showTrialDialog(
-                                  extend: facility.hasActiveWebsiteAdminTrial),
+                      // An exempt facility already has the website, and the
+                      // trial callable refuses it for want of a $75 plan.
+                      onPressed: _busy ||
+                              facility.hasActiveStripeWebsiteSubscription ||
+                              facility.billingExempt
+                          ? null
+                          : () => _showTrialDialog(
+                              extend: facility.hasActiveWebsiteAdminTrial),
                       icon: const Icon(Icons.schedule),
                       label: Text(facility.hasActiveWebsiteAdminTrial
                           ? 'Extend trial'

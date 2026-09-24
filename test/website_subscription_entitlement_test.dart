@@ -7,6 +7,7 @@ FacilityModel facility({
   String? stripeWebsiteSubscriptionId,
   String? websiteSubscriptionStatus,
   DateTime? websiteAdminTrialEndsAt,
+  bool billingExempt = false,
 }) {
   return FacilityModel(
     id: 'facility-1',
@@ -16,6 +17,7 @@ FacilityModel facility({
     stripeWebsiteSubscriptionId: stripeWebsiteSubscriptionId,
     websiteSubscriptionStatus: websiteSubscriptionStatus,
     websiteAdminTrialEndsAt: websiteAdminTrialEndsAt,
+    billingExempt: billingExempt,
   );
 }
 
@@ -102,5 +104,32 @@ void main() {
     );
     expect(expired.hasActiveBaseSubscription, isFalse);
     expect(active.hasActiveBaseSubscription, isTrue);
+  });
+
+  test('a billing-exempt facility has the website without paying', () {
+    // The operator's own facility. Its $25 subscription was cancelled, and a
+    // superadmin trial is refused for want of a paid $75 plan, so before this
+    // Website Setup showed only the paywall.
+    expect(
+      facility(
+        billingExempt: true,
+        stripeWebsiteSubscriptionId: 'sub_old',
+        websiteSubscriptionStatus: 'cancelled',
+      ).hasActiveWebsiteSubscription,
+      isTrue,
+    );
+    expect(facility().hasActiveWebsiteSubscription, isFalse);
+  });
+
+  test('a billing-exempt row is not listed as needing a \$75 plan', () {
+    final row = WebsiteAdminRow(
+      facility: facility(billingExempt: true),
+      ownerEmail: 'owner@example.com',
+      account: account(status: SubscriptionStatus.cancelled),
+      publicWebsiteConfigured: false,
+      publicWebsiteEnabled: false,
+    );
+    expect(row.hasActiveBaseSubscription, isFalse);
+    expect(row.billingExempt, isTrue);
   });
 }

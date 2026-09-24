@@ -299,8 +299,14 @@ class FacilityModel {
   bool get hasActiveWebsiteAdminTrial =>
       websiteAdminTrialEndsAt?.isAfter(DateTime.now()) == true;
 
+  /// Whether the facility has its public website: the $25 Stripe add-on, an
+  /// unexpired superadmin trial, or [billingExempt] (the operator's own
+  /// facility, super-admin only). Same as hasActiveWebsiteSubscription in
+  /// functions-public-website, which decides whether the site is served.
   bool get hasActiveWebsiteSubscription =>
-      hasActiveStripeWebsiteSubscription || hasActiveWebsiteAdminTrial;
+      billingExempt ||
+      hasActiveStripeWebsiteSubscription ||
+      hasActiveWebsiteAdminTrial;
 
   // Convert FacilityModel to Map for Firestore
   Map<String, dynamic> toFirestore() {
