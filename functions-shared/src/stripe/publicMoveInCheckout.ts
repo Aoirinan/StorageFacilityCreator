@@ -27,13 +27,17 @@ export type PublicMoveInCheckoutStatus =
   | 'paid'
   /** This payment completed the move-in. */
   | 'completed'
-  /** The renter's browser completed the move-in with this payment first. */
+  /** The move-in for this payment had already been completed, usually by the renter's browser. */
   | 'alreadyCompleted'
-  /** The move-in cannot be completed with this payment; the owner was told. */
+  /**
+   * The move-in cannot be completed with this payment; the owner was told to
+   * refund it, and it is marked in publicMoveInPayments so it cannot complete
+   * the move-in later.
+   */
   | 'refused'
   /** The move-in form was not saved, so only the renter can finish; the owner was told. */
   | 'awaitingForm'
-  /** Completing kept failing; the owner was told. */
+  /** Completing kept failing for an hour; the owner was told. */
   | 'failed';
 
 export type PaidPublicMoveInCheckout = {

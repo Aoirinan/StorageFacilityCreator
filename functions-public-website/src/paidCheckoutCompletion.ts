@@ -3,9 +3,14 @@ import * as admin from 'firebase-admin';
 import { PUBLIC_MOVE_IN_CHECKOUTS_COLLECTION } from '@sfc/functions-shared';
 import type { PublicMoveInCheckoutStatus } from '@sfc/functions-shared';
 import { SENDGRID_API_KEY, STRIPE_SECRETS } from './secrets';
-import { completeMoveInForReservation } from './publicMoveIn';
+import {
+  completeMoveInForReservation,
+  OTHER_RESERVATION_PAYMENT_MESSAGE,
+  PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+} from './publicMoveIn';
 import { MOVE_IN_FORM_NOT_SAVED_REASON } from './moveInForm';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
+import { timestampToDate } from './checkoutHold';
 import { paidMoveInNotCompletedNotification } from './onlineMoveInReview';
 import type { PaidMoveInProblem } from './onlineMoveInReview';
 
@@ -22,6 +27,11 @@ import type { PaidMoveInProblem } from './onlineMoveInReview';
  * code the browser uses. The browser may be completing the same reservation
  * at the same moment; that code lets one of them do it.
  *
+ * A record is taken up by the trigger when it is written, and by the sweep
+ * (sweepPaidMoveInCheckouts) while it stays unsettled: after a failure that
+ * may pass, or when the trigger never ran for it (a record written before the
+ * trigger was deployed, or a lost run).
+ *
  * A payment that cannot complete the move-in (the unit was rented meanwhile,
  * the reservation ended, the payment does not match) is recorded here and
  * raised to the owner as an alert, since the renter has paid and needs a
@@ -29,11 +39,17 @@ import type { PaidMoveInProblem } from './onlineMoveInReview';
  */
 
 /**
- * How long a failing completion is retried (the function's failure policy)
- * before the owner is told. Refusals are not retried: the same checks would
- * refuse again.
+ * How long, from when the webhook recorded it, a failing completion is
+ * retried before the owner is told. Refusals are not retried: the same checks
+ * would refuse again.
  */
 export const PAID_CHECKOUT_RETRY_MS = 60 * 60 * 1000;
+
+/**
+ * How long a record stays unsettled before the sweep takes it up. Long enough
+ * for the trigger's own run, which the sweep would otherwise duplicate.
+ */
+export const PAID_CHECKOUT_SWEEP_AFTER_MS = 3 * 60 * 1000;
 
 /** Refusals no retry will change. Anything else (Stripe or Firestore unavailable, contention) is retried. */
 const PERMANENT_REFUSAL_CODES = new Set([
@@ -49,6 +65,12 @@ type Settlement = {
   status: Exclude<PublicMoveInCheckoutStatus, 'paid'>;
   fields?: Record<string, unknown>;
   problem?: PaidMoveInProblem;
+  /**
+   * Whether the payment, refused for this reservation, is marked so that it
+   * cannot complete the move-in later. The owner is told to refund it, and
+   * may have by the time the renter comes back.
+   */
+  blockPayment?: boolean;
 };
 
 function checkoutRef(checkoutSessionId: string): admin.firestore.DocumentReference {
@@ -78,7 +100,7 @@ async function paymentAccountProblem(
   return null;
 }
 
-/** What completing the move-in for [record] came to. Throws to have the failure policy retry. */
+/** What completing the move-in for [record] came to. Throws when it should be tried again. */
 async function attemptMoveIn(
   checkoutSessionId: string,
   record: Record<string, any>,
@@ -90,6 +112,7 @@ async function attemptMoveIn(
   try {
     const accountProblem = await paymentAccountProblem(record, reservation);
     if (accountProblem) {
+      // Not this facility's payment to block: it is on another account.
       return { status: 'refused', problem: { kind: 'refused', refusal: accountProblem } };
     }
     const result = await completeMoveInForReservation({
@@ -103,7 +126,7 @@ async function attemptMoveIn(
       return { status: 'completed', fields: { tenantId: result.tenantId, contractId: result.contractId } };
     }
     if (result.paymentIntentId === paymentIntentId) {
-      // The renter's browser completed it with this payment first.
+      // The move-in for this payment was done already, usually by the browser.
       return { status: 'alreadyCompleted', fields: { tenantId: result.tenantId } };
     }
     // The renter paid twice, on two Checkout Sessions: one payment moved them
@@ -111,6 +134,7 @@ async function attemptMoveIn(
     return {
       status: 'refused',
       problem: { kind: 'refused', refusal: 'The reservation was already completed with another payment' },
+      blockPayment: true,
     };
   } catch (err: unknown) {
     if (err instanceof functions.https.HttpsError) {
@@ -118,7 +142,12 @@ async function attemptMoveIn(
         return { status: 'awaitingForm', problem: { kind: 'formNotSaved' } };
       }
       if (PERMANENT_REFUSAL_CODES.has(err.code)) {
-        return { status: 'refused', problem: { kind: 'refused', refusal: err.message } };
+        return {
+          status: 'refused',
+          problem: { kind: 'refused', refusal: err.message },
+          // A payment tagged for another reservation is that reservation's to use.
+          blockPayment: err.message !== OTHER_RESERVATION_PAYMENT_MESSAGE,
+        };
       }
     }
     const message = (err as { message?: string } | null)?.message || String(err);
@@ -136,25 +165,49 @@ async function attemptMoveIn(
 
 /**
  * Records how [checkoutSessionId] settled and, when the renter was not moved
- * in, raises the owner's alert, in one transaction: a run that finds it
- * already settled changes nothing, so a retried or repeated trigger raises
- * one alert.
+ * in, raises the owner's alert and marks a refused payment used, in one
+ * transaction: a run that finds it already settled changes nothing, so a
+ * repeated run raises one alert.
+ *
+ * The reservation is read again here. The renter's browser can complete it
+ * with this payment after the attempt above was refused (the refusal read the
+ * unit or the payment before the browser's move-in landed); that settles as
+ * done, not as a refund. The browser's transaction and this one both read and
+ * write the payment's record in publicMoveInPayments, so one of them sees the
+ * other: either the move-in stands and nothing is marked, or the payment is
+ * marked refused and the browser cannot then use it.
  */
 async function settle(
   checkoutSessionId: string,
   record: Record<string, any>,
   reservation: Record<string, any> | null,
-  settlement: Settlement,
-): Promise<boolean> {
+  attempted: Settlement,
+): Promise<{ settledNow: boolean; settlement: Settlement }> {
   const db = admin.firestore();
   const ref = checkoutRef(checkoutSessionId);
+  const paymentIntentId = String(record.paymentIntentId || '');
   return db.runTransaction(async (tx) => {
     const current = await tx.get(ref);
-    if ((current.data() as Record<string, any> | undefined)?.status !== 'paid') return false;
+    if ((current.data() as Record<string, any> | undefined)?.status !== 'paid') {
+      return { settledNow: false, settlement: attempted };
+    }
+
+    let settlement = attempted;
+    const reservationRef = db.collection('publicReservations').doc(String(record.reservationId || ''));
+    const fresh = (await tx.get(reservationRef)).data() as Record<string, any> | undefined;
+    if (settlement.problem && fresh?.status === 'completed' && fresh.paymentIntentId === paymentIntentId) {
+      settlement = { status: 'alreadyCompleted', fields: { tenantId: fresh.tenantId ?? null } };
+    }
+
+    const paymentUseRef = paymentIntentId
+      ? db.collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntentId)
+      : null;
+    const markPayment =
+      settlement.blockPayment === true && paymentUseRef != null && !(await tx.get(paymentUseRef)).exists;
 
     let notification: { ref: admin.firestore.DocumentReference; data: Record<string, unknown> } | null = null;
+    const facilityId = String(reservation?.facilityId || record.facilityId || '');
     if (settlement.problem) {
-      const facilityId = String(reservation?.facilityId || record.facilityId || '');
       const built = paidMoveInNotCompletedNotification({
         facilityId,
         checkoutSessionId,
@@ -163,7 +216,7 @@ async function settle(
         unitId: reservation?.unitId ? String(reservation.unitId) : null,
         unitNumber: String(reservation?.unitNumber || '').trim() || 'unknown',
         amountCents: Number(record.amountTotalCents) || 0,
-        paymentIntentId: String(record.paymentIntentId || ''),
+        paymentIntentId,
         problem: settlement.problem,
       });
       const notificationRef = db
@@ -177,6 +230,18 @@ async function settle(
     }
 
     if (notification) tx.set(notification.ref, notification.data);
+    if (markPayment && paymentUseRef && settlement.problem?.kind === 'refused') {
+      tx.set(paymentUseRef, {
+        paymentIntentId,
+        facilityId,
+        reservationId: String(record.reservationId || ''),
+        checkoutSessionId,
+        refusal: settlement.problem.refusal,
+        refusedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdBy: 'publicMoveInCheckout',
+      });
+    }
     tx.update(ref, {
       status: settlement.status,
       ...(settlement.fields || {}),
@@ -185,18 +250,18 @@ async function settle(
       settledAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    return true;
+    return { settledNow: true, settlement };
   });
 }
 
 /**
- * Completes the move-in for the paid checkout [checkoutSessionId], recorded
- * at [receivedAt]. Returns how it settled, or null when there is no record.
- * Safe to run any number of times.
+ * Completes the move-in for the paid checkout [checkoutSessionId]. Returns
+ * how it settled, or null when there is no record. Throws when it failed for
+ * a reason that may pass, within PAID_CHECKOUT_RETRY_MS of the record being
+ * written. Safe to run any number of times.
  */
 export async function completePaidCheckout(
   checkoutSessionId: string,
-  receivedAt: Date,
   now: Date = new Date(),
 ): Promise<PublicMoveInCheckoutStatus | null> {
   const snap = await checkoutRef(checkoutSessionId).get();
@@ -208,6 +273,7 @@ export async function completePaidCheckout(
   if (record.status !== 'paid') {
     return record.status as PublicMoveInCheckoutStatus; // Settled by an earlier run.
   }
+  const receivedAt = timestampToDate(record.receivedAt) ?? now;
 
   const reservationSnap = await admin.firestore()
     .collection('publicReservations')
@@ -215,8 +281,8 @@ export async function completePaidCheckout(
     .get();
   const reservation = reservationSnap.exists ? (reservationSnap.data() as Record<string, any>) : null;
 
-  const settlement = await attemptMoveIn(checkoutSessionId, record, reservation, receivedAt, now);
-  const settledNow = await settle(checkoutSessionId, record, reservation, settlement);
+  const attempted = await attemptMoveIn(checkoutSessionId, record, reservation, receivedAt, now);
+  const { settledNow, settlement } = await settle(checkoutSessionId, record, reservation, attempted);
 
   const log = {
     checkoutSessionId,
@@ -241,14 +307,64 @@ export async function completePaidCheckout(
   return settlement.status;
 }
 
+/**
+ * Takes up every paid checkout still unsettled PAID_CHECKOUT_SWEEP_AFTER_MS
+ * after it was recorded. Returns how many it tried.
+ */
+export async function sweepPaidCheckouts(now: Date = new Date()): Promise<number> {
+  const unsettled = await admin.firestore()
+    .collection(PUBLIC_MOVE_IN_CHECKOUTS_COLLECTION)
+    .where('status', '==', 'paid')
+    .limit(100)
+    .get();
+  let tried = 0;
+  for (const doc of unsettled.docs) {
+    const receivedAt = timestampToDate((doc.data() as Record<string, any>).receivedAt);
+    if (receivedAt && now.getTime() - receivedAt.getTime() < PAID_CHECKOUT_SWEEP_AFTER_MS) {
+      continue; // Its trigger run may still be going.
+    }
+    tried += 1;
+    try {
+      await completePaidCheckout(doc.id, now);
+    } catch (err: unknown) {
+      functions.logger.warn('Paid move-in checkout sweep: completion failed; the next sweep retries it', {
+        checkoutSessionId: doc.id,
+        error: (err as { message?: string } | null)?.message || String(err),
+      });
+    }
+  }
+  return tried;
+}
+
 export const completePublicMoveInFromCheckout = functions
   .runWith({
     secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY],
-    // Retried while completing fails for a reason that may pass; see PAID_CHECKOUT_RETRY_MS.
-    failurePolicy: true,
     timeoutSeconds: 120,
   })
   .firestore.document(`${PUBLIC_MOVE_IN_CHECKOUTS_COLLECTION}/{checkoutSessionId}`)
   .onCreate(async (_snap, context) => {
-    await completePaidCheckout(String(context.params.checkoutSessionId), new Date(context.timestamp));
+    const checkoutSessionId = String(context.params.checkoutSessionId);
+    try {
+      await completePaidCheckout(checkoutSessionId);
+    } catch (err: unknown) {
+      // Left unsettled; sweepPaidMoveInCheckouts tries it again.
+      functions.logger.warn('Paid move-in checkout: completion failed; the sweep retries it', {
+        checkoutSessionId,
+        error: (err as { message?: string } | null)?.message || String(err),
+      });
+    }
+  });
+
+export const sweepPaidMoveInCheckouts = functions
+  .runWith({
+    secrets: [...STRIPE_SECRETS, SENDGRID_API_KEY],
+    timeoutSeconds: 540,
+  })
+  .pubsub.schedule('every 10 minutes')
+  .onRun(async () => {
+    const tried = await sweepPaidCheckouts();
+    if (tried > 0) {
+      functions.logger.info('Paid move-in checkout sweep', { tried });
+    }
+    return null;
   });

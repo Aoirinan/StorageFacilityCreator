@@ -48,3 +48,35 @@ bool isMoveInFormNotSaved({required String code, Object? details}) {
       details is Map &&
       details['reason'] == 'moveInFormNotSaved';
 }
+
+/// What the page does when finishing a paid move-in from the saved form fails.
+enum PaidMoveInFailure {
+  /// The server cannot finish it from a saved form: none was saved, or the
+  /// server is older than this page and wants the form in the request. The
+  /// renter fills it in here, as before.
+  fillInForm,
+
+  /// The move-in was refused. The renter has paid, must not pay again, and
+  /// is told to contact the facility.
+  refused,
+
+  /// A failure that may pass (a timeout, the server or Stripe unavailable).
+  /// The server finishes a paid move-in on its own when Stripe reports the
+  /// payment, so the renter is asked to check again, not told it failed.
+  tryAgain,
+}
+
+/// How the page treats a failed attempt to finish a paid move-in, from the
+/// callable's error [code] and [details].
+PaidMoveInFailure paidMoveInFailure({required String code, Object? details}) {
+  if (isMoveInFormNotSaved(code: code, details: details) ||
+      code == 'invalid-argument') {
+    return PaidMoveInFailure.fillInForm;
+  }
+  if (code == 'failed-precondition' ||
+      code == 'permission-denied' ||
+      code == 'not-found') {
+    return PaidMoveInFailure.refused;
+  }
+  return PaidMoveInFailure.tryAgain;
+}

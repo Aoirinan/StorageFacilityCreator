@@ -16,6 +16,15 @@ export class InMemoryFirestore {
   /** A query's `get()` on a collection path listed here rejects with its error. */
   readonly queryErrors = new Map<string, Error>();
 
+  /** The next `get()` of a document path listed here rejects with its error, once. */
+  readonly nextGetErrors = new Map<string, Error>();
+
+  /**
+   * Run, once, before the next transaction starts: something another caller
+   * does between this caller's reads and its transaction.
+   */
+  beforeNextTransaction: (() => Promise<unknown>) | null = null;
+
   /** The last transaction queued; the next one starts when it settles. */
   private transactionTail: Promise<unknown> = Promise.resolve();
 
@@ -82,6 +91,11 @@ export class InMemoryFirestore {
       }
 
       async get(): Promise<DocSnapshot> {
+        const getError = owner.nextGetErrors.get(this.path);
+        if (getError) {
+          owner.nextGetErrors.delete(this.path);
+          throw getError;
+        }
         return new DocSnapshot(this, this.path);
       }
 
@@ -121,18 +135,24 @@ export class InMemoryFirestore {
     }
 
     /**
-     * A collection query. Equality (`==`) filters are applied; other
-     * operators, ordering and limits are ignored.
+     * A collection query. Equality (`==`) and `in` filters are applied;
+     * other operators, ordering and limits are ignored.
      */
     class Query {
       constructor(
         readonly path: string,
-        private readonly equals: Array<[string, unknown]> = [],
+        private readonly filters: Array<[string, (value: unknown) => boolean]> = [],
       ) {}
 
       where(field?: string, op?: string, value?: unknown): Query {
-        if (field === undefined || op !== '==') return this;
-        return new Query(this.path, [...this.equals, [field, value]]);
+        if (field === undefined) return this;
+        if (op === '==') {
+          return new Query(this.path, [...this.filters, [field, (v) => v === value]]);
+        }
+        if (op === 'in' && Array.isArray(value)) {
+          return new Query(this.path, [...this.filters, [field, (v) => value.includes(v)]]);
+        }
+        return this;
       }
 
       limit(): Query {
@@ -156,7 +176,7 @@ export class InMemoryFirestore {
           .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
           .filter((key) => {
             const data = store.get(key) || {};
-            return this.equals.every(([field, value]) => field in data && data[field] === value);
+            return this.filters.every(([field, matches]) => field in data && matches(data[field]));
           })
           .map((key) => new DocSnapshot(new DocRef(key), key));
         return { empty: docs.length === 0, size: docs.length, docs };
@@ -201,6 +221,27 @@ export class InMemoryFirestore {
       }
     }
 
+    /**
+     * Transactions run one at a time. Writes still land as they are made,
+     * so a transaction that throws part way leaves its earlier writes.
+     */
+    function runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
+      const before = owner.beforeNextTransaction;
+      owner.beforeNextTransaction = null;
+      if (before) {
+        return before().then(() => runTransaction(fn));
+      }
+      const tx = {
+        get: async (ref: DocRef) => ref.get(),
+        set: async (ref: DocRef, data: DocData) => ref.set(data),
+        update: async (ref: DocRef, data: DocData) => ref.update(data),
+        delete: async (ref: DocRef) => ref.delete(),
+      };
+      const run = owner.transactionTail.then(() => fn(tx));
+      owner.transactionTail = run.catch(() => undefined);
+      return run;
+    }
+
     return {
       collection(name: string): CollectionRef {
         return new CollectionRef(name);
@@ -214,21 +255,7 @@ export class InMemoryFirestore {
       batch(): WriteBatch {
         return new WriteBatch();
       },
-      /**
-       * Transactions run one at a time. Writes still land as they are made,
-       * so a transaction that throws part way leaves its earlier writes.
-       */
-      runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
-        const tx = {
-          get: async (ref: DocRef) => ref.get(),
-          set: async (ref: DocRef, data: DocData) => ref.set(data),
-          update: async (ref: DocRef, data: DocData) => ref.update(data),
-          delete: async (ref: DocRef) => ref.delete(),
-        };
-        const run = owner.transactionTail.then(() => fn(tx));
-        owner.transactionTail = run.catch(() => undefined);
-        return run;
-      },
+      runTransaction,
       FieldValue,
     };
   }

@@ -91,6 +91,10 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
   /// form so they do not pay again.
   String? _paidMoveInProblem;
 
+  /// A renter back from Stripe whose move-in could not be confirmed yet, for
+  /// a reason that may pass: asked to check again, and not shown the form.
+  bool _paidMoveInPending = false;
+
   double get _effectiveMonthlyRate {
     final reservationRate =
         (_reservation?.metadata?['monthlyRate'] as num?)?.toDouble();
@@ -163,6 +167,8 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     setState(() {
       _isLoading = true;
       _error = null;
+      _paidMoveInProblem = null;
+      _paidMoveInPending = false;
     });
 
     try {
@@ -395,6 +401,17 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       await _finishPaidMoveIn(paymentIntentId);
     } catch (e) {
       if (!mounted) return;
+      // Stripe sends the renter here only after taking the payment, so a
+      // confirmation that failed for a reason that may pass is not a reason
+      // to show the pay button again. A definite answer (not paid, not this
+      // reservation's session) is, as before.
+      final definite = e is FirebaseFunctionsException &&
+          paidMoveInFailure(code: e.code, details: e.details) !=
+              PaidMoveInFailure.tryAgain;
+      if (!definite) {
+        setState(() => _paidMoveInPending = true);
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Payment verification failed: $e'),
@@ -425,23 +442,28 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       setState(() => _moveInCompleted = true);
     } on FirebaseFunctionsException catch (e) {
       if (!mounted) return;
-      if (isMoveInFormNotSaved(code: e.code, details: e.details)) {
-        // Checkout was started before the form was saved with it: the
-        // renter fills it in here and submits, as before.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Payment verified. Fill in the form below and submit to finish your move-in.'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-        return;
+      switch (paidMoveInFailure(code: e.code, details: e.details)) {
+        case PaidMoveInFailure.fillInForm:
+          // No form was saved with the checkout, or the server wants it sent:
+          // the renter fills it in here and submits, as before.
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Payment verified. Fill in the form below and submit to finish your move-in.'),
+              backgroundColor: AppTheme.success,
+            ),
+          );
+        case PaidMoveInFailure.refused:
+          setState(() => _paidMoveInProblem =
+              (e.message ?? '').trim().isNotEmpty ? e.message!.trim() : e.code);
+        case PaidMoveInFailure.tryAgain:
+          setState(() => _paidMoveInPending = true);
       }
-      setState(() => _paidMoveInProblem =
-          (e.message ?? '').trim().isNotEmpty ? e.message!.trim() : e.code);
     } catch (e) {
+      // A timeout, or no connection: the server finishes a paid move-in on
+      // its own, so the renter checks again rather than being told it failed.
       if (!mounted) return;
-      setState(() => _paidMoveInProblem = e.toString());
+      setState(() => _paidMoveInPending = true);
     }
   }
 
@@ -499,7 +521,12 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
         throw Exception('Checkout URL not returned.');
       }
       final uri = Uri.parse(checkoutUrl);
-      final launched = await launchUrl(uri);
+      // In this tab. Opened in a new one (launchUrl's default on the web),
+      // Stripe sent the renter back to a fresh page in that tab, while this
+      // one kept the form and a live pay button; opened after the await
+      // above, a new tab can also be popup-blocked. Nothing is lost by
+      // leaving this page: the form was saved with the checkout.
+      final launched = await launchUrl(uri, webOnlyWindowName: '_self');
       if (!launched) {
         throw Exception('Unable to open Stripe Checkout.');
       }
@@ -752,6 +779,8 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                   ? _buildCompletedView()
               : _paidMoveInProblem != null
                   ? _buildPaidMoveInProblemView()
+              : _paidMoveInPending
+                  ? _buildPaidMoveInPendingView()
               : _reservation == null || _unit == null || _facility == null
                   ? const Center(child: Text('Invalid reservation'))
                   : Center(
@@ -1269,11 +1298,32 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     );
   }
 
+  /// Shown instead of the form when a renter back from Stripe could not be
+  /// confirmed moved in yet, for a reason that may pass. The server finishes
+  /// a paid move-in on its own when Stripe reports the payment, so they are
+  /// asked to check again, and never shown the pay button.
+  Widget _buildPaidMoveInPendingView() {
+    return _buildOutcomeView(
+      icon: Icons.hourglass_top,
+      color: const Color(0xFF0F7669),
+      title: 'Finishing your move-in',
+      lines: const [
+        'Your payment is being confirmed. Please do not pay again.',
+        'Online move-ins are usually completed within a few minutes of payment. '
+            'Check again shortly, or contact the facility if this does not change.',
+      ],
+      actionLabel: 'Check again',
+      onAction: _loadReservation,
+    );
+  }
+
   Widget _buildOutcomeView({
     required IconData icon,
     required Color color,
     required String title,
     required List<String> lines,
+    String actionLabel = 'Return Home',
+    VoidCallback? onAction,
   }) {
     return Center(
       child: ConstrainedBox(
@@ -1305,7 +1355,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
               ],
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () => context.go('/'),
+                onPressed: onAction ?? () => context.go('/'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0F7669),
                   foregroundColor: Colors.white,
@@ -1313,7 +1363,7 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
-                child: const Text('Return Home'),
+                child: Text(actionLabel),
               ),
             ],
           ),

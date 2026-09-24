@@ -58,7 +58,7 @@ void main() {
       );
     });
 
-    test('does not mistake other refusals for it', () {
+    test('does not mistake other refusals for it (isMoveInFormNotSaved)', () {
       expect(isMoveInFormNotSaved(code: 'failed-precondition'), isFalse);
       expect(
         isMoveInFormNotSaved(code: 'failed-precondition', details: {'reason': 'other'}),
@@ -68,6 +68,31 @@ void main() {
         isMoveInFormNotSaved(code: 'internal', details: {'reason': 'moveInFormNotSaved'}),
         isFalse,
       );
+    });
+  });
+
+  group('paidMoveInFailure', () {
+    test('no saved form, or a server that wants the form sent, shows the form', () {
+      expect(
+        paidMoveInFailure(
+            code: 'failed-precondition', details: {'reason': 'moveInFormNotSaved'}),
+        PaidMoveInFailure.fillInForm,
+      );
+      // An older completePublicMoveIn ignores useSavedForm and asks for the fields.
+      expect(paidMoveInFailure(code: 'invalid-argument'), PaidMoveInFailure.fillInForm);
+    });
+
+    test('a refusal is final: the renter is told to contact the facility', () {
+      for (final code in ['failed-precondition', 'permission-denied', 'not-found']) {
+        expect(paidMoveInFailure(code: code), PaidMoveInFailure.refused, reason: code);
+      }
+    });
+
+    test('a failure that may pass asks the renter to check again, never to pay again', () {
+      // The server finishes a paid move-in itself when Stripe reports it.
+      for (final code in ['internal', 'unavailable', 'deadline-exceeded', 'resource-exhausted', 'unknown']) {
+        expect(paidMoveInFailure(code: code), PaidMoveInFailure.tryAgain, reason: code);
+      }
     });
   });
 }

@@ -701,6 +701,26 @@ export const createPublicMoveInCheckout = functions
     });
   }
 
+  // Completion refuses a tenant-portal move-in under an email that is not the
+  // portal tenant's, when it writes the move-in, which is after payment. The
+  // form is here now, so the same test runs before it.
+  const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
+  const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
+  if (String(reservationMetadata.source || '').trim() === 'tenant_portal_additional_unit' && portalSourceTenantId) {
+    const sourceTenantSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('tenants')
+      .doc(portalSourceTenantId)
+      .get();
+    if (
+      sourceTenantSnap.exists &&
+      !portalTenantMayLink(sourceTenantSnap.data() as Record<string, any>, moveInForm.email)
+    ) {
+      throw new functions.https.HttpsError('permission-denied', 'Portal-linked move-in validation failed');
+    }
+  }
+
   const moveInDate =
     (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
   const chargeQuote = await loadPublicMoveInChargeQuote({
@@ -1090,10 +1110,33 @@ async function mergeTemplateWithCertificatePdf(
  * by the PaymentIntent id. Top level rather than under the facility, so a
  * connected account shared by two facilities cannot spend one payment at each.
  */
-const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
+export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 
 const PAYMENT_ALREADY_USED_MESSAGE =
   'This payment has already been used to complete a move-in. Contact the facility.';
+
+/**
+ * A payment the paid-checkout trigger could not use for its move-in, and told
+ * the owner to refund, is recorded in PUBLIC_MOVE_IN_PAYMENTS_COLLECTION with
+ * `refusedAt`, so it cannot complete a move-in afterwards: by then the owner
+ * may have refunded it.
+ */
+export const PAYMENT_REFUSED_MESSAGE =
+  'This payment could not be used for this move-in, and the facility has been asked to refund it. Contact the facility.';
+
+export const OTHER_RESERVATION_PAYMENT_MESSAGE =
+  'This payment was made for a different reservation. Contact the facility.';
+
+/**
+ * Whether a tenant-portal renter may take another unit linked to their portal
+ * account: the portal tenant still has the portal, and the move-in is under
+ * the same email. Checked at checkout, before payment, and again when the
+ * move-in is written.
+ */
+function portalTenantMayLink(sourceTenantData: Record<string, any>, email: string): boolean {
+  const sourceEmailLower = (sourceTenantData.emailLower || '').toString().trim().toLowerCase();
+  return sourceTenantData.portalEnabled === true && sourceEmailLower === email;
+}
 
 /** Who is completing an online move-in. */
 export type MoveInCaller =
@@ -1170,13 +1213,11 @@ export async function completeMoveInForReservation(params: MoveInCompletionReque
     // paid-checkout trigger would otherwise tell the owner to refund a renter
     // who was moved in, and the renter would be shown an error.
     if (!(err instanceof functions.https.HttpsError)) throw err;
-    let current: Record<string, any> | undefined;
-    try {
-      const snap = await admin.firestore().collection('publicReservations').doc(params.reservationId).get();
-      current = snap.exists ? (snap.data() as Record<string, any>) : undefined;
-    } catch {
-      throw err;
-    }
+    // A failed read throws its own error, not the refusal: the refusal may be
+    // of a move-in that was done, and read as one it would tell the owner to
+    // refund a tenant. The read error is retried like any other failure.
+    const snap = await admin.firestore().collection('publicReservations').doc(params.reservationId).get();
+    const current = snap.exists ? (snap.data() as Record<string, any>) : undefined;
     if (current?.status !== 'completed') throw err;
     assertCallerMayComplete(params.caller, current);
     return alreadyCompleted(params.reservationId, current);
@@ -1430,7 +1471,7 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
       ) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'This payment was made for a different reservation. Contact the facility.',
+          OTHER_RESERVATION_PAYMENT_MESSAGE,
         );
       }
       // A lapsed hold is honoured only for a payment that names this
@@ -1445,7 +1486,7 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
       if (caller.kind === 'paidCheckout' && paidReservationId !== String(reservationId)) {
         throw new functions.https.HttpsError(
           'failed-precondition',
-          'This payment was made for a different reservation. Contact the facility.',
+          OTHER_RESERVATION_PAYMENT_MESSAGE,
         );
       }
 
@@ -1611,13 +1652,18 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
     if (paymentUseRef) {
       const paymentUseSnap = await tx.get(paymentUseRef);
       if (paymentUseSnap.exists) {
+        const paymentUse = (paymentUseSnap.data() || {}) as Record<string, any>;
         functions.logger.warn('Public move-in: payment already used', {
           facilityId,
           reservationId,
           paymentIntentId: verifiedPaymentIntentId,
-          usedByReservationId: (paymentUseSnap.data() as Record<string, any> | undefined)?.reservationId,
+          usedByReservationId: paymentUse.reservationId,
+          refused: paymentUse.refusedAt != null,
         });
-        throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          paymentUse.refusedAt != null ? PAYMENT_REFUSED_MESSAGE : PAYMENT_ALREADY_USED_MESSAGE,
+        );
       }
     }
 
@@ -1641,9 +1687,7 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
       const sourceTenantSnap = await tx.get(sourceTenantRef);
       if (sourceTenantSnap.exists) {
         const sourceTenantData = sourceTenantSnap.data() as Record<string, any>;
-        const sourceEmailLower = (sourceTenantData.emailLower || '').toString().trim().toLowerCase();
-        const sourcePortalEnabled = sourceTenantData.portalEnabled === true;
-        if (!sourcePortalEnabled || sourceEmailLower !== normalizedEmail) {
+        if (!portalTenantMayLink(sourceTenantData, normalizedEmail)) {
           throw new functions.https.HttpsError(
             'permission-denied',
             'Portal-linked move-in validation failed',
@@ -1883,6 +1927,42 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
       });
     }
 
+    // The tenant's gate code, and the unit's checkout hold cleared, with the
+    // tenant too. Done after the transaction, a run that stopped after it
+    // (a timeout, an instance lost) left them undone, and nothing redid them:
+    // the next run finds the reservation completed.
+    const gateAccessCode = generateAccessCode();
+    tx.set(
+      admin.firestore().collection('facilities').doc(facilityId).collection('gateAccess').doc(),
+      {
+        facilityId,
+        tenantId: tenantRef.id,
+        tenantName: name,
+        accessCode: gateAccessCode,
+        isActive: true,
+        validFrom: null,
+        validUntil: null,
+        allowedDays: [],
+        allowedStartTime: null,
+        allowedEndTime: null,
+        notes: 'Auto-generated from public move-in',
+        createdAt: nowTs,
+        updatedAt: nowTs,
+        createdBy: 'publicMoveIn',
+      },
+    );
+    if (unitId) {
+      tx.delete(
+        admin.firestore()
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('mapEngine')
+          .doc('activeHolds')
+          .collection('items')
+          .doc(unitId),
+      );
+    }
+
     // Update reservation status
     tx.update(reservationRef, {
       status: 'completed',
@@ -1903,10 +1983,11 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
     return {
       tenantId: tenantRef.id,
       contractId: contractRef.id,
+      gateAccessCode,
     };
   });
 
-  const { tenantId, contractId } = transactionResult;
+  const { tenantId, contractId, gateAccessCode } = transactionResult;
 
   // Reached only when paid (unpaid ones were refused above).
   if (unitNotOfferedReason && unitId) {
@@ -1988,52 +2069,6 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
     } catch (apErr: any) {
       functions.logger.warn('Public move-in: autopay notification failed', { message: apErr?.message });
     }
-  }
-
-  // Best-effort cleanup of active checkout hold.
-  if (unitId) {
-    const holdRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('mapEngine')
-      .doc('activeHolds')
-      .collection('items')
-      .doc(unitId);
-    try {
-      await holdRef.delete();
-    } catch (e) {
-      functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
-    }
-  }
-
-  // Create gate access code
-  let gateAccessCode: string | null = null;
-  try {
-    gateAccessCode = generateAccessCode();
-    const gateRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('gateAccess')
-      .doc();
-
-    await gateRef.set({
-      facilityId,
-      tenantId,
-      tenantName: name,
-      accessCode: gateAccessCode,
-      isActive: true,
-      validFrom: null,
-      validUntil: null,
-      allowedDays: [],
-      allowedStartTime: null,
-      allowedEndTime: null,
-      notes: 'Auto-generated from public move-in',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdBy: 'publicMoveIn',
-    });
-  } catch (gateError: any) {
-    functions.logger.error('Failed to create gate access', { error: gateError?.message });
   }
 
   functions.logger.info('Public move-in completed', {

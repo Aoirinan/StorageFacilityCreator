@@ -17,6 +17,7 @@ import firebaseFunctionsTest from 'firebase-functions-test';
 import { paidPublicMoveInCheckoutFromSession } from '@sfc/functions-shared';
 import { computePublicMoveInCharges } from '../moveInCharges';
 import { PAID_CHECKOUT_RETRY_MS } from '../paidCheckoutCompletion';
+import { PAYMENT_REFUSED_MESSAGE } from '../publicMoveIn';
 import { SAVED_MOVE_IN_FORM_DAYS } from '../moveInForm';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
 import { MOVE_IN_FORM } from './support/moveInForm';
@@ -80,6 +81,8 @@ type Harness = {
   cancel: (rental?: Rental) => Promise<unknown>;
   /** The trigger's run for a recorded checkout, [minutesLater] after the webhook recorded it. */
   webhook: (sessionId: string, minutesLater?: number) => Promise<string | null>;
+  /** The scheduled sweep, [minutesLater] from now. Returns how many records it tried. */
+  sweep: (minutesLater?: number) => Promise<number>;
 };
 
 function load(inMemory: InMemoryFirestore): Harness {
@@ -161,10 +164,9 @@ function load(inMemory: InMemoryFirestore): Harness {
       { reservationId: rental.reservationId, moveInToken: rental.token, status: 'cancelled' },
       callableContext,
     );
-  harness.webhook = (sessionId, minutesLater = 0) => {
-    const receivedAt = new Date();
-    return paid.completePaidCheckout(sessionId, receivedAt, new Date(receivedAt.getTime() + minutesLater * MINUTE));
-  };
+  harness.webhook = (sessionId, minutesLater = 0) =>
+    paid.completePaidCheckout(sessionId, new Date(Date.now() + minutesLater * MINUTE));
+  harness.sweep = (minutesLater = 0) => paid.sweepPaidCheckouts(new Date(Date.now() + minutesLater * MINUTE));
   return harness;
 }
 
@@ -377,6 +379,13 @@ test('a renter who pays and never comes back is moved in from the webhook, once'
   assert.equal(paymentEntries(h, 'pi_1').length, 1);
   // The government ID and signature are not kept a second time.
   assert.equal(h.inMemory.read(formPath(RENTAL)), undefined);
+  // A gate code for the tenant, and the unit's checkout hold cleared.
+  const gateCodes = h.inMemory
+    .listCollection(`facilities/${FACILITY}/gateAccess`)
+    .map((path) => h.inMemory.read(path) as Record<string, any>);
+  assert.equal(gateCodes.length, 1);
+  assert.equal(gateCodes[0].tenantId, unit?.tenantId);
+  assert.equal(h.inMemory.read(`facilities/${FACILITY}/mapEngine/activeHolds/items/${RENTAL.unitId}`), undefined);
   const record = h.inMemory.read(checkoutPath('cs_1'));
   assert.equal(record?.status, 'completed');
   assert.equal(record?.tenantId, unit?.tenantId);
@@ -710,7 +719,7 @@ test('a failure that may pass is retried, and after an hour the owner is told', 
   recordPaidCheckout(h, 'cs_1', 'pi_1');
   h.stripeDown = true;
 
-  // Thrown, so the function's failure policy runs it again.
+  // Thrown and left unsettled, so the sweep runs it again.
   await assert.rejects(() => h.webhook('cs_1', 5));
   assert.equal(h.inMemory.read(checkoutPath('cs_1'))?.status, 'paid');
   assert.deepEqual(alerts(h), []);
@@ -733,6 +742,147 @@ test('a retried run completes the move-in once Stripe answers again', async () =
 
   assert.equal(tenants(h).length, 1);
   assert.deepEqual(alerts(h), []);
+});
+
+// Stranded records, refused payments, re-reads
+
+test('the sweep completes a paid checkout its trigger never ran for, and leaves a fresh one to its trigger', async () => {
+  const h = setUp([RENTAL, OTHER_RENTAL]);
+  await h.checkout();
+  await h.checkout(OTHER_RENTAL);
+  pay(h, 'pi_1');
+  pay(h, 'pi_2', OTHER_RENTAL);
+  // Recorded before the trigger was deployed: nothing ran for it.
+  recordPaidCheckout(h, 'cs_old', 'pi_1');
+  h.inMemory.seed(checkoutPath('cs_old'), {
+    ...h.inMemory.read(checkoutPath('cs_old')),
+    receivedAt: Timestamp.fromDate(new Date(Date.now() - 10 * MINUTE)),
+  });
+  // Just recorded: its trigger run is under way.
+  recordPaidCheckout(h, 'cs_new', 'pi_2', OTHER_RENTAL);
+
+  assert.equal(await h.sweep(), 1);
+
+  assert.equal(h.inMemory.read(checkoutPath('cs_old'))?.status, 'completed');
+  assert.equal(h.inMemory.read(checkoutPath('cs_new'))?.status, 'paid');
+  assert.equal(tenants(h).length, 1);
+  assert.equal(h.inMemory.read(reservationPath(RENTAL))?.status, 'completed');
+});
+
+test('a payment the owner was told to refund cannot complete the move-in afterwards', async () => {
+  const h = setUp();
+  await h.checkout();
+  pay(h, 'pi_1');
+  recordPaidCheckout(h, 'cs_1', 'pi_1');
+  const unit = h.inMemory.read(unitPath(RENTAL)) as Record<string, unknown>;
+  h.inMemory.seed(unitPath(RENTAL), { ...unit, status: 'maintenance' });
+  assert.equal(await h.webhook('cs_1'), 'refused');
+  assertOwnerAlerted(h, 'cs_1', 'pi_1', 'refused');
+
+  // The unit is back in service, and the renter comes back from Stripe; by
+  // now the owner may have refunded the payment.
+  h.inMemory.seed(unitPath(RENTAL), unit);
+  await assert.rejects(
+    () => h.complete({ useSavedForm: true, paymentIntentId: 'pi_1' }),
+    (err: unknown) => {
+      const e = err as { code?: string; message?: string };
+      assert.equal(e.code, 'failed-precondition');
+      assert.equal(e.message, PAYMENT_REFUSED_MESSAGE);
+      return true;
+    },
+  );
+
+  assertNotMovedIn(h);
+  assert.equal(h.inMemory.read('publicMoveInPayments/pi_1')?.refusal, 'Unit is no longer available');
+});
+
+test('a move-in the browser finishes after the webhook was refused is settled as done, not refunded', async () => {
+  const h = setUp();
+  await h.checkout();
+  pay(h, 'pi_1');
+  recordPaidCheckout(h, 'cs_1', 'pi_1');
+  // The hold ran out while the renter paid, and another renter held the unit
+  // just long enough to refuse the webhook's attempt.
+  h.inMemory.seed(reservationPath(RENTAL), {
+    ...h.inMemory.read(reservationPath(RENTAL)),
+    expiresAt: Timestamp.fromDate(new Date(Date.now() - 5 * MINUTE)),
+  });
+  const holdPath = `facilities/${FACILITY}/mapEngine/activeHolds/items/${RENTAL.unitId}`;
+  h.inMemory.seed(holdPath, {
+    facilityId: FACILITY,
+    unitId: RENTAL.unitId,
+    reservationId: 'res-someone-else',
+    status: 'pending',
+    expiresAt: Timestamp.fromDate(new Date(Date.now() + 5 * MINUTE)),
+  });
+  // After the refusal and before it is recorded, the other hold goes and the
+  // browser moves the renter in with this payment.
+  const other: { browser?: Record<string, any> } = {};
+  h.inMemory.beforeNextTransaction = async () => {
+    h.inMemory.getStore().delete(holdPath);
+    other.browser = await h.complete({ useSavedForm: true, paymentIntentId: 'pi_1' });
+  };
+
+  const status = await h.webhook('cs_1');
+
+  assert.equal(other.browser?.success, true);
+  assert.equal(status, 'alreadyCompleted');
+  assert.equal(tenants(h).length, 1);
+  assert.deepEqual(alerts(h), [], 'the owner is not told to refund a renter who was moved in');
+  assert.equal(h.inMemory.read('publicMoveInPayments/pi_1')?.refusedAt, undefined);
+});
+
+test('a failed read while checking whether the move-in was done is retried, not taken as a refusal', async () => {
+  const h = setUp();
+  await h.checkout();
+  pay(h, 'pi_1');
+  recordPaidCheckout(h, 'cs_1', 'pi_1');
+  // The browser moves the renter in while the webhook is checking the
+  // payment; the webhook's read of the reservation afterwards fails.
+  h.duringNextRetrieve = async () => {
+    await h.complete({ useSavedForm: true, paymentIntentId: 'pi_1' });
+    h.inMemory.nextGetErrors.set(reservationPath(RENTAL), Object.assign(new Error('unavailable'), { code: 14 }));
+  };
+
+  await assert.rejects(() => h.webhook('cs_1'), /unavailable/);
+  assert.equal(h.inMemory.read(checkoutPath('cs_1'))?.status, 'paid');
+  assert.deepEqual(alerts(h), [], 'no refund alert for a renter who was moved in');
+
+  assert.equal(await h.sweep(5), 1);
+  assert.equal(h.inMemory.read(checkoutPath('cs_1'))?.status, 'alreadyCompleted');
+  assert.equal(tenants(h).length, 1);
+  assert.deepEqual(alerts(h), []);
+});
+
+test('a tenant-portal move-in under another email is refused at checkout, before Stripe', async () => {
+  const h = setUp();
+  h.inMemory.seed(reservationPath(RENTAL), {
+    ...h.inMemory.read(reservationPath(RENTAL)),
+    metadata: { source: 'tenant_portal_additional_unit', portalTenantId: 'tenant-portal' },
+  });
+  const portalTenant = {
+    facilityId: FACILITY,
+    name: 'Rita Renter',
+    emailLower: 'rita.portal@example.com',
+    portalEnabled: true,
+    isActive: true,
+  };
+  h.inMemory.seed(`facilities/${FACILITY}/tenants/tenant-portal`, portalTenant);
+
+  await assert.rejects(
+    () => h.checkout(),
+    (err: unknown) => {
+      assert.equal((err as { code?: string }).code, 'permission-denied');
+      return true;
+    },
+  );
+  assert.deepEqual(h.stripeCalls, []);
+  assert.equal(h.inMemory.read(formPath(RENTAL)), undefined);
+
+  // Under the portal tenant's own email it goes ahead.
+  h.inMemory.seed(`facilities/${FACILITY}/tenants/tenant-portal`, { ...portalTenant, emailLower: MOVE_IN_FORM.email });
+  await h.checkout();
+  assert.deepEqual(h.stripeCalls, ['checkout.sessions.create']);
 });
 
 // The page reopened after a completed move-in

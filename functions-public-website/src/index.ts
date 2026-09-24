@@ -38,7 +38,7 @@ export {
   confirmPublicMoveInCheckout,
   completePublicMoveIn,
 } from './publicMoveIn';
-export { completePublicMoveInFromCheckout } from './paidCheckoutCompletion';
+export { completePublicMoveInFromCheckout, sweepPaidMoveInCheckouts } from './paidCheckoutCompletion';
 export {
   createPublicPaymentLink,
   getPublicPaymentLink,
