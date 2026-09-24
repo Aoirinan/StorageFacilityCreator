@@ -77,7 +77,12 @@ class FakeStaysRepository implements StaysRepository {
     if (error != null) throw error;
     writes.add(FakeStaysWrite(op, collection, id, data));
     final col = _col(facilityId, collection);
-    final resolved = {for (final e in data.entries) e.key: e.value is _ServerTime ? _now() : e.value};
+    Object? resolve(Object? v) => v is _ServerTime
+        ? _now()
+        : v is Map<String, dynamic>
+            ? {for (final e in v.entries) e.key: resolve(e.value)}
+            : v;
+    final resolved = {for (final e in data.entries) e.key: resolve(e.value)};
     switch (op) {
       case 'delete':
         col.remove(id);
@@ -381,6 +386,7 @@ class FakeStaysRepository implements StaysRepository {
     _write('set', facilityId, StaysCollections.guestProfiles, id, {
       'facilityId': facilityId,
       ..._profile(draft),
+      'consent': draft.hasConsent ? _consent(draft) : null,
       'stayCount': 0,
       'lastStayAt': null,
       'createdBy': uid,
@@ -390,9 +396,25 @@ class FakeStaysRepository implements StaysRepository {
     return id;
   }
 
+  /// Consent as the real repository writes it: stamped with the server time and the user.
+  Map<String, dynamic> _consent(StayGuestProfileDraft draft) => {
+        'email': draft.consentEmail,
+        'sms': draft.consentSms,
+        'method': draft.consentMethod!.wire,
+        'recordedAt': _serverTime,
+        'recordedBy': uid,
+      };
+
   @override
-  Future<void> updateGuestProfile(String facilityId, String profileId, StayGuestProfileDraft draft) async =>
-      _write('update', facilityId, StaysCollections.guestProfiles, profileId, {..._profile(draft), ..._stamp()});
+  Future<void> updateGuestProfile(String facilityId, String profileId, StayGuestProfileDraft draft) async {
+    final stored = read(facilityId, StaysCollections.guestProfiles, profileId);
+    final storedConsent = stored == null ? null : StayGuestProfile.fromMap(profileId, stored).consent;
+    _write('update', facilityId, StaysCollections.guestProfiles, profileId, {
+      ..._profile(draft),
+      if (draft.changesConsent(storedConsent)) 'consent': _consent(draft),
+      ..._stamp(),
+    });
+  }
 
   @override
   Future<void> deleteGuestProfile(String facilityId, String profileId) async =>

@@ -9,6 +9,7 @@ import 'package:sfcapp/models/stays/stay_channel.dart';
 import 'package:sfcapp/models/stays/stay_controls.dart';
 import 'package:sfcapp/models/stays/stay_enums.dart';
 import 'package:sfcapp/models/stays/stay_folio.dart';
+import 'package:sfcapp/models/stays/stay_guest_profile.dart';
 import 'package:sfcapp/models/stays/stay_income_entry.dart';
 import 'package:sfcapp/models/stays/stay_listing.dart';
 import 'package:sfcapp/models/stays/stay_night_lock_bucket.dart';
@@ -16,6 +17,10 @@ import 'package:sfcapp/models/stays/stay_private.dart';
 import 'package:sfcapp/models/stays/stay_task.dart';
 import 'package:sfcapp/models/stays/stays_callable_models.dart';
 import 'package:sfcapp/services/stays/stays_callables.dart';
+import 'package:sfcapp/services/stays/stays_collections.dart';
+import 'package:sfcapp/services/stays/stays_repository.dart';
+
+import 'support/fake_stays_repository.dart';
 
 void main() {
   group('stay controls', () {
@@ -336,6 +341,47 @@ void main() {
       expect(soft.softBlockDates, ['2026-10-04']);
       expect(staysExceptionFrom(Exception('offline')).reason, StaysErrorReason.unknown);
       expect(staysExceptionFrom(FirebaseFunctionsException(code: 'internal', message: 'x')).reason, StaysErrorReason.unknown);
+    });
+  });
+  group('guest consent', () {
+    const draft = StayGuestProfileDraft(name: 'Rick Rover', consentEmail: true, consentSms: false, consentMethod: ConsentMethod.verbal);
+    final recorded = StayGuestConsent(
+      email: true,
+      sms: false,
+      method: ConsentMethod.verbal,
+      recordedAt: DateTime.utc(2026, 9, 1),
+      recordedBy: 'uid-owner',
+    );
+
+    test('only a change to the answers records new consent', () {
+      expect(draft.changesConsent(null), isTrue);
+      expect(draft.changesConsent(recorded), isFalse);
+      const smsToo = StayGuestProfileDraft(name: 'Rick Rover', consentEmail: true, consentSms: true, consentMethod: ConsentMethod.verbal);
+      expect(smsToo.changesConsent(recorded), isTrue);
+      const written = StayGuestProfileDraft(name: 'Rick Rover', consentEmail: true, consentSms: false, consentMethod: ConsentMethod.written);
+      expect(written.changesConsent(recorded), isTrue);
+      expect(const StayGuestProfileDraft(name: 'Rick Rover').changesConsent(null), isFalse);
+    });
+
+    test('re-saving a profile keeps when and by whom consent was captured', () async {
+      final repo = FakeStaysRepository(uid: 'uid-manager', now: () => DateTime.utc(2026, 10, 1));
+      final id = await repo.createGuestProfile('f1', draft);
+      expect(repo.writes.last.data['consent'], isA<Map<String, dynamic>>());
+
+      await repo.updateGuestProfile(
+        'f1',
+        id,
+        const StayGuestProfileDraft(name: 'Rick R. Rover', consentEmail: true, consentSms: false, consentMethod: ConsentMethod.verbal),
+      );
+      expect(repo.writes.last.data.containsKey('consent'), isFalse);
+      expect(repo.read('f1', StaysCollections.guestProfiles, id)!['name'], 'Rick R. Rover');
+
+      await repo.updateGuestProfile(
+        'f1',
+        id,
+        const StayGuestProfileDraft(name: 'Rick R. Rover', consentEmail: true, consentSms: true, consentMethod: ConsentMethod.verbal),
+      );
+      expect((repo.writes.last.data['consent'] as Map)['sms'], isTrue);
     });
   });
 }

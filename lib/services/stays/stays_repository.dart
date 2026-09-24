@@ -96,6 +96,14 @@ class StayGuestProfileDraft {
   final ConsentMethod? consentMethod;
 
   bool get hasConsent => consentEmail != null && consentSms != null && consentMethod != null;
+
+  /// Whether saving this draft over a profile whose consent is [stored]
+  /// records new consent. Only a change to what was agreed does: re-saving
+  /// the same answers keeps the original recordedAt and recordedBy, which
+  /// say when and by whom consent was captured.
+  bool changesConsent(StayGuestConsent? stored) =>
+      hasConsent &&
+      !(stored != null && stored.email == consentEmail && stored.sms == consentSms && stored.method == consentMethod);
 }
 
 /// A copy-first message template to save (owner/manager). No auto-send in v1.
@@ -565,12 +573,18 @@ class FirestoreStaysRepository implements StaysRepository {
   }
 
   @override
-  Future<void> updateGuestProfile(String facilityId, String profileId, StayGuestProfileDraft draft) =>
-      _col(facilityId, StaysCollections.guestProfiles).doc(profileId).update({
-        ..._profileFields(draft),
-        if (draft.hasConsent) 'consent': _consent(draft),
-        ..._stamp(),
-      });
+  Future<void> updateGuestProfile(String facilityId, String profileId, StayGuestProfileDraft draft) {
+    final ref = _col(facilityId, StaysCollections.guestProfiles).doc(profileId);
+    final changes = {..._profileFields(draft), ..._stamp()};
+    if (!draft.hasConsent) return ref.update(changes);
+    // Consent is re-stamped only when the answers change (see changesConsent),
+    // read and written in one transaction.
+    return ref.firestore.runTransaction((tx) async {
+      final snap = await tx.get(ref);
+      final stored = snap.exists ? StayGuestProfile.fromFirestore(snap).consent : null;
+      tx.update(ref, {...changes, if (draft.changesConsent(stored)) 'consent': _consent(draft)});
+    });
+  }
 
   @override
   Future<void> deleteGuestProfile(String facilityId, String profileId) =>
