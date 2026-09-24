@@ -848,3 +848,57 @@ test('the facility creation wizard can still set an email limit on a fresh facil
     sneaky.set({ emailMonthlyLimit: 500, emailMonthlyCount: 0 }, { merge: true }),
   );
 });
+
+test('an invitee can list the pending invites addressed to their own verified email, and nothing else', async () => {
+  // PermissionService.fulfillPendingInvitesForUser and the account service's
+  // pending-invite check query collectionGroup('invites') by emailLower. With
+  // only the facility-scoped rule (owner/manager list) that was refused, so a
+  // fresh invited signup got no role and was taken for a new owner.
+  const OTHER_FACILITY_ID = 'fac-test-2';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const invite = (facilityId, id, emailLower) =>
+      db.collection('facilities').doc(facilityId).collection('invites').doc(id).set({
+        facilityId,
+        email: emailLower,
+        emailLower,
+        roleType: 'employee',
+        status: 'pending',
+        invitedBy: OWNER_UID,
+      });
+    await db.collection('facilities').doc(OTHER_FACILITY_ID).set({ ownerUid: OUTSIDER_UID });
+    await invite(FACILITY_ID, 'inv-mine-1', 'invitee@example.com');
+    await invite(OTHER_FACILITY_ID, 'inv-mine-2', 'invitee@example.com');
+    await invite(FACILITY_ID, 'inv-theirs', 'someone@example.com');
+  });
+
+  const pendingFor = (db, emailLower) =>
+    db.collectionGroup('invites').where('emailLower', '==', emailLower).where('status', '==', 'pending');
+
+  // The signed-in address is mixed case; the rule and the app lower-case it.
+  const invitee = testEnv
+    .authenticatedContext('invitee-user', { email: 'Invitee@Example.com', email_verified: true })
+    .firestore();
+  const mine = await assertSucceeds(pendingFor(invitee, 'invitee@example.com').get());
+  assert.deepEqual(mine.docs.map((d) => d.id).sort(), ['inv-mine-1', 'inv-mine-2']);
+  await assertSucceeds(pendingFor(invitee, 'invitee@example.com').limit(1).get());
+
+  // Someone else's invites, or every invite, stay hidden.
+  await assertFails(pendingFor(invitee, 'someone@example.com').get());
+  await assertFails(invitee.collectionGroup('invites').get());
+
+  // Signed out, or an address the user has not verified (anyone can sign up
+  // with any address), lists nothing.
+  await assertFails(pendingFor(testEnv.unauthenticatedContext().firestore(), 'invitee@example.com').get());
+  const unverified = testEnv
+    .authenticatedContext('squatter-user', { email: 'invitee@example.com', email_verified: false })
+    .firestore();
+  await assertFails(pendingFor(unverified, 'invitee@example.com').get());
+
+  // The facility rule is unchanged: its owner lists its invites, its staff do not.
+  const facilityInvites = (db) => db.collection('facilities').doc(FACILITY_ID).collection('invites').get();
+  const ownerList = await assertSucceeds(facilityInvites(testEnv.authenticatedContext(OWNER_UID).firestore()));
+  assert.equal(ownerList.size, 2);
+  await assertFails(facilityInvites(testEnv.authenticatedContext(STAFF_UID).firestore()));
+});

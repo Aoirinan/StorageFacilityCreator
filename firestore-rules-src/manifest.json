@@ -76,6 +76,7 @@
     "21-bug_reports.rules",
     "23-customDomainClaims.rules",
     "24-platformEmailLogs.rules",
+    "25-invites-collectionGroup.rules",
     "22-footer.rules"
   ]
 }
