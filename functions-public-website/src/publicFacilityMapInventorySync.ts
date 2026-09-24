@@ -142,7 +142,14 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     const categorySlug = slugify(unitType);
     const isPubliclyEnabledType =
       enabledTypes.length === 0 || enabledTypes.includes(unitType);
-    const st = String(d.status || '').toLowerCase();
+    // The online rental holds rent a unit whose String(status || '') lower-cases
+    // to 'available' or 'reserved': none for a missing status, 'Available'
+    // included. A non-string counts as no status here and in the app
+    // (UnitModel.storedStatus); only a list such as ['available'], which
+    // nothing writes, would pass the holds' String() and not this. Keep in step
+    // with buildPublicUnitInventoryMaps.
+    const storedStatus = typeof d.status === 'string' ? d.status : '';
+    const st = storedStatus.toLowerCase();
     const unitNumNorm = String(d.unitNumber || '').trim().toLowerCase();
     const hasTenantLink =
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
@@ -181,7 +188,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       unitLabel: showUnitNumbers ? unum : null,
       displayName: showUnitNumbers ? `Unit ${unum}` : 'Available Unit',
       status: publicStatus,
-      internalStatus: d.status ?? null,
+      internalStatus: storedStatus || null,
       unitType,
       categorySlug,
       size,

@@ -26,7 +26,22 @@ class UnitModel {
   final String facilityId;
   final String unitNumber;
   final String unitType;
+
+  /// Anything in the doc that is not exactly a [UnitStatus] name (no status,
+  /// 'Available', 'Occupied') reads as [UnitStatus.available]. The dashboard
+  /// and Units list rely on that; the online rental list must not (see
+  /// [storedStatus]).
   final UnitStatus status;
+
+  /// The doc's `status` as stored, for a unit read from Firestore: the string,
+  /// or '' when there is none or it is not a string. Null for a unit built in
+  /// code, where [status] is all there is.
+  ///
+  /// The online rental holds test the stored string lower-cased, not
+  /// [status], so they refuse a unit with no status and accept 'Available'.
+  /// FacilityMapV2Service.buildPublicUnitInventoryMaps goes by this so that
+  /// the public list offers exactly what the holds accept.
+  final String? storedStatus;
   final String? tenantId;
   final String? tenantName;
   final double monthlyRate;
@@ -56,7 +71,8 @@ class UnitModel {
   /// Whether this unit can appear as rentable on the facility's public website.
   /// Defaults to true. Only the public map and website read it; it has no
   /// effect on Total/Occupied/Vacant (see [internalUse]). Owners whose rental
-  /// page is not live yet turn it off for most of their units.
+  /// page is not live yet turn it off for most of their units. Only an exact
+  /// `false` turns it off, as in `isUnitOfferedOnline` (functions-shared).
   final bool publicListingEnabled;
 
   /// Office, manager residence or personal-use space the owner does not rent
@@ -74,6 +90,7 @@ class UnitModel {
     required this.unitNumber,
     required this.unitType,
     required this.status,
+    this.storedStatus,
     this.tenantId,
     this.tenantName,
     required this.monthlyRate,
@@ -115,6 +132,7 @@ class UnitModel {
         (e) => e.name == data['status'],
         orElse: () => UnitStatus.available,
       ),
+      storedStatus: data['status'] is String ? data['status'] as String : '',
       tenantId: data['tenantId'],
       tenantName: data['tenantName'],
       monthlyRate: (data['monthlyRate'] ?? 0.0).toDouble(),
@@ -148,7 +166,10 @@ class UnitModel {
       overlock: data['overlock'] != null
           ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
           : null,
-      publicListingEnabled: data['publicListingEnabled'] as bool? ?? true,
+      // Was `as bool? ?? true`, which threw on a stray 'false' or 0 and so
+      // failed the whole unit read: the Units list came back empty and the
+      // public map publish failed.
+      publicListingEnabled: data['publicListingEnabled'] != false,
       internalUse: data['internalUse'] == true,
     );
   }
@@ -233,6 +254,8 @@ class UnitModel {
       unitNumber: unitNumber ?? this.unitNumber,
       unitType: unitType ?? this.unitType,
       status: status ?? this.status,
+      // A status set here is the unit's status now; the stored one is stale.
+      storedStatus: status == null ? storedStatus : null,
       tenantId: tenantId ?? this.tenantId,
       tenantName: tenantName ?? this.tenantName,
       monthlyRate: monthlyRate ?? this.monthlyRate,

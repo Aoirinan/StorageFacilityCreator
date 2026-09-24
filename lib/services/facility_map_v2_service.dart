@@ -368,8 +368,16 @@ class FacilityMapV2Service {
           unit.tenantId != null && unit.tenantId!.trim().isNotEmpty;
       final claimedByActiveTenant =
           tenantClaimedUnitNumbers.contains(unitNumNorm);
-      final statusAllowsRental = unit.status == UnitStatus.available ||
-          unit.status == UnitStatus.reserved;
+      // The online rental holds (createPublicReservationHold,
+      // createTenantPortalAdditionalUnitHold) and createPublicMoveInCheckout
+      // accept a unit whose stored status lower-cases to 'available' or
+      // 'reserved'. This used unit.status, which reads a unit with no status
+      // as available, so the list offered units the hold then refused (and
+      // misread 'Occupied' as available). Keep in step with
+      // syncPublicFacilityMapInventoryForFacility.
+      final storedStatus = unit.storedStatus ?? unit.status.name;
+      final st = storedStatus.toLowerCase();
+      final statusAllowsRental = st == 'available' || st == 'reserved';
       // The online rental callables rent only what isUnitOfferedOnline
       // (functions-shared) allows: listed and not internal use. This looked at
       // the listing switch alone, so an office or residence left listed was
@@ -387,7 +395,7 @@ class FacilityMapV2Service {
           ? 'unavailable'
           : (hasTenantLink || claimedByActiveTenant)
               ? 'rented'
-              : statusToPublicStatus(unit.status);
+              : statusToPublicStatus(st);
 
       return <String, dynamic>{
         'unitId': unit.id,
@@ -396,7 +404,7 @@ class FacilityMapV2Service {
         'displayName':
             showUnitNumbers ? 'Unit ${unit.unitNumber}' : 'Available Unit',
         'status': publicStatus,
-        'internalStatus': unit.status.name,
+        'internalStatus': storedStatus.isEmpty ? null : storedStatus,
         'unitType': unitType,
         'categorySlug': categorySlug,
         'size': size,

@@ -177,7 +177,8 @@ type PublicMapCase = {
   name: string;
   units: FixtureDoc[];
   tenants: FixtureDoc[];
-  expected: Record<string, { isRentable: boolean; status: string }>;
+  /** Per unit, the published fields compared: isRentable and status always, some others. */
+  expected: Record<string, Record<string, unknown>>;
 };
 
 /** Cases the app's test (test/public_map_units_parity_test.dart) runs too. */
@@ -188,7 +189,7 @@ function publicMapParityCases(): PublicMapCase[] {
 
 test('the sync publishes every shared parity case as the app does', async () => {
   const cases = publicMapParityCases();
-  assert.ok(cases.length >= 7, 'the shared fixture was not read');
+  assert.ok(cases.length >= 10, 'the shared fixture was not read');
   for (const c of cases) {
     const inMemory = new InMemoryFirestore();
     inMemory.seed(`facilities/${MAP_FACILITY}/mapEngine/meta`, { publicSlug: MAP_SLUG });
@@ -200,8 +201,12 @@ test('the sync publishes every shared parity case as the app does', async () => 
     await syncPublicFacilityMapInventoryForFacility(MAP_FACILITY);
 
     const units = inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.units as Array<Record<string, any>>;
+    // The fields each unit's entry names; a unit the fixture does not expect shows up as an extra key.
+    const fieldsOf = (unitId: string) => Object.keys(c.expected[unitId] ?? { isRentable: 0, status: 0 });
     assert.deepEqual(
-      Object.fromEntries(units.map((u) => [u.unitId, { isRentable: u.isRentable, status: u.status }])),
+      Object.fromEntries(
+        units.map((u) => [u.unitId, Object.fromEntries(fieldsOf(u.unitId).map((f) => [f, u[f]]))]),
+      ),
       c.expected,
       c.name,
     );

@@ -1,5 +1,4 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:sfcapp/models/unit_model.dart';
 
 enum FacilityMapVersionStatus { draft, published, archived }
 
@@ -278,19 +277,19 @@ class PublicFacilityMapSnapshot {
   }
 }
 
-String statusToPublicStatus(UnitStatus status) {
+/// The public list's status for a unit whose lower-cased stored status is
+/// [status] (see FacilityMapV2Service.buildPublicUnitInventoryMaps). Same as
+/// statusToPublicStatus in
+/// functions-public-website/src/publicFacilityMapInventorySync.ts.
+String statusToPublicStatus(String status) {
   switch (status) {
-    case UnitStatus.available:
+    case 'available':
       return 'available';
-    case UnitStatus.reserved:
+    case 'reserved':
       return 'reserved';
-    case UnitStatus.occupied:
+    case 'occupied':
       return 'rented';
-    case UnitStatus.maintenance:
-    case UnitStatus.outOfOrder:
-    case UnitStatus.overlocked:
-    case UnitStatus.lockout:
-    case UnitStatus.auction:
+    default:
       return 'unavailable';
   }
 }
