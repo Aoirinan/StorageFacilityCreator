@@ -41,6 +41,21 @@ test('an approved account wins over a newer pendingApproval duplicate, whatever 
   assert.equal(preferredOwnerAccountDoc([original, pendingDuplicate])?.id, 'acct_original');
 });
 
+test('a pendingApproval doc loses even when it is the older one', () => {
+  // Not only a question of age: an approved, billed or suspended account is
+  // the one that decides, whichever was written first.
+  const olderPending = doc('acct_pending', {
+    subscriptionStatus: 'pendingApproval',
+    createdAt: ts('2025-01-01T00:00:00Z'),
+  });
+  const newerCancelled = doc('acct_cancelled', {
+    subscriptionStatus: 'cancelled',
+    createdAt: ts('2026-01-01T00:00:00Z'),
+  });
+  assert.equal(preferredOwnerAccountDoc([olderPending, newerCancelled])?.id, 'acct_cancelled');
+  assert.equal(preferredOwnerAccountDoc([newerCancelled, olderPending])?.id, 'acct_cancelled');
+});
+
 test('then the oldest, then the id; a doc without createdAt counts as the newest', () => {
   const older = doc('acct_b', { subscriptionStatus: 'cancelled', createdAt: ts('2025-01-01T00:00:00Z') });
   const newer = doc('acct_a', { subscriptionStatus: 'active', createdAt: ts('2026-01-01T00:00:00Z') });
