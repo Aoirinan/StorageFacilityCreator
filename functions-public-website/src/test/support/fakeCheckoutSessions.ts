@@ -31,6 +31,13 @@ export class FakeCheckoutSessions {
   expireCalls: string[] = [];
   /** When set, the next create throws this instead. */
   failNextCreate: Error | null = null;
+  /** When set, the next retrieve throws this instead (a timeout, an outage). */
+  failNextRetrieve: Error | null = null;
+  /**
+   * When set, runs once at the start of the next create: something that
+   * happens while the request is on its way to Stripe (a revoke, another tab).
+   */
+  duringNextCreate: (() => Promise<void> | void) | null = null;
 
   get now(): Date {
     return new Date(this.nowMs);
@@ -109,6 +116,9 @@ export class FakeCheckoutSessions {
     return {
       create: async (params, options) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
+        const during = this.duringNextCreate;
+        this.duringNextCreate = null;
+        if (during) await during();
         this.createCalls.push({ params, options });
         const account = String(options.stripeAccount || 'platform');
         const key = options.idempotencyKey ? `${account}:${options.idempotencyKey}` : null;
@@ -157,6 +167,11 @@ export class FakeCheckoutSessions {
       retrieve: async (id, _params, options) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         this.retrieveCalls.push({ id, options });
+        if (this.failNextRetrieve) {
+          const error = this.failNextRetrieve;
+          this.failNextRetrieve = null;
+          throw error;
+        }
         const s = this.sessions.get(id);
         if (!s || s.account !== String(options.stripeAccount || 'platform')) throw this.notFound(id);
         return this.view(s);

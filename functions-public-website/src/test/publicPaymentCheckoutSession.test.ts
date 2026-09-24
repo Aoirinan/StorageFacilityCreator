@@ -287,3 +287,73 @@ test('paying a session after staff revoked the link is reported as received and 
   assert.equal(fake.read(LINK_PATH)!.status, 'revoked');
   assert.equal(fake.read(`publicPaymentLinkExceptions/${checkout.sessionId}`)!.reason, 'paid_after_revoke');
 });
+
+test('an orphaned reservation too close to lapsing for Stripe is replaced, not joined', async () => {
+  const { stripe, fake, deps } = setup();
+  // A request reserved attempt 1 and died before reaching Stripe; 20 minutes on,
+  // its expires_at is 25 minutes away, and Stripe refuses anything under 30.
+  const expiresAtSeconds = Math.floor(stripe.nowMs / 1000) + CHECKOUT_SESSION_TTL_SECONDS;
+  fake.seed(LINK_PATH, {
+    ...fake.read(LINK_PATH)!,
+    checkoutAttempt: 1,
+    checkoutExpiresAt: Timestamp.fromMillis(expiresAtSeconds * 1000),
+    checkoutSessionId: null,
+  });
+  stripe.advance(20 * 60 * 1000);
+
+  const result = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+
+  assert.equal(stripe.createCalls.length, 1);
+  assert.equal(stripe.createCalls[0].options.idempotencyKey, `link_${TOKEN}_2`);
+  assert.deepEqual(stripe.payable(), [result.sessionId]);
+});
+
+test('a revoke landing while the session is being created leaves nothing payable', async () => {
+  const { stripe, fake, deps } = setup();
+  stripe.duringNextCreate = () => {
+    fake.seed(LINK_PATH, { ...fake.read(LINK_PATH)!, status: 'revoked' });
+  };
+
+  await rejectsWith(getOrCreatePublicLinkCheckout(TOKEN, deps), 'failed-precondition');
+
+  assert.equal(stripe.created().length, 1);
+  assert.deepEqual(stripe.expireCalls, stripe.created());
+  assert.deepEqual(stripe.payable(), []);
+  assert.equal(fake.read(LINK_PATH)!.status, 'revoked');
+});
+
+test('a newer attempt landing while the session is being created wins; the older session is closed', async () => {
+  const { stripe, fake, deps } = setup();
+  stripe.duringNextCreate = () => {
+    // Another tab reserved attempt 2 after this request reserved attempt 1.
+    const latest = fake.read(LINK_PATH)!;
+    fake.seed(LINK_PATH, {
+      ...latest,
+      checkoutAttempt: 2,
+      checkoutExpiresAt: Timestamp.fromMillis((Math.floor(stripe.nowMs / 1000) + CHECKOUT_SESSION_TTL_SECONDS) * 1000),
+      checkoutSessionId: null,
+    });
+  };
+
+  const result = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+
+  const [first] = stripe.created();
+  assert.notEqual(result.sessionId, first);
+  assert.ok(stripe.expireCalls.includes(first));
+  assert.deepEqual(stripe.payable(), [result.sessionId]);
+  assert.equal(stripe.createCalls[stripe.createCalls.length - 1].options.idempotencyKey, `link_${TOKEN}_2`);
+  assert.equal(fake.read(LINK_PATH)!.checkoutSessionId, result.sessionId);
+});
+
+test('a Stripe outage while confirming says try again, not "not this link\'s session"', async () => {
+  const { stripe, deps } = setup();
+  const checkout = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+  stripe.pay(checkout.sessionId, 'pi_outage');
+  stripe.failNextRetrieve = Object.assign(new Error('An error occurred with our connection to Stripe.'), {
+    type: 'StripeConnectionError',
+  });
+
+  await rejectsWith(confirmPublicLinkCheckout(TOKEN, checkout.sessionId, deps), 'unavailable');
+  // Once Stripe answers again the same call confirms it.
+  assert.deepEqual(await confirmPublicLinkCheckout(TOKEN, checkout.sessionId, deps), { status: 'paid' });
+});

@@ -31,8 +31,13 @@ import {
 export const CHECKOUT_SESSION_TTL_SECONDS = 45 * 60;
 /** An open session with less than this left is expired and replaced rather than handed out. */
 export const REUSE_MIN_REMAINING_MS = 2 * 60 * 1000;
-/** A reservation whose session was never stored is joined only while this much of it is left. */
-export const JOIN_MIN_REMAINING_MS = 5 * 60 * 1000;
+/**
+ * A reservation whose session was never stored is joined only while this much
+ * of it is left. Joining re-sends its `expires_at`, and when the first request
+ * never reached Stripe that is a fresh create, which Stripe refuses unless
+ * expires_at is at least 30 minutes away; the extra minute absorbs clock skew.
+ */
+export const JOIN_MIN_REMAINING_MS = 31 * 60 * 1000;
 
 const MAX_PASSES = 4;
 
@@ -197,6 +202,12 @@ async function loadFacilityAccount(
   };
 }
 
+/** Stripe says the object does not exist (on this account), as opposed to failing to answer. */
+function isStripeResourceMissing(error: unknown): boolean {
+  const e = error as { statusCode?: number; code?: string } | null;
+  return e?.statusCode === 404 || e?.code === 'resource_missing';
+}
+
 /**
  * The link's stored session, or null when Stripe no longer has it on this
  * account (the facility reconnected a different Stripe account): that session
@@ -210,8 +221,7 @@ async function retrieveUnlessMissing(
   try {
     return await sessions.retrieve(sessionId, {}, requestOptions);
   } catch (error) {
-    const e = error as { statusCode?: number; code?: string };
-    if (e?.statusCode === 404 || e?.code === 'resource_missing') {
+    if (isStripeResourceMissing(error)) {
       functions.logger.warn('Payment-link session is gone from the connected account; starting a new one', {
         sessionId,
       });
@@ -443,7 +453,16 @@ export async function confirmPublicLinkCheckout(
     functions.logger.warn('confirmPublicPaymentCheckout: session lookup failed', {
       error: (error as Error)?.message,
     });
-    throw new functions.https.HttpsError('not-found', 'Checkout session not found');
+    // The page treats not-found as "not this link's session" and offers Pay
+    // Now again, so only Stripe saying the session does not exist may say so.
+    // A timeout or outage is "try again": the page keeps showing processing.
+    if (isStripeResourceMissing(error)) {
+      throw new functions.https.HttpsError('not-found', 'Checkout session not found');
+    }
+    throw new functions.https.HttpsError(
+      'unavailable',
+      'Could not reach Stripe to confirm the payment. Please try again shortly.',
+    );
   }
   if (session.metadata?.paymentLinkToken !== token) {
     throw new functions.https.HttpsError('permission-denied', 'Checkout session does not match this payment link');

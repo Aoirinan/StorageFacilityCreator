@@ -65,6 +65,10 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   Timer? _pollTimer;
   int _polls = 0;
 
+  /// Bumped whenever polling restarts ("Check again"), so an answer from an
+  /// earlier round cannot schedule more polls or overwrite the page.
+  int _pollGeneration = 0;
+
   @override
   void initState() {
     super.initState();
@@ -150,6 +154,7 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
     final token = _token;
     if (token == null) return;
     _pollTimer?.cancel();
+    _pollGeneration++;
     _returnSessionId = sessionId;
     _set(() => _phase = _Phase.confirming);
     String status;
@@ -200,31 +205,65 @@ class _PublicPaymentScreenState extends State<PublicPaymentScreen> {
   void _startPolling() {
     _pollTimer?.cancel();
     _polls = 0;
+    final generation = ++_pollGeneration;
     _set(() => _phase = _Phase.confirming);
-    _pollTimer = Timer.periodic(widget.pollInterval, (timer) async {
+    _schedulePoll(generation);
+  }
+
+  /// One check at a time: the next is scheduled only after this one answers,
+  /// so a slow answer cannot land after a later one has settled the page.
+  void _schedulePoll(int generation) {
+    _pollTimer = Timer(widget.pollInterval, () async {
       _polls++;
-      final token = _token;
-      PublicPaymentLink? link;
-      try {
-        link = token == null ? null : await widget.api.getLink(token);
-      } catch (_) {
-        link = null;
-      }
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (link != null && link.status == 'paid') {
-        timer.cancel();
-        _set(() {
-          _paymentLink = link;
-          _phase = _Phase.paid;
-        });
-      } else if (_polls >= widget.maxPolls) {
-        timer.cancel();
+      final settled = await _pollOnce();
+      if (!mounted || generation != _pollGeneration || settled) return;
+      if (_polls >= widget.maxPolls) {
         _set(() => _phase = _Phase.stillConfirming);
+      } else {
+        _schedulePoll(generation);
       }
     });
+  }
+
+  /// Re-asks the server to confirm the session Stripe returned with (the
+  /// confirm is idempotent), so the page reaches paid even when the webhook
+  /// never marks the link. Falls back to the link's own status. True once the
+  /// page has moved to a final state.
+  Future<bool> _pollOnce() async {
+    final token = _token;
+    if (token == null) return false;
+    final sessionId = _returnSessionId;
+    if (sessionId != null) {
+      try {
+        final status = await widget.api.confirmCheckout(token, sessionId);
+        if (!mounted) return true;
+        if (status == 'paid') {
+          await _showPaid();
+          return true;
+        }
+        if (status == 'received') {
+          _set(() => _phase = _Phase.received);
+          return true;
+        }
+      } catch (_) {
+        // Still settling or unreachable: never re-offer Pay Now from a poll.
+      }
+    }
+    PublicPaymentLink? link;
+    try {
+      link = await widget.api.getLink(token);
+    } catch (_) {
+      link = null;
+    }
+    if (!mounted) return true;
+    if (link != null && link.status == 'paid') {
+      _set(() {
+        _paymentLink = link;
+        _phase = _Phase.paid;
+      });
+      return true;
+    }
+    return false;
   }
 
   String? _getTokenFromUrl() {

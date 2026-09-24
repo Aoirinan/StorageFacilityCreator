@@ -20,15 +20,18 @@ PublicPaymentLink _link(String status) => PublicPaymentLink.fromMap(_token, {
 class _FakeApi extends PublicPaymentApi {
   _FakeApi({
     required this.links,
-    this.confirmStatus = 'paid',
-    this.confirmError,
+    String confirmStatus = 'paid',
+    Object? confirmError,
+    List<Object>? confirmAnswers,
     this.start,
-  });
+  }) : confirmAnswers = confirmAnswers ?? [confirmError ?? confirmStatus];
 
   /// Successive getLink answers; the last one repeats.
   final List<PublicPaymentLink?> links;
-  final String confirmStatus;
-  final Object? confirmError;
+
+  /// Successive confirmCheckout answers, a status or an error to throw; the
+  /// last one repeats.
+  final List<Object> confirmAnswers;
   final PublicCheckoutStart? start;
 
   int getCalls = 0;
@@ -50,9 +53,11 @@ class _FakeApi extends PublicPaymentApi {
 
   @override
   Future<String> confirmCheckout(String token, String sessionId) async {
+    final n = confirmCalls.length;
     confirmCalls.add([token, sessionId]);
-    if (confirmError != null) throw confirmError!;
-    return confirmStatus;
+    final answer = confirmAnswers[n < confirmAnswers.length ? n : confirmAnswers.length - 1];
+    if (answer is String) return answer;
+    throw answer;
   }
 }
 
@@ -119,6 +124,47 @@ void main() {
     await tester.pump();
 
     expect(find.text('Payment Successful!'), findsOneWidget);
+  });
+
+  testWidgets('polling re-confirms the session, so paid shows even when the webhook never marks the link',
+      (tester) async {
+    // checkout.session.completed is not delivered: the link itself stays pending.
+    final api = _FakeApi(
+      links: [_link('pending')],
+      confirmAnswers: ['processing', 'processing', 'paid'],
+    );
+
+    await _pump(tester, api, checkoutReturn: _successReturn);
+    expect(find.text('Confirming your payment…'), findsOneWidget);
+    for (var i = 0; i < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump();
+    }
+
+    expect(api.confirmCalls, List.filled(3, [_token, _sessionId]));
+    expect(find.text('Payment Successful!'), findsOneWidget);
+    expect(find.text('Pay Now'), findsNothing);
+  });
+
+  testWidgets('a poll that cannot confirm keeps checking and never offers Pay Now', (tester) async {
+    final api = _FakeApi(
+      links: [_link('pending')],
+      confirmAnswers: [
+        'processing',
+        FirebaseFunctionsException(code: 'unavailable', message: 'Stripe timed out'),
+        FirebaseFunctionsException(code: 'not-found', message: 'gone'),
+      ],
+    );
+
+    await _pump(tester, api, checkoutReturn: _successReturn);
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump();
+    }
+
+    expect(api.confirmCalls.length, 4);
+    expect(find.text('Payment Processing'), findsOneWidget);
+    expect(find.text('Pay Now'), findsNothing);
   });
 
   testWidgets('if confirming fails the tenant is told not to pay again, with no Pay Now', (tester) async {

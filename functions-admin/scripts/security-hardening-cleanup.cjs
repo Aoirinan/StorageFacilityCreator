@@ -31,6 +31,26 @@ function storagePathFromPublicUrl(raw) {
   }
 }
 
+/**
+ * Fields a rotated payment link must not inherit. The checkout ones name the
+ * old token's Stripe session: the new link would hand that session back, and
+ * a payment on it carries the old (now revoked) token, so it is recorded as
+ * paid after revoke instead of paying the new link. The new link starts its
+ * own checkout.
+ */
+const LINK_FIELDS_NOT_ROTATED = [
+  'checkoutSessionId',
+  'checkoutSessionIds',
+  'checkoutAttempt',
+  'checkoutExpiresAt',
+];
+
+function rotatedLinkData(current, replacementToken, rotatedFrom, rotatedAt) {
+  const data = { ...current };
+  for (const field of LINK_FIELDS_NOT_ROTATED) delete data[field];
+  return { ...data, token: replacementToken, rotatedFrom, rotatedAt };
+}
+
 function exportJobIdFromFileName(name) {
   const match = /^exports\/([^/]+)\/(.+)_\d+\.csv$/.exec(name);
   return match ? { facilityId: match[1], jobId: match[2] } : null;
@@ -94,12 +114,15 @@ async function main() {
       await db.runTransaction(async (txn) => {
         const current = await txn.get(doc.ref);
         if (!current.exists || current.get('status') !== 'pending') return;
-        txn.create(replacementRef, {
-          ...current.data(),
-          token: replacementToken,
-          rotatedFrom: doc.id,
-          rotatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        txn.create(
+          replacementRef,
+          rotatedLinkData(
+            current.data(),
+            replacementToken,
+            doc.id,
+            admin.firestore.FieldValue.serverTimestamp(),
+          ),
+        );
         txn.update(doc.ref, {
           status: 'revoked',
           revokedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -256,7 +279,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack : error);
-  process.exitCode = 1;
-});
+// Run only as a script; tests load it for rotatedLinkData.
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack : error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { LINK_FIELDS_NOT_ROTATED, rotatedLinkData };
