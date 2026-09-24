@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/facility_doc_path.dart';
 
 enum PaymentStatus {
   pending,
@@ -103,7 +104,7 @@ class PaymentModel {
     return PaymentModel(
       id: doc.id,
       tenantId: data['tenantId'] ?? '',
-      facilityId: data['facilityId'] ?? '',
+      facilityId: facilityIdOf(doc, data['facilityId']),
       contractId: data['contractId'] ?? '',
       amount: (data['amount'] ?? 0.0).toDouble(),
       status: PaymentStatus.values.firstWhere(
