@@ -10,6 +10,15 @@ function joinPath(...segments: string[]): string {
 export class InMemoryFirestore {
   private readonly store = new Map<string, DocData>();
 
+  /** When set, every `count()` query rejects with it (a failed aggregate read). */
+  countError: Error | null = null;
+
+  /** A query's `get()` on a collection path listed here rejects with its error. */
+  readonly queryErrors = new Map<string, Error>();
+
+  /** The last transaction queued; the next one starts when it settles. */
+  private transactionTail: Promise<unknown> = Promise.resolve();
+
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
   }
@@ -34,6 +43,8 @@ export class InMemoryFirestore {
 
   private buildFirestore(): Record<string, unknown> {
     const store = this.store;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const owner = this;
 
     const FieldValue = {
       serverTimestamp: () => Timestamp.now(),
@@ -102,28 +113,67 @@ export class InMemoryFirestore {
       }
     }
 
-    class CollectionRef {
-      constructor(readonly path: string) {}
+    /**
+     * A collection query. Equality (`==`) filters are applied; other
+     * operators, ordering and limits are ignored.
+     */
+    class Query {
+      constructor(
+        readonly path: string,
+        private readonly equals: Array<[string, unknown]> = [],
+      ) {}
+
+      where(field?: string, op?: string, value?: unknown): Query {
+        if (field === undefined || op !== '==') return this;
+        return new Query(this.path, [...this.equals, [field, value]]);
+      }
+
+      limit(): Query {
+        return this;
+      }
+
+      orderBy(): Query {
+        return this;
+      }
+
+      /** Cursors are ignored: limits are too, so one page holds every doc. */
+      startAfter(): Query {
+        return this;
+      }
+
+      async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
+        const queryError = owner.queryErrors.get(this.path);
+        if (queryError) throw queryError;
+        const prefix = `${this.path}/`;
+        const docs = [...store.keys()]
+          .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
+          .filter((key) => {
+            const data = store.get(key) || {};
+            return this.equals.every(([field, value]) => field in data && data[field] === value);
+          })
+          .map((key) => new DocSnapshot(new DocRef(key), key));
+        return { empty: docs.length === 0, size: docs.length, docs };
+      }
+
+      count(): { get: () => Promise<{ data: () => { count: number } }> } {
+        return {
+          get: async () => {
+            if (owner.countError) throw owner.countError;
+            const { docs } = await this.get();
+            return { data: () => ({ count: docs.length }) };
+          },
+        };
+      }
+    }
+
+    class CollectionRef extends Query {
+      constructor(path: string) {
+        super(path);
+      }
 
       doc(id?: string): DocRef {
         const docId = id || `auto_${store.size + 1}`;
         return new DocRef(joinPath(this.path, docId));
-      }
-
-      where(): CollectionRef {
-        return this;
-      }
-
-      limit(): CollectionRef {
-        return this;
-      }
-
-      async get(): Promise<{ empty: boolean; docs: DocSnapshot[] }> {
-        const prefix = `${this.path}/`;
-        const docs = [...store.keys()]
-          .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
-          .map((key) => new DocSnapshot(new DocRef(key), key));
-        return { empty: docs.length === 0, docs };
       }
     }
 
@@ -146,19 +196,28 @@ export class InMemoryFirestore {
       collection(name: string): CollectionRef {
         return new CollectionRef(name);
       },
+      doc(path: string): DocRef {
+        return new DocRef(path);
+      },
       collectionGroup(): CollectionRef {
         return new CollectionRef('');
       },
       batch(): WriteBatch {
         return new WriteBatch();
       },
+      /**
+       * Transactions run one at a time. Writes still land as they are made,
+       * so a transaction that throws part way leaves its earlier writes.
+       */
       runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
         const tx = {
           get: async (ref: DocRef) => ref.get(),
           set: async (ref: DocRef, data: DocData) => ref.set(data),
           update: async (ref: DocRef, data: DocData) => ref.update(data),
         };
-        return fn(tx);
+        const run = owner.transactionTail.then(() => fn(tx));
+        owner.transactionTail = run.catch(() => undefined);
+        return run;
       },
       FieldValue,
     };
@@ -172,10 +231,12 @@ export function installInMemoryFirestore(inMemory: InMemoryFirestore): void {
   }
   const TimestampStatic = admin.firestore.Timestamp;
   const FieldValueStatic = admin.firestore.FieldValue;
+  const FieldPathStatic = admin.firestore.FieldPath;
   const fs = inMemory.firestore();
   const firestoreFn = Object.assign(() => fs, {
     Timestamp: TimestampStatic,
     FieldValue: FieldValueStatic,
+    FieldPath: FieldPathStatic,
   });
   Object.defineProperty(admin, 'firestore', {
     configurable: true,

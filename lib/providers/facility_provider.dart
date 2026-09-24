@@ -50,6 +50,8 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, a caller that awaited this could not tell it failed.
+      rethrow;
     }
   }
 
@@ -74,6 +76,7 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -84,6 +87,8 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, Facilities said "archived successfully" when it was not.
+      rethrow;
     }
   }
 
@@ -94,6 +99,9 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, the screen said "deleted permanently" even when the
+      // server refused (no email code, not the owner) or failed.
+      rethrow;
     }
   }
 
@@ -104,6 +112,8 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, Facilities said "restored successfully" when it was not.
+      rethrow;
     }
   }
 }

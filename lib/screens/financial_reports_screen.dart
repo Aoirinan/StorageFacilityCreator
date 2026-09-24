@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/foundation.dart';
 import '../providers/reports_provider.dart';
 import '../services/reports_service.dart';
 import '../services/facility_service.dart';
@@ -43,26 +42,12 @@ class _FinancialReportsScreenState extends ConsumerState<FinancialReportsScreen>
 
   Future<void> _initializeAccountAndLoadFacilities() async {
     try {
-      // CRITICAL: Ensure account exists BEFORE trying to load facilities
-      // Permission errors often occur because account doesn't exist yet
       final authState = ref.read(authStateProvider);
       if (authState.hasValue && authState.value != null) {
-        final user = authState.value!;
-        try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-          if (kDebugMode) {
-            debugPrint('✅ Account verified/created for user: ${user.uid}');
-          }
-        } catch (accountError) {
-          if (mounted) {
-            debugPrint('❌ Could not ensure account exists: $accountError');
-            setState(() {
-              _facilityError = 'Account setup error: $accountError. Please try again or contact support.';
-              _isLoadingFacilities = false;
-            });
-            return;
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop the facilities loading (it used to return here with
+        // an account error in place of the reports).
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         // Now subscribe to facilities stream
         if (mounted) {

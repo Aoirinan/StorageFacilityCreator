@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 
 /// Last action taken on overlock (OVERLOCKED or REMOVED).
 enum OverlockAction {
@@ -29,18 +30,20 @@ class OverlockInfo {
       return const OverlockInfo(isOverlocked: false);
     }
     OverlockAction? action;
-    final last = data['lastAction'] as String?;
+    final last = data['lastAction'];
     if (last == 'OVERLOCKED') {
       action = OverlockAction.overlocked;
     } else if (last == 'REMOVED') {
       action = OverlockAction.removed;
     }
+    // Read without casts: this runs inside UnitModel.fromFirestore, where a
+    // throw fails the whole facility's unit read.
     return OverlockInfo(
       isOverlocked: data['isOverlocked'] == true,
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
-      updatedByUid: data['updatedByUid'] as String?,
-      updatedByName: data['updatedByName'] as String?,
-      reasonNote: data['reasonNote'] as String?,
+      updatedAt: dateFromField(data['updatedAt']),
+      updatedByUid: textFromField(data['updatedByUid']),
+      updatedByName: textFromField(data['updatedByName']),
+      reasonNote: textFromField(data['reasonNote']),
       lastAction: action,
     );
   }

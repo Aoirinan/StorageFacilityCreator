@@ -10,7 +10,6 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_service.dart';
-import '../services/facility_stats_service.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
 import '../theme/app_theme.dart';
@@ -139,12 +138,18 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       _publicSettingsError = null;
     });
     try {
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facility.id);
+      // Both reads always run and neither needs the other, so run them
+      // together instead of paying two round trips in series. Future.wait
+      // also listens to both, so a failure in either lands in the catch below.
+      final settingsFuture =
+          FacilityPublicService.getPublicSettings(widget.facility.id);
+      final mapSlugFuture =
+          FacilityMapV2Service.getPublicSlugForFacility(widget.facility.id);
+      await Future.wait([settingsFuture, mapSlugFuture]);
+      final settings = await settingsFuture;
       final slug = settings?.publicRentalSlug?.trim();
-      final fallbackSlug = await FacilityMapV2Service.getPublicSlugForFacility(
-              widget.facility.id) ??
-          widget.facility.id.toLowerCase();
+      final fallbackSlug =
+          await mapSlugFuture ?? widget.facility.id.toLowerCase();
       final safeSlug = (slug == null || slug.isEmpty) ? fallbackSlug : slug;
 
       if (!mounted) return;
@@ -306,7 +311,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
               height: 64,
               decoration: BoxDecoration(
                 border: Border.all(
-                    color: AppTheme.textSecondary.withOpacity(0.3)),
+                    color: AppTheme.textSecondary.withValues(alpha: 0.3)),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.all(6),
@@ -431,7 +436,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         totalUnits: totalUnits,
       );
 
-      await FacilityStatsService.reconcileUnitsToCapacity(widget.facility.id);
+      // No stats step on save. It used to await a client-side orphan heal
+      // and recompute here (reads plus a stats write that was always
+      // denied); nothing on this form changes unit counts, and the Cloud
+      // Function keeps them current on every unit and tenant write.
 
       if (kDebugMode) {
         print('✅ Facility updated successfully');

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../models/invoice_model.dart';
+import 'package:sfcapp/models/invoice_status_actions.dart';
 import '../models/invoice_line_item_model.dart';
 import '../models/ledger_entry_model.dart';
 import '../models/tenant_model.dart';
@@ -16,7 +17,35 @@ import 'facility_service.dart';
 import 'audit_service.dart';
 import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'email_service.dart';
-import 'pdf_letterhead.dart';
+import 'package:sfcapp/services/pdf_letterhead.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+
+/// Why "Send to tenant" sent nothing and left the invoice as it was.
+class InvoiceNotSentException implements UserFacingException {
+  const InvoiceNotSentException(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// The invoice was emailed, but marking it sent failed. Not "not sent":
+/// sending it again emails the tenant a second copy.
+class InvoiceNotRecordedException implements UserFacingException {
+  const InvoiceNotRecordedException(this.emailedTo);
+
+  final String emailedTo;
+
+  @override
+  String get message =>
+      'The invoice was emailed to $emailedTo, but marking it sent failed, '
+      'so it may still show as not sent. Do not send it again.';
+
+  @override
+  String toString() => message;
+}
 
 /// Service for managing invoices
 class InvoiceService {
@@ -700,7 +729,14 @@ class InvoiceService {
     }
   }
 
-  /// Send invoice (update status and send email)
+  /// Emails the invoice to its tenant, attaching its PDF first if it has
+  /// none, and only then marks it sent.
+  ///
+  /// It used to mark the invoice sent first and email only when it had a PDF
+  /// and the tenant an email address, and return normally otherwise. An
+  /// invoice from the ledger's Generate Invoice has no PDF until "Attach PDF
+  /// copy", so Send on one said "Invoice sent successfully" and marked it
+  /// Sent with nothing emailed.
   static Future<void> sendInvoice({
     required String facilityId,
     required String invoiceId,
@@ -710,13 +746,13 @@ class InvoiceService {
       if (user == null) throw Exception('User not authenticated');
 
       // Get invoice and related data
-      final invoiceDoc = await _firestore
+      final invoiceRef = _firestore
           .collection('facilities')
           .doc(facilityId)
           .collection('invoices')
-          .doc(invoiceId)
-          .get();
-      
+          .doc(invoiceId);
+      final invoiceDoc = await invoiceRef.get();
+
       if (!invoiceDoc.exists) {
         throw Exception('Invoice not found');
       }
@@ -732,25 +768,127 @@ class InvoiceService {
         throw Exception('Facility not found');
       }
 
-      // Update invoice status
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('invoices')
-          .doc(invoiceId)
-          .update({
-        'status': InvoiceStatus.sent.name,
-        'sentAt': FieldValue.serverTimestamp(),
-      });
+      await deliverInvoice(
+        invoice: invoice,
+        tenant: tenant,
+        facility: facility,
+        attachPdf: () async {
+          final pdfData = await generateInvoicePDF(
+            invoice: invoice,
+            tenant: tenant,
+            facility: facility,
+          );
+          final pdfUrl = await uploadInvoicePDF(
+            facilityId: facilityId,
+            invoiceId: invoiceId,
+            pdfData: pdfData,
+          );
+          await invoiceRef.update({'pdfUrl': pdfUrl});
+          return pdfUrl;
+        },
+        sendEmail: (email) => EmailService.sendEmail(
+          to: email.to,
+          subject: email.subject,
+          html: email.html,
+          text: email.text,
+          facilityId: facilityId,
+        ),
+        markSent: () => invoiceRef.update({
+          'status': InvoiceStatus.sent.name,
+          'sentAt': FieldValue.serverTimestamp(),
+        }),
+      );
 
-      // Send email with invoice PDF
-      if (invoice.pdfUrl != null && tenant.email.isNotEmpty) {
-        try {
-          final subject = 'Invoice ${invoice.invoiceNumber} from ${facility.name}';
-          final body = '''
+      if (kDebugMode) {
+        print('✅ [Invoice] Invoice sent: $invoiceId to ${tenant.email}');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [Invoice] Error sending invoice: $e');
+      }
+      rethrow;
+    }
+  }
+
+  /// [sendInvoice]'s order of work, apart from the reads and writes: refuse
+  /// a closed invoice or a tenant with no email address before anything is
+  /// done, attach a PDF when the invoice has none ([attachPdf] returns its
+  /// URL), email it ([sendEmail]), and only once the email went call
+  /// [markSent].
+  @visibleForTesting
+  static Future<void> deliverInvoice({
+    required InvoiceModel invoice,
+    required TenantModel tenant,
+    required FacilityModel facility,
+    required Future<String> Function() attachPdf,
+    required Future<EmailResult> Function(
+      ({String to, String subject, String html, String text}) email,
+    ) sendEmail,
+    required Future<void> Function() markSent,
+  }) async {
+    // Read fresh by sendInvoice: a page opened before the invoice was paid
+    // or voided still offers Send, and the write put it back to Sent.
+    if (!availableInvoiceActions(invoice.status).contains(InvoiceAction.send)) {
+      throw InvoiceNotSentException(
+        'This invoice is ${invoice.status.name}, so it was not sent.',
+      );
+    }
+    final to = tenant.email.trim();
+    if (to.isEmpty) {
+      throw InvoiceNotSentException(
+        '${tenant.name} has no email address, so the invoice was not sent. '
+        'Add one to their profile, then send it again.',
+      );
+    }
+
+    var pdfUrl = invoice.pdfUrl;
+    if (pdfUrl == null || pdfUrl.isEmpty) {
+      try {
+        pdfUrl = await attachPdf();
+      } catch (e) {
+        if (kDebugMode) {
+          print('❌ [Invoice] Could not attach a PDF before sending: $e');
+        }
+        throw InvoiceNotSentException(
+          'The invoice PDF could not be attached, so nothing was sent: '
+          '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+        );
+      }
+    }
+
+    final emailResult = await sendEmail((
+      to: to,
+      subject: 'Invoice ${invoice.invoiceNumber} from ${facility.name}',
+      html: _invoiceEmailHtml(invoice, tenant, facility, pdfUrl),
+      text: _invoiceEmailText(invoice, tenant, facility, pdfUrl),
+    ));
+    if (!emailResult.success) {
+      throw InvoiceNotSentException(
+        'The invoice email was not sent: '
+        '${EmailService.staffEmailFailureHint(emailResult)}',
+      );
+    }
+
+    try {
+      await markSent();
+    } catch (e) {
+      if (kDebugMode) {
+        print('⚠️ [Invoice] Emailed, but marking it sent failed: $e');
+      }
+      throw InvoiceNotRecordedException(to);
+    }
+  }
+
+  static String _invoiceEmailText(
+    InvoiceModel invoice,
+    TenantModel tenant,
+    FacilityModel facility,
+    String pdfUrl,
+  ) =>
+      '''
 Dear ${tenant.name},
 
-Please find attached your invoice ${invoice.invoiceNumber} for ${facility.name}.
+Here is your invoice ${invoice.invoiceNumber} for ${facility.name}.
 
 Invoice Details:
 - Invoice Number: ${invoice.invoiceNumber}
@@ -759,6 +897,7 @@ Invoice Details:
 - Total Amount: ${invoice.formattedTotal}
 ${invoice.balance > 0 ? '- Balance Due: ${invoice.formattedBalance}' : ''}
 
+Download the invoice PDF: $pdfUrl
 ${invoice.notes != null && invoice.notes!.isNotEmpty ? '\nNotes:\n${invoice.notes}\n' : ''}
 
 Please make payment by the due date to avoid late fees.
@@ -770,8 +909,13 @@ ${facility.email != null ? '\nEmail: ${facility.email}' : ''}
 ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
 ''';
 
-          // Send email with PDF link
-          final htmlBody = '''
+  static String _invoiceEmailHtml(
+    InvoiceModel invoice,
+    TenantModel tenant,
+    FacilityModel facility,
+    String pdfUrl,
+  ) =>
+      '''
 <html>
 <body>
   <p>Dear ${tenant.name},</p>
@@ -785,7 +929,7 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
     ${invoice.balance > 0 ? '<li>Balance Due: ${invoice.formattedBalance}</li>' : ''}
   </ul>
   ${invoice.notes != null && invoice.notes!.isNotEmpty ? '<p><strong>Notes:</strong><br>${invoice.notes}</p>' : ''}
-  ${invoice.pdfUrl != null ? '<p><a href="${invoice.pdfUrl}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Invoice PDF</a></p>' : ''}
+  <p><a href="$pdfUrl" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Invoice PDF</a></p>
   <p>Please make payment by the due date to avoid late fees.</p>
   <p>Thank you for your business!</p>
   <p>
@@ -796,44 +940,6 @@ ${facility.phone != null ? 'Phone: ${facility.phone}' : ''}
 </body>
 </html>
 ''';
-
-          final emailResult = await EmailService.sendEmail(
-            to: tenant.email,
-            subject: subject,
-            html: htmlBody,
-            text: body,
-            facilityId: facilityId,
-          );
-
-          if (!emailResult.success) {
-            throw Exception(EmailService.staffEmailFailureHint(emailResult));
-          }
-
-          if (kDebugMode) {
-            print('✅ [Invoice] Invoice email sent to ${tenant.email}');
-          }
-        } catch (emailError) {
-          if (kDebugMode) {
-            print('⚠️ [Invoice] Error sending email: $emailError');
-          }
-          rethrow;
-        }
-      } else {
-        if (kDebugMode) {
-          print('⚠️ [Invoice] Cannot send email: PDF URL or tenant email missing');
-        }
-      }
-
-      if (kDebugMode) {
-        print('✅ [Invoice] Invoice sent: $invoiceId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ [Invoice] Error sending invoice: $e');
-      }
-      rethrow;
-    }
-  }
 
   /// Mark invoice as paid (manual payment)
   static Future<void> markInvoiceAsPaid({

@@ -86,7 +86,8 @@ export function decideRentReminder(params: {
 }): ReminderDecision {
   const { tenant, balance, reminderDays, now } = params;
 
-  if (tenant.isActive === false) return { send: false, reason: 'inactive' };
+  // Exactly true, as the app and every server job read a tenant's isActive.
+  if (tenant.isActive !== true) return { send: false, reason: 'inactive' };
   if (!tenant.phone || !tenant.phone.trim()) return { send: false, reason: 'no-phone' };
   if (tenant.smsOptOut === true) return { send: false, reason: 'opted-out' };
   if (!hasSmsConsent(tenant)) return { send: false, reason: 'no-consent' };

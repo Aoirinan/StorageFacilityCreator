@@ -3,13 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:sfcapp/models/facility_creator_account_model.dart';
-import 'package:sfcapp/services/facility_creator_account_service.dart';
-import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'app_route.dart';
 import '../widgets/subscription_warning_banner.dart';
 import '../widgets/support_session_banner.dart';
+import 'package:sfcapp/widgets/online_move_in_review_banner.dart';
 import '../widgets/subscription_lock_overlay.dart';
 import '../services/modern_navigation_service.dart';
 import '../services/subscription_guard_service.dart';
@@ -144,9 +142,8 @@ class _TrialExpiryCheckerState extends State<_TrialExpiryChecker> {
         allowSubscriptionRoutes: true,
       );
       if (!mounted) return;
-      if (!result.canAccess && result.redirectRoute != null) {
-        context.go(result.redirectRoute!);
-      }
+      final redirect = SubscriptionGuardService.backgroundRecheckRedirect(result);
+      if (redirect != null) context.go(redirect);
     } catch (_) {}
   }
 
@@ -191,17 +188,15 @@ class _SubscriptionAwareSidebarState extends State<_SubscriptionAwareSidebar> {
         return;
       }
 
-      final account = await FacilityCreatorAccountService.getAccountByOwnerUid(user.uid);
-      final facilities = await FacilityService.getUserFacilities(includeArchived: false, forceRefresh: false);
-      final hasAccess = await FacilityCreatorAccountService.hasActiveSubscription(user.uid, facilities: facilities);
+      // The route guard's rule, so an invited staff member (no account of
+      // their own) is not locked out of a sidebar the guard lets them use.
+      // Pending approval gets its own screen/guard and is not locked here.
+      final lock = await SubscriptionGuardService.shellLock(user.uid);
 
       if (mounted) {
-        // Pending approval gets its own screen/guard. Don't freeze sidebar interactions here.
-        bool isLocked =
-            account == null ? true : (account.isPendingApproval ? false : !hasAccess);
-        
         setState(() {
-          _isLocked = isLocked;
+          // Null: a read failed. Keep what is shown; the guard fails closed.
+          _isLocked = lock.locked ?? _isLocked;
           _isLoading = false;
         });
       }
@@ -321,6 +316,10 @@ class AppShell extends ConsumerWidget {
                         // Visible on every screen while a super admin is
                         // working inside someone else's facility.
                         const SupportSessionBanner(),
+
+                        // A paid online move-in into a unit taken off online
+                        // rental: the owner's only alert of it.
+                        const OnlineMoveInReviewBanner(),
 
                         // Page content
                         Expanded(child: KeyboardScrollable(child: child)),

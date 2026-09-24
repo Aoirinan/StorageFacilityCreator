@@ -13,6 +13,8 @@ import '../../services/late_logic_service.dart';
 import '../../services/tenant_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/badge_widget.dart';
+import 'package:sfcapp/services/error_reporter.dart';
+import 'package:sfcapp/widgets/facilities_load_error.dart';
 /// Past due hub tab: late stats + overdue payments/tenants (Delinquency Overview + Past Due merged).
 class PastDueHubTab extends ConsumerStatefulWidget {
   const PastDueHubTab({super.key});
@@ -23,6 +25,7 @@ class PastDueHubTab extends ConsumerStatefulWidget {
 
 class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
   String? _selectedFacilityId;
+  Object? _loadError;
 
   @override
   void initState() {
@@ -33,14 +36,18 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
   Future<void> _loadUserFacilities() async {
     final authState = ref.read(authStateProvider);
     if (authState.hasValue && authState.value != null) {
+      // Only creation flows need the account, so a failed account read must
+      // not stop the facilities loading.
+      FacilityCreatorAccountService.ensureAccountInBackground();
       try {
-        await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
         ref.invalidate(userFacilitiesProvider(authState.value!.uid));
         final facilitiesAsync =
             await ref.read(userFacilitiesProvider(authState.value!.uid).future);
         final facilities =
             facilitiesAsync as List<FacilityModel>? ?? <FacilityModel>[];
-        if (facilities.isNotEmpty && mounted) {
+        if (!mounted) return;
+        setState(() => _loadError = null);
+        if (facilities.isNotEmpty) {
           final activeId =
               ref.read(activeFacilityIdProvider).whenOrNull(data: (d) => d);
           final id = activeId != null && facilities.any((f) => f.id == activeId)
@@ -48,7 +55,12 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
               : facilities.first.id;
           setState(() => _selectedFacilityId = id);
         }
-      } catch (_) {}
+      } catch (e, st) {
+        // Shown with a Retry: it was swallowed, and the tab said there were
+        // no facilities.
+        ErrorReporter.reportError(e, st, context: 'PastDueHubTab._loadUserFacilities');
+        if (mounted) setState(() => _loadError = e);
+      }
     }
   }
 
@@ -64,11 +76,10 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
     final auth = ref.watch(authStateProvider);
     final activeId =
         ref.watch(activeFacilityIdProvider).whenOrNull(data: (d) => d);
-    final facilities = auth.whenOrNull(data: (d) => d) != null
-        ? ref
-            .watch(userFacilitiesProvider(auth.whenOrNull(data: (d) => d)!.uid))
-            .whenOrNull(data: (d) => d)
+    final facilitiesAsync = auth.whenOrNull(data: (d) => d) != null
+        ? ref.watch(userFacilitiesProvider(auth.whenOrNull(data: (d) => d)!.uid))
         : null;
+    final facilities = facilitiesAsync?.whenOrNull(data: (d) => d);
 
     String? effectiveId = _selectedFacilityId;
     if (effectiveId == null && facilities != null && facilities.isNotEmpty) {
@@ -83,6 +94,9 @@ class _PastDueHubTabState extends ConsumerState<PastDueHubTab> {
     }
 
     if (effectiveId == null) {
+      if (_loadError != null || (facilitiesAsync?.hasError ?? false)) {
+        return FacilitiesLoadError(onRetry: _loadUserFacilities);
+      }
       return _buildNoFacilitiesMessage(context);
     }
 

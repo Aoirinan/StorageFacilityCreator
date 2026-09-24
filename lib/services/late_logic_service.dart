@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/payment_model.dart';
 import '../models/tenant_model.dart';
 import '../models/contract_model.dart';
+import '../models/facility_model.dart';
 import 'tenant_service.dart';
 import 'facility_service.dart';
 
@@ -174,7 +175,14 @@ class LateLogicService {
   /// Grace period for a facility (from Billing Settings). Use this so "late" matches what the owner configured.
   static Future<int> getFacilityGracePeriodDays(String facilityId) async {
     final facility = await FacilityService.getFacility(facilityId);
-    final grace = facility?.billingSettings?['gracePeriodDays'];
+    return gracePeriodDaysFromBillingSettings(facility?.billingSettings);
+  }
+
+  /// [getFacilityGracePeriodDays] for a caller that already holds the facility,
+  /// parsed exactly the same way, so it gets the same answer without another
+  /// read of the facility doc.
+  static int gracePeriodDaysFromBillingSettings(Map<String, dynamic>? settings) {
+    final grace = settings?['gracePeriodDays'];
     if (grace is int) return grace;
     if (grace != null) return int.tryParse(grace.toString()) ?? _defaultGracePeriodDays;
     return _defaultGracePeriodDays;
@@ -288,113 +296,76 @@ class LateLogicService {
     }
   }
 
-  static Future<List<TenantOverdueInfo>> getTenantsWithOverduePayments(String facilityId) async {
+  /// Tenants who are behind: those with overdue payment records, then active
+  /// tenants whose paid-through date is past the grace period.
+  ///
+  /// Pass [facility] when it is already loaded: grace days and fee rules then
+  /// come from its billing settings with no further read of the facility doc.
+  /// Pass [tenants] when the caller is already loading the facility's tenant
+  /// list; it is awaited only if a payment record needs its tenant, and a
+  /// tenant missing from it (the list is capped) is still read by id. The
+  /// caller keeps awaiting [tenants] itself.
+  static Future<List<TenantOverdueInfo>> getTenantsWithOverduePayments(
+    String facilityId, {
+    FacilityModel? facility,
+    Future<List<TenantModel>>? tenants,
+  }) async {
     try {
       if (kDebugMode) {
         print('🔄 Getting tenants with overdue payments for facility: $facilityId');
       }
 
-      // Get overdue payments (may return [] if query fails or no payments exist)
-      List<PaymentModel> overduePayments;
-      try {
-        overduePayments = await getOverduePayments(facilityId);
-      } catch (_) {
-        overduePayments = [];
-      }
+      // One facility read at most, and none when the caller has it. The fee
+      // rules used to be re-read from the facility doc for every tenant inside
+      // the loop, and the grace period read it once more after that.
+      final settings = facility != null
+          ? facility.billingSettings
+          : (await FacilityService.getFacility(facilityId))?.billingSettings;
+      final feeRules = LateFeeRules.fromBillingSettings(settings);
+      // Use facility's grace period so "late" matches what the owner set in Billing Settings
+      final graceDays = gracePeriodDaysFromBillingSettings(settings);
+      final now = DateTime.now();
+      final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+      final graceCutoff = startOfCurrentMonth.subtract(Duration(days: graceDays));
+
+      final tenantsRef =
+          _firestore.collection('facilities').doc(facilityId).collection('tenants');
+      // Independent queries, so one wave instead of three round trips in a row.
+      final wave = await Future.wait<Object>([
+        // May return [] if the query fails or no payments exist.
+        getOverduePayments(facilityId)
+            .catchError((Object _) => <PaymentModel>[]),
+        tenantsRef
+            .where('paidThrough', isLessThan: Timestamp.fromDate(graceCutoff))
+            .get(),
+        tenantsRef.where('paidThrough', isNull: true).get(),
+      ]);
+      final overduePayments = wave[0] as List<PaymentModel>;
+      final lateTenantsSnapshot = wave[1] as QuerySnapshot<Map<String, dynamic>>;
+      final neverPaidSnapshot = wave[2] as QuerySnapshot<Map<String, dynamic>>;
 
       final paymentsByTenant = <String, List<PaymentModel>>{};
       for (final payment in overduePayments) {
         paymentsByTenant.putIfAbsent(payment.tenantId, () => []).add(payment);
       }
 
-      final results = <TenantOverdueInfo>[];
-      final trackedTenantIds = <String>{};
+      final paymentTenants = await _tenantsById(
+        facilityId,
+        paymentsByTenant.keys.toSet(),
+        tenants,
+      );
 
-      // Add tenants who have overdue payment records
-      for (final entry in paymentsByTenant.entries) {
-        final tenantDoc = await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('tenants')
-            .doc(entry.key)
-            .get();
-
-        if (!tenantDoc.exists) {
-          continue;
-        }
-
-        final tenant = TenantModel.fromFirestore(tenantDoc);
-        final tenantPayments = entry.value;
-
-        final feeRules = await getFacilityLateFeeRules(facilityId);
-        final graceDaysForFees = feeRules.gracePeriodDays;
-        final totalDue = tenantPayments.fold<double>(0, (sum, payment) => sum + payment.amount);
-        final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment, rules: feeRules));
-        final maxDaysOverdue = tenantPayments.fold<int>(0, (max, payment) => payment.daysOverdue > max ? payment.daysOverdue : max);
-        final status = _statusForOverduePayments(tenantPayments, gracePeriodDays: graceDaysForFees);
-
-        results.add(TenantOverdueInfo(
-          tenant: tenant,
-          payments: tenantPayments,
-          totalDue: totalDue,
-          totalLateFees: totalLateFees,
-          overduePayments: tenantPayments.length,
-          maxDaysOverdue: maxDaysOverdue,
-          status: status,
-        ));
-        trackedTenantIds.add(tenant.id);
-      }
-
-      // Use facility's grace period so "late" matches what the owner set in Billing Settings
-      final graceDays = await getFacilityGracePeriodDays(facilityId);
-      final now = DateTime.now();
-      final startOfCurrentMonth = DateTime(now.year, now.month, 1);
-      final graceCutoff = startOfCurrentMonth.subtract(Duration(days: graceDays));
-
-      final lateTenantsSnapshot = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .where('paidThrough', isLessThan: Timestamp.fromDate(graceCutoff))
-          .get();
-
-      final neverPaidSnapshot = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .where('paidThrough', isNull: true)
-          .get();
-
-      final additionalDocs = [
-        ...lateTenantsSnapshot.docs,
-        ...neverPaidSnapshot.docs,
-      ];
-
-      for (final doc in additionalDocs) {
-        if (!doc.exists) continue;
-        if (trackedTenantIds.contains(doc.id)) continue;
-
-        final tenant = TenantModel.fromFirestore(doc);
-        if (!tenant.isActive) continue;
-        if (!isTenantLate(tenant, gracePeriodDays: graceDays)) continue;
-
-        final daysLate = getTenantDaysLate(tenant, gracePeriodDays: graceDays);
-        final status = _statusForDaysLate(daysLate);
-        results.add(
-          TenantOverdueInfo(
-            tenant: tenant,
-            payments: const [],
-            totalDue: tenant.monthlyRate,
-            totalLateFees: 0,
-            overduePayments: 0,
-            maxDaysOverdue: daysLate,
-            status: status,
-          ),
-        );
-        trackedTenantIds.add(tenant.id);
-      }
-
-      results.sort((a, b) => b.totalBalance.compareTo(a.totalBalance));
+      final results = buildOverdueList(
+        paymentsByTenant: paymentsByTenant,
+        paymentTenants: paymentTenants,
+        paidThroughCandidates: [
+          ...lateTenantsSnapshot.docs,
+          ...neverPaidSnapshot.docs,
+        ].where((doc) => doc.exists).map(TenantModel.fromFirestore),
+        feeRules: feeRules,
+        graceDays: graceDays,
+        now: now,
+      );
 
       if (kDebugMode) {
         print('✅ Found ${results.length} tenants with overdue payments');
@@ -407,6 +378,102 @@ class LateLogicService {
       }
       rethrow;
     }
+  }
+
+  /// The tenants for [ids], from [tenants] where present and read by id (in
+  /// parallel, not one after another) for the rest. Ids with no tenant doc are
+  /// left out.
+  static Future<Map<String, TenantModel>> _tenantsById(
+    String facilityId,
+    Set<String> ids,
+    Future<List<TenantModel>>? tenants,
+  ) async {
+    final found = <String, TenantModel>{};
+    if (ids.isEmpty) return found;
+    if (tenants != null) {
+      try {
+        for (final t in await tenants) {
+          if (ids.contains(t.id)) found[t.id] = t;
+        }
+      } catch (_) {
+        // Read each one by id below instead.
+      }
+    }
+    final missing = ids.where((id) => !found.containsKey(id)).toList();
+    final docs = await Future.wait(missing.map((id) => _firestore
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('tenants')
+        .doc(id)
+        .get()));
+    for (final doc in docs) {
+      if (doc.exists) found[doc.id] = TenantModel.fromFirestore(doc);
+    }
+    return found;
+  }
+
+  /// Builds [getTenantsWithOverduePayments]' list from data already read.
+  ///
+  /// Tenants with overdue payment records come first (fees from [feeRules]);
+  /// then each active candidate that [isTenantLate] says is late, unless
+  /// already listed. Sorted by total balance, highest first.
+  static List<TenantOverdueInfo> buildOverdueList({
+    required Map<String, List<PaymentModel>> paymentsByTenant,
+    required Map<String, TenantModel> paymentTenants,
+    required Iterable<TenantModel> paidThroughCandidates,
+    required LateFeeRules feeRules,
+    required int graceDays,
+    DateTime? now,
+  }) {
+    final results = <TenantOverdueInfo>[];
+    final trackedTenantIds = <String>{};
+
+    // Add tenants who have overdue payment records
+    for (final entry in paymentsByTenant.entries) {
+      final tenant = paymentTenants[entry.key];
+      if (tenant == null) continue;
+      final tenantPayments = entry.value;
+
+      final totalDue = tenantPayments.fold<double>(0, (sum, payment) => sum + payment.amount);
+      final totalLateFees = tenantPayments.fold<double>(0, (sum, payment) => sum + calculateLateFee(payment, rules: feeRules));
+      final maxDaysOverdue = tenantPayments.fold<int>(0, (max, payment) => payment.daysOverdue > max ? payment.daysOverdue : max);
+      final status = _statusForOverduePayments(tenantPayments, gracePeriodDays: feeRules.gracePeriodDays);
+
+      results.add(TenantOverdueInfo(
+        tenant: tenant,
+        payments: tenantPayments,
+        totalDue: totalDue,
+        totalLateFees: totalLateFees,
+        overduePayments: tenantPayments.length,
+        maxDaysOverdue: maxDaysOverdue,
+        status: status,
+      ));
+      trackedTenantIds.add(tenant.id);
+    }
+
+    for (final tenant in paidThroughCandidates) {
+      if (trackedTenantIds.contains(tenant.id)) continue;
+      if (!tenant.isActive) continue;
+      if (!isTenantLate(tenant, gracePeriodDays: graceDays, now: now)) continue;
+
+      final daysLate = getTenantDaysLate(tenant, gracePeriodDays: graceDays, now: now);
+      final status = _statusForDaysLate(daysLate);
+      results.add(
+        TenantOverdueInfo(
+          tenant: tenant,
+          payments: const [],
+          totalDue: tenant.monthlyRate,
+          totalLateFees: 0,
+          overduePayments: 0,
+          maxDaysOverdue: daysLate,
+          status: status,
+        ),
+      );
+      trackedTenantIds.add(tenant.id);
+    }
+
+    results.sort((a, b) => b.totalBalance.compareTo(a.totalBalance));
+    return results;
   }
 
   // --- Late Fee Calculation ---

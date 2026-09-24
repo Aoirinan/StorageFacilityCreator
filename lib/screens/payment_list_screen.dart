@@ -15,6 +15,7 @@ import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/autopay_service.dart';
+import 'package:sfcapp/services/payment_service.dart';
 import '../services/stripe_connect_service.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
@@ -65,6 +66,10 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   bool _autopayChargeDaySaving = false;
   bool _appliedRouteParams = false;
   final SetupRetryController _setupRetry = SetupRetryController();
+
+  /// Payments with a Process running or done. A second Process on the same
+  /// row ran it again (paidThrough moved on a second month).
+  final Set<String> _processingPaymentIds = {};
 
   @override
   void initState() {
@@ -160,31 +165,11 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       if (authState.hasValue && authState.value != null) {
         final user = authState.value!;
         
-        // CRITICAL: Ensure account exists BEFORE trying to load facilities
-        // Permission errors often occur because account doesn't exist yet
-        try {
-          await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-          if (kDebugMode) {
-            debugPrint('✅ Account verified/created for user: ${user.uid}');
-          }
-        } catch (accountError) {
-          // Account creation failed - show helpful error
-          if (mounted) {
-            debugPrint('❌ Could not ensure account exists: $accountError');
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Account setup error: $accountError. Please try again or contact support.'),
-                backgroundColor: AppTheme.warning,
-                duration: const Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'Retry',
-                  onPressed: () => _loadUserFacilities(),
-                ),
-              ),
-            );
-            return; // Don't try to load facilities if account creation failed
-          }
-        }
+        // Only creation flows need the account, so a failed account read
+        // must not stop this list loading (it used to return here, blank).
+        // Facility reads never depended on it: the rules check ownerUid and
+        // roles on the facility itself.
+        FacilityCreatorAccountService.ensureAccountInBackground();
 
         ref.invalidate(userFacilitiesProvider(user.uid));
         // Prefer active facility so Payments and Stripe Connect page stay in sync.
@@ -1685,7 +1670,9 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
             if (payment.status == PaymentStatus.pending)
               IconButton(
                 icon: const Icon(Icons.payment),
-                onPressed: () => _processPayment(payment),
+                onPressed: _processingPaymentIds.contains(payment.id)
+                    ? null
+                    : () => _processPayment(payment),
               ),
             IconButton(
               icon: const Icon(Icons.arrow_forward_ios),
@@ -1709,8 +1696,12 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       case PaymentStatus.failed:
         return AppTheme.error;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return AppTheme.primaryBlue;
+      case PaymentStatus.disputed:
+        return AppTheme.error;
       case PaymentStatus.cancelled:
+      case PaymentStatus.other:
         return AppTheme.textTertiary;
     }
   }
@@ -1726,9 +1717,14 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
       case PaymentStatus.failed:
         return Icons.error;
       case PaymentStatus.refunded:
+      case PaymentStatus.partiallyRefunded:
         return Icons.refresh;
       case PaymentStatus.cancelled:
         return Icons.cancel;
+      case PaymentStatus.disputed:
+        return Icons.gavel;
+      case PaymentStatus.other:
+        return Icons.help_outline;
     }
   }
 
@@ -1768,30 +1764,42 @@ class _PaymentListScreenState extends ConsumerState<PaymentListScreen> {
   }
 
   void _processPayment(PaymentModel payment) {
+    if (_processingPaymentIds.contains(payment.id)) return;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Process Payment'),
         content: Text('Process payment of ${payment.formattedAmount}?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
-              Navigator.of(context).pop();
+              if (!_processingPaymentIds.add(payment.id)) return;
+              setState(() {});
+              Navigator.of(dialogContext).pop();
               try {
                 await ref.read(paymentOperationsProvider.notifier).processPayment(
                   facilityId: _selectedFacilityId,
                   paymentId: payment.id,
                   method: payment.method,
                 );
-                if (!context.mounted) return;
+                // The list's own context. The dialog's is dead after the
+                // await, so the refresh never ran and the row stayed
+                // pending with its Process button, inviting a second one.
+                // The id stays in the set: the payment is paid.
+                if (!mounted) return;
                 ref.invalidate(paymentListProvider(_selectedFacilityId));
                 ref.invalidate(paymentStatsProvider(_selectedFacilityId));
               } catch (e) {
-                if (!context.mounted) return;
+                if (!mounted) return;
+                // A refusal (no longer due) keeps the row's Process off; the
+                // notifier has the list reloaded to show what it really is.
+                if (e is! PaymentNotProcessableException) {
+                  setState(() => _processingPaymentIds.remove(payment.id));
+                }
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(ErrorMessageHelper.getUserFriendlyMessage(e)),

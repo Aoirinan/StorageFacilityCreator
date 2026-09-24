@@ -39,10 +39,86 @@ class MoveInData {
   });
 }
 
+/// Statuses in which a tenant is in the unit.
+const _tenantInUnitStatuses = {
+  UnitStatus.occupied,
+  UnitStatus.overlocked,
+  UnitStatus.lockout,
+  UnitStatus.auction,
+};
+
+/// A move-in refused because the unit already has a tenant in it.
+///
+/// Thrown typed so the wizard can tell a move-in of this same tenant
+/// ([sameTenant]) from a unit someone else rents, and so its message does not
+/// reach the screen as "Exception: ...".
+class MoveInUnitConflict implements Exception {
+  const MoveInUnitConflict({
+    required this.unitNumber,
+    required this.holderName,
+    required this.sameTenant,
+  });
+
+  final String unitNumber;
+
+  /// The name the unit shows for its tenant; may be empty.
+  final String holderName;
+
+  /// The unit shows the tenant being moved in.
+  final bool sameTenant;
+
+  String get message {
+    if (sameTenant) {
+      final who = holderName.isEmpty ? 'this tenant' : holderName;
+      return 'This move-in was partly completed: Unit $unitNumber already '
+          "shows $who in it. Open $who's ledger to review before trying "
+          'again.';
+    }
+    return 'Unit $unitNumber is already occupied'
+        '${holderName.isEmpty ? '' : ' by $holderName'}.';
+  }
+
+  @override
+  String toString() => message;
+}
+
+/// Why a move-in of [tenantId] into [unit] (as just read from Firestore) must
+/// not run, or null when it may.
+///
+/// A move-in submitted twice, or retried after it had in fact finished, wrote
+/// a second contract, second charges, a second payment allocation and a
+/// second gate code: nothing checked the unit before writing. The unit is not
+/// the last thing a move-in writes: step 1 (the tenant's unit) already marks
+/// it occupied by the tenant, before the contract, charges and payment. So
+/// the same tenant in the unit means a move-in at least partly done, maybe
+/// one that failed partway, and running it again could charge them twice.
+/// [unit] null (it could not be read) lets the move-in run as before.
+MoveInUnitConflict? moveInUnitConflict({
+  required UnitModel? unit,
+  required String tenantId,
+}) {
+  if (unit == null) return null;
+  final holder = unit.tenantId ?? '';
+  if (holder.isEmpty || !_tenantInUnitStatuses.contains(unit.status)) {
+    return null;
+  }
+  return MoveInUnitConflict(
+    unitNumber: unit.unitNumber,
+    holderName: unit.tenantName ?? '',
+    sameTenant: holder == tenantId,
+  );
+}
+
 /// Service for managing move-in workflow
 class MoveInService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so a test can sign a fake user in and run
+  // the real move-in (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// Calculate move-in charges
   /// Returns list of invoice line items with prorated amounts
@@ -250,9 +326,18 @@ class MoveInService {
       }
 
       final facilityId = moveInData.unit.facilityId;
+      String? rentNotice;
       TenantModel tenant;
       ContractModel contract;
       List<String> ledgerEntryIds = [];
+
+      // Read the unit fresh, before any write: the wizard's copy is from
+      // when the unit was picked.
+      final conflict = moveInUnitConflict(
+        unit: await UnitService.getUnit(facilityId, moveInData.unit.id),
+        tenantId: moveInData.existingTenant?.id ?? '',
+      );
+      if (conflict != null) throw conflict;
 
       // Step 1: Create or update tenant
       if (moveInData.existingTenant != null) {
@@ -264,7 +349,9 @@ class MoveInService {
         
         // Update tenant with move-in info
         // Note: Insurance status should be set via the wizard UI, not here
-        await TenantService.updateTenant(
+        // Never frees a unit the tenant already rents (a second unit).
+        // A unit added to ones they hold adds its rate; the wizard shows it.
+        rentNotice = await TenantService.recordMoveInUnit(
           tenantId: tenant.id,
           facilityId: facilityId,
           unitNumber: moveInData.unit.unitNumber,
@@ -428,6 +515,7 @@ class MoveInService {
         tenantId: tenant.id,
         contractId: contract.id,
         ledgerEntryIds: ledgerEntryIds,
+        notice: rentNotice,
       );
     } catch (e) {
       if (kDebugMode) {
@@ -436,6 +524,7 @@ class MoveInService {
       return MoveInResult(
         success: false,
         error: e.toString(),
+        conflict: e is MoveInUnitConflict ? e : null,
       );
     }
   }
@@ -449,12 +538,22 @@ class MoveInResult {
   final List<String> ledgerEntryIds;
   final String? error;
 
+  /// For the owner after a finished move-in, e.g. the tenant's new monthly
+  /// rent when the unit was added to others they rent.
+  final String? notice;
+
+  /// Set when the unit already had a tenant, so the wizard can point the
+  /// owner at the ledger instead of inviting a retry.
+  final MoveInUnitConflict? conflict;
+
   MoveInResult({
     required this.success,
     this.tenantId,
     this.contractId,
     this.ledgerEntryIds = const [],
     this.error,
+    this.notice,
+    this.conflict,
   });
 }
 

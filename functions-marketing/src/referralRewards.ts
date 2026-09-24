@@ -4,7 +4,7 @@
  */
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
-import { enforceAppCheckOrThrow } from '@sfc/functions-shared';
+import { enforceAppCheckOrThrow, findOwnerAccountDoc } from '@sfc/functions-shared';
 
 const REFERRAL_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const REFERRAL_CODE_LEN = 8;
@@ -42,16 +42,12 @@ export const ensureReferralCodeForAccount = functions.https.onCall(async (_data:
   enforceAppCheckOrThrow(context);
 
   const db = admin.firestore();
-  const q = await db
-    .collection('facilityCreatorAccounts')
-    .where('ownerUid', '==', context.auth.uid)
-    .limit(1)
-    .get();
-  if (q.empty) {
+  // The owner's preferred account, not whichever duplicate limit(1) returned.
+  const accountSnap = await findOwnerAccountDoc(db, context.auth.uid);
+  if (!accountSnap) {
     throw new functions.https.HttpsError('failed-precondition', 'No facility creator account yet');
   }
-  const accountRef = q.docs[0].ref;
-  const accountSnap = q.docs[0];
+  const accountRef = accountSnap.ref;
   const existing = (accountSnap.get('referralCode') as string | undefined)?.trim().toUpperCase();
   if (existing && existing.length >= 4) {
     return { referralCode: existing, accountId: accountRef.id };
@@ -104,18 +100,14 @@ export const claimReferralAttribution = functions.https.onCall(async (data: { re
   }
 
   const db = admin.firestore();
-  const q = await db
-    .collection('facilityCreatorAccounts')
-    .where('ownerUid', '==', context.auth.uid)
-    .limit(1)
-    .get();
-  if (q.empty) {
+  const accountSnap = await findOwnerAccountDoc(db, context.auth.uid);
+  if (!accountSnap) {
     throw new functions.https.HttpsError('failed-precondition', 'No facility creator account yet');
   }
-  const accountRef = q.docs[0].ref;
+  const accountRef = accountSnap.ref;
   const myAccountId = accountRef.id;
 
-  const existingRef = q.docs[0].get('referredByAccountId') as string | undefined;
+  const existingRef = accountSnap.get('referredByAccountId') as string | undefined;
   if (existingRef && existingRef.trim().length > 0) {
     return { ok: true, alreadyClaimed: true, referredByAccountId: existingRef.trim() };
   }
@@ -160,16 +152,12 @@ export const setReferralRewardPreferredFacility = functions.https.onCall(
     enforceAppCheckOrThrow(context);
 
     const db = admin.firestore();
-    const q = await db
-      .collection('facilityCreatorAccounts')
-      .where('ownerUid', '==', context.auth.uid)
-      .limit(1)
-      .get();
-    if (q.empty) {
+    const accountSnap = await findOwnerAccountDoc(db, context.auth.uid);
+    if (!accountSnap) {
       throw new functions.https.HttpsError('failed-precondition', 'No facility creator account yet');
     }
-    const accountRef = q.docs[0].ref;
-    const facIds = ((q.docs[0].get('facilityIds') as string[]) || []).slice();
+    const accountRef = accountSnap.ref;
+    const facIds = ((accountSnap.get('facilityIds') as string[]) || []).slice();
 
     const raw = data?.facilityId;
     if (raw == null || String(raw).trim() === '') {

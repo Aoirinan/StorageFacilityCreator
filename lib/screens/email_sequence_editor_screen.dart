@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import '../models/email_sequence_model.dart';
 import '../services/email_sequence_service.dart';
-import '../providers/facility_provider.dart';
 import '../providers/search_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 /// Screen for creating/editing email sequences
 class EmailSequenceEditorScreen extends ConsumerStatefulWidget {
@@ -173,7 +172,9 @@ class _EmailSequenceEditorScreenState extends ConsumerState<EmailSequenceEditorS
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sequence saved successfully')),
         );
-        context.pop();
+        // A bare pop threw after the save when this page was opened by a
+        // link or a reload, and the catch reported the save as failed.
+        popOrGo(context, AppRoute.emailSequences);
       }
     } catch (e) {
       setState(() {

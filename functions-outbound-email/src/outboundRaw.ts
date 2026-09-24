@@ -7,6 +7,7 @@ import {
   buildFacilityFooter,
   enforceAppCheckOrThrow,
   enforceRateLimit,
+  findOwnerAccountDoc,
   getPublicAppUrl,
   getSendgridAsmGroupId,
   getSgMail,
@@ -1143,14 +1144,12 @@ async function checkAndIncrementEmailUsage(facilityId: string): Promise<{success
   if (facilityDoc.exists) {
     const ownerUid = facilityDoc.data()?.ownerUid;
     if (ownerUid) {
-      const accountSnapshot = await admin.firestore()
-        .collection('facilityCreatorAccounts')
-        .where('ownerUid', '==', ownerUid)
-        .limit(1)
-        .get();
+      // The owner's preferred account, not whichever duplicate limit(1)
+      // returned: a pendingApproval duplicate would set the wrong cap.
+      const accountDoc = await findOwnerAccountDoc(admin.firestore(), ownerUid);
 
-      if (!accountSnapshot.empty) {
-        const accountData = accountSnapshot.docs[0].data();
+      if (accountDoc) {
+        const accountData = accountDoc.data();
         derivedLimit = emailMonthlyLimitForAccount(
           accountData.subscriptionStatus === 'trialing',
         );

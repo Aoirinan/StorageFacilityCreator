@@ -18,6 +18,7 @@ import '../screens/cancellation/cancellation_retention_wizard.dart';
 import '../services/stripe_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
+import 'package:sfcapp/utils/save_then_publish.dart';
 import '../widgets/custom_domain_panel.dart';
 
 class FacilityWebsiteSetupScreen extends ConsumerStatefulWidget {
@@ -916,44 +917,47 @@ class _FacilityWebsiteSetupScreenState
         },
       };
 
-      await FacilityPublicService.updatePublicSettings(
-        facilityId: widget.facilityId,
-        enabled: _websiteEnabled,
-        publicRentalsEnabled: true,
-        publicRentalSlug: slug,
-        customDomain: customDomain.isEmpty ? null : customDomain,
-        pageTitle: _pageTitleController.text.trim().isEmpty
-            ? null
-            : _pageTitleController.text.trim(),
-        pageDescription: _pageDescriptionController.text.trim().isEmpty
-            ? null
-            : _pageDescriptionController.text.trim(),
-        marketingContent: _marketingContentController.text.trim().isEmpty
-            ? null
-            : _marketingContentController.text.trim(),
-        featuredImages: _heroImageUrlController.text.trim().isEmpty
-            ? null
-            : <String>[_heroImageUrlController.text.trim()],
-        customStyles: <String, dynamic>{
-          'heroGradientStart': _normalizeHexColor(
-              _heroGradientStartController.text,
-              fallback: '#0C1E4D'),
-          'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text,
-              fallback: '#1E5BD4'),
-          'heroTextColor': _normalizeHexColor(_heroTextColorController.text,
-              fallback: '#FFFFFF'),
-          'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text,
-              fallback: '#103A86'),
+      await saveThenPublish(
+        save: () => FacilityPublicService.updatePublicSettings(
+          facilityId: widget.facilityId,
+          enabled: _websiteEnabled,
+          publicRentalsEnabled: true,
+          publicRentalSlug: slug,
+          customDomain: customDomain.isEmpty ? null : customDomain,
+          pageTitle: _pageTitleController.text.trim().isEmpty
+              ? null
+              : _pageTitleController.text.trim(),
+          pageDescription: _pageDescriptionController.text.trim().isEmpty
+              ? null
+              : _pageDescriptionController.text.trim(),
+          marketingContent: _marketingContentController.text.trim().isEmpty
+              ? null
+              : _marketingContentController.text.trim(),
+          featuredImages: _heroImageUrlController.text.trim().isEmpty
+              ? null
+              : <String>[_heroImageUrlController.text.trim()],
+          customStyles: <String, dynamic>{
+            'heroGradientStart': _normalizeHexColor(
+                _heroGradientStartController.text,
+                fallback: '#0C1E4D'),
+            'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text,
+                fallback: '#1E5BD4'),
+            'heroTextColor': _normalizeHexColor(_heroTextColorController.text,
+                fallback: '#FFFFFF'),
+            'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text,
+                fallback: '#103A86'),
+          },
+          widgets: mergedWidgets,
+        ),
+        publish: () async {
+          await FacilityMapV2Service.setPublicSlug(
+            facilityId: widget.facilityId,
+            slug: slug,
+          );
+          await FacilityMapV2Service.publishCurrentDraft(
+              facilityId: widget.facilityId);
         },
-        widgets: mergedWidgets,
       );
-
-      await FacilityMapV2Service.setPublicSlug(
-        facilityId: widget.facilityId,
-        slug: slug,
-      );
-      await FacilityMapV2Service.publishCurrentDraft(
-          facilityId: widget.facilityId);
 
       if (!mounted) return;
       setState(() => _isSaving = false);
@@ -967,7 +971,8 @@ class _FacilityWebsiteSetupScreenState
       if (!mounted) return;
       setState(() {
         _isSaving = false;
-        _error = 'Failed to save website settings: $e';
+        _error = saveThenPublishErrorText(e,
+            saveFailed: 'Failed to save website settings');
       });
     }
   }

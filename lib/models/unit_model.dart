@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 import 'overlock_model.dart';
 
 enum UnitStatus {
@@ -26,7 +27,22 @@ class UnitModel {
   final String facilityId;
   final String unitNumber;
   final String unitType;
+
+  /// Anything in the doc that is not exactly a [UnitStatus] name (no status,
+  /// 'Available', 'Occupied') reads as [UnitStatus.available]. The dashboard
+  /// and Units list rely on that; the online rental list must not (see
+  /// [storedStatus]).
   final UnitStatus status;
+
+  /// The doc's `status` as stored, for a unit read from Firestore: the string,
+  /// or '' when there is none or it is not a string. Null for a unit built in
+  /// code, where [status] is all there is.
+  ///
+  /// The online rental holds test the stored string lower-cased, not
+  /// [status], so they refuse a unit with no status and accept 'Available'.
+  /// FacilityMapV2Service.buildPublicUnitInventoryMaps goes by this so that
+  /// the public list offers exactly what the holds accept.
+  final String? storedStatus;
   final String? tenantId;
   final String? tenantName;
   final double monthlyRate;
@@ -54,10 +70,20 @@ class UnitModel {
   /// Manager overlock state (auditable). If absent, treat as not overlocked.
   final OverlockInfo? overlock;
   /// Whether this unit can appear as rentable on the facility's public website.
-  /// Defaults to true; set false for staff-only spaces (manager residence,
-  /// office, personal-use units) that are `available` internally but must
-  /// never be publicly rentable.
+  /// Defaults to true. Only the public map and website read it; it has no
+  /// effect on Total/Occupied/Vacant (see [internalUse]). Owners whose rental
+  /// page is not live yet turn it off for most of their units. Only an exact
+  /// `false` turns it off, as in `isUnitOfferedOnline` (functions-shared).
   final bool publicListingEnabled;
+
+  /// Office, manager residence or personal-use space the owner does not rent
+  /// out. Left out of Total/Occupied/Vacant everywhere
+  /// (`FacilityStatsService.countsTowardOccupancy`, and `countsTowardOccupancy`
+  /// in functions-facility-ops), and never offered online whatever
+  /// [publicListingEnabled] says (`isUnitOfferedOnline` in functions-shared,
+  /// `FacilityMapV2Service.buildPublicUnitInventoryMaps`). Only an exact
+  /// `true` counts; missing is false.
+  final bool internalUse;
 
   const UnitModel({
     required this.id,
@@ -65,6 +91,7 @@ class UnitModel {
     required this.unitNumber,
     required this.unitType,
     required this.status,
+    this.storedStatus,
     this.tenantId,
     this.tenantName,
     required this.monthlyRate,
@@ -91,54 +118,60 @@ class UnitModel {
     this.mapHeight,
     this.overlock,
     this.publicListingEnabled = true,
+    this.internalUse = false,
   });
 
+  /// Reads every field so that a value of the wrong type never throws (see
+  /// lib/utils/firestore_field_read.dart): UnitService builds a facility's
+  /// units in one pass, so one unit that threw emptied the Units list and
+  /// failed the public map publish.
   factory UnitModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    final layout = data['mapLayout'] as Map<String, dynamic>?;
+    final layout = mapFromField(data['mapLayout']);
+    final overlock = mapFromField(data['overlock']);
     return UnitModel(
       id: doc.id,
-      facilityId: data['facilityId'] ?? '',
-      unitNumber: data['unitNumber'] ?? '',
-      unitType: data['unitType'] ?? 'standard',
+      facilityId: textFromField(data['facilityId']) ?? '',
+      unitNumber: textFromField(data['unitNumber']) ?? '',
+      unitType: textFromField(data['unitType']) ?? 'standard',
       status: UnitStatus.values.firstWhere(
         (e) => e.name == data['status'],
         orElse: () => UnitStatus.available,
       ),
-      tenantId: data['tenantId'],
-      tenantName: data['tenantName'],
-      monthlyRate: (data['monthlyRate'] ?? 0.0).toDouble(),
-      securityDeposit: data['securityDeposit']?.toDouble(),
-      description: data['description'],
-      dimensions: data['dimensions'] != null 
-          ? Map<String, dynamic>.from(data['dimensions'])
-          : null,
-      features: data['features'] != null 
-          ? List<String>.from(data['features'])
-          : null,
-      notes: data['notes'],
-      lastMaintenance: data['lastMaintenance']?.toDate(),
-      nextMaintenance: data['nextMaintenance']?.toDate(),
-      moveInDate: data['moveInDate']?.toDate(),
-      moveOutDate: data['moveOutDate']?.toDate(),
-      moveOutNoticeDate: data['moveOutNoticeDate']?.toDate(),
-      reservationExpiry: data['reservationExpiry']?.toDate(),
-      reservedBy: data['reservedBy'],
-      customFields: data['customFields'] != null 
-          ? Map<String, dynamic>.from(data['customFields'])
-          : null,
-      createdAt: data['createdAt']?.toDate() ?? DateTime.now(),
-      updatedAt: data['updatedAt']?.toDate() ?? DateTime.now(),
-      createdBy: data['createdBy'] ?? '',
-      updatedBy: data['updatedBy'],
-      mapX: (layout?['x'] as num?)?.toDouble(),
-      mapY: (layout?['y'] as num?)?.toDouble(),
-      mapWidth: (layout?['width'] as num?)?.toDouble(),
-      mapHeight: (layout?['height'] as num?)?.toDouble(),
-      overlock: data['overlock'] != null
-          ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
-          : null,
-      publicListingEnabled: data['publicListingEnabled'] as bool? ?? true,
+      storedStatus: data['status'] is String ? data['status'] as String : '',
+      // A link only when it is a string, not its text: the public map sync
+      // and the stats function (facility_stats.ts) ignore any other value, so
+      // reading 5 as '5' would count the unit rented here and free there.
+      tenantId: data['tenantId'] is String ? data['tenantId'] as String : null,
+      tenantName: textFromField(data['tenantName']),
+      monthlyRate: numberFromField(data['monthlyRate']) ?? 0.0,
+      securityDeposit: numberFromField(data['securityDeposit']),
+      description: textFromField(data['description']),
+      dimensions: mapFromField(data['dimensions']),
+      features: textListFromField(data['features']),
+      notes: textFromField(data['notes']),
+      lastMaintenance: dateFromField(data['lastMaintenance']),
+      nextMaintenance: dateFromField(data['nextMaintenance']),
+      moveInDate: dateFromField(data['moveInDate']),
+      moveOutDate: dateFromField(data['moveOutDate']),
+      moveOutNoticeDate: dateFromField(data['moveOutNoticeDate']),
+      reservationExpiry: dateFromField(data['reservationExpiry']),
+      reservedBy: textFromField(data['reservedBy']),
+      customFields: mapFromField(data['customFields']),
+      createdAt: dateFromField(data['createdAt']) ?? DateTime.now(),
+      updatedAt: dateFromField(data['updatedAt']) ?? DateTime.now(),
+      createdBy: textFromField(data['createdBy']) ?? '',
+      updatedBy: textFromField(data['updatedBy']),
+      mapX: numberFromField(layout?['x']),
+      mapY: numberFromField(layout?['y']),
+      mapWidth: numberFromField(layout?['width']),
+      mapHeight: numberFromField(layout?['height']),
+      overlock: overlock != null ? OverlockInfo.fromMap(overlock) : null,
+      // Was `as bool? ?? true`, which threw on a stray 'false' or 0 and so
+      // failed the whole unit read: the Units list came back empty and the
+      // public map publish failed.
+      publicListingEnabled: data['publicListingEnabled'] != false,
+      internalUse: data['internalUse'] == true,
     );
   }
 
@@ -169,6 +202,7 @@ class UnitModel {
       'createdBy': createdBy,
       'updatedBy': updatedBy,
       'publicListingEnabled': publicListingEnabled,
+      'internalUse': internalUse,
     };
     if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
       map['mapLayout'] = {
@@ -213,6 +247,7 @@ class UnitModel {
     double? mapHeight,
     OverlockInfo? overlock,
     bool? publicListingEnabled,
+    bool? internalUse,
   }) {
     return UnitModel(
       id: id ?? this.id,
@@ -220,6 +255,8 @@ class UnitModel {
       unitNumber: unitNumber ?? this.unitNumber,
       unitType: unitType ?? this.unitType,
       status: status ?? this.status,
+      // A status set here is the unit's status now; the stored one is stale.
+      storedStatus: status == null ? storedStatus : null,
       tenantId: tenantId ?? this.tenantId,
       tenantName: tenantName ?? this.tenantName,
       monthlyRate: monthlyRate ?? this.monthlyRate,
@@ -246,6 +283,7 @@ class UnitModel {
       mapHeight: mapHeight ?? this.mapHeight,
       overlock: overlock ?? this.overlock,
       publicListingEnabled: publicListingEnabled ?? this.publicListingEnabled,
+      internalUse: internalUse ?? this.internalUse,
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/facility_doc_path.dart';
 
 enum PaymentStatus {
   pending,
@@ -7,6 +8,30 @@ enum PaymentStatus {
   failed,
   refunded,
   cancelled,
+  /// The charge is disputed (stripeWebhookDisputeCreated writes it).
+  disputed,
+  /// Part of the charge was refunded (stripeWebhookChargeRefunded writes
+  /// `partially_refunded`).
+  partiallyRefunded,
+  /// A status this app has no name for; [PaymentModel.storedStatus] has it.
+  other,
+}
+
+/// The status a payment stored with [stored] has.
+///
+/// Statuses this app did not name used to read as pending, so a disputed or
+/// part-refunded Stripe payment showed as pending with a Process button, and
+/// processing it overwrote the dispute with paid and moved the tenant's
+/// paidThrough on a month nobody paid for. Now they read as what they are,
+/// and anything unknown as [PaymentStatus.other]. Only a missing status
+/// still reads as pending, as a payment created without one is still owed.
+PaymentStatus paymentStatusFromStored(Object? stored) {
+  if (stored == null) return PaymentStatus.pending;
+  if (stored == 'partially_refunded') return PaymentStatus.partiallyRefunded;
+  for (final status in PaymentStatus.values) {
+    if (status != PaymentStatus.other && status.name == stored) return status;
+  }
+  return PaymentStatus.other;
 }
 
 enum PaymentMethod {
@@ -33,6 +58,10 @@ class PaymentModel {
   final String contractId;
   final double amount;
   final PaymentStatus status;
+
+  /// The status as stored, for a [PaymentStatus.other] payment (null for
+  /// the rest): shown instead of a guess, and written back unchanged.
+  final String? storedStatus;
   final PaymentMethod method;
   final DateTime dueDate;
   final DateTime? paidDate;
@@ -57,6 +86,7 @@ class PaymentModel {
     required this.contractId,
     required this.amount,
     required this.status,
+    this.storedStatus,
     required this.method,
     required this.dueDate,
     this.paidDate,
@@ -99,17 +129,17 @@ class PaymentModel {
 
     final snapName = readTrimmed(data['tenantName']) ?? readTrimmed(data['payerName']);
     final snapUnit = readTrimmed(data['unitNumber']) ?? readTrimmed(data['payerUnit']);
+    final status = paymentStatusFromStored(data['status']);
 
     return PaymentModel(
       id: doc.id,
       tenantId: data['tenantId'] ?? '',
-      facilityId: data['facilityId'] ?? '',
+      facilityId: facilityIdOf(doc, data['facilityId']),
       contractId: data['contractId'] ?? '',
       amount: (data['amount'] ?? 0.0).toDouble(),
-      status: PaymentStatus.values.firstWhere(
-        (e) => e.name == data['status'],
-        orElse: () => PaymentStatus.pending,
-      ),
+      status: status,
+      storedStatus:
+          status == PaymentStatus.other ? '${data['status']}' : null,
       method: PaymentMethod.values.firstWhere(
         (e) => e.name == data['method'],
         orElse: () => PaymentMethod.cash,
@@ -139,7 +169,9 @@ class PaymentModel {
       'facilityId': facilityId,
       'contractId': contractId,
       'amount': amount,
-      'status': status.name,
+      'status': status == PaymentStatus.other
+          ? storedStatus
+          : status.storedValue,
       'method': method.name,
       'dueDate': Timestamp.fromDate(dueDate),
       'paidDate': paidDate != null ? Timestamp.fromDate(paidDate!) : null,
@@ -167,6 +199,7 @@ class PaymentModel {
     String? contractId,
     double? amount,
     PaymentStatus? status,
+    String? storedStatus,
     PaymentMethod? method,
     DateTime? dueDate,
     DateTime? paidDate,
@@ -190,6 +223,7 @@ class PaymentModel {
       contractId: contractId ?? this.contractId,
       amount: amount ?? this.amount,
       status: status ?? this.status,
+      storedStatus: storedStatus ?? this.storedStatus,
       method: method ?? this.method,
       dueDate: dueDate ?? this.dueDate,
       paidDate: paidDate ?? this.paidDate,
@@ -253,17 +287,24 @@ class PaymentModel {
     switch (status) {
       case PaymentStatus.pending:
         return isOverdue ? 'Overdue' : 'Pending';
+      case PaymentStatus.other:
+        return _humanStatus(storedStatus);
       case PaymentStatus.paid:
-        return 'Paid';
       case PaymentStatus.completed:
-        return 'Completed';
       case PaymentStatus.failed:
-        return 'Failed';
       case PaymentStatus.refunded:
-        return 'Refunded';
       case PaymentStatus.cancelled:
-        return 'Cancelled';
+      case PaymentStatus.disputed:
+      case PaymentStatus.partiallyRefunded:
+        return status.displayName;
     }
+  }
+
+  /// `requires_action` as "Requires action"; "Unknown" when blank.
+  static String _humanStatus(String? stored) {
+    final words = (stored ?? '').replaceAll('_', ' ').trim();
+    if (words.isEmpty) return 'Unknown';
+    return words[0].toUpperCase() + words.substring(1);
   }
   
   String get methodDisplayName {
@@ -302,8 +343,20 @@ extension PaymentStatusExtension on PaymentStatus {
         return 'Refunded';
       case PaymentStatus.cancelled:
         return 'Cancelled';
+      case PaymentStatus.disputed:
+        return 'Disputed';
+      case PaymentStatus.partiallyRefunded:
+        return 'Partially refunded';
+      case PaymentStatus.other:
+        return 'Other';
     }
   }
+
+  /// The value stored in a payment doc's `status` for this status.
+  /// [PaymentStatus.other] has none of its own: write the doc's
+  /// [PaymentModel.storedStatus] back instead.
+  String get storedValue =>
+      this == PaymentStatus.partiallyRefunded ? 'partially_refunded' : name;
 }
 
 extension PaymentMethodExtension on PaymentMethod {

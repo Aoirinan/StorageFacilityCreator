@@ -7,7 +7,11 @@ export {
   isSuperAdmin,
 } from './auth/superAdmin';
 export { enforceAppCheckOrThrow } from './auth/appCheck';
-export { getFacilityDataForUserOrThrow, canAccessFacility } from './auth/facilityAccess';
+export {
+  getFacilityDataForUserOrThrow,
+  canAccessFacility,
+  isFacilityOwnerOrManager,
+} from './auth/facilityAccess';
 
 export {
   extractCallableClientIp,
@@ -144,6 +148,18 @@ export type {
   AccountRollupResult,
   FacilitySubscriptionSnapshot,
 } from './subscription/accountRollup';
+export {
+  OWNER_ACCOUNT_READ_LIMIT,
+  OWNER_ACCOUNT_STANDING_FIELD,
+  accountWriteAffectsStanding,
+  buildOwnerAccountStanding,
+  findOwnerAccountDoc,
+  listOwnerAccountDocs,
+  preferredOwnerAccountDoc,
+  sameOwnerAccountStanding,
+  syncOwnerAccountStanding,
+} from './platform/ownerAccount';
+export type { AccountDocLike, OwnerAccountStanding, OwnerStandingSyncDeps } from './platform/ownerAccount';
 
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';
@@ -250,3 +266,49 @@ export {
   processReferralOnPlatformInvoicePaid,
   resolveReferralPendingItemForSuperAdmin,
 } from './referral/referralRewards';
+
+export type {
+  DocData as TenantDeleteDocData,
+  HeldUnit,
+  LinkedDoc,
+  TenantDeleteBlock,
+  TenantDeletePlan,
+  TenantDeleteRecords,
+  TenantHistoryCounts,
+  UnitStatus,
+} from './tenants/permanentDeleteRules';
+export {
+  MAX_TENANTS_PER_PERMANENT_DELETE,
+  PERMANENT_TENANT_DELETE_NOT_ENTITLED_MESSAGE,
+  TENANT_DELETE_SCAN_LIMIT,
+  UNIT_STATUSES,
+  buildTenantDeletePlan,
+  facilityAllowsPermanentTenantDelete,
+  facilityCreatorAccountIdOf,
+  hasAutopaySubscription,
+  isActiveFlagSet,
+  isArchivedUnit,
+  isLiveCardPaymentRow,
+  isLiveInvoiceRow,
+  isLiveLedgerRow,
+  isLivePaymentRow,
+  isTenantDeleteBlocked,
+  permanentDeleteBlockers,
+  scanLiveRows,
+  tenantDisplayName,
+  timestampMillis,
+  toTenantDeleteBlock,
+  unitStatusOf,
+  unitsHeldByTenant,
+} from './tenants/permanentDeleteRules';
+
+export type { UnitNotOfferedReason } from './units/onlineRental';
+export {
+  enabledOnlineUnitTypes,
+  isArchivedForOnlineRental,
+  isInternalUseUnit,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
+  isUnlistedUnit,
+  unitNotOfferedOnlineReason,
+} from './units/onlineRental';

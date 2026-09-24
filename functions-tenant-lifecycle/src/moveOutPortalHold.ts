@@ -1,9 +1,17 @@
 ﻿import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
-import { sendFacilityEmailWithCompliance, authenticatePortalTenantForFacility, extractCallableClientIp } from '@sfc/functions-shared';
+import {
+  sendFacilityEmailWithCompliance,
+  authenticatePortalTenantForFacility,
+  extractCallableClientIp,
+  enabledOnlineUnitTypes,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
+} from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
+import { tenantFieldsAfterMoveOut } from './moveOutTenantFields';
 /**
  * Process move-out workflow
  * Handles move-out in a transaction-safe way: updates contract, frees unit, calculates charges/refunds
@@ -77,6 +85,21 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       if (!contractDoc.exists) {
         throw new Error('Contract not found');
       }
+      // Already moved out (a retry after a dropped connection, which
+      // re-enables the screen's button): nothing is written again. A second
+      // run took the unit's rent off the tenant again (250 to 150 to 50) and
+      // posted the move-out charges twice.
+      const contract = contractDoc.data() || {};
+      if (contract.moveOutStatus === 'completed') {
+        return { success: true, alreadyCompleted: true, contractId, unitId, tenantId };
+      }
+      if (contract.isActive === false) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'This contract is archived or has already ended, so nothing was moved out. ' +
+            'To free the unit, use Units > unit > Unassign Tenant.',
+        );
+      }
 
       // 2. Get unit
       const unitRef = admin.firestore()
@@ -89,6 +112,7 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       if (!unitDoc.exists) {
         throw new Error('Unit not found');
       }
+      const unitData = unitDoc.data() || {};
 
       // 3. Get tenant
       const tenantRef = admin.firestore()
@@ -102,23 +126,53 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         throw new Error('Tenant not found');
       }
 
-      // 3b. Does this tenant still rent anything else?
+      // Another tenant's unit is not this tenant's to free (the screen
+      // falls back to the facility's first unit when the tenant's unit
+      // number matches none): it freed that tenant's unit and took its rent
+      // off this one.
+      const holder = typeof unitData.tenantId === 'string' ? unitData.tenantId : '';
+      if (holder && holder !== tenantId && String(unitData.status ?? '') !== 'available') {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          `Unit ${String(unitData.unitNumber ?? '').trim()} is assigned to ` +
+            `${String(unitData.tenantName ?? '').trim() || 'another tenant'}, not this tenant, so nothing was moved out.`,
+        );
+      }
+
+      // 3b. Does this tenant still hold another unit?
       //
       // Moving out of one unit was unconditionally marking the whole tenant
       // inactive. A tenant renting two units who vacates one would be
       // deactivated entirely — and the autopay worker skips inactive tenants,
       // so rent on the unit they still occupy would silently stop being
-      // collected. The portal offers renting an additional unit, so multi-unit
-      // tenants are an expected case, not an edge one.
-      const otherContractsSnap = await transaction.get(
+      // collected. Their units, not their contracts, decide it, as in the
+      // app: a unit given by Edit Tenant or Units > Assign Tenant has no
+      // contract of its own. Read before any write.
+      const linkedUnitsSnap = await transaction.get(
         admin.firestore()
           .collection('facilities')
           .doc(facilityId)
-          .collection('contracts')
-          .where('tenantId', '==', tenantId)
-          .where('isActive', '==', true),
+          .collection('units')
+          .where('tenantId', '==', tenantId),
       );
-      const stillRentsElsewhere = otherContractsSnap.docs.some((d) => d.id !== contractId);
+      const settled = tenantFieldsAfterMoveOut({
+        tenantId,
+        tenant: tenantDoc.data() || {},
+        unitId,
+        unit: unitData,
+        linkedUnits: linkedUnitsSnap.docs.map((d) => ({ id: d.id, data: d.data() })),
+      });
+      // Their last unit: their gate codes go off with them, as the app's
+      // move-out does, or an inactive tenant kept a working code.
+      const gateAccessSnap = settled.endsTenancy
+        ? await transaction.get(
+          admin.firestore()
+            .collection('facilities')
+            .doc(facilityId)
+            .collection('gateAccess')
+            .where('tenantId', '==', tenantId),
+        )
+        : null;
 
       // 4. Update contract - mark as ended
       transaction.update(contractRef, {
@@ -142,13 +196,16 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
         updatedBy: userId,
       });
 
-      // 6. Update tenant — only end the tenancy if this was their last unit.
+      // 6. Update tenant — only end the tenancy if this was their last unit;
+      // otherwise this unit's rent comes off their rate (tenantFieldsAfterMoveOut).
       transaction.update(tenantRef, {
-        ...(stillRentsElsewhere
-          ? {}
-          : { unitNumber: '', isActive: false }),
+        ...settled.fields,
         updatedAt: now,
       });
+      for (const gate of gateAccessSnap?.docs ?? []) {
+        if (gate.data().isActive === false) continue;
+        transaction.update(gate.ref, { isActive: false, updatedAt: now, updatedBy: userId });
+      }
 
     // 7. Create ledger entries for move-out charges if any
       if (moveOutCharges && moveOutCharges > 0) {
@@ -203,11 +260,22 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
 
       return {
         success: true,
+        alreadyCompleted: false,
         contractId,
         unitId,
         tenantId,
+        rentNotice: settled.rentNotice,
+        rentWarning: settled.rentWarning,
       };
     });
+
+    if (result.alreadyCompleted) {
+      return {
+        ...result,
+        refundProcessed: false,
+        message: 'This move-out was already completed, so nothing was charged or changed again.',
+      };
+    }
 
     // 9. Process refund via Stripe if requested
     const refundResult = null;
@@ -285,14 +353,43 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
       tenantId: data?.tenantId,
       error: error?.message || 'unknown',
     });
+    // Refusals written for the owner keep their code and words.
+    if (error instanceof functions.https.HttpsError && error.code === 'failed-precondition') throw error;
     throw new functions.https.HttpsError('internal', `Failed to process move-out: ${error.message}`);
   }
 });
+
+/** The unit types the facility opened to online rental (settings/public); empty means all. */
+async function readEnabledOnlineUnitTypes(facilityId: string): Promise<string[]> {
+  const settingsSnap = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('settings')
+    .doc('public')
+    .get();
+  return enabledOnlineUnitTypes(settingsSnap.data());
+}
+
+/**
+ * Whether a portal tenant may rent [unit] online, apart from its status,
+ * which each caller checks: the owner offers it online, its type is one the
+ * owner opened to online rental (as on the public map), and it is not
+ * deactivated. The list and the hold both use this, so a unit the list
+ * leaves out cannot be held by sending its id.
+ */
+function isOfferedToPortalTenant(unit: Record<string, unknown>, enabledTypes: string[]): boolean {
+  return unit.isActive !== false && isUnitOfferedOnline(unit) && isUnitTypeOfferedOnline(unit, enabledTypes);
+}
 
 /**
  * Lists units available for online/additional rental for a tenant portal session.
  * Direct Firestore reads are blocked for portal users; this callable validates email + access code
  * then reads inventory with the Admin SDK (same trust boundary as createTenantPortalAdditionalUnitHold).
+ *
+ * Only units the owner offers online (isOfferedToPortalTenant): the portal
+ * rents through the same online move-in and checkout as the public rental
+ * page, so a unit left off the public website, archived or kept for internal
+ * use is not offered here either.
  */
 export const tenantPortalListAvailableUnits = functions.https.onCall(async (data: any, context) => {
   const email = (data?.email || '').toString().trim().toLowerCase();
@@ -309,6 +406,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
 
+  const enabledTypes = await readEnabledOnlineUnitTypes(facilityId);
   const unitsSnap = await admin
     .firestore()
     .collection('facilities')
@@ -325,7 +423,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   unitsSnap.forEach((doc) => {
     const d = doc.data() as Record<string, any>;
-    if (d.isActive === false) {
+    if (!isOfferedToPortalTenant(d, enabledTypes)) {
       return;
     }
     const st = String(d.status || '').toLowerCase();
@@ -383,6 +481,7 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
   const session = await authenticatePortalTenantForFacility(email, accessCode, facilityId, clientIp);
   const sourceTenantDoc = session.tenantDoc;
   const sourceTenantData = session.tenantData as Record<string, any>;
+  const enabledTypes = await readEnabledOnlineUnitTypes(facilityId);
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + holdMinutes * 60 * 1000);
@@ -410,7 +509,11 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
     }
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
-    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+    // The list above leaves these units out, but a unit id can be sent
+    // directly: every unit's id is in the public map doc. Same test as the
+    // list, which the hold did not share: it took deactivated units and
+    // unit types the owner had not opened to online rental.
+    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isOfferedToPortalTenant(unitData, enabledTypes)) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 

@@ -1,5 +1,12 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import {
+  enabledOnlineUnitTypes,
+  isArchivedForOnlineRental,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
+  isUnlistedUnit,
+} from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
 const INVENTORY_KEYS = [
@@ -14,6 +21,7 @@ const INVENTORY_KEYS = [
   'archived',
   'isActive',
   'publicListingEnabled',
+  'internalUse',
 ];
 
 function slugify(raw: string): string {
@@ -21,6 +29,18 @@ function slugify(raw: string): string {
   const cleaned = lowered.replace(/[^a-z0-9]+/gi, '-');
   const normalized = cleaned.replace(/-{2,}/g, '-').replace(/^-|-$/g, '');
   return normalized.length === 0 ? 'facility-map' : normalized;
+}
+
+/**
+ * The unit's rent as published: a finite number, or a string holding one, as the app's UnitModel
+ * reads it and Number() reads it for the move-in charge; anything else 0, the app's default. This
+ * published the stored value as it was, so a rate typed in as '100' went out as a string (the
+ * rental portal reads it as a number and failed to load) while the app's publish wrote 100, and a
+ * missing rate went out as undefined, which Firestore rejects, failing the sync for every unit.
+ */
+function publishedMonthlyRate(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : 0;
 }
 
 function statusToPublicStatus(status: string): string {
@@ -106,17 +126,19 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
   const settings = (settingsSnap.data() || {}) as Record<string, any>;
   const showPublicPricing = settings.publicPricingEnabled !== false;
   const showUnitNumbers = settings.publicUnitNumbersEnabled !== false;
-  const enabledRaw = settings.enabledPublicUnitTypes;
-  const enabledTypes: string[] = Array.isArray(enabledRaw)
-    ? enabledRaw.map((e: any) => String(e).trim()).filter((e: string) => e.length > 0)
-    : [];
+  const enabledTypes = enabledOnlineUnitTypes(settings);
 
   // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
   const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
   const tenantClaimed = new Set<string>();
   for (const tdoc of tenantDocs) {
     const td = tdoc.data();
-    if (td.isActive === false) continue;
+    // Active means `isActive` exactly true, as in the app's TenantModel, the
+    // stats function and every server job. This skipped only `=== false`, so
+    // a doc with no isActive claimed its unit here but not in the app's own
+    // publish (FacilityMapV2Service), and the two writers of this list
+    // disagreed about that unit.
+    if (td.isActive !== true) continue;
     const n = String(td.unitNumber || '').trim().toLowerCase();
     if (n.length > 0) tenantClaimed.add(n);
   }
@@ -126,26 +148,44 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
 
   for (const doc of unitDocs) {
     const d = doc.data();
-    if (d.archived === true) continue;
+    // The app's unit read (UnitService.readFacilityUnits) and the stats
+    // function keep a unit only when `(archived ?? false) === false`; this
+    // kept a stray non-boolean such as 'true' that the app's publish drops.
+    if (isArchivedForOnlineRental(d)) continue;
 
     const unitType = String(d.unitType || '');
     const categorySlug = slugify(unitType);
-    const isPubliclyEnabledType =
-      enabledTypes.length === 0 || enabledTypes.includes(unitType);
-    const st = String(d.status || '').toLowerCase();
-    const unitNumNorm = String(d.unitNumber || '').trim().toLowerCase();
+    const isPubliclyEnabledType = isUnitTypeOfferedOnline(d, enabledTypes);
+    // The online rental holds rent a unit whose String(status || '') lower-cases
+    // to 'available' or 'reserved': none for a missing status, 'Available'
+    // included. A non-string counts as no status here and in the app
+    // (UnitModel.storedStatus); only a list such as ['available'], which
+    // nothing writes, would pass the holds' String() and not this. Keep in step
+    // with buildPublicUnitInventoryMaps.
+    const storedStatus = typeof d.status === 'string' ? d.status : '';
+    const st = storedStatus.toLowerCase();
+    // As the app's UnitModel reads it: a number as its text (101 is '101'), missing as ''. This
+    // published the stored value, so an imported 101 went out as a number here and as '101' from
+    // the app's publish, and a missing one as undefined, which Firestore rejects.
+    const unum = String(d.unitNumber ?? '');
+    const unitNumNorm = unum.trim().toLowerCase();
     const hasTenantLink =
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
     const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
     const statusAllowsRental = st === 'available' || st === 'reserved';
-    const publicListingEnabled = d.publicListingEnabled !== false;
+    const publicListingEnabled = !isUnlistedUnit(d);
+    // The online rental callables rent only what isUnitOfferedOnline allows:
+    // listed and not internal use. This looked at the listing switch alone, so
+    // an office or residence left listed was advertised as rentable and then
+    // refused at the hold. Keep in step with buildPublicUnitInventoryMaps.
+    const offeredOnline = isUnitOfferedOnline(d);
     const isRentable =
       statusAllowsRental &&
       !hasTenantLink &&
       !claimedByActiveTenant &&
       isPubliclyEnabledType &&
-      publicListingEnabled;
-    const publicStatus = !publicListingEnabled
+      offeredOnline;
+    const publicStatus = !offeredOnline
       ? 'unavailable'
       : hasTenantLink || claimedByActiveTenant
       ? 'rented'
@@ -159,19 +199,18 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       size = `${Math.round(width)}x${Math.round(depth)}`;
     }
 
-    const unum = d.unitNumber;
     units.push({
       unitId: doc.id,
       unitNumber: showUnitNumbers ? unum : null,
       unitLabel: showUnitNumbers ? unum : null,
       displayName: showUnitNumbers ? `Unit ${unum}` : 'Available Unit',
       status: publicStatus,
-      internalStatus: d.status ?? null,
+      internalStatus: storedStatus || null,
       unitType,
       categorySlug,
       size,
       description: d.description ?? null,
-      monthlyRate: showPublicPricing ? d.monthlyRate : null,
+      monthlyRate: showPublicPricing ? publishedMonthlyRate(d.monthlyRate) : null,
       isRentable,
       publicListingEnabled,
     });

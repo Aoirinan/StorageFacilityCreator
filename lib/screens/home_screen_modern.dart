@@ -156,19 +156,32 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     super.dispose();
   }
 
+  /// Pushes a page over the dashboard and reloads the dashboard on return.
+  /// A pushed page keeps the dashboard mounted, so its autoDispose provider
+  /// survives and would still show the numbers from before the payment or
+  /// move-out made on that page.
+  void _pushThenRefreshDashboard(String location, {Object? extra}) {
+    context.push(location, extra: extra).then((_) {
+      if (mounted) ref.invalidate(dashboardStatsProvider);
+    });
+  }
+
   Future<void> _recomputeAllStats(BuildContext context) async {
     try {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Syncing facility counts…')),
       );
-      await FacilityStatsService.recomputeAllFacilitiesStats();
+      // Server-side: heals and rewrites the stats the client cannot write.
+      // This used to report success while every write behind it was denied.
+      final result = await FacilityStatsService.recomputeAllFacilitiesStats();
       if (!context.mounted) return;
       ref.invalidate(dashboardStatsProvider);
       setState(() {});
+      final outcome = FacilityStatsService.syncCountsMessage(result);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Counts synced. Dashboard, delinquency, and facility cards will show matching numbers.'),
-          backgroundColor: AppTheme.success,
+        SnackBar(
+          content: Text(outcome.message),
+          backgroundColor: outcome.isError ? AppTheme.error : AppTheme.success,
         ),
       );
     } catch (e) {
@@ -258,13 +271,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
   void _handleNewFacilityPressed(BuildContext context) async {
     // Check subscription status before allowing facility creation
     try {
-      final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
+      // Null for invited staff, who get an account only once they create a facility.
+      final account = await FacilityCreatorAccountService.ensureAccountForCurrentUser();
       ref.invalidate(userFacilitiesProvider(widget.user.uid));
       // Check if user has facilities
       final facilities = await ref.read(userFacilitiesProvider(widget.user.uid).future);
 
       // Check if user is on trial and already has a facility
-      if (account.subscriptionStatus == SubscriptionStatus.trialing && facilities.length >= 1) {
+      if (account?.subscriptionStatus == SubscriptionStatus.trialing && facilities.length >= 1) {
         // Show upgrade dialog for trial users
         showDialog(
           context: context,
@@ -429,7 +443,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
           const SizedBox(width: 8),
           // Sync counts (recompute occupancy/tenant counts for all facilities)
           Tooltip(
-            message: 'Recompute occupancy, tenant counts, and past-due totals for all facilities',
+            message: 'Recheck every unit and refresh the counts for all your facilities',
             child: IconButton(
               onPressed: () => _recomputeAllStats(context),
               icon: const Icon(Icons.refresh, size: 20),
@@ -858,7 +872,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     return Align(
       alignment: Alignment.centerLeft,
       child: Tooltip(
-        message: 'Recompute occupancy, tenant counts, and past-due totals for all facilities',
+        message: 'Recheck every unit and refresh the counts for all your facilities',
         child: TextButton.icon(
           onPressed: () => _recomputeAllStats(context),
           icon: const Icon(Icons.refresh, size: 18),
@@ -921,7 +935,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               title: 'Total Units',
               value: stats.totalUnits.toString(),
               subtitle:
-                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant',
+                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant${dashboardInternalUseNote(stats)}',
               icon: Icons.home_work,
               color: AppTheme.info,
             ),
@@ -1066,12 +1080,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       ));
     }
     
-    if (stats.totalUnits > 0) {
+    // Unit docs, not the counted total: a facility whose units are all
+    // internal-use has units, and totalUnits alone hid the row for it.
+    if (stats.totalUnitDocs > 0) {
       activities.add(activity.ActivityItem(
         title: 'Total Units',
         subtitle: multiFacility
-            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)'
-            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total',
+            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)${dashboardInternalUseNote(stats)}'
+            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total${dashboardInternalUseNote(stats)}',
         icon: Icons.home_work,
         iconColor: AppTheme.info,
         timestamp: DateTime.now().subtract(const Duration(minutes: 10)),
@@ -1451,7 +1467,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       }
 
       if (context.mounted) {
-        context.push(AppRoute.tenantDetail, extra: tenant);
+        _pushThenRefreshDashboard(AppRoute.tenantDetail, extra: tenant);
       }
     } catch (e) {
       if (mounted) {
@@ -1521,6 +1537,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
                   color: cs.onSurfaceVariant,
                 ),
                 textAlign: TextAlign.center,
+              ),
+              // A failed or timed-out facility load ends up here rather than
+              // as a dashboard of zeros, so give it a way back.
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: () => ref.invalidate(dashboardStatsProvider),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
               ),
             ],
           ),
@@ -1660,7 +1684,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     return InkWell(
       onTap: () {
         // Navigate to tenant detail
-        context.push('/tenants/detail?tenantId=${tenant.tenantId}&facilityId=${tenant.facilityId}');
+        _pushThenRefreshDashboard('/tenants/detail?tenantId=${tenant.tenantId}&facilityId=${tenant.facilityId}');
       },
       borderRadius: BorderRadius.circular(8),
       child: Padding(
@@ -1775,10 +1799,10 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       onTap: () {
         if (moveOut.contractId.isNotEmpty) {
           // Navigate to contract detail or move-out screen
-          context.push('/contracts/detail?contractId=${moveOut.contractId}&facilityId=${moveOut.facilityId}');
+          _pushThenRefreshDashboard('/contracts/detail?contractId=${moveOut.contractId}&facilityId=${moveOut.facilityId}');
         } else {
           // Navigate to tenant detail
-          context.push('/tenants/detail?tenantId=${moveOut.tenantId}&facilityId=${moveOut.facilityId}');
+          _pushThenRefreshDashboard('/tenants/detail?tenantId=${moveOut.tenantId}&facilityId=${moveOut.facilityId}');
         }
       },
       borderRadius: BorderRadius.circular(8),

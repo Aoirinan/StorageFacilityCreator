@@ -174,6 +174,9 @@ class _ClaimDetailScreenState extends State<ClaimDetailScreen> {
   }
 
   Future<void> _saveClaim() async {
+    // A second tap in the same frame, before the rebuild disables Save,
+    // would submit the claim twice.
+    if (_isSaving) return;
     if (!_formKey.currentState!.validate()) return;
     if (_selectedTenantId == null || _selectedTenantId!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -186,6 +186,11 @@ service cloud.firestore {
       // Exempts the facility from billing entirely. Super-admin only, for the
       // operator's own sites; self-granting it would be a free subscription.
       'billingExempt',
+      // The owner's account standing, copied here by functions-automation for
+      // invited staff, who cannot read the account. The app lets staff in on
+      // it, so an owner who could write it could keep their staff working
+      // after their own access lapsed or was suspended.
+      'ownerAccountStanding',
 
       // A2P 10DLC / Twilio registration state. Backend-only, and a genuine
       // privilege escalation if it is not: the SMS send path reads
@@ -424,46 +429,11 @@ service cloud.firestore {
         request.resource.data.senderUid == request.auth.uid;
     }
 
-    // Permanent tenant doc delete: require active paid or trialing (not expired), via per-facility platform sub or linked creator account.
-    // Stricter than general app access (no past_due grace / cancelled remainder).
+    // Permanent tenant delete's subscription gate lives in the
+    // deleteTenantsPermanently callable now (functions-shared
+    // tenants/permanentDeleteRules.ts); tenant docs are super-admin delete only.
     function creatorAccountData(accountId) {
       return get(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)).data;
-    }
-
-    function accountAllowsPermanentTenantDelete(accountId) {
-      return exists(/databases/$(database)/documents/facilityCreatorAccounts/$(accountId)) &&
-        (creatorAccountData(accountId).suspended == null || creatorAccountData(accountId).suspended == false) &&
-        creatorAccountData(accountId).subscriptionStatus != 'pendingApproval' &&
-        (
-          creatorAccountData(accountId).subscriptionStatus == 'active' ||
-          (
-            creatorAccountData(accountId).subscriptionStatus == 'trialing' &&
-            (
-              !('subscriptionTrialEnd' in creatorAccountData(accountId)) ||
-              creatorAccountData(accountId).subscriptionTrialEnd == null ||
-              request.time < creatorAccountData(accountId).subscriptionTrialEnd
-            )
-          )
-        );
-    }
-
-    function facilityHasActiveOrTrialingPlatformSub(facilityId) {
-      let d = facilityDoc(facilityId);
-      return 'platformSubscriptionStatus' in d &&
-        d.platformSubscriptionStatus is string &&
-        (d.platformSubscriptionStatus == 'active' || d.platformSubscriptionStatus == 'trialing');
-    }
-
-    function facilityAllowsPermanentTenantDelete(facilityId) {
-      return facilityExists(facilityId) && (
-        facilityHasActiveOrTrialingPlatformSub(facilityId) ||
-        (
-          'facilityCreatorAccountId' in facilityDoc(facilityId) &&
-          facilityDoc(facilityId).facilityCreatorAccountId is string &&
-          facilityDoc(facilityId).facilityCreatorAccountId.size() > 0 &&
-          accountAllowsPermanentTenantDelete(facilityDoc(facilityId).facilityCreatorAccountId)
-        )
-      );
     }
 
     function isAccountOwner(accountId) {
@@ -580,17 +550,21 @@ service cloud.firestore {
         facilityInviteRoleMergeAllowed(facilityId)
       );
       
-      // Allow delete only by owner
-      allow delete: if request.auth != null && 
-        resource.data.ownerUid == request.auth.uid;
+      // Owners delete through the deleteFacilityPermanently callable, which
+      // removes the whole subtree. The app's own delete skipped subcollections
+      // it couldn't delete (tenants among them) and then deleted this doc,
+      // leaving tenant records with no facility.
+      allow delete: if isSuperAdmin();
       
       // Sub-collections under facilities
       match /tenants/{tenantId} {
         allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow create, update: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
-        allow delete: if isSuperAdmin() || (
-          isFacilityOwnerOrManager(facilityId) && facilityAllowsPermanentTenantDelete(facilityId)
-        );
+        // Owners and managers delete through the deleteTenantsPermanently
+        // callable, which refuses tenants with billing or legal history or a
+        // unit. A direct delete (an old app tab, the API) skipped that check
+        // and orphaned the tenant's ledger, invoices and payments.
+        allow delete: if isSuperAdmin();
 
         // Per-tenant insurance docs (InsuranceService: tenants/{tenantId}/insurance)
         match /insurance/{insuranceId} {
@@ -1218,7 +1192,13 @@ service cloud.firestore {
       // Facility notifications (autopay, system alerts). Written by Cloud Functions; staff can read. Redirect /notifications -> Settings.
       match /Notifications/{notificationId} {
         allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
-        allow write: if false; // Cloud Functions only
+        // Written by Cloud Functions only. Staff may mark one read (the
+        // app's "Mark reviewed" / "Mark read") and change nothing else;
+        // every client write was refused, so no alert could be cleared.
+        allow update: if (isSuperAdmin() || isFacilityStaff(facilityId)) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']) &&
+          request.resource.data.readAt is timestamp;
+        allow create, delete: if false;
       }
 
       // Message logs - unified logging for all outbound communications
@@ -1844,6 +1824,20 @@ service cloud.firestore {
     match /platformEmailLogs/{logId} {
       allow read: if isSuperAdmin();
       allow write: if false; // All writes go through Cloud Functions.
+    }
+
+    // A signed-in user with a verified email may list the invites addressed to
+    // that email across facilities: collectionGroup('invites') filtered on
+    // emailLower (PermissionService.fulfillPendingInvitesForUser, and the
+    // account service's check for a pending invite). Without it that query was
+    // refused, a fresh invited signup got no role, and the app took them for a
+    // new owner. Verified only: an unverified account can carry anyone's
+    // address, and listing would hand it invites it never received the link
+    // for. Owner/manager listing and every write stay with the facility rule.
+    match /{path=**}/invites/{inviteId} {
+      allow list: if authEmailLower() != null &&
+        request.auth.token.email_verified == true &&
+        resource.data.emailLower == authEmailLower();
     }
 
     

@@ -48,4 +48,5 @@ export { computeDocumentHash, mergeSignatureIntoPdf } from './documentSigningCal
 export { backfillContractComplianceFields } from './backfillContractComplianceCallable';
 
 export { sendTenantPortalInvites } from './portalInvites';
+export { deleteTenantsPermanently } from './deleteTenantsPermanentlyCallable';
 export { requestPortalAccessCodeReminder } from './portalAccessCodeReminder';

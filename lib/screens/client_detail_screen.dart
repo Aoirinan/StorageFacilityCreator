@@ -1,7 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -25,23 +24,20 @@ import '../models/gate_access_model.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
-import '../providers/facility_provider.dart';
-import '../providers/unit_provider.dart';
 import '../models/ledger_entry_model.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
 import '../services/autopay_service.dart';
-import '../services/modern_navigation_service.dart';
 import '../router/app_route.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../widgets/tenant_facility_unit_picker.dart';
+import 'package:sfcapp/router/back_navigation.dart';
+import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 import '../constants/location_options.dart';
-import 'ledger_screen.dart';
 import '../ui/payments/tenant_billing_panel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
+import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
+import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -100,89 +96,9 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
 
   // ── Per-section edit dialogs ───────────────────────────────────────────────
 
-  Future<void> _editBasicInfo(TenantModel tenant) async {
-    final nameCtrl = TextEditingController(text: tenant.name);
-    final emailCtrl = TextEditingController(text: tenant.email);
-    final phoneCtrl = TextEditingController(text: tenant.phone);
-    final unitCtrl = TextEditingController(text: tenant.unitNumber);
-    final rateCtrl = TextEditingController(text: tenant.monthlyRate.toString());
-    bool smsConsent = tenant.smsOptInDate != null && !tenant.smsOptOut;
-    final formKey = GlobalKey<FormState>();
-
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx, setS) => AlertDialog(
-        title: const Text('Edit Contact Information'),
-        content: SingleChildScrollView(
-          child: Form(
-            key: formKey,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextFormField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Full Name *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)), validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
-              const SizedBox(height: 12),
-              TextFormField(controller: emailCtrl, decoration: const InputDecoration(labelText: 'Email *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)), keyboardType: TextInputType.emailAddress, validator: (v) {
-                if (v == null || v.trim().isEmpty) return 'Required';
-                if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(v)) return 'Invalid email';
-                return null;
-              }),
-              const SizedBox(height: 12),
-              TextFormField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.phone)), keyboardType: TextInputType.phone, validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
-              const SizedBox(height: 12),
-              TenantFacilityUnitPicker(
-                facilityId: tenant.facilityId,
-                unitNumberController: unitCtrl,
-                monthlyRateController: rateCtrl,
-                forTenantId: tenant.id,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(controller: rateCtrl, decoration: const InputDecoration(labelText: 'Monthly Rate *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.attach_money)), keyboardType: TextInputType.number, validator: (v) {
-                if (v == null || v.trim().isEmpty) return 'Required';
-                if (double.tryParse(v) == null || double.parse(v) <= 0) return 'Invalid rate';
-                return null;
-              }),
-              const SizedBox(height: 12),
-              Consumer(builder: (ctx2, ref2, _) {
-                final facilityName = ref2.watch(facilityProvider(tenant.facilityId)).value?.name ?? 'this facility';
-                return Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: AppTheme.backgroundSecondary, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderLight)),
-                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Checkbox(value: smsConsent && !tenant.smsOptOut, onChanged: tenant.smsOptOut ? null : (v) => setS(() => smsConsent = v ?? false)),
-                    Expanded(child: Padding(padding: const EdgeInsets.only(top: 10), child: tenant.smsOptOut
-                        ? Text('Tenant opted out of SMS.', style: TextStyle(fontSize: 12, color: AppTheme.error))
-                        : Text('SMS consent for $facilityName', style: const TextStyle(fontSize: 12)))),
-                  ]),
-                );
-              }),
-            ]),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(ctx, true); }, child: const Text('Save')),
-        ],
-      )),
-    );
-
-    if (saved != true || !mounted) { nameCtrl.dispose(); emailCtrl.dispose(); phoneCtrl.dispose(); unitCtrl.dispose(); rateCtrl.dispose(); return; }
-
-    try {
-      await ref.read(tenantOperationsProvider.notifier).updateTenant(
-        facilityId: tenant.facilityId, tenantId: tenant.id,
-        name: nameCtrl.text.trim(), email: emailCtrl.text.trim(), phone: phoneCtrl.text.trim(),
-        unitNumber: unitCtrl.text.trim(), monthlyRate: double.parse(rateCtrl.text.trim()),
-        smsOptInDate: smsConsent && !tenant.smsOptOut ? DateTime.now() : null,
-      );
-      if (mounted) {
-        ref.invalidate(facilityTenantsProvider(tenant.facilityId));
-        ref.invalidate(facilityUnitsProvider(tenant.facilityId));
-        ref.invalidate(unitsForFacilityProvider(tenant.facilityId));
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contact info updated'), backgroundColor: AppTheme.success, duration: Duration(seconds: 2)));
-      }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: AppTheme.error));
-    }
-    nameCtrl.dispose(); emailCtrl.dispose(); phoneCtrl.dispose(); unitCtrl.dispose(); rateCtrl.dispose();
-  }
+  // Contact Information's edit: see editTenantContactInfo.
+  Future<void> _editBasicInfo(TenantModel tenant) =>
+      editTenantContactInfo(context, ref, tenant);
 
   Future<void> _editIdentification(TenantModel tenant) async {
     final idNumCtrl = TextEditingController(text: tenant.governmentIdNumber ?? '');
@@ -797,24 +713,30 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     });
 
     try {
-      final matches = await DNRService.findDNRMatches(
-        facilityId: widget.tenant.facilityId,
-        name: widget.tenant.name,
-        email: widget.tenant.email,
-        phone: widget.tenant.phone,
-      );
-
-      if (mounted) {
-        setState(() {
+      await runTenantDnrCheck(
+        context,
+        findMatches: () => DNRService.findDNRMatches(
+          facilityId: widget.tenant.facilityId,
+          name: widget.tenant.name,
+          email: widget.tenant.email,
+          phone: widget.tenant.phone,
+        ),
+        onMatches: (matches) => setState(() {
           _dnrMatches = matches;
           _isCheckingDNR = false;
-        });
-
-        // Show blocking dialog if matches found
-        if (matches.isNotEmpty) {
-          _showDNRBlockingDialog(context, matches);
-        }
-      }
+        }),
+        onOverride: (matches) {
+          // The page can be gone while the alert is open (the trial check
+          // sends the owner to /subscription); setState would throw there,
+          // but the override still gets its audit record.
+          if (mounted) {
+            setState(() {
+              _dnrOverride = true;
+            });
+          }
+          _logDNROverride(matches);
+        },
+      );
     } catch (e) {
       if (kDebugMode) {
         print('Error checking DNR matches: $e');
@@ -825,95 +747,6 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         });
       }
     }
-  }
-
-  void _showDNRBlockingDialog(BuildContext context, List<DNRModel> matches) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.warning, color: AppTheme.error),
-              const SizedBox(width: 8),
-              const Text('DNR Alert'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'This tenant matches ${matches.length} active DNR entr${matches.length == 1 ? 'y' : 'ies'}:',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              ...matches.map((match) => Card(
-                color: AppTheme.error.withOpacity(0.1),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Name: ${match.name}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      if (match.email.isNotEmpty)
-                        Text('Email: ${match.email}'),
-                      if (match.phone.isNotEmpty)
-                        Text('Phone: ${match.phone}'),
-                      Text('Reason: ${match.reason}'),
-                      if (match.addedByName != null && match.addedByEmail != null)
-                        Text(
-                          'Added by: ${match.addedByName} (${match.addedByEmail})',
-                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                      if (match.facilityName != null)
-                        Text(
-                          'Facility: ${match.facilityName}',
-                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                      if (match.expiresAt != null)
-                        Text('Expires: ${match.expiresAt!.toLocal().toString().split(' ')[0]}'),
-                    ],
-                  ),
-                ),
-              )),
-              const SizedBox(height: 16),
-              const Text(
-                'Do you want to override and continue?',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop(); // Close dialog
-                Navigator.of(context).pop(); // Go back to tenant list
-              },
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _dnrOverride = true;
-                });
-                Navigator.of(context).pop(); // Close dialog
-                _logDNROverride(matches);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.error,
-                foregroundColor: AppTheme.textOnDark,
-              ),
-              child: const Text('Override & Continue'),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   Future<void> _logDNROverride(List<DNRModel> matches) async {
@@ -1586,6 +1419,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   }
 
   static void _showDeleteDialog(BuildContext context, TenantModel tenant) {
+    // The dialog below is closed before the delete; units are confirmed here.
+    final screenContext = context;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1601,24 +1436,28 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
               Navigator.of(context).pop();
 
               try {
-                await TenantService.deleteTenant(
+                final deleted = await TenantService.deleteTenant(
                   facilityId: tenant.facilityId,
                   tenantId: tenant.id!,
+                  confirmUnitsFreed: (freeing) =>
+                      confirmUnitsFreedDialog(screenContext, freeing),
                 );
 
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                // The page's context: this dialog's was closed above, so its
+                // mounted check was always false and neither ran.
+                if (deleted && screenContext.mounted) {
+                  ScaffoldMessenger.of(screenContext).showSnackBar(
                     const SnackBar(
                       content: Text('Tenant deleted successfully'),
                       backgroundColor: AppTheme.success,
                     ),
                   );
-                  // Navigate back since tenant no longer exists
-                  Navigator.of(context).pop();
+                  // The tenant no longer exists: leave their page.
+                  popOrGo(screenContext, AppRoute.tenants);
                 }
               } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                if (screenContext.mounted) {
+                  ScaffoldMessenger.of(screenContext).showSnackBar(
                     SnackBar(
                       content: Text('Error deleting tenant: $e'),
                       backgroundColor: AppTheme.error,
@@ -1860,14 +1699,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       );
 
       // Send reminder immediately
-      final sent = await ReminderService.sendReminder(
+      final sent = (await ReminderService.sendReminder(
         facilityId: tenant.facilityId,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
         message: 'This is a reminder about your storage unit. Please contact us if you have any questions.',
         channels: [ReminderChannel.email],
-      );
+      )).sent;
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2054,14 +1893,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         tenantPhone: tenant.phone,
       );
 
-      final sent = await ReminderService.sendReminder(
+      final sent = (await ReminderService.sendReminder(
         facilityId: tenant.facilityId,
         reminderId: reminder.id,
         tenantEmail: tenant.email ?? '',
         tenantPhone: tenant.phone ?? '',
         message: message,
         channels: channels,
-      );
+      )).sent;
 
       if (mounted && messenger != null) {
         messenger.hideCurrentSnackBar();

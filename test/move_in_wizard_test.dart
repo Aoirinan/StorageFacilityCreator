@@ -1,0 +1,513 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:sfcapp/models/contract_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/detail_routes.dart';
+import 'package:sfcapp/screens/move_in_wizard_screen.dart';
+import 'package:sfcapp/services/move_in_service.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
+
+import 'support/fake_facility_collection.dart';
+import 'support/fake_facility_firestore.dart';
+
+final _tenant = TenantModel(
+  id: 't1',
+  facilityId: 'f1',
+  name: 'Pat Renter',
+  email: 'pat@example.com',
+  phone: '5550100',
+  unitNumber: '',
+  monthlyRate: 0,
+  createdAt: DateTime(2026, 1, 1),
+);
+
+UnitModel _unit({
+  UnitStatus status = UnitStatus.available,
+  String? tenantId,
+  String? tenantName,
+}) =>
+    UnitModel(
+      id: 'u1',
+      facilityId: 'f1',
+      unitNumber: 'A1',
+      unitType: 'standard',
+      status: status,
+      tenantId: tenantId,
+      tenantName: tenantName,
+      monthlyRate: 100,
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 1),
+      createdBy: 'owner',
+    );
+
+final _lease = ContractModel(
+  id: 'c1',
+  facilityId: 'f1',
+  facilityOwnerUid: 'owner',
+  tenantId: 't1',
+  title: 'Storage Lease - A1',
+  description: 'Move-in contract for unit A1',
+  type: ContractType.lease,
+  status: ContractStatus.draft,
+  createdAt: DateTime(2026, 1, 1),
+  createdBy: 'owner',
+);
+
+void main() {
+  group('move-in wizard', () {
+    late int leases;
+    late int moveIns;
+    late Completer<MoveInResult> moveIn;
+    late MoveInWizardServices services;
+
+    setUp(() {
+      leases = 0;
+      moveIns = 0;
+      services = MoveInWizardServices(
+        getFacility: (_) async => null,
+        getUnits: (_) async => [_unit()],
+        getTenants: (_) async => [_tenant],
+        createLeaseContract: ({
+          required String facilityId,
+          required String tenantId,
+          required String unitNumber,
+        }) async {
+          leases++;
+          return _lease;
+        },
+        completeMoveIn: ({
+          required MoveInData moveInData,
+          String? paymentMethod,
+          String? paymentReferenceId,
+          bool skipPayment = false,
+        }) {
+          moveIns++;
+          return moveIn.future;
+        },
+      );
+    });
+
+    // The calendar opens the wizard with go; nothing is underneath it.
+    // [shell]: an outer Scaffold, as the app shell gives, so a snackbar
+    // shown while leaving is still on screen on the page left to.
+    Future<GoRouter> pumpWizard(WidgetTester tester, {bool shell = false}) async {
+      // Made in the test's fake-async zone, or its completion is never seen
+      // by pump.
+      moveIn = Completer<MoveInResult>();
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final router = GoRouter(
+        initialLocation: AppRoute.moveInWizard,
+        routes: [
+          GoRoute(
+            path: AppRoute.moveInWizard,
+            builder: (_, __) => MoveInWizardScreen(
+              facilityId: 'f1',
+              unitId: 'u1',
+              tenantId: 't1',
+              services: services,
+            ),
+          ),
+          GoRoute(
+            path: AppRoute.tenantDetail,
+            builder: (_, state) => Text(
+              'TENANT ${state.uri.queryParameters['tenantId']}',
+            ),
+          ),
+          // The app's ledger route, with the tenant read and the page
+          // swapped for stand-ins.
+          tenantLedgerRoute(
+            load: (facilityId, tenantId) async =>
+                tenantId == _tenant.id ? _tenant : null,
+            page: (tenant) => Text('LEDGER ${tenant.id} IN ${tenant.facilityId}'),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: shell ? (context, child) => Scaffold(body: child) : null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return router;
+    }
+
+    Finder continueButton() =>
+        find.widgetWithText(TextButton, 'Continue').hitTestable();
+
+    Future<void> continueToReview(WidgetTester tester) async {
+      // Tenant & unit, financial, contract, payment.
+      for (var step = 0; step < 4; step++) {
+        await tester.tap(continueButton());
+        await tester.pumpAndSettle();
+      }
+      expect(tester.widget<Stepper>(find.byType(Stepper)).currentStep, 4);
+    }
+
+    testWidgets('two quick Continue taps on the last step complete it once',
+        (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      // The second tap lands before the rebuild that disables the button.
+      await tester.tap(continueButton());
+      await tester.tap(continueButton(), warnIfMissed: false);
+      await tester.pump();
+
+      expect(moveIns, 1);
+      expect(leases, 1);
+      // And the step buttons stay disabled while it runs.
+      final buttons = tester.widgetList<TextButton>(
+        find.ancestor(
+          of: find.text('Continue'),
+          matching: find.byType(TextButton),
+        ),
+      );
+      expect(buttons, isNotEmpty);
+      expect(buttons.every((b) => b.onPressed == null), isTrue);
+
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
+      expect(moveIns, 1);
+      // Opened with go, so it lands on the tenant's page.
+      expect(find.text('TENANT t1'), findsOneWidget);
+    });
+
+    testWidgets("a unit added to an existing tenant's shows their new rent", (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(
+        success: true,
+        tenantId: 't1',
+        notice: r'Monthly rent is now $200.00 for units 101 and A1.',
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('TENANT t1'), findsOneWidget);
+      expect(
+        find.text(r'Move-in completed. Monthly rent is now $200.00 for units 101 and A1.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a first unit keeps the plain success message', (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
+      expect(find.text('Move-in completed successfully!'), findsOneWidget);
+    });
+
+    testWidgets('a failed move-in can be tried again', (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(success: false, error: 'Unit is busy'));
+      await tester.pumpAndSettle();
+      expect(find.text('Unit is busy'), findsOneWidget);
+
+      moveIn = Completer<MoveInResult>();
+      await tester.tap(continueButton());
+      await tester.pump();
+      expect(moveIns, 2);
+      // The lease from the first attempt is reused.
+      expect(leases, 1);
+    });
+
+    // A move-in that failed partway had already put the tenant in the unit,
+    // so the retry was refused with "Exception: This tenant has already
+    // moved into Unit A1", as if it had finished.
+    testWidgets('a partly done move-in points to the ledger, not a retry',
+        (tester) async {
+      final router = await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      final conflict = moveInUnitConflict(
+        unit: _unit(
+          status: UnitStatus.occupied,
+          tenantId: 't1',
+          tenantName: 'Pat Renter',
+        ),
+        tenantId: 't1',
+      )!;
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: conflict.toString(),
+          conflict: conflict,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'This move-in was partly completed: Unit A1 already shows Pat '
+          "Renter in it. Open Pat Renter's ledger to review before trying "
+          'again.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Exception'), findsNothing);
+
+      await tester.tap(find.text("Open Pat Renter's ledger"));
+      await tester.pumpAndSettle();
+      expect(find.text('LEDGER t1 IN f1'), findsOneWidget);
+
+      // Back on the wizard, with the move-in not run again.
+      router.pop();
+      await tester.pumpAndSettle();
+      expect(find.text("Open Pat Renter's ledger"), findsOneWidget);
+      expect(moveIns, 1);
+    });
+
+    testWidgets('a unit someone else rents offers no ledger', (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      final conflict = moveInUnitConflict(
+        unit: _unit(
+          status: UnitStatus.occupied,
+          tenantId: 't2',
+          tenantName: 'Sam',
+        ),
+        tenantId: 't1',
+      )!;
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: conflict.toString(),
+          conflict: conflict,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unit A1 is already occupied by Sam.'), findsOneWidget);
+      expect(find.textContaining('ledger'), findsNothing);
+    });
+
+    testWidgets('other errors are shown without "Exception: "',
+        (tester) async {
+      await pumpWizard(tester);
+      await continueToReview(tester);
+
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(
+        MoveInResult(
+          success: false,
+          error: Exception('Failed to retrieve created contract').toString(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Failed to retrieve created contract'), findsOneWidget);
+      expect(find.textContaining('Exception'), findsNothing);
+    });
+  });
+
+  group('leaveAfterMoveIn', () {
+    GoRouter router(String initialLocation) => GoRouter(
+          initialLocation: initialLocation,
+          routes: [
+            GoRoute(
+              path: AppRoute.calendar,
+              builder: (_, __) => const Text('CALENDAR'),
+            ),
+            GoRoute(
+              path: AppRoute.moveInWizard,
+              builder: (context, _) => TextButton(
+                onPressed: () => leaveAfterMoveIn(
+                  context,
+                  facilityId: 'f1',
+                  tenantId: 't1',
+                ),
+                child: const Text('Finish'),
+              ),
+            ),
+            GoRoute(
+              path: AppRoute.tenantDetail,
+              builder: (_, state) => Text(
+                'TENANT ${state.uri.queryParameters['tenantId']} '
+                'IN ${state.uri.queryParameters['facilityId']}',
+              ),
+            ),
+          ],
+        );
+
+    Future<GoRouter> pump(WidgetTester tester, String location) async {
+      final r = router(location);
+      addTearDown(r.dispose);
+      await tester.pumpWidget(
+        MaterialApp.router(
+          routerConfig: r,
+          builder: (context, child) => Scaffold(body: child),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return r;
+    }
+
+    testWidgets('pops back to the page that pushed the wizard with true',
+        (tester) async {
+      final r = await pump(tester, AppRoute.calendar);
+      final result = r.push<bool>(AppRoute.moveInWizard);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Finish'));
+      await tester.pumpAndSettle();
+      expect(await result, isTrue);
+      expect(find.text('CALENDAR'), findsOneWidget);
+    });
+
+    testWidgets('opens the tenant page when nothing is underneath',
+        (tester) async {
+      await pump(tester, AppRoute.moveInWizard);
+
+      await tester.tap(find.text('Finish'));
+      await tester.pumpAndSettle();
+      // A bare pop threw here, after the move-in had been written.
+      expect(tester.takeException(), isNull);
+      expect(find.text('TENANT t1 IN f1'), findsOneWidget);
+    });
+  });
+
+  group('moveInUnitConflict', () {
+    test('lets a move-in into an available unit run', () {
+      expect(moveInUnitConflict(unit: _unit(), tenantId: 't1'), isNull);
+    });
+
+    test('lets it run when the unit could not be read', () {
+      expect(moveInUnitConflict(unit: null, tenantId: 't1'), isNull);
+    });
+
+    test('lets a reservation for this tenant be moved in', () {
+      expect(
+        moveInUnitConflict(
+          unit: _unit(status: UnitStatus.reserved, tenantId: 't1'),
+          tenantId: 't1',
+        ),
+        isNull,
+      );
+    });
+
+    test('refuses a move-in this tenant has already started', () {
+      final conflict = moveInUnitConflict(
+        unit: _unit(status: UnitStatus.occupied, tenantId: 't1'),
+        tenantId: 't1',
+      );
+      expect(conflict?.sameTenant, isTrue);
+      // Not "already moved in": step 1 marks the unit occupied, so a
+      // move-in that failed at the charges or payment looks like this too.
+      expect(
+        conflict.toString(),
+        'This move-in was partly completed: Unit A1 already shows this '
+        "tenant in it. Open this tenant's ledger to review before trying "
+        'again.',
+      );
+    });
+
+    test('refuses a unit another tenant is in', () {
+      for (final status in [
+        UnitStatus.occupied,
+        UnitStatus.overlocked,
+        UnitStatus.lockout,
+        UnitStatus.auction,
+      ]) {
+        final conflict = moveInUnitConflict(
+          unit: _unit(status: status, tenantId: 't2', tenantName: 'Sam'),
+          tenantId: 't1',
+        );
+        expect(conflict?.sameTenant, isFalse, reason: status.name);
+        // Typed, so it no longer reads "Exception: Unit A1 ...".
+        expect(
+          conflict.toString(),
+          'Unit A1 is already occupied by Sam.',
+          reason: status.name,
+        );
+      }
+    });
+
+    // completeMoveIn needs Firebase (it checks the signed-in user first), so
+    // its hand-off of the conflict to the wizard is checked in its source:
+    // thrown typed, not wrapped in Exception(...), and passed on typed.
+    test('completeMoveIn passes the conflict on typed', () {
+      final source = File('lib/services/move_in_service.dart').readAsStringSync();
+      expect(source, contains('if (conflict != null) throw conflict;'));
+      expect(source, contains('conflict: e is MoveInUnitConflict ? e : null,'));
+    });
+  });
+
+  group("completeMoveIn, with the app's own stores", () {
+    // Nothing ran completeMoveIn itself, so dropping the rent notice from
+    // its result left every test passing while the wizard said nothing.
+    late FakeFacilityFirestore db;
+
+    setUp(() {
+      db = FakeFacilityFirestore('f1', {
+        'tenants': [
+          FakeDoc('t1', {'name': 'Pat Renter', 'isActive': true, 'unitNumber': 'A0', 'monthlyRate': 100}),
+        ],
+        'units': [
+          FakeDoc('u0', {'facilityId': 'f1', 'unitNumber': 'A0', 'status': 'occupied', 'tenantId': 't1', 'monthlyRate': 100}),
+          FakeDoc('u1', {'facilityId': 'f1', 'unitNumber': 'A1', 'status': 'available', 'monthlyRate': 150}),
+        ],
+      });
+      final auth = MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+      TenantService.firestoreForTesting = db;
+      TenantService.authForTesting = auth;
+      UnitService.authForTesting = auth;
+      MoveInService.authForTesting = auth;
+      FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+    });
+    tearDown(() {
+      TenantService.firestoreForTesting = null;
+      TenantService.authForTesting = null;
+      UnitService.authForTesting = null;
+      MoveInService.authForTesting = null;
+      FacilitySubcollections.overrideForTesting(null);
+    });
+
+    test("a unit added to a tenant's others: the new rent reaches the wizard", () async {
+      final result = await MoveInService.completeMoveIn(
+        moveInData: MoveInData(
+          existingTenant: _tenant,
+          unit: _unit(),
+          contract: _lease,
+          lineItems: const [],
+          totalAmount: 0,
+          moveInDate: DateTime(2026, 9, 23),
+        ),
+        skipPayment: true,
+      );
+      expect(result.success, isTrue, reason: result.error);
+      expect(result.notice, r'Monthly rent is now $250.00 for units A0 and A1.');
+      expect(db.data('tenants', 't1')!['monthlyRate'], 250);
+      expect(db.data('units', 'u1')!['tenantId'], 't1');
+      expect(db.data('units', 'u1')!['status'], 'occupied');
+    });
+  });
+}

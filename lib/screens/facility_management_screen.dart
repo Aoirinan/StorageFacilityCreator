@@ -8,24 +8,27 @@ import '../providers/auth_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/email_usage_card.dart';
+import 'package:sfcapp/widgets/facility_delete_gate.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/facility_creation_policy.dart';
 import '../services/facility_service.dart';
 import '../services/facility_stats_service.dart';
 import '../services/superadmin_service.dart';
 import '../providers/dashboard_provider.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import 'facility_creation_wizard.dart';
 import 'subscription_test_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../utils/error_message_helper.dart';
+import '../utils/keyed_memo.dart';
 import '../utils/two_factor_helper.dart';
 
 class FacilityManagementScreen extends ConsumerStatefulWidget {
-  const FacilityManagementScreen({super.key});
+  const FacilityManagementScreen({super.key, this.deleteBlocker});
+
+  /// Why Delete Permanently can't go ahead, or null; see
+  /// facilityDeleteAllowed. Tests only: the app always checks with
+  /// FacilityService.facilityDeleteBlocker.
+  final Future<String?> Function(String facilityId)? deleteBlocker;
 
   @override
   ConsumerState<FacilityManagementScreen> createState() => _FacilityManagementScreenState();
@@ -35,6 +38,13 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
   bool _showArchived = false;
   String? _selectedFacilityId; // null means "All Facilities"
   int _totalFacilityCount = 0; // Total facilities from account
+
+  /// Per facility card, so its unit and tenant reads run when the counts the
+  /// Cloud Function mirrors onto the facility doc change, not on every
+  /// rebuild. Created inline in build(), every facility-doc snapshot re-read
+  /// every unit and tenant of every card.
+  final Map<String, KeyedMemo<Future<({int totalUnits, int occupiedUnits})>>>
+      _unitCountMemos = {};
 
   @override
   void initState() {
@@ -62,14 +72,17 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Syncing facility counts…')),
       );
-      await FacilityStatsService.recomputeAllFacilitiesStats();
+      // Server-side: heals and rewrites the stats the client cannot write.
+      // This used to report success while every write behind it was denied.
+      final result = await FacilityStatsService.recomputeAllFacilitiesStats();
       if (!context.mounted) return;
       ref.invalidate(dashboardStatsProvider);
-      setState(() {});
+      setState(_unitCountMemos.clear);
+      final outcome = FacilityStatsService.syncCountsMessage(result);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Counts synced. Dashboard and facility cards will show correct occupancy.'),
-          backgroundColor: AppTheme.success,
+        SnackBar(
+          content: Text(outcome.message),
+          backgroundColor: outcome.isError ? AppTheme.error : AppTheme.success,
         ),
       );
     } catch (e) {
@@ -194,7 +207,7 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
                   ],
                   // Recompute all facility stats (fix ghost occupancy / sync counts)
                   Tooltip(
-                    message: 'Recompute occupancy and tenant counts for all facilities',
+                    message: 'Recheck every unit and refresh the counts for all your facilities',
                     child: TextButton.icon(
                       onPressed: () => _recomputeAllStats(context),
                       icon: const Icon(Icons.refresh, size: 18),
@@ -417,7 +430,19 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
           ],
         ),
         subtitle: FutureBuilder<({int totalUnits, int occupiedUnits})>(
-          future: FacilityStatsService.computeUnitCounts(facility.id),
+          // A result that disagrees with the mirror is shown but not kept, so
+          // a failed read (which comes back as zeros) is retried on the next
+          // rebuild instead of sticking until the mirror changes.
+          future: _unitCountMemos
+              .putIfAbsent(facility.id, KeyedMemo.new)
+              .callKeeping(
+                '${facility.id}|${facility.occupiedUnits}|${facility.unitDocCount}',
+                () => FacilityStatsService.computeUnitCounts(facility.id),
+                keep: (counts) => FacilityStatsService.countsMatchFacilityMirror(
+                  counts,
+                  facility,
+                ),
+              ),
           builder: (context, snapshot) {
             // Show the actual count of unit documents (live > cached field).
             // `facility.totalUnits` is the user-set capacity max and is not used here.
@@ -578,7 +603,10 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Error archiving facility: $e'),
+              content: Text(
+                '${facility.name} was not archived: '
+                '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+              ),
               backgroundColor: AppTheme.error,
             ),
           );
@@ -642,6 +670,12 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
   }
 
   Future<void> _deleteFacility(FacilityModel facility) async {
+    if (!await facilityDeleteAllowed(context, facility,
+            blocker: widget.deleteBlocker ??
+                FacilityService.facilityDeleteBlocker) ||
+        !mounted) {
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => _DeleteConfirmationDialog(facilityName: facility.name),

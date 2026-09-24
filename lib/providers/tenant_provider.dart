@@ -252,8 +252,52 @@ final tenantOperationsProvider = StateNotifierProvider<TenantOperationsNotifier,
   return TenantOperationsNotifier();
 });
 
+/// The tenant writes that can be refused (archive, delete). A seam so tests
+/// can make them fail without Firebase.
+class TenantOperationsBackend {
+  const TenantOperationsBackend();
+
+  Future<void> archiveTenant({required String facilityId, required String tenantId}) =>
+      TenantService.archiveTenant(facilityId: facilityId, tenantId: tenantId);
+
+  /// False: the owner said no to freeing units, and nothing was deleted.
+  Future<bool> deleteTenant({
+    required String facilityId,
+    required String tenantId,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
+      TenantService.deleteTenant(
+          facilityId: facilityId, tenantId: tenantId, confirmUnitsFreed: confirmUnitsFreed);
+
+  Future<bool> deleteTenants({
+    required String facilityId,
+    required List<String> tenantIds,
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) =>
+      TenantService.deleteTenants(
+          facilityId: facilityId, tenantIds: tenantIds, confirmUnitsFreed: confirmUnitsFreed);
+}
+
 class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
-  TenantOperationsNotifier() : super(const AsyncValue.data(null));
+  TenantOperationsNotifier([this._backend = const TenantOperationsBackend()])
+      : super(const AsyncValue.data(null));
+
+  final TenantOperationsBackend _backend;
+
+  /// Records the outcome in [state] and rethrows. Swallowing the error here
+  /// made every caller show "deleted successfully" (or "saved") even when the
+  /// write was refused.
+  Future<T> _run<T>(Future<T> Function() operation) async {
+    state = const AsyncValue.loading();
+    try {
+      final result = await operation();
+      state = const AsyncValue.data(null);
+      return result;
+    } catch (error, stackTrace) {
+      state = AsyncValue.error(error, stackTrace);
+      rethrow;
+    }
+  }
 
   Future<void> createTenant({
     required String facilityId,
@@ -274,38 +318,31 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     bool portalEnabled = false,
     String? portalAccessCode,
     String? portalWelcomeMessage,
-  }) async {
-    state = const AsyncValue.loading();
-    
-    try {
-      await TenantService.createTenant(
-        facilityId: facilityId,
-        name: name,
-        email: email,
-        phone: phone,
-        unitNumber: unitNumber,
-        monthlyRate: monthlyRate,
-        notes: notes,
-        governmentIdType: governmentIdType,
-        governmentIdNumber: governmentIdNumber,
-        governmentIdState: governmentIdState,
-        governmentIdCountry: governmentIdCountry,
-        governmentIdIssuedAt: governmentIdIssuedAt,
-        governmentIdExpiresAt: governmentIdExpiresAt,
-        emergencyContacts: emergencyContacts,
-        vehicles: vehicles,
-        portalEnabled: portalEnabled,
-        portalAccessCode: portalAccessCode,
-        portalWelcomeMessage: portalWelcomeMessage,
-      );
-      
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
+  }) {
+    return _run(() => TenantService.createTenant(
+          facilityId: facilityId,
+          name: name,
+          email: email,
+          phone: phone,
+          unitNumber: unitNumber,
+          monthlyRate: monthlyRate,
+          notes: notes,
+          governmentIdType: governmentIdType,
+          governmentIdNumber: governmentIdNumber,
+          governmentIdState: governmentIdState,
+          governmentIdCountry: governmentIdCountry,
+          governmentIdIssuedAt: governmentIdIssuedAt,
+          governmentIdExpiresAt: governmentIdExpiresAt,
+          emergencyContacts: emergencyContacts,
+          vehicles: vehicles,
+          portalEnabled: portalEnabled,
+          portalAccessCode: portalAccessCode,
+          portalWelcomeMessage: portalWelcomeMessage,
+        ));
   }
 
-  Future<void> updateTenant({
+  /// The notice [TenantService.updateTenant] returns, for the screen.
+  Future<String?> updateTenant({
     required String facilityId,
     required String tenantId,
     String? name,
@@ -332,97 +369,63 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     DateTime? portalLastAccessAt,
     bool resetPortalStats = false,
     DateTime? smsOptInDate,
-  }) async {
-    state = const AsyncValue.loading();
-    
-    try {
-      await TenantService.updateTenant(
-        facilityId: facilityId,
-        tenantId: tenantId,
-        name: name,
-        email: email,
-        phone: phone,
-        unitNumber: unitNumber,
-        monthlyRate: monthlyRate,
-        notes: notes,
-        isActive: isActive,
-        governmentIdType: governmentIdType,
-        governmentIdNumber: governmentIdNumber,
-        governmentIdState: governmentIdState,
-        governmentIdCountry: governmentIdCountry,
-        governmentIdIssuedAt: governmentIdIssuedAt,
-        governmentIdExpiresAt: governmentIdExpiresAt,
-        clearGovernmentIdIssuedAt: clearGovernmentIdIssuedAt,
-        clearGovernmentIdExpiresAt: clearGovernmentIdExpiresAt,
-        emergencyContacts: emergencyContacts,
-        vehicles: vehicles,
-        portalEnabled: portalEnabled,
-        portalAccessCode: portalAccessCode,
-        clearPortalAccessCode: clearPortalAccessCode,
-        portalWelcomeMessage: portalWelcomeMessage,
-        portalLastAccessAt: portalLastAccessAt,
-        resetPortalStats: resetPortalStats,
-        smsOptInDate: smsOptInDate,
-      );
-      
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
+    ConfirmFreeUnit? confirmFreeOldUnit,
+  }) {
+    return _run(() => TenantService.updateTenant(
+          facilityId: facilityId,
+          tenantId: tenantId,
+          name: name,
+          email: email,
+          phone: phone,
+          unitNumber: unitNumber,
+          monthlyRate: monthlyRate,
+          notes: notes,
+          isActive: isActive,
+          governmentIdType: governmentIdType,
+          governmentIdNumber: governmentIdNumber,
+          governmentIdState: governmentIdState,
+          governmentIdCountry: governmentIdCountry,
+          governmentIdIssuedAt: governmentIdIssuedAt,
+          governmentIdExpiresAt: governmentIdExpiresAt,
+          clearGovernmentIdIssuedAt: clearGovernmentIdIssuedAt,
+          clearGovernmentIdExpiresAt: clearGovernmentIdExpiresAt,
+          emergencyContacts: emergencyContacts,
+          vehicles: vehicles,
+          portalEnabled: portalEnabled,
+          portalAccessCode: portalAccessCode,
+          clearPortalAccessCode: clearPortalAccessCode,
+          portalWelcomeMessage: portalWelcomeMessage,
+          portalLastAccessAt: portalLastAccessAt,
+          resetPortalStats: resetPortalStats,
+          smsOptInDate: smsOptInDate,
+          confirmFreeOldUnit: confirmFreeOldUnit,
+        ));
   }
 
   Future<void> archiveTenant({
     required String facilityId,
     required String tenantId,
-  }) async {
-    state = const AsyncValue.loading();
-    
-    try {
-      await TenantService.archiveTenant(
-        facilityId: facilityId,
-        tenantId: tenantId,
-      );
-      
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
+  }) {
+    return _run(() => _backend.archiveTenant(facilityId: facilityId, tenantId: tenantId));
   }
 
-  Future<void> deleteTenant({
+  /// False: the owner said no to freeing units, and nothing was deleted.
+  Future<bool> deleteTenant({
     required String facilityId,
     required String tenantId,
-  }) async {
-    state = const AsyncValue.loading();
-    
-    try {
-      await TenantService.deleteTenant(
-        facilityId: facilityId,
-        tenantId: tenantId,
-      );
-      
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) {
+    return _run(() => _backend.deleteTenant(
+        facilityId: facilityId, tenantId: tenantId, confirmUnitsFreed: confirmUnitsFreed));
   }
 
-  Future<void> deleteTenants({
+  Future<bool> deleteTenants({
     required String facilityId,
     required List<String> tenantIds,
-  }) async {
-    state = const AsyncValue.loading();
-    
-    try {
-      await TenantService.deleteTenants(
-        facilityId: facilityId,
-        tenantIds: tenantIds,
-      );
-      
-      state = const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      state = AsyncValue.error(error, stackTrace);
-    }
+    required ConfirmUnitsFreed confirmUnitsFreed,
+  }) {
+    return _run(() => _backend.deleteTenants(
+        facilityId: facilityId, tenantIds: tenantIds, confirmUnitsFreed: confirmUnitsFreed));
   }
 }
 

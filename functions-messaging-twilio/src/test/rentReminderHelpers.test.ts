@@ -8,7 +8,7 @@ import {
   nextRentDueDate,
   RentReminderTenant,
 } from '../rentReminderHelpers';
-import { facilityLocalHour, readReminderSettings } from '../rentReminderSms';
+import { facilityLocalHour, readReminderSettings, rentReminderTenantFromDoc } from '../rentReminderSms';
 
 function tenant(overrides: Partial<RentReminderTenant> = {}): RentReminderTenant {
   return {
@@ -97,6 +97,8 @@ test('no phone, no consent and inactive are each refused', () => {
     [{ smsOptInDate: null, smsConsentStatus: null }, 'no-consent'],
     [{ smsOptOut: true }, 'opted-out'],
     [{ isActive: false }, 'inactive'],
+    // A doc with no isActive is not an active tenant anywhere else.
+    [{ isActive: undefined }, 'inactive'],
   ];
   for (const [overrides, reason] of cases) {
     const decision = decideRentReminder({
@@ -204,4 +206,26 @@ test('a facility is texted at its own local hour, not the server hour', () => {
 test('an unknown time zone does not throw', () => {
   const now = new Date(Date.UTC(2026, 8, 28, 15, 0));
   assert.equal(typeof facilityLocalHour('Not/AZone', now), 'number');
+});
+
+test('a tenant doc is active only when isActive is exactly true', () => {
+  const now = new Date(2026, 8, 28);
+  const doc = {
+    name: 'Alexa Rau',
+    phone: '406-555-0100',
+    paidThrough: new Date(2026, 8, 30),
+    smsOptInDate: new Date(2026, 8, 1),
+    monthlyRate: 130,
+  };
+  assert.equal(rentReminderTenantFromDoc('t1', { ...doc, isActive: true }).isActive, true);
+  // Before: `data.isActive !== false`, so a partial doc read as active here
+  // and as inactive in the app and every other job.
+  for (const isActive of [undefined, false, 'true']) {
+    const tenant = rentReminderTenantFromDoc('t1', { ...doc, isActive });
+    assert.equal(tenant.isActive, false, String(isActive));
+    assert.equal(
+      decideRentReminder({ tenant, balance: 130, reminderDays: 3, now }).reason,
+      'inactive',
+    );
+  }
 });

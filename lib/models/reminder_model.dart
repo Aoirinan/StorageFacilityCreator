@@ -279,4 +279,11 @@ extension ReminderChannelExtension on ReminderChannel {
         return 'In-App';
     }
   }
+
+  /// Whether a reminder can go out to the tenant this way. Push and in-app
+  /// were never built (no tenant app reads reminders): a send printed a
+  /// debug line and counted as delivered, so a reminder was marked sent
+  /// "via in-app" with nothing sent. The pages keep them unselectable.
+  bool get canSend =>
+      this == ReminderChannel.email || this == ReminderChannel.sms;
 }

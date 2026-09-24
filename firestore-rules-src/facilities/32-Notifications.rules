@@ -1,6 +1,12 @@
       match /Notifications/{notificationId} {
         allow read: if isSuperAdmin() || isFacilityStaff(facilityId);
-        allow write: if false; // Cloud Functions only
+        // Written by Cloud Functions only. Staff may mark one read (the
+        // app's "Mark reviewed" / "Mark read") and change nothing else;
+        // every client write was refused, so no alert could be cleared.
+        allow update: if (isSuperAdmin() || isFacilityStaff(facilityId)) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']) &&
+          request.resource.data.readAt is timestamp;
+        allow create, delete: if false;
       }
 
       // Message logs - unified logging for all outbound communications

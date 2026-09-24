@@ -6,9 +6,14 @@ import {
   enforceAppCheckOrThrow,
   enforceRateLimit,
   escapeHtml,
+  enabledOnlineUnitTypes,
   getStripeClient,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
   sendFacilityEmailWithCompliance,
+  unitNotOfferedOnlineReason,
 } from '@sfc/functions-shared';
+import type { UnitNotOfferedReason } from '@sfc/functions-shared';
 import {
   amountsMatchCents,
   isPublicMoveInStripePaymentRequired,
@@ -21,6 +26,8 @@ import { createAutopayNotificationAndEvent } from './autopayNotification';
 import { resolveSmsConsentFields } from './smsConsent';
 import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
+import { assertFacilityHasTenantCapacity } from './tenantCapacity';
+import { notifyOwnerOfMoveInToUnitNotOffered } from './onlineMoveInReview';
 
 /** Public settings → active contract template with PDF, for online move-in. */
 async function readOnlineMoveInTemplateBinding(facilityId: string): Promise<{
@@ -237,6 +244,31 @@ function callerFingerprint(context: functions.https.CallableContext): string {
   return `ip_${crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16)}`;
 }
 
+export const ONLINE_RENTALS_OFF_MESSAGE =
+  'This facility is not taking online rentals right now. Please contact the facility.';
+
+/**
+ * The public rental page offers a unit only when the owner has turned online
+ * rentals on (FacilityPublicSettings.publicRentalsEnabled, off by default), so
+ * a direct call is held to the same switch. The setting is already public in
+ * the facility's publicFacilityMaps doc, so saying so leaks nothing.
+ *
+ * Returns the settings, so the hold can apply their unit types too.
+ */
+async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Record<string, unknown>> {
+  const settingsSnap = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('settings')
+    .doc('public')
+    .get();
+  const settings = (settingsSnap.data() || {}) as Record<string, unknown>;
+  if (settings.publicRentalsEnabled !== true) {
+    throw new functions.https.HttpsError('failed-precondition', ONLINE_RENTALS_OFF_MESSAGE);
+  }
+  return settings;
+}
+
 /**
  * Creates a short-lived public reservation hold for a unit.
  * This reduces obvious double-booking races before move-in completion.
@@ -282,11 +314,17 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     userId: context.auth?.uid || null,
   });
 
+  const publicSettings = await assertFacilityTakesOnlineRentals(String(facilityId));
+  const enabledUnitTypes = enabledOnlineUnitTypes(publicSettings);
+
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: name ? String(name).trim() : '',
     email: String(email).trim().toLowerCase(),
     phone: phone ? String(phone).trim() : '',
   });
+
+  // Before the unit is held, so a renter at a full facility finds out first.
+  await assertFacilityHasTenantCapacity(admin.firestore(), String(facilityId));
 
   const now = new Date();
   // Capped at 15 minutes, not 60. A hold makes the unit unavailable to everyone
@@ -319,7 +357,15 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     }
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
-    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+    // One refusal for all of these, so a caller cannot tell an unlisted or
+    // internal-use unit from a rented one. The unit type too: the public map
+    // marks a type the owner turned off not rentable, but a direct call held
+    // it.
+    if (
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isUnitOfferedOnline(unitData) ||
+      !isUnitTypeOfferedOnline(unitData, enabledUnitTypes)
+    ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 
@@ -537,6 +583,31 @@ export const createPublicMoveInCheckout = functions
     userId: context.auth?.uid || null,
   });
 
+  // The unit can be rented, unlisted, archived or set to internal use while it
+  // is held (up to 15 minutes for a public hold, 60 for a tenant-portal one).
+  // completePublicMoveIn refuses such a unit too, but only after Checkout has
+  // taken the payment, leaving the owner to refund it by hand. Same test and
+  // refusal as both holds; trimmed as loadPublicMoveInChargeQuote does, so the
+  // unit checked is the unit priced.
+  const reservedUnitId = String(reservation.unitId || '').trim();
+  if (reservedUnitId) {
+    const unitSnap = await admin.firestore()
+      .collection('facilities')
+      .doc(facilityId)
+      .collection('units')
+      .doc(reservedUnitId)
+      .get();
+    const unitData = unitSnap.exists ? (unitSnap.data() as Record<string, any>) : null;
+    const unitStatus = String(unitData?.status || '').toLowerCase();
+    if (
+      !unitData ||
+      (unitStatus !== 'available' && unitStatus !== 'reserved') ||
+      !isUnitOfferedOnline(unitData)
+    ) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+  }
+
   const facilityDoc = await admin.firestore().collection('facilities').doc(facilityId).get();
   if (!facilityDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Facility not found');
@@ -550,6 +621,10 @@ export const createPublicMoveInCheckout = functions
       'Facility owner must complete Stripe setup before online payments are enabled',
     );
   }
+
+  // Checked again before any payment is taken: the hold may be up to 15
+  // minutes old, and tenant-portal holds are created in another codebase.
+  await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
 
   await assertOnlineRentalNotOnDnrList(admin.firestore(), {
     name: reservation.name ? String(reservation.name).trim() : '',
@@ -872,6 +947,16 @@ async function mergeTemplateWithCertificatePdf(
 }
 
 /**
+ * One document per PaymentIntent that has completed an online move-in, keyed
+ * by the PaymentIntent id. Top level rather than under the facility, so a
+ * connected account shared by two facilities cannot spend one payment at each.
+ */
+const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
+
+const PAYMENT_ALREADY_USED_MESSAGE =
+  'This payment has already been used to complete a move-in. Contact the facility.';
+
+/**
  * Complete public move-in flow (no auth)
  * - Validates reservation token
  * - Creates tenant and contract
@@ -977,6 +1062,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const facilityEmailForContext = String(facilityPre.email || '').trim();
 
   let preloadedUnitData: Record<string, any> | null = null;
+  // Why the unit is no longer offered online, when it was unlisted, archived
+  // or set to internal use since the hold. Refused below only if nothing
+  // has been paid.
+  let unitNotOfferedReason: UnitNotOfferedReason | null = null;
   // Optional unit validation
   if (unitId) {
     const unitSnap = await admin.firestore()
@@ -995,6 +1084,10 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     if (unitStatus && unitStatus !== 'available' && unitStatus !== 'reserved') {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is no longer available');
     }
+    // Both hold callables and checkout check this too. Looked at again for a
+    // unit unlisted, archived or set to internal use since then; whether that
+    // refuses the move-in waits on the payment check below.
+    unitNotOfferedReason = unitNotOfferedOnlineReason(preloadedUnitData);
     const numFromUnit = String(preloadedUnitData.unitNumber || '').trim();
     if (numFromUnit) {
       displayUnitNumber = numFromUnit;
@@ -1030,7 +1123,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       ? expectedFromReservation
       : requiredPaymentCents;
 
-  if (paymentRequired || (!skipPayment && paymentIntentId)) {
+  const paymentVerified = paymentRequired || (!skipPayment && Boolean(paymentIntentId));
+  // Stripe's id for the verified payment, which is the key for its use record.
+  let verifiedPaymentIntentId: string | null = null;
+  let verifiedAmountReceivedCents = 0;
+  if (paymentVerified) {
     if (requiredPaymentCents > 0 && minimumPaymentCents !== requiredPaymentCents) {
       throw new functions.https.HttpsError(
         'failed-precondition',
@@ -1064,6 +1161,30 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
           `Payment intent not successful: ${paymentIntent.status}`,
         );
       }
+
+      // confirmPublicMoveInCheckout hands the PaymentIntent id to the browser,
+      // so a renter can offer one reservation's payment for another. A
+      // PaymentIntent whose metadata names another reservation, or another
+      // kind of payment, is refused. One with no such metadata relies on the
+      // one-use record written with the tenant below.
+      const paymentMetadata = paymentIntent.metadata || {};
+      const paymentType = String(paymentMetadata.type || '').trim();
+      const paidReservationId = String(paymentMetadata.reservationId || '').trim();
+      if (
+        (paymentType && paymentType !== 'public_move_in') ||
+        (paidReservationId && paidReservationId !== String(reservationId))
+      ) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'This payment was made for a different reservation. Contact the facility.',
+        );
+      }
+
+      verifiedPaymentIntentId = String(paymentIntent.id || '').trim();
+      if (!verifiedPaymentIntentId) {
+        throw new functions.https.HttpsError('internal', 'Failed to validate payment intent');
+      }
+      verifiedAmountReceivedCents = paymentIntent.amount_received;
     } catch (err: any) {
       functions.logger.error('Payment intent validation failed', {
         error: err?.message,
@@ -1078,6 +1199,53 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       'failed-precondition',
       'Payment is required to complete this move-in.',
     );
+  }
+
+  // Move-ins completed before the one-use record existed left only their
+  // payment ledger entry. A failed lookup is logged and let through: the
+  // record still stops any payment used from now on, and a renter who has
+  // paid is not turned away by a read error.
+  if (verifiedPaymentIntentId) {
+    let usedByEarlierMoveIn = false;
+    try {
+      const priorEntries = await admin.firestore()
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('ledgers')
+        .where('referenceId', '==', verifiedPaymentIntentId)
+        .get();
+      usedByEarlierMoveIn = priorEntries.docs.some((doc) => {
+        const entry = (doc.data() || {}) as Record<string, any>;
+        return entry.type === 'payment' && entry.createdBy === 'publicMoveIn';
+      });
+    } catch (err: any) {
+      functions.logger.error('Public move-in: prior payment lookup failed', {
+        error: err?.message || String(err),
+        facilityId,
+        paymentIntentId: verifiedPaymentIntentId,
+      });
+    }
+    if (usedByEarlierMoveIn) {
+      functions.logger.warn('Public move-in: payment already used by an earlier move-in', {
+        facilityId,
+        reservationId,
+        paymentIntentId: verifiedPaymentIntentId,
+      });
+      throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
+    }
+  }
+
+  // A renter who has paid is never turned away for capacity or for a unit
+  // taken off online rental: both were checked when checkout was created, and
+  // refusing after Checkout has charged left the renter paid with no tenancy,
+  // no refund and nothing said to the owner. A paid move-in into a unit no
+  // longer offered goes ahead and the owner is told (after the transaction).
+  // A move-in with nothing to pay has no checkout, so it is refused here.
+  if (!paymentVerified) {
+    if (unitNotOfferedReason) {
+      throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
+    }
+    await assertFacilityHasTenantCapacity(admin.firestore(), facilityId);
   }
 
   const verifiedTotalAmount = chargeQuote.totalAmount;
@@ -1164,6 +1332,24 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     }
     if (freshData.status !== 'pending' && freshData.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
+    }
+
+    // One PaymentIntent completes one move-in. Read here and written with the
+    // tenant, so two completions racing on one payment cannot both succeed.
+    const paymentUseRef = verifiedPaymentIntentId
+      ? admin.firestore().collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(verifiedPaymentIntentId)
+      : null;
+    if (paymentUseRef) {
+      const paymentUseSnap = await tx.get(paymentUseRef);
+      if (paymentUseSnap.exists) {
+        functions.logger.warn('Public move-in: payment already used', {
+          facilityId,
+          reservationId,
+          paymentIntentId: verifiedPaymentIntentId,
+          usedByReservationId: (paymentUseSnap.data() as Record<string, any> | undefined)?.reservationId,
+        });
+        throw new functions.https.HttpsError('failed-precondition', PAYMENT_ALREADY_USED_MESSAGE);
+      }
     }
 
     const facilityDocRef = admin.firestore().collection('facilities').doc(facilityId);
@@ -1389,6 +1575,19 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       });
     }
 
+    if (paymentUseRef) {
+      tx.set(paymentUseRef, {
+        paymentIntentId: verifiedPaymentIntentId,
+        facilityId,
+        reservationId: String(reservationId),
+        tenantId: tenantRef.id,
+        contractId: contractRef.id,
+        amountReceivedCents: verifiedAmountReceivedCents,
+        createdAt: nowTs,
+        createdBy: 'publicMoveIn',
+      });
+    }
+
     // Update reservation status
     tx.update(reservationRef, {
       status: 'completed',
@@ -1397,6 +1596,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       tenantId: tenantRef.id,
       contractId: contractRef.id,
       completedBy: 'publicMoveIn',
+      paymentIntentId: verifiedPaymentIntentId,
     });
 
     return {
@@ -1406,6 +1606,20 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   });
 
   const { tenantId, contractId } = transactionResult;
+
+  // Reached only when paid (unpaid ones were refused above).
+  if (unitNotOfferedReason && unitId) {
+    await notifyOwnerOfMoveInToUnitNotOffered({
+      facilityId,
+      tenantId,
+      tenantName: name.trim(),
+      unitId,
+      unitNumber: displayUnitNumber,
+      reason: unitNotOfferedReason,
+      reservationId: String(reservationId),
+      paymentIntentId: verifiedPaymentIntentId,
+    });
+  }
 
   // Generate and store a reviewable PDF (dashboard contract detail uses signedFileUrl / fileUrl).
   try {
@@ -1492,7 +1706,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   }
 
   // Create payment ledger entry (outside transaction to avoid blocking)
-  if (!skipPayment && paymentIntentId && verifiedTotalAmount > 0) {
+  if (!skipPayment && verifiedPaymentIntentId && verifiedTotalAmount > 0) {
     const ledgerRef = admin.firestore()
       .collection('facilities')
       .doc(facilityId)
@@ -1505,13 +1719,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       type: 'payment',
       amount: -Number(verifiedTotalAmount),
       description: 'Move-in payment',
-      referenceId: paymentIntentId,
+      referenceId: verifiedPaymentIntentId,
       entryDate: new Date(),
       status: 'posted',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: 'publicMoveIn',
       metadata: {
-        paymentIntentId,
+        paymentIntentId: verifiedPaymentIntentId,
       },
     });
   }

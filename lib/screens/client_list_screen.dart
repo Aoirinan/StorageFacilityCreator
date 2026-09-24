@@ -1,39 +1,30 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:csv/csv.dart';
-import 'dart:convert';
-import '../providers/tenant_provider.dart';
-import '../providers/permission_provider.dart';
-import '../providers/auth_provider.dart';
-import '../providers/facility_provider.dart';
-import '../providers/active_facility_provider.dart';
-import '../models/tenant_model.dart';
-import '../models/facility_model.dart';
-import '../services/facility_creator_account_service.dart';
-import '../services/tenant_service.dart';
-import '../services/tenant_portal_service.dart';
-import '../widgets/modern_page_wrapper.dart';
-import '../theme/app_theme.dart';
-import '../constants/app_constants.dart';
-import '../services/modern_navigation_service.dart';
-import '../router/app_router.dart';
-import '../router/app_route.dart';
-import '../widgets/keyboard_scrollable.dart';
-import '../utils/error_message_helper.dart';
-import '../utils/setup_retry_controller.dart';
-import 'client_detail_screen.dart';
-import 'tenant_creation_screen.dart';
-import 'tenant_edit_screen.dart';
-import 'subscription_test_screen.dart';
-import 'facility_map_editor_screen.dart';
-import 'tenant_csv_import_wizard_screen.dart';
-import '../services/late_logic_service.dart';
-import '../services/permission_service.dart';
-import '../models/permission_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/providers/permission_provider.dart';
+import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/tenant_portal_service.dart';
+import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/constants/app_constants.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/setup_retry_controller.dart';
+import 'package:sfcapp/screens/tenant_creation_screen.dart';
+import 'package:sfcapp/screens/tenant_edit_screen.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/models/permission_model.dart';
+import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
 final _facilityGracePeriodProvider = FutureProvider.family<int, String>((ref, facilityId) async {
@@ -125,7 +116,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       if (facilities == null || facilities.isEmpty) return;
 
       final activeId = next.whenOrNull(data: (d) => d);
-      final newLocal = activeId == null ? 'all' : activeId;
+      final newLocal = activeId ?? 'all';
       if (newLocal == _selectedFacilityId) return;
       if (activeId == null || facilities.any((f) => f.id == activeId)) {
         setState(() {
@@ -402,7 +393,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       Container(
                         padding: const EdgeInsets.symmetric(vertical: AppConstants.spacingS),
                         decoration: BoxDecoration(
-                          color: cs.primary.withOpacity(0.1),
+                          color: cs.primary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
@@ -438,7 +429,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                             _selectedTenantIds.clear();
                                           } else {
                                             _selectedTenantIds.clear();
-                                            _selectedTenantIds.addAll(tenants.where((t) => t.id != null).map((t) => t.id!));
+                                            _selectedTenantIds.addAll(tenants.map((t) => t.id));
                                           }
                                         });
                                       },
@@ -834,7 +825,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: AppConstants.spacingM, vertical: AppConstants.spacingXS),
-      color: isSelected ? AppTheme.primaryBlue.withOpacity(0.1) : null,
+      color: isSelected ? AppTheme.primaryBlue.withValues(alpha: 0.1) : null,
       child: ListTile(
         leading: _isSelectionMode
             ? Checkbox(
@@ -842,7 +833,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 onChanged: (value) {
                   setState(() {
                     if (value == true) {
-                      _selectedTenantIds.add(tenant.id!);
+                      _selectedTenantIds.add(tenant.id);
                     } else {
                       _selectedTenantIds.remove(tenant.id);
                     }
@@ -880,9 +871,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 margin: const EdgeInsets.only(top: AppConstants.spacingXS),
                 padding: const EdgeInsets.symmetric(horizontal: AppConstants.spacingS, vertical: AppConstants.spacingXS / 2),
                 decoration: BoxDecoration(
-                  color: AppTheme.error.withOpacity(0.1),
+                  color: AppTheme.error.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.error.withOpacity(0.3)),
+                  border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
                 ),
                 child: Text(
                   'LATE PAYMENT - $daysLate ${daysLate == 1 ? 'day' : 'days'}',
@@ -901,16 +892,16 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 onSelected: (value) async {
                   switch (value) {
                     case 'view':
-                      context.push(AppRoute.tenantDetail, extra: tenant);
+                      unawaited(context.push(AppRoute.tenantDetail, extra: tenant));
                       break;
                     case 'edit':
-                      context.push(
+                      unawaited(context.push(
                         AppRoute.legacyScreen,
                         extra: TenantEditScreen(
                           tenant: tenant,
                           facilityIdOverride: _selectedFacilityId.isNotEmpty ? _selectedFacilityId : null,
                         ),
-                      );
+                      ));
                       break;
                     case 'archive':
                       await _archiveTenant(tenant);
@@ -922,7 +913,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       setState(() {
                         _isSelectionMode = true;
                         _selectedTenantIds.clear();
-                        _selectedTenantIds.add(tenant.id!);
+                        _selectedTenantIds.add(tenant.id);
                       });
                       break;
                     case 'delete':
@@ -1000,7 +991,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                   if (isSelected) {
                     _selectedTenantIds.remove(tenant.id);
                   } else {
-                    _selectedTenantIds.add(tenant.id!);
+                    _selectedTenantIds.add(tenant.id);
                   }
                 });
               }
@@ -1089,7 +1080,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   /// Bulk form of the portal invite: everyone currently selected.
   Future<void> _inviteSelectedTenants() async {
     final tenants = ref.read(filteredTenantsProvider(_selectedFacilityId)).value ?? const <TenantModel>[];
-    final selected = tenants.where((t) => t.id != null && _selectedTenantIds.contains(t.id)).toList();
+    final selected = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
     if (selected.isEmpty) return;
     await _inviteTenants(selected);
   }
@@ -1120,8 +1111,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     final byFacility = <String, List<String>>{};
     for (final t in tenants) {
-      if (t.id == null) continue;
-      byFacility.putIfAbsent(t.facilityId, () => []).add(t.id!);
+      byFacility.putIfAbsent(t.facilityId, () => []).add(t.id);
     }
     final lines = <String>[];
     var anyFailed = false;
@@ -1177,31 +1167,88 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
 
     if (confirmed == true) {
-      try {
-        await ref.read(tenantOperationsProvider.notifier).archiveTenant(
-          facilityId: tenant.facilityId,
-          tenantId: tenant.id,
+      final error = await _archive(tenant.facilityId, tenant.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error ?? '${tenant.name} archived successfully'),
+            backgroundColor: error == null ? AppTheme.success : AppTheme.error,
+            duration: Duration(seconds: error == null ? 4 : 10),
+          ),
         );
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${tenant.name} archived successfully'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error archiving tenant: $e'),
-              backgroundColor: AppTheme.error,
-            ),
-          );
-        }
       }
     }
+  }
+
+  /// Archives one tenant. Returns null on success, else a message to show:
+  /// archive is refused while the tenant still holds a unit.
+  Future<String?> _archive(String facilityId, String tenantId) async {
+    try {
+      await ref.read(tenantOperationsProvider.notifier).archiveTenant(
+        facilityId: facilityId,
+        tenantId: tenantId,
+      );
+      return null;
+    } on TenantStillAssignedToUnitException catch (e) {
+      return e.message;
+    } catch (e) {
+      return 'Error archiving tenant: $e';
+    }
+  }
+
+  /// Delete was refused because the tenant(s) have history. Explains what
+  /// they have and offers Archive only for those who hold no unit, because
+  /// archiving an occupant silently stops their rent, autopay and lockout.
+  Future<void> _showDeleteRefused(
+    TenantDeleteRefusedException refusal, {
+    required String facilityId,
+    String? note,
+  }) async {
+    if (!mounted) return;
+    final archivable = refusal.blocked.where((b) => b.canArchiveInstead).toList();
+    final single = refusal.blocked.length == 1;
+    final archive = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(single
+            ? "Can't delete ${refusal.blocked.single.tenantName}"
+            : 'Nothing was deleted'),
+        content: SingleChildScrollView(
+          child: Text(note == null ? refusal.details : '${refusal.details}\n\n$note'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(archivable.isEmpty ? 'OK' : 'Cancel'),
+          ),
+          if (archivable.isNotEmpty)
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(single ? 'Archive instead' : 'Archive ${archivable.length}'),
+            ),
+        ],
+      ),
+    );
+    if (archive != true || !mounted) return;
+
+    final errors = <String>[];
+    for (final b in archivable) {
+      final error = await _archive(facilityId, b.tenantId);
+      if (error != null) errors.add(single ? error : '${b.tenantName}: $error');
+    }
+    if (!mounted) return;
+    final archived = archivable.length - errors.length;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(errors.isEmpty
+            ? (single
+                ? '${archivable.single.tenantName} archived'
+                : '$archived tenant${archived == 1 ? '' : 's'} archived')
+            : errors.join('\n')),
+        backgroundColor: errors.isEmpty ? AppTheme.success : AppTheme.error,
+        duration: Duration(seconds: errors.isEmpty ? 4 : 10),
+      ),
+    );
   }
 
   Future<void> _deleteTenant(TenantModel tenant) async {
@@ -1221,11 +1268,15 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       return;
     }
 
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Tenant'),
-        content: Text('Are you sure you want to permanently delete ${tenant.name}? This action cannot be undone.'),
+        content: Text(
+          'Permanently delete ${tenant.name}? This cannot be undone.\n\n'
+          '$_permanentDeleteNote',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1241,12 +1292,13 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     if (confirmed == true) {
       try {
-        await ref.read(tenantOperationsProvider.notifier).deleteTenant(
+        final deleted = await ref.read(tenantOperationsProvider.notifier).deleteTenant(
           facilityId: tenant.facilityId,
           tenantId: tenant.id,
+          confirmUnitsFreed: _confirmUnitsFreed,
         );
-        
-        if (mounted) {
+
+        if (deleted && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('${tenant.name} deleted successfully'),
@@ -1254,6 +1306,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
             ),
           );
         }
+      } on TenantDeleteRefusedException catch (e) {
+        await _showDeleteRefused(e, facilityId: tenant.facilityId);
+      } on TenantDeleteCheckFailedException catch (e) {
+        _showDeleteFailed(e.message);
+      } on CallableFailureException catch (e) {
+        _showDeleteFailed(e.message);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1265,6 +1323,26 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         }
       }
     }
+  }
+
+  // Shown before every permanent delete. Deliberately no mention of
+  // Move-out: it has no entry point in the app, needs a contract, and
+  // emails the tenant.
+  static const _permanentDeleteNote =
+      'Permanent delete is only for tenants entered by mistake: no charges, '
+      'payments, invoices, contracts, liens or saved cards. A unit they hold '
+      'is unassigned and listed as available; you will see which before '
+      'anything is deleted. For someone who has left: unassign their unit, '
+      'then Archive. Their history is kept.';
+
+  Future<bool> _confirmUnitsFreed(List<TenantDeletePlan> freeing) =>
+      confirmUnitsFreedDialog(context, freeing);
+
+  void _showDeleteFailed(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: AppTheme.error),
+    );
   }
 
   Future<void> _deleteSelectedTenants() async {
@@ -1295,16 +1373,27 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     final selectedTenants = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
     final count = _selectedTenantIds.length;
     final tenantIdsToDelete = _selectedTenantIds.toList();
-    
+
+    // All or nothing per call, so a bigger selection is refused up front.
+    if (count > TenantService.maxTenantsPerDelete) {
+      _showDeleteFailed(TenantDeleteTooManyException(count).message);
+      return;
+    }
+
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Tenants'),
-        content: Text(
-          'Are you sure you want to permanently delete $count tenant${count == 1 ? '' : 's'}?\n\n'
-          'This action cannot be undone.\n\n'
-          'Selected tenants:\n${selectedTenants.take(5).map((t) => '• ${t.name}').join('\n')}'
-          '${selectedTenants.length > 5 ? '\n... and ${selectedTenants.length - 5} more' : ''}',
+        content: SingleChildScrollView(
+          child: Text(
+            'Permanently delete $count tenant${count == 1 ? '' : 's'}? '
+            'This cannot be undone.\n\n'
+            '$_permanentDeleteNote\n\n'
+            'If any selected tenant has history, nothing is deleted.\n\n'
+            'Selected tenants:\n${selectedTenants.take(5).map((t) => '• ${t.name}').join('\n')}'
+            '${selectedTenants.length > 5 ? '\n... and ${selectedTenants.length - 5} more' : ''}',
+          ),
         ),
         actions: [
           TextButton(
@@ -1324,17 +1413,18 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
     if (confirmed == true) {
       try {
-        await ref.read(tenantOperationsProvider.notifier).deleteTenants(
+        final deleted = await ref.read(tenantOperationsProvider.notifier).deleteTenants(
           facilityId: _selectedFacilityId,
           tenantIds: tenantIdsToDelete,
+          confirmUnitsFreed: _confirmUnitsFreed,
         );
-        
-        if (mounted) {
+
+        if (deleted && mounted) {
           setState(() {
             _selectedTenantIds.clear();
             _isSelectionMode = false;
           });
-          
+
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('$count tenant${count == 1 ? '' : 's'} deleted successfully'),
@@ -1342,6 +1432,28 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
             ),
           );
         }
+      } on TenantDeleteRefusedException catch (e) {
+        if (!mounted) return;
+        // Deselect the refused tenants so pressing Delete again removes only
+        // the clean ones; the refusal was all or nothing.
+        final blockedIds = e.blocked.map((b) => b.tenantId).toSet();
+        final remaining = tenantIdsToDelete.where((id) => !blockedIds.contains(id)).length;
+        setState(() => _selectedTenantIds.removeAll(blockedIds));
+        await _showDeleteRefused(
+          e,
+          facilityId: _selectedFacilityId,
+          note: remaining == 0
+              ? null
+              : 'They have been taken out of your selection, so pressing Delete '
+                  'again removes only the other $remaining (any units those hold '
+                  'are named before anything is deleted).',
+        );
+      } on TenantDeleteCheckFailedException catch (e) {
+        _showDeleteFailed(e.message);
+      } on TenantDeleteTooManyException catch (e) {
+        _showDeleteFailed(e.message);
+      } on CallableFailureException catch (e) {
+        _showDeleteFailed(e.message);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1393,13 +1505,13 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
         // Navigate to tenant creation screen
         if (isMounted) {
-          context.push(
+          unawaited(context.push(
             AppRoute.legacyScreen,
             extra: TenantCreationScreen(
               facilities: facilities,
               selectedFacilityId: selectedFacilityId,
             ),
-          );
+          ));
         }
       }
     } catch (e) {

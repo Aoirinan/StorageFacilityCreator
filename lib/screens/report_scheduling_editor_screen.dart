@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/scheduled_report_model.dart';
-import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/search_provider.dart';
 import 'package:sfcapp/services/report_scheduling_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 
 /// Screen for creating/editing scheduled reports
 class ReportSchedulingEditorScreen extends ConsumerStatefulWidget {
@@ -161,7 +161,9 @@ class _ReportSchedulingEditorScreenState extends ConsumerState<ReportSchedulingE
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Schedule saved successfully')),
         );
-        context.pop();
+        // A bare pop threw after the save when this page was opened by a
+        // link or a reload, and the catch reported the save as failed.
+        popOrGo(context, AppRoute.reportScheduling);
       }
     } catch (e) {
       setState(() {

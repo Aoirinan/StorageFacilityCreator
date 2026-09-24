@@ -1,0 +1,216 @@
+{
+  "_about": [
+    "What the two writers of publicFacilityMaps/{slug}.units must both publish for the same unit and tenant docs, with default public settings.",
+    "The app side runs each case through the public map's unit and tenant reads and FacilityMapV2Service.buildPublicUnitInventoryMaps (test/public_map_units_parity_test.dart).",
+    "The server side runs each case through syncPublicFacilityMapInventoryForFacility (functions-public-website/src/test/publicFacilityMapInventorySync.test.ts).",
+    "expected is keyed by unit doc id and lists every unit that is published; a unit left out of it must not be published. Each entry names the published fields compared for that unit.",
+    "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down."
+  ],
+  "cases": [
+    {
+      "name": "internal-use units are not offered online, even when left listed",
+      "units": [
+        { "id": "a1", "data": { "unitNumber": "A1", "status": "available", "unitType": "standard" } },
+        { "id": "a2", "data": { "unitNumber": "A2", "status": "available", "unitType": "standard", "internalUse": false } },
+        { "id": "office", "data": { "unitNumber": "OFF", "status": "available", "unitType": "standard", "internalUse": true, "publicListingEnabled": true } },
+        { "id": "store", "data": { "unitNumber": "STO", "status": "available", "unitType": "standard", "internalUse": true } },
+        { "id": "home", "data": { "unitNumber": "RES", "status": "available", "unitType": "standard", "internalUse": true, "publicListingEnabled": false } }
+      ],
+      "tenants": [],
+      "expected": {
+        "a1": { "isRentable": true, "status": "available" },
+        "a2": { "isRentable": true, "status": "available" },
+        "office": { "isRentable": false, "status": "unavailable" },
+        "store": { "isRentable": false, "status": "unavailable" },
+        "home": { "isRentable": false, "status": "unavailable" }
+      }
+    },
+    {
+      "name": "an internal-use unit someone lives in reads unavailable, not rented",
+      "units": [
+        { "id": "home", "data": { "unitNumber": "RES", "status": "occupied", "unitType": "standard", "tenantId": "t1", "internalUse": true } },
+        { "id": "office", "data": { "unitNumber": "OFF", "status": "available", "unitType": "standard", "internalUse": true } },
+        { "id": "a1", "data": { "unitNumber": "A1", "status": "occupied", "unitType": "standard", "tenantId": "t2" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Manager", "isActive": true, "unitNumber": "RES" } },
+        { "id": "t2", "data": { "name": "Al", "isActive": true, "unitNumber": "A1" } },
+        { "id": "t3", "data": { "name": "Bo", "isActive": true, "unitNumber": "OFF" } }
+      ],
+      "expected": {
+        "home": { "isRentable": false, "status": "unavailable" },
+        "office": { "isRentable": false, "status": "unavailable" },
+        "a1": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "only an exact true marks internal use",
+      "units": [
+        { "id": "s", "data": { "unitNumber": "S", "status": "available", "unitType": "standard", "internalUse": "true" } },
+        { "id": "n", "data": { "unitNumber": "N", "status": "available", "unitType": "standard", "internalUse": 1 } },
+        { "id": "z", "data": { "unitNumber": "Z", "status": "available", "unitType": "standard", "internalUse": null } }
+      ],
+      "tenants": [],
+      "expected": {
+        "s": { "isRentable": true, "status": "available" },
+        "n": { "isRentable": true, "status": "available" },
+        "z": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "unlisted units are unavailable; a missing listing switch means listed",
+      "units": [
+        { "id": "on", "data": { "unitNumber": "A1", "status": "available", "unitType": "standard", "publicListingEnabled": true } },
+        { "id": "off", "data": { "unitNumber": "A2", "status": "available", "unitType": "standard", "publicListingEnabled": false } },
+        { "id": "missing", "data": { "unitNumber": "A3", "status": "available", "unitType": "standard" } },
+        { "id": "nul", "data": { "unitNumber": "A4", "status": "available", "unitType": "standard", "publicListingEnabled": null } },
+        { "id": "rented-off", "data": { "unitNumber": "A5", "status": "occupied", "unitType": "standard", "tenantId": "t1", "publicListingEnabled": false } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "A5" } }],
+      "expected": {
+        "on": { "isRentable": true, "status": "available" },
+        "off": { "isRentable": false, "status": "unavailable" },
+        "missing": { "isRentable": true, "status": "available" },
+        "nul": { "isRentable": true, "status": "available" },
+        "rented-off": { "isRentable": false, "status": "unavailable" }
+      }
+    },
+    {
+      "name": "only a tenant with isActive exactly true claims its unit",
+      "units": [
+        { "id": "a1", "data": { "unitNumber": "A1", "status": "available", "unitType": "standard" } },
+        { "id": "a2", "data": { "unitNumber": "A2", "status": "available", "unitType": "standard" } },
+        { "id": "a3", "data": { "unitNumber": "A3", "status": "available", "unitType": "standard" } },
+        { "id": "a4", "data": { "unitNumber": "A4", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "active", "data": { "name": "Al", "isActive": true, "unitNumber": "A1" } },
+        { "id": "archived", "data": { "name": "Bo", "isActive": false, "unitNumber": "A2" } },
+        { "id": "partial", "data": { "unitNumber": "A3" } },
+        { "id": "spaced", "data": { "name": "Cy", "isActive": true, "unitNumber": " a4 " } }
+      ],
+      "expected": {
+        "a1": { "isRentable": false, "status": "rented" },
+        "a2": { "isRentable": true, "status": "available" },
+        "a3": { "isRentable": true, "status": "available" },
+        "a4": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "archived units are left off the list",
+      "units": [
+        { "id": "live", "data": { "unitNumber": "A1", "status": "available", "unitType": "standard" } },
+        { "id": "false", "data": { "unitNumber": "A2", "status": "available", "unitType": "standard", "archived": false } },
+        { "id": "nul", "data": { "unitNumber": "A3", "status": "available", "unitType": "standard", "archived": null } },
+        { "id": "gone", "data": { "unitNumber": "A4", "status": "available", "unitType": "standard", "archived": true } },
+        { "id": "stray", "data": { "unitNumber": "A5", "status": "available", "unitType": "standard", "archived": "true" } }
+      ],
+      "tenants": [],
+      "expected": {
+        "live": { "isRentable": true, "status": "available" },
+        "false": { "isRentable": true, "status": "available" },
+        "nul": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "status and tenant links decide the rest",
+      "units": [
+        { "id": "reserved", "data": { "unitNumber": "R1", "status": "reserved", "unitType": "standard" } },
+        { "id": "occupied", "data": { "unitNumber": "O1", "status": "occupied", "unitType": "standard" } },
+        { "id": "linked", "data": { "unitNumber": "L1", "status": "available", "unitType": "standard", "tenantId": "t9" } },
+        { "id": "blank-link", "data": { "unitNumber": "L2", "status": "available", "unitType": "standard", "tenantId": "  " } },
+        { "id": "maintenance", "data": { "unitNumber": "M1", "status": "maintenance", "unitType": "standard" } },
+        { "id": "overlocked", "data": { "unitNumber": "M2", "status": "overlocked", "unitType": "standard" } }
+      ],
+      "tenants": [],
+      "expected": {
+        "reserved": { "isRentable": true, "status": "reserved" },
+        "occupied": { "isRentable": false, "status": "rented" },
+        "linked": { "isRentable": false, "status": "rented" },
+        "blank-link": { "isRentable": true, "status": "available" },
+        "maintenance": { "isRentable": false, "status": "unavailable" },
+        "overlocked": { "isRentable": false, "status": "unavailable" }
+      }
+    },
+    {
+      "name": "a unit with no status string is not offered, as the online holds refuse it",
+      "units": [
+        { "id": "missing", "data": { "unitNumber": "A1", "unitType": "standard" } },
+        { "id": "nul", "data": { "unitNumber": "A2", "status": null, "unitType": "standard" } },
+        { "id": "empty", "data": { "unitNumber": "A3", "status": "", "unitType": "standard" } },
+        { "id": "number", "data": { "unitNumber": "A4", "status": 1, "unitType": "standard" } },
+        { "id": "bool", "data": { "unitNumber": "A5", "status": true, "unitType": "standard" } },
+        { "id": "set", "data": { "unitNumber": "A6", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [],
+      "expected": {
+        "missing": { "isRentable": false, "status": "unavailable", "internalStatus": null },
+        "nul": { "isRentable": false, "status": "unavailable", "internalStatus": null },
+        "empty": { "isRentable": false, "status": "unavailable", "internalStatus": null },
+        "number": { "isRentable": false, "status": "unavailable", "internalStatus": null },
+        "bool": { "isRentable": false, "status": "unavailable", "internalStatus": null },
+        "set": { "isRentable": true, "status": "available", "internalStatus": "available" }
+      }
+    },
+    {
+      "name": "status is read as the online holds read it: lower-cased, not trimmed",
+      "units": [
+        { "id": "cap", "data": { "unitNumber": "A1", "status": "Available", "unitType": "standard" } },
+        { "id": "upper", "data": { "unitNumber": "A2", "status": "RESERVED", "unitType": "standard" } },
+        { "id": "occupied", "data": { "unitNumber": "A3", "status": "Occupied", "unitType": "standard" } },
+        { "id": "maintenance", "data": { "unitNumber": "A4", "status": "Maintenance", "unitType": "standard" } },
+        { "id": "camel", "data": { "unitNumber": "A5", "status": "outOfOrder", "unitType": "standard" } },
+        { "id": "padded", "data": { "unitNumber": "A6", "status": " available ", "unitType": "standard" } },
+        { "id": "cap-unlisted", "data": { "unitNumber": "A7", "status": "Available", "unitType": "standard", "publicListingEnabled": false } }
+      ],
+      "tenants": [],
+      "expected": {
+        "cap": { "isRentable": true, "status": "available", "internalStatus": "Available" },
+        "upper": { "isRentable": true, "status": "reserved", "internalStatus": "RESERVED" },
+        "occupied": { "isRentable": false, "status": "rented", "internalStatus": "Occupied" },
+        "maintenance": { "isRentable": false, "status": "unavailable", "internalStatus": "Maintenance" },
+        "camel": { "isRentable": false, "status": "unavailable", "internalStatus": "outOfOrder" },
+        "padded": { "isRentable": false, "status": "unavailable", "internalStatus": " available " },
+        "cap-unlisted": { "isRentable": false, "status": "unavailable", "internalStatus": "Available" }
+      }
+    },
+    {
+      "name": "only an exact false unlists a unit, as isUnitOfferedOnline reads it",
+      "units": [
+        { "id": "string", "data": { "unitNumber": "A1", "status": "available", "unitType": "standard", "publicListingEnabled": "false" } },
+        { "id": "zero", "data": { "unitNumber": "A2", "status": "available", "unitType": "standard", "publicListingEnabled": 0 } },
+        { "id": "off", "data": { "unitNumber": "A3", "status": "available", "unitType": "standard", "publicListingEnabled": false } }
+      ],
+      "tenants": [],
+      "expected": {
+        "string": { "isRentable": true, "status": "available", "publicListingEnabled": true },
+        "zero": { "isRentable": true, "status": "available", "publicListingEnabled": true },
+        "off": { "isRentable": false, "status": "unavailable", "publicListingEnabled": false }
+      }
+    },
+    {
+      "name": "a unit number or rate stored as the other type is read, and published the same by both",
+      "units": [
+        { "id": "num", "data": { "unitNumber": 101, "status": "available", "unitType": "standard", "monthlyRate": 100 } },
+        { "id": "text-rate", "data": { "unitNumber": "B1", "status": "available", "unitType": "standard", "monthlyRate": "100" } },
+        { "id": "padded-rate", "data": { "unitNumber": "B2", "status": "available", "unitType": "standard", "monthlyRate": " 75.50 " } },
+        { "id": "word-rate", "data": { "unitNumber": "B3", "status": "available", "unitType": "standard", "monthlyRate": "call us" } },
+        { "id": "claimed", "data": { "unitNumber": 102, "status": "available", "unitType": "standard", "monthlyRate": 90 } },
+        { "id": "text-dims", "data": { "unitNumber": "B4", "status": "available", "unitType": "standard", "monthlyRate": 80, "dimensions": { "width": "10", "depth": "15" } } },
+        { "id": "number-link", "data": { "unitNumber": "B5", "status": "available", "unitType": "standard", "monthlyRate": 80, "tenantId": 5 } },
+        { "id": "junk", "data": { "unitNumber": "B6", "status": "available", "unitType": "standard", "monthlyRate": 60, "tenantName": 7, "description": 12, "notes": 3, "features": "climate", "dimensions": "10x10", "customFields": "none", "createdAt": "2026-01-01", "moveInDate": 1700000000000, "mapLayout": "left", "overlock": { "isOverlocked": false, "updatedAt": "yesterday", "updatedByUid": 9 } } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "102" } }],
+      "expected": {
+        "num": { "isRentable": true, "status": "available", "unitNumber": "101", "unitLabel": "101", "displayName": "Unit 101", "monthlyRate": 100 },
+        "text-rate": { "isRentable": true, "status": "available", "monthlyRate": 100 },
+        "padded-rate": { "isRentable": true, "status": "available", "monthlyRate": 75.5 },
+        "word-rate": { "isRentable": true, "status": "available", "monthlyRate": 0 },
+        "claimed": { "isRentable": false, "status": "rented", "unitNumber": "102" },
+        "text-dims": { "isRentable": true, "status": "available", "size": "10x15" },
+        "number-link": { "isRentable": true, "status": "available" },
+        "junk": { "isRentable": true, "status": "available", "unitNumber": "B6", "monthlyRate": 60, "size": null }
+      }
+    }
+  ]
+}

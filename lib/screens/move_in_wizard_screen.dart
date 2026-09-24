@@ -1,34 +1,117 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/foundation.dart';
+import 'package:go_router/go_router.dart';
 import '../models/tenant_model.dart';
 import '../models/unit_model.dart';
 import '../models/contract_model.dart';
 import '../models/invoice_line_item_model.dart';
 import '../services/move_in_service.dart';
-import '../services/prorate_service.dart';
 import '../services/tenant_service.dart';
 import '../services/unit_service.dart';
 import '../services/contract_service.dart';
 import '../services/contract_send_service.dart';
 import '../services/facility_service.dart';
 import '../providers/auth_provider.dart';
-import '../providers/tenant_provider.dart';
-import '../providers/unit_provider.dart';
 import '../models/facility_model.dart';
 import '../theme/app_theme.dart';
+import 'package:sfcapp/router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
+
+/// Creates the lease a move-in is signed against when the Contract step was
+/// skipped.
+Future<ContractModel> _createLeaseContract({
+  required String facilityId,
+  required String tenantId,
+  required String unitNumber,
+}) async {
+  final contractId = await ContractService.createContract(
+    facilityId: facilityId,
+    tenantId: tenantId,
+    title: 'Storage Lease - $unitNumber',
+    description: 'Move-in contract for unit $unitNumber',
+    type: ContractType.lease,
+  );
+  final createdContract = await ContractService.getContract(facilityId, contractId);
+  if (createdContract == null) {
+    throw Exception('Failed to retrieve created contract');
+  }
+  return createdContract;
+}
+
+/// The reads and writes the wizard makes. The app always uses the defaults;
+/// a test swaps them to drive the real wizard without Firebase.
+class MoveInWizardServices {
+  const MoveInWizardServices({
+    this.getFacility = FacilityService.getFacility,
+    this.getUnits = UnitService.getUnitsForFacility,
+    this.getTenants = TenantService.getTenantsForFacility,
+    this.createLeaseContract = _createLeaseContract,
+    this.completeMoveIn = MoveInService.completeMoveIn,
+  });
+
+  final Future<FacilityModel?> Function(String facilityId) getFacility;
+  final Future<List<UnitModel>> Function(String facilityId) getUnits;
+  final Future<List<TenantModel>> Function(String facilityId) getTenants;
+  final Future<ContractModel> Function({
+    required String facilityId,
+    required String tenantId,
+    required String unitNumber,
+  }) createLeaseContract;
+  final Future<MoveInResult> Function({
+    required MoveInData moveInData,
+    String? paymentMethod,
+    String? paymentReferenceId,
+    bool skipPayment,
+  }) completeMoveIn;
+}
+
+/// Leaves the wizard after a finished move-in: back to the page that opened
+/// it (handing it `true`), or to the tenant's page when nothing is underneath.
+///
+/// The calendar opens the wizard with go, so a bare context.pop threw "There
+/// is nothing to pop" after the move-in had written the contract, charges and
+/// payment; the wizard reported that as a failed move-in and invited a retry
+/// that duplicated them.
+///
+/// [notice] (the tenant's new rent when the unit was added to others they
+/// rent) is shown with the success message, and for longer.
+void leaveAfterMoveIn(
+  BuildContext context, {
+  required String facilityId,
+  String? tenantId,
+  String? notice,
+}) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(notice == null
+          ? 'Move-in completed successfully!'
+          : 'Move-in completed. $notice'),
+      backgroundColor: AppTheme.success,
+      duration: Duration(seconds: notice == null ? 4 : 10),
+    ),
+  );
+  popOrGo(
+    context,
+    tenantId == null || tenantId.isEmpty
+        ? AppRoute.tenants
+        : AppRoute.tenantDetailFor(tenantId: tenantId, facilityId: facilityId),
+    true, // Return success
+  );
+}
 
 class MoveInWizardScreen extends ConsumerStatefulWidget {
   final String facilityId;
   final String? unitId;
   final String? tenantId; // Pre-selected tenant
+  final MoveInWizardServices services;
 
   const MoveInWizardScreen({
     super.key,
     required this.facilityId,
     this.unitId,
     this.tenantId,
+    this.services = const MoveInWizardServices(),
   });
 
   @override
@@ -65,11 +148,19 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   String? _paymentMethod; // 'cash', 'check', 'creditCard', 'ach'
   bool _skipPayment = false;
 
+  // True from the first Complete tap until the move-in fails. It stays true
+  // after a finished move-in, so nothing can submit it a second time.
   bool _isLoading = false;
+  bool _isCreatingContract = false;
   String? _errorMessage;
 
+  /// Set when the move-in was refused because the unit already shows this
+  /// tenant: an earlier attempt got partway. The error then offers the
+  /// tenant's ledger rather than a retry that could charge them twice.
+  bool _partlyMovedIn = false;
+
   Future<TenantModel?> _pickTenant() async {
-    final tenants = await TenantService.getTenantsForFacility(widget.facilityId);
+    final tenants = await widget.services.getTenants(widget.facilityId);
     if (!mounted) return null;
     return showModalBottomSheet<TenantModel>(
       context: context,
@@ -106,7 +197,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   }
 
   Future<UnitModel?> _pickUnit() async {
-    final units = await UnitService.getUnitsForFacility(widget.facilityId);
+    final units = await widget.services.getUnits(widget.facilityId);
     final availableUnits = units.where((u) => u.status == UnitStatus.available).toList()
       ..sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
     if (!mounted) return null;
@@ -160,8 +251,8 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   Future<void> _loadInitialData() async {
     // Load facility settings for insurance options
     try {
-      final facility = await FacilityService.getFacility(widget.facilityId);
-      if (facility != null) {
+      final facility = await widget.services.getFacility(widget.facilityId);
+      if (facility != null && mounted) {
         setState(() {
           _facility = facility;
         });
@@ -175,12 +266,12 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
     // Load pre-selected unit if provided
     if (widget.unitId != null) {
       try {
-        final units = await UnitService.getUnitsForFacility(widget.facilityId);
+        final units = await widget.services.getUnits(widget.facilityId);
         final unit = units.firstWhere(
           (u) => u.id == widget.unitId,
           orElse: () => units.first,
         );
-        if (unit.id == widget.unitId) {
+        if (unit.id == widget.unitId && mounted) {
           setState(() {
             _selectedUnit = unit;
             _monthlyRent = unit.monthlyRate;
@@ -196,12 +287,12 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
     // Load pre-selected tenant if provided
     if (widget.tenantId != null) {
       try {
-        final tenants = await TenantService.getTenantsForFacility(widget.facilityId);
+        final tenants = await widget.services.getTenants(widget.facilityId);
         final tenant = tenants.firstWhere(
           (t) => t.id == widget.tenantId,
           orElse: () => tenants.first,
         );
-        if (tenant.id == widget.tenantId) {
+        if (tenant.id == widget.tenantId && mounted) {
           setState(() {
             _selectedTenant = tenant;
           });
@@ -259,6 +350,10 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
   }
 
   Future<void> _completeMoveIn() async {
+    // A second tap before the rebuild disabled the button (or while the first
+    // was still running) ran the whole move-in again: a second contract, a
+    // second set of charges, a second payment allocation and gate code.
+    if (_isLoading) return;
     if (_selectedTenant == null || _selectedUnit == null) {
       setState(() {
         _errorMessage = 'Please select tenant and unit';
@@ -276,24 +371,17 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _partlyMovedIn = false;
     });
 
+    MoveInResult? completed;
     try {
       // Create contract if not already created
-      if (_contract == null) {
-        final contractId = await ContractService.createContract(
-          facilityId: widget.facilityId,
-          tenantId: _selectedTenant!.id,
-          title: 'Storage Lease - ${_selectedUnit!.unitNumber}',
-          description: 'Move-in contract for unit ${_selectedUnit!.unitNumber}',
-          type: ContractType.lease,
-        );
-        final createdContract = await ContractService.getContract(widget.facilityId, contractId);
-        if (createdContract == null) {
-          throw Exception('Failed to retrieve created contract');
-        }
-        _contract = createdContract;
-      }
+      _contract ??= await widget.services.createLeaseContract(
+        facilityId: widget.facilityId,
+        tenantId: _selectedTenant!.id,
+        unitNumber: _selectedUnit!.unitNumber,
+      );
 
       // Update tenant insurance status before completing move-in
       if (_insuranceSelection != null && _selectedTenant != null) {
@@ -362,7 +450,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       }
 
       // Complete move-in
-      final result = await MoveInService.completeMoveIn(
+      final result = await widget.services.completeMoveIn(
         moveInData: moveInData,
         paymentMethod: _skipPayment ? null : _paymentMethod,
         paymentReferenceId: paymentReferenceId,
@@ -370,18 +458,13 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       );
 
       if (result.success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Move-in completed successfully!'),
-              backgroundColor: AppTheme.success,
-            ),
-          );
-          context.pop(true); // Return success
-        }
-      } else {
+        completed = result;
+      } else if (mounted) {
         setState(() {
-          _errorMessage = result.error ?? 'Failed to complete move-in';
+          _errorMessage = _withoutExceptionPrefix(
+            result.error ?? 'Failed to complete move-in',
+          );
+          _partlyMovedIn = result.conflict?.sameTenant ?? false;
           _isLoading = false;
         });
       }
@@ -389,11 +472,42 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       if (kDebugMode) {
         print('❌ Error completing move-in: $e');
       }
-      setState(() {
-        _errorMessage = e.toString();
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = _withoutExceptionPrefix(e.toString());
+          _isLoading = false;
+        });
+      }
     }
+
+    // Leave outside the try, so a navigation error cannot be reported as a
+    // failed move-in. _isLoading stays true so it cannot run again.
+    if (completed == null || !mounted) return;
+    leaveAfterMoveIn(
+      context,
+      facilityId: widget.facilityId,
+      tenantId: completed.tenantId ?? _selectedTenant?.id,
+      notice: completed.notice,
+    );
+  }
+
+  /// Errors reached the owner as "Exception: Unit A1 is ...".
+  static String _withoutExceptionPrefix(String error) =>
+      error.startsWith('Exception: ')
+          ? error.substring('Exception: '.length)
+          : error;
+
+  /// Opens the tenant's ledger over the wizard, read fresh, so the owner can
+  /// see what the earlier attempt wrote.
+  void _openLedgerOfTenant() {
+    final tenant = _selectedTenant;
+    if (tenant == null) return;
+    context.push(
+      AppRoute.tenantLedgerFor(
+        tenantId: tenant.id,
+        facilityId: widget.facilityId,
+      ),
+    );
   }
 
   @override
@@ -421,7 +535,9 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         key: _formKey,
         child: Stepper(
           currentStep: _currentStep,
-          onStepContinue: () {
+          // Null while the move-in runs, which disables the step buttons: the
+          // default Continue stayed live, so a double tap completed it twice.
+          onStepContinue: _isLoading ? null : () {
             if (_currentStep < 4) {
               if (_validateCurrentStep()) {
                 setState(() {
@@ -436,16 +552,17 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
               _completeMoveIn();
             }
           },
-          onStepCancel: () {
+          onStepCancel: _isLoading ? null : () {
             if (_currentStep > 0) {
               setState(() {
                 _currentStep -= 1;
               });
             } else {
-              context.pop();
+              // A bare pop threw here: the calendar opens the wizard with go.
+              popOrGo(context, AppRoute.calendar);
             }
           },
-          onStepTapped: (step) {
+          onStepTapped: _isLoading ? null : (step) {
             if (step < _currentStep) {
               setState(() {
                 _currentStep = step;
@@ -929,9 +1046,15 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
         children: [
           if (_contract == null)
             ElevatedButton.icon(
-              onPressed: _selectedTenant == null || _selectedUnit == null
+              onPressed: _selectedTenant == null ||
+                      _selectedUnit == null ||
+                      _isCreatingContract ||
+                      _isLoading
                   ? null
                   : () async {
+                      // One contract per tap: a double tap created two.
+                      if (_isCreatingContract || _isLoading) return;
+                      setState(() => _isCreatingContract = true);
                       try {
                         final created = await ContractService.createMoveInContract(
                           facilityId: widget.facilityId,
@@ -956,6 +1079,10 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                               backgroundColor: AppTheme.error,
                             ),
                           );
+                        }
+                      } finally {
+                        if (mounted) {
+                          setState(() => _isCreatingContract = false);
                         }
                       }
                     },
@@ -1070,16 +1197,29 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
               color: AppTheme.error.withOpacity(0.1),
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.error, color: AppTheme.error),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _errorMessage!,
-                        style: const TextStyle(color: AppTheme.error),
-                      ),
+                    Row(
+                      children: [
+                        const Icon(Icons.error, color: AppTheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: const TextStyle(color: AppTheme.error),
+                          ),
+                        ),
+                      ],
                     ),
+                    if (_partlyMovedIn && _selectedTenant != null) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _openLedgerOfTenant,
+                        icon: const Icon(Icons.receipt_long),
+                        label: Text("Open ${_selectedTenant!.name}'s ledger"),
+                      ),
+                    ],
                   ],
                 ),
               ),

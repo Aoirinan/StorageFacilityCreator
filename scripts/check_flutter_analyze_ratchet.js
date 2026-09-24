@@ -13,6 +13,24 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const baselinePath = path.join(root, 'flutter_analyze_baseline.txt');
+
+// An error line. flutter_tools separates fields with '-' on Windows and '•'
+// everywhere else, so '- ' alone never matched on the Linux CI runner.
+const ERROR_LINE = /^\s*error [•-] /;
+
+// Self-check, so a filter that stops matching either platform fails loudly
+// instead of letting every error through.
+for (const [line, isError] of [
+  ['  error - Undefined name - lib/a.dart:1:1 - undefined_identifier', true],
+  ['  error • Undefined name • lib/a.dart:1:1 • undefined_identifier', true],
+  ['warning • Unused import • lib/a.dart:1:8 • unused_import', false],
+  ['   info - Prefer const - lib/a.dart:2:3 - prefer_const_constructors', false],
+]) {
+  if (ERROR_LINE.test(line) !== isError) {
+    console.error(`FAIL: the error-line filter ${isError ? 'misses' : 'wrongly matches'}: ${line}`);
+    process.exit(1);
+  }
+}
 const baseline = parseInt(fs.readFileSync(baselinePath, 'utf8').trim(), 10);
 
 let output;
@@ -33,6 +51,15 @@ if (!match) {
 
 const current = parseInt(match[1], 10);
 console.log(`flutter analyze: ${current} issues (baseline: ${baseline})`);
+
+// Errors fail whatever the count: a screen no test imports can stop
+// compiling and `flutter test` still passes (a removed argument did).
+const errors = output.split(/\r?\n/).filter((line) => ERROR_LINE.test(line));
+if (errors.length > 0) {
+  console.error(`FAIL: flutter analyze reports ${errors.length} error(s):`);
+  console.error(errors.join('\n'));
+  process.exit(1);
+}
 
 if (current > baseline) {
   console.error(`FAIL: issue count increased (${current} > ${baseline}). Fix the new issue(s) or, if this is a false positive, understand why before touching the baseline.`);

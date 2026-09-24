@@ -337,9 +337,10 @@ class AppCheckService {
           }
         }
       } else {
-        // Verify token generation for production and ensure we have a fresh token
-        // Force refresh to get a new token (prevents using expired tokens)
-        _verifyTokenGeneration(forceRefresh: true);
+        // Verify token generation for production. Not forced: the SDK already
+        // hands back a new token whenever the cached one has expired, so
+        // forcing only ran a reCAPTCHA + token exchange on every page load.
+        _verifyTokenGeneration();
       }
     } catch (e, stack) {
       // Always log errors (not just in debug mode)
@@ -359,12 +360,24 @@ class AppCheckService {
   /// Check if token needs refresh (if it's older than 5.6 days, refresh it)
   /// Firebase App Check tokens have 7-day TTL (604800 seconds), so refresh at ~80% of TTL
   /// This ensures we always have a valid token before expiration while minimizing unnecessary refreshes
-  static bool _shouldRefreshToken() {
-    if (_lastTokenRefresh == null) return true; // Never refreshed, need to get one
-    final age = DateTime.now().difference(_lastTokenRefresh!);
+  static bool _shouldRefreshToken() =>
+      shouldForceTokenRefresh(lastRefresh: _lastTokenRefresh, now: DateTime.now());
+
+  /// Whether a token this service last fetched at [lastRefresh] should be
+  /// force-refreshed rather than taken from the SDK's cache.
+  ///
+  /// No fetch yet in this page load is not a reason to force one: the SDK's
+  /// cached token is still checked for expiry, and a new one fetched if it has
+  /// expired. Returning true here made every page load force a refresh.
+  @visibleForTesting
+  static bool shouldForceTokenRefresh({
+    required DateTime? lastRefresh,
+    required DateTime now,
+  }) {
+    if (lastRefresh == null) return false;
     // Refresh if token is older than ~134 hours (5.6 days = ~80% of 7-day TTL)
     // This ensures we refresh before expiration while avoiding frequent refreshes
-    return age.inHours >= 134;
+    return now.difference(lastRefresh).inHours >= 134;
   }
 
   /// Get App Check token with error handling

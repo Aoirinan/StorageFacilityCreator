@@ -28,6 +28,28 @@ class AppRoute {
   static const facilityEdit = '/facilities/edit';
   static const tenants = '/tenants';
   static const tenantDetail = '/tenants/detail';
+
+  /// A tenant's detail page by id, for when there is no tenant to pass
+  /// as `extra` (a reload or a link).
+  static String tenantDetailFor({
+    required String tenantId,
+    required String facilityId,
+  }) =>
+      Uri(path: tenantDetail, queryParameters: {
+        'tenantId': tenantId,
+        'facilityId': facilityId,
+      }).toString();
+
+  /// A tenant's ledger by id (the tenant is read fresh).
+  static String tenantLedgerFor({
+    required String tenantId,
+    required String facilityId,
+  }) =>
+      Uri(
+        path: '/tenants/$tenantId/ledger',
+        queryParameters: {'facilityId': facilityId},
+      ).toString();
+
   static const tenantCsvImport = '/tenants/import-csv';
   static const units = '/units';
   static const unitsMap = '/units/map';
@@ -50,6 +72,18 @@ class AppRoute {
   static const paymentsReminders = '/payments?tab=reminders';
   static const paymentsCollect = '/payments?tab=collect';
   static const paymentDetail = '/payments/detail';
+
+  /// A payment's detail page by id, for when there is no payment to pass
+  /// as `extra`. The page needs both ids to load it.
+  static String paymentDetailFor({
+    required String paymentId,
+    required String facilityId,
+  }) =>
+      Uri(path: paymentDetail, queryParameters: {
+        'paymentId': paymentId,
+        'facilityId': facilityId,
+      }).toString();
+
   static const paymentCreate = '/payments/create';
   static const paymentReconciliation = '/payments/reconciliation';
   static const invoices = '/invoices';
