@@ -9,6 +9,7 @@ import 'package:sfcapp/providers/payment_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/payment_detail_screen.dart';
+import 'package:sfcapp/services/payment_service.dart';
 
 final _payment = PaymentModel(
   id: 'p1',
@@ -124,5 +125,44 @@ void main() {
     await tester.tap(processIcon());
     await tester.pumpAndSettle();
     expect(find.text('Process Payment'), findsOneWidget);
+  });
+
+  // An Edit, Cancel or Delete could be picked while the Process was still
+  // writing, and raced it.
+  testWidgets('the Edit/Cancel/Delete menu is off while Process runs',
+      (tester) async {
+    await pumpDetail(tester);
+    PopupMenuButton<String> menu() =>
+        tester.widget(find.byType(PopupMenuButton<String>));
+    expect(menu().enabled, isTrue);
+
+    await tester.tap(processIcon());
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Process'));
+    await tester.pumpAndSettle();
+    expect(menu().enabled, isFalse);
+    await tester.tap(find.byIcon(Icons.more_vert), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.text('Delete'), findsNothing);
+
+    // Back once the Process has failed.
+    processing.completeError(Exception('offline'));
+    await tester.pumpAndSettle();
+    expect(menu().enabled, isTrue);
+  });
+
+  // PaymentService refuses a payment already paid elsewhere; the page said
+  // only "An error occurred".
+  testWidgets('a refused Process says why', (tester) async {
+    await pumpDetail(tester);
+    await tester.tap(processIcon());
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Process'));
+    await tester.pump();
+    processing.completeError(
+      const PaymentNotProcessableException('This payment has already been paid.'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('This payment has already been paid.'), findsOneWidget);
   });
 }

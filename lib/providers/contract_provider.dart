@@ -37,6 +37,9 @@ final contractOperationsProvider = StateNotifierProvider<ContractOperationsNotif
   return ContractOperationsNotifier();
 });
 
+/// Each method records a failure in [state] and rethrows it. They used to
+/// only record it, so a failed Delete on the Contracts list did nothing and
+/// said nothing.
 class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   ContractOperationsNotifier() : super(const AsyncValue.data(null));
 
@@ -117,6 +120,7 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -128,6 +132,7 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -147,6 +152,7 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -170,6 +176,7 @@ class ContractOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 
@@ -217,6 +224,7 @@ class ContractTemplateOperationsNotifier extends StateNotifier<AsyncValue<void>>
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      rethrow;
     }
   }
 }

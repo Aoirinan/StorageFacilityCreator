@@ -1,12 +1,38 @@
+import 'dart:async';
+
+import 'package:firebase_core/firebase_core.dart';
 import 'package:sfcapp/models/facility_model.dart';
+
+/// Longest the wizard waits for a facility create. Offline, Firestore holds
+/// the write until it reconnects, so the create never finished and Create
+/// spun until the page was closed.
+const facilityCreateTimeout = Duration(seconds: 30);
+
+/// Firebase error codes after which the create's write may still have
+/// landed: the connection, not a rule or a check, stopped it.
+const _networkFailureCodes = {
+  'unavailable',
+  'deadline-exceeded',
+  'network-request-failed',
+};
+
+/// Whether a create that threw [error] may have written the facility
+/// anyway: it timed out or lost the network. Refusals (subscription
+/// required, a unit count out of range, permission denied, not signed in)
+/// are thrown before anything is written.
+bool facilityCreateMayHaveLanded(Object error) {
+  if (error is TimeoutException) return true;
+  return error is FirebaseException && _networkFailureCodes.contains(error.code);
+}
 
 /// How recently a facility must have been created to count as the one an
 /// attempt that reported an error made anyway.
 const facilityCreateRecoveryWindow = Duration(minutes: 5);
 
-/// Added to the error when a create failed and no facility it made could be
-/// found: the write may still land (or have landed where the re-check could
-/// not see it), and Create is live again.
+/// Added to the error when a create timed out or lost the network and no
+/// facility it made could be found: the write may still land (or have landed
+/// where the re-check could not see it), and Create is live again. Not for
+/// refusals, where nothing was written.
 const facilityCreateUnconfirmedHint =
     'Check Facilities before retrying: the facility may have been created.';
 
@@ -36,22 +62,30 @@ FacilityModel? findJustCreatedFacility(
   return newest;
 }
 
-/// Runs [create] and returns the new facility's id.
+/// Runs [create], stopping after [timeout], and returns the new facility's
+/// id.
 ///
-/// When [create] throws (a timeout, a dropped connection) the write may
-/// still have gone through. [reloadFacilities] then reads the user's
-/// facilities again (from the server, not the cache) and a facility found by
-/// [findJustCreatedFacility] is taken as the one created, so the owner is
-/// not invited to make it twice. Otherwise the error is rethrown.
+/// When [create] times out or loses the network
+/// ([facilityCreateMayHaveLanded]) the write may still have gone through.
+/// [reloadFacilities] then reads the user's facilities again (from the
+/// server, not the cache) and a facility found by [findJustCreatedFacility]
+/// is taken as the one created, so the owner is not invited to make it
+/// twice. Otherwise, and always for a refusal, the error is rethrown.
 Future<String> createFacilityOrRecover({
   required String name,
   required Future<String> Function() create,
   required Future<List<FacilityModel>> Function() reloadFacilities,
   DateTime Function() now = DateTime.now,
+  Duration timeout = facilityCreateTimeout,
 }) async {
   try {
-    return await create();
-  } catch (_) {
+    return await create().timeout(timeout);
+  } catch (e) {
+    // A refusal wrote nothing. Looking anyway took a same-name facility
+    // made minutes earlier as this one: a "subscription required" was
+    // swallowed and the wizard set that facility up again and said
+    // "created".
+    if (!facilityCreateMayHaveLanded(e)) rethrow;
     List<FacilityModel> facilities = const [];
     try {
       facilities = await reloadFacilities();

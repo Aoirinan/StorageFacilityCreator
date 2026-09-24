@@ -131,6 +131,9 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
+            // Off while a Process runs: an Edit, Cancel or Delete then raced
+            // the write that marks the payment paid.
+            enabled: !_processing,
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
               const PopupMenuItem(

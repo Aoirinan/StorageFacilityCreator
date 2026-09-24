@@ -12,9 +12,18 @@ import 'package:sfcapp/router/back_navigation.dart';
 class ReminderDetailScreen extends ConsumerStatefulWidget {
   final ReminderModel reminder;
 
+  /// Answers the page's permission checks. The app always uses
+  /// [PermissionService.hasPermission]; a test swaps it to drive the real
+  /// page, and its real reminder actions, without Firebase.
+  final Future<PermissionCheck> Function({
+    required PermissionType permission,
+    String? facilityId,
+  }) checkPermission;
+
   const ReminderDetailScreen({
     super.key,
     required this.reminder,
+    this.checkPermission = PermissionService.hasPermission,
   });
 
   @override
@@ -38,15 +47,15 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
 
   Future<void> _loadCreatorAndPermissions() async {
     final facilityId = widget.reminder.facilityId;
-    final deleteCheck = await PermissionService.hasPermission(
+    final deleteCheck = await widget.checkPermission(
       permission: PermissionType.deleteReminder,
       facilityId: facilityId,
     );
-    final editCheck = await PermissionService.hasPermission(
+    final editCheck = await widget.checkPermission(
       permission: PermissionType.editReminder,
       facilityId: facilityId,
     );
-    final createCheck = await PermissionService.hasPermission(
+    final createCheck = await widget.checkPermission(
       permission: PermissionType.createReminder,
       facilityId: facilityId,
     );
