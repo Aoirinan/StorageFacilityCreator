@@ -23,8 +23,12 @@ class _FakeApi extends PublicPaymentApi {
     String confirmStatus = 'paid',
     Object? confirmError,
     List<Object>? confirmAnswers,
+    this.confirmDelays = const {},
     this.start,
   }) : confirmAnswers = confirmAnswers ?? [confirmError ?? confirmStatus];
+
+  /// How long the nth confirmCheckout call takes to answer (default: at once).
+  final Map<int, Duration> confirmDelays;
 
   /// Successive getLink answers; the last one repeats.
   final List<PublicPaymentLink?> links;
@@ -55,6 +59,8 @@ class _FakeApi extends PublicPaymentApi {
   Future<String> confirmCheckout(String token, String sessionId) async {
     final n = confirmCalls.length;
     confirmCalls.add([token, sessionId]);
+    final delay = confirmDelays[n];
+    if (delay != null) await Future<void>.delayed(delay);
     final answer = confirmAnswers[n < confirmAnswers.length ? n : confirmAnswers.length - 1];
     if (answer is String) return answer;
     throw answer;
@@ -181,6 +187,42 @@ void main() {
 
     expect(find.text('Payment Processing'), findsOneWidget);
     expect(find.text("You don't need to pay again."), findsOneWidget);
+    expect(find.text('Check again'), findsOneWidget);
+    expect(find.text('Pay Now'), findsNothing);
+  });
+
+  testWidgets('a double press of Check again keeps one chain of checks, even with a check in flight',
+      (tester) async {
+    // Calls 0-3: the first round, ending in "still confirming". Calls 4 and 5:
+    // the two presses; the second answers only after the first press's
+    // round has a check (call 6) in flight.
+    final api = _FakeApi(
+      links: [_link('pending')],
+      confirmStatus: 'processing',
+      confirmDelays: {
+        4: const Duration(milliseconds: 50),
+        5: const Duration(milliseconds: 250),
+        6: const Duration(milliseconds: 150),
+      },
+    );
+    await _pump(tester, api, checkoutReturn: _successReturn);
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Check again'), findsOneWidget);
+    expect(api.confirmCalls.length, 4);
+
+    // Both presses land before the page rebuilds without the button.
+    await tester.tap(find.text('Check again'));
+    await tester.tap(find.text('Check again'));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    // One chain: the check in flight when the second press answered is
+    // dropped, then three more. Without the generation check that check's
+    // chain kept going beside the new one, and made an extra call.
+    expect(api.confirmCalls.length, 10);
     expect(find.text('Check again'), findsOneWidget);
     expect(find.text('Pay Now'), findsNothing);
   });

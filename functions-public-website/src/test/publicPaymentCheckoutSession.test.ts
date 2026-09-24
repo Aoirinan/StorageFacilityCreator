@@ -308,6 +308,26 @@ test('an orphaned reservation too close to lapsing for Stripe is replaced, not j
   assert.deepEqual(stripe.payable(), [result.sessionId]);
 });
 
+test('an orphaned reservation just under the 30 minutes Stripe needs is replaced, not joined', async () => {
+  const { stripe, fake, deps } = setup();
+  // The edge the 31-minute join window exists for: 29.5 minutes left. A
+  // window under that joined it, and Stripe refused the create outright.
+  const expiresAtSeconds = Math.floor(stripe.nowMs / 1000) + CHECKOUT_SESSION_TTL_SECONDS;
+  fake.seed(LINK_PATH, {
+    ...fake.read(LINK_PATH)!,
+    checkoutAttempt: 1,
+    checkoutExpiresAt: Timestamp.fromMillis(expiresAtSeconds * 1000),
+    checkoutSessionId: null,
+  });
+  stripe.advance(CHECKOUT_SESSION_TTL_SECONDS * 1000 - 29.5 * 60 * 1000);
+
+  const result = checkoutOf(await getOrCreatePublicLinkCheckout(TOKEN, deps));
+
+  assert.equal(stripe.createCalls.length, 1);
+  assert.equal(stripe.createCalls[0].options.idempotencyKey, `link_${TOKEN}_2`);
+  assert.deepEqual(stripe.payable(), [result.sessionId]);
+});
+
 test('a revoke landing while the session is being created leaves nothing payable', async () => {
   const { stripe, fake, deps } = setup();
   stripe.duringNextCreate = () => {
