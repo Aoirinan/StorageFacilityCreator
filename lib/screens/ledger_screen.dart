@@ -19,6 +19,11 @@ import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
 import '../utils/error_message_helper.dart';
 
+/// What the ledger says when part of the balance is card disputes.
+String disputedBalanceNote(double disputed) =>
+    'Includes \$${disputed.toStringAsFixed(2)} from card disputes. Autopay '
+    'does not charge it; collect it by hand if the dispute is lost.';
+
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
 /// so back pops to that page. It used to push a second tenant page on top of
 /// the ledger, so the top-bar back then went "back" to the ledger, and every
@@ -152,6 +157,10 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           // A failed or pending balance must not read as "$0.00": that told
           // owners every tenant was paid up while the sum was failing.
           final balanceKnown = balanceAsync.hasValue && !balanceAsync.hasError;
+          // Card disputes stay in the balance but autopay and the reminders
+          // leave them out, so staff must be told the difference is theirs to
+          // collect by hand.
+          final disputed = splitPostedLedgerEntries(entries).disputed;
 
           // Apply filters
           var filteredEntries = entries;
@@ -319,6 +328,16 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
+                              if (balanceKnown && disputed > 0) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  disputedBalanceNote(disputed),
+                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),

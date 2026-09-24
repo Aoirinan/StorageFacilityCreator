@@ -25,6 +25,76 @@ enum LedgerEntryStatus {
   voided,
 }
 
+/// Ledger types the Stripe webhook writes for a card dispute: the money
+/// taken back (+amount) and, if the facility wins, returned (-amount). The
+/// app has no enum value for either, so they read as [LedgerEntryType.otherCharge];
+/// [LedgerEntry.storedType] keeps the stored name.
+const disputeLedgerType = 'dispute';
+const disputeReversalLedgerType = 'dispute_reversal';
+
+/// Whether a stored ledger row belongs to a card dispute: either dispute
+/// type, or any row carrying a `metadata.disputeId` (the webhook stamps it on
+/// both, and it survives a save that re-labels the type).
+///
+/// Autopay, the delinquency job and the reminders leave these rows out of
+/// what they collect: charging a disputed amount back to the same card is
+/// re-billing without consent, and paid twice when the facility wins. Staff
+/// collect it by hand. Same rule as functions-shared
+/// src/ledger/disputeEntries.ts; both run
+/// functions-shared/src/test/fixtures/disputeLedgerParity.json.
+bool isDisputeLedgerRow(Map<String, dynamic>? row) {
+  if (row == null) return false;
+  final type = row['type'];
+  if (type == disputeLedgerType || type == disputeReversalLedgerType) return true;
+  final metadata = row['metadata'];
+  if (metadata is Map) {
+    final disputeId = metadata['disputeId'];
+    if (disputeId is String && disputeId.trim().isNotEmpty) return true;
+  }
+  return false;
+}
+
+/// A posted balance split into what automation may collect and the part
+/// that is card disputes, rounded to cents.
+class LedgerBalanceSplit {
+  /// Every row: what the tenant owes, as staff see it.
+  final double total;
+
+  /// Dispute rows only: positive while a dispute has the money out.
+  final double disputed;
+
+  /// Everything else: the most autopay may charge.
+  final double collectible;
+
+  const LedgerBalanceSplit({
+    required this.total,
+    required this.disputed,
+    required this.collectible,
+  });
+}
+
+double _cents(double value) => (value * 100).round() / 100;
+
+/// Splits already-filtered (posted) rows; non-numeric amounts count as 0.
+LedgerBalanceSplit splitLedgerBalance(Iterable<Map<String, dynamic>> rows) {
+  var disputed = 0.0;
+  var collectible = 0.0;
+  for (final row in rows) {
+    final raw = row['amount'];
+    final amount = raw is num && raw.isFinite ? raw.toDouble() : 0.0;
+    if (isDisputeLedgerRow(row)) {
+      disputed += amount;
+    } else {
+      collectible += amount;
+    }
+  }
+  return LedgerBalanceSplit(
+    total: _cents(disputed + collectible),
+    disputed: _cents(disputed),
+    collectible: _cents(collectible),
+  );
+}
+
 class LedgerEntry {
   final String id;
   final String tenantId;
@@ -42,6 +112,10 @@ class LedgerEntry {
   final DateTime? voidedAt;
   final String? voidedBy;
 
+  /// The `type` as stored, which [type] cannot always name (a card dispute
+  /// reads as otherCharge). Null for an entry not read from Firestore.
+  final String? storedType;
+
   const LedgerEntry({
     required this.id,
     required this.tenantId,
@@ -58,6 +132,7 @@ class LedgerEntry {
     required this.createdBy,
     this.voidedAt,
     this.voidedBy,
+    this.storedType,
   });
 
   factory LedgerEntry.fromFirestore(DocumentSnapshot doc) {
@@ -88,6 +163,7 @@ class LedgerEntry {
       createdBy: data['createdBy'] ?? '',
       voidedAt: data['voidedAt'] != null ? (data['voidedAt'] as Timestamp).toDate() : null,
       voidedBy: data['voidedBy'],
+      storedType: data['type'] is String ? data['type'] as String : null,
     );
   }
 
@@ -126,6 +202,7 @@ class LedgerEntry {
     String? createdBy,
     DateTime? voidedAt,
     String? voidedBy,
+    String? storedType,
   }) {
     return LedgerEntry(
       id: id ?? this.id,
@@ -143,11 +220,17 @@ class LedgerEntry {
       createdBy: createdBy ?? this.createdBy,
       voidedAt: voidedAt ?? this.voidedAt,
       voidedBy: voidedBy ?? this.voidedBy,
+      // A new type is a new entry kind; the stored name no longer applies.
+      storedType: storedType ?? (type == null ? this.storedType : null),
     );
   }
 
   // Helper getters
   bool get isCharge => amount > 0;
+
+  /// A card dispute's row (see [isDisputeLedgerRow]).
+  bool get isCardDispute =>
+      isDisputeLedgerRow({'type': storedType, 'metadata': metadata});
   bool get isPayment => amount < 0;
   bool get isActive => status == LedgerEntryStatus.posted;
   
@@ -160,6 +243,9 @@ class LedgerEntry {
   }
 
   String get typeDisplayName {
+    // Both read as "Other Charge" before, even the negative reversal.
+    if (storedType == disputeLedgerType) return 'Card dispute';
+    if (storedType == disputeReversalLedgerType) return 'Card dispute reversed';
     switch (type) {
       case LedgerEntryType.rentCharge:
         return 'Rent';

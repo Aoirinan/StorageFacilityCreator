@@ -7,7 +7,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
 import { writeAuditLog } from './guardrails';
-import { sumLedgerBalance } from './autopayScheduledHelpers';
+import { collectibleLedgerBalance } from './autopayScheduledHelpers';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 
 /**
@@ -187,9 +187,9 @@ export const processDelinquencyAutomation = functions.runWith({ secrets: SENDGRI
 
 /**
  * Process delinquency for a single facility
- * This can be called manually or by the scheduled function
+ * This can be called manually or by the scheduled function. Exported for tests.
  */
-async function processDelinquencyForFacility(
+export async function processDelinquencyForFacility(
   facilityId: string,
   dryRun: boolean = false,
 ): Promise<{
@@ -314,9 +314,12 @@ async function processDelinquencyForFacility(
         // delinquency notices, moved to lien status, and had their gate access
         // disabled where auto-lockout is on. This job runs daily.
         //
-        // Only `posted` entries count, matching sumLedgerBalance and the Dart
-        // ledger service; `pending` rows are not yet real money.
-        const balance = sumLedgerBalance(
+        // Only `posted` entries count, matching the Dart ledger service;
+        // `pending` rows are not yet real money. Card-dispute rows are left
+        // out, as they are from autopay: a late fee, notice or lockout on an
+        // amount the cardholder is disputing is automation acting on money
+        // that is staff's to collect by hand.
+        const balance = collectibleLedgerBalance(
           ledgerSnapshot.docs
             .map((entry) => entry.data())
             .filter((entryData) => entryData.status === 'posted'),

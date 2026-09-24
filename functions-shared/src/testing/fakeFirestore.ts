@@ -6,7 +6,8 @@
  * would go unnoticed.
  *
  * Supports: collection/doc refs, get/set(merge)/update/create/delete/add,
- * equality `where` + `limit` queries, `runTransaction`, `batch`, and the
+ * `where` (==, !=, <, <=, >, >=, in, array-contains; dotted field paths) +
+ * `limit` queries, `collectionGroup`, `runTransaction`, `batch`, and the
  * `FieldValue` sentinels this codebase writes (serverTimestamp, increment,
  * arrayUnion, arrayRemove, delete) whether they come from firebase-admin or
  * from this fake's own `FieldValue`.
@@ -42,6 +43,61 @@ function deepEqual(a: unknown, b: unknown): boolean {
   }
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** A field by dotted path (`metadata.disputeId`), as Firestore reads it in a filter. */
+function fieldAt(data: DocData, field: string): unknown {
+  let value: unknown = data;
+  for (const segment of field.split('.')) {
+    if (!value || typeof value !== 'object') return undefined;
+    value = (value as DocData)[segment];
+  }
+  return value;
+}
+
+/** Orders numbers, strings and timestamps; null when the two cannot be compared. */
+function compareValues(a: unknown, b: unknown): number | null {
+  const millis = (v: unknown): number | null => {
+    if (v instanceof admin.firestore.Timestamp) return v.toMillis();
+    if (v instanceof Date) return v.getTime();
+    return null;
+  };
+  const am = millis(a);
+  const bm = millis(b);
+  if (am !== null && bm !== null) return am - bm;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
+  return null;
+}
+
+type Filter = [field: string, op: string, value: unknown];
+
+function matchesFilter(data: DocData, [field, op, value]: Filter): boolean {
+  const actual = fieldAt(data, field);
+  switch (op) {
+    case '==':
+      return deepEqual(actual, value);
+    case '!=':
+      // Firestore leaves out documents that lack the field.
+      return actual !== undefined && !deepEqual(actual, value);
+    case 'in':
+      return Array.isArray(value) && value.some((v) => deepEqual(actual, v));
+    case 'array-contains':
+      return Array.isArray(actual) && actual.some((v) => deepEqual(v, value));
+    case '<':
+    case '<=':
+    case '>':
+    case '>=': {
+      const order = compareValues(actual, value);
+      if (order === null) return false;
+      if (op === '<') return order < 0;
+      if (op === '<=') return order <= 0;
+      if (op === '>') return order > 0;
+      return order >= 0;
+    }
+    default:
+      throw new Error(`fakeFirestore: unsupported filter operator ${op}`);
+  }
 }
 
 /** Recognises a FieldValue sentinel and describes it, or returns null. */
@@ -173,6 +229,16 @@ export class FakeFirestore {
     return entry ? clone(entry.data) : undefined;
   }
 
+  /** Full paths of every document in a collection with this id, at any depth. */
+  listGroup(collectionId: string): string[] {
+    return [...this.docs.keys()]
+      .filter((key) => {
+        const segments = key.split('/');
+        return segments.length % 2 === 0 && segments[segments.length - 2] === collectionId;
+      })
+      .sort();
+  }
+
   /** Ids of the documents directly inside a collection path. */
   list(collectionPath: string): string[] {
     const prefix = `${collectionPath}/`;
@@ -296,28 +362,31 @@ export class FakeFirestore {
     class Query {
       constructor(
         readonly path: string,
-        protected readonly filters: Array<[string, unknown]> = [],
+        protected readonly filters: Filter[] = [],
         protected readonly max: number | null = null,
+        /** A collectionGroup query: `path` is the collection id, matched at any depth. */
+        protected readonly group: boolean = false,
       ) {}
       where(field: string, op: string, value: unknown): Query {
-        if (op !== '==') throw new Error(`fakeFirestore: only == filters are supported (got ${op})`);
-        return new Query(this.path, [...this.filters, [field, value]], this.max);
+        return new Query(this.path, [...this.filters, [field, op, value]], this.max, this.group);
       }
       limit(n: number): Query {
-        return new Query(this.path, this.filters, n);
+        return new Query(this.path, this.filters, n, this.group);
       }
       orderBy(): Query {
         return this;
       }
       async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
         await fake.tick();
-        let ids = fake.list(this.path);
-        ids = ids.filter((id) => {
-          const data = fake.read(`${this.path}/${id}`) || {};
-          return this.filters.every(([field, value]) => deepEqual(data[field], value));
+        let paths = this.group
+          ? fake.listGroup(this.path)
+          : fake.list(this.path).map((id) => `${this.path}/${id}`);
+        paths = paths.filter((path) => {
+          const data = fake.read(path) || {};
+          return this.filters.every((filter) => matchesFilter(data, filter));
         });
-        if (this.max !== null) ids = ids.slice(0, this.max);
-        const docs = ids.map((id) => new DocSnapshot(new DocRef(`${this.path}/${id}`), fake.read(`${this.path}/${id}`)));
+        if (this.max !== null) paths = paths.slice(0, this.max);
+        const docs = paths.map((path) => new DocSnapshot(new DocRef(path), fake.read(path)));
         return { empty: docs.length === 0, size: docs.length, docs };
       }
     }
@@ -394,6 +463,7 @@ export class FakeFirestore {
 
     return {
       collection: (name: string) => new CollectionRef(name),
+      collectionGroup: (collectionId: string) => new Query(collectionId, [], null, true),
       doc: (path: string) => new DocRef(path),
       batch: () => new WriteBatch(),
       runTransaction: async <T>(fn: (tx: Transaction) => Promise<T>, options?: { maxAttempts?: number }) => {

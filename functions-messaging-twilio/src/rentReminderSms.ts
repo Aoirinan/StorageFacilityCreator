@@ -4,6 +4,7 @@ import {
   formatPhoneNumber,
   getOutboundGateConfig,
   isCustomerRecipientAllowed,
+  splitLedgerBalance,
 } from '@sfc/functions-shared';
 import {
   SENDGRID_SECRETS,
@@ -83,8 +84,15 @@ export function facilityLocalHour(timeZone: string | undefined, now: Date): numb
   }
 }
 
-/** Posted ledger balance for one tenant. Positive means they owe. */
-async function tenantBalance(facilityId: string, tenantId: string): Promise<number> {
+/**
+ * Posted ledger balance for one tenant, as a reminder may quote it. Positive
+ * means they owe. Exported for tests.
+ *
+ * Card-dispute rows are left out, as autopay leaves them out: the text quoted
+ * the balance as rent due, so a disputed amount was asked for again, and paid
+ * twice when the facility then won. Staff collect a disputed amount by hand.
+ */
+export async function tenantBalance(facilityId: string, tenantId: string): Promise<number> {
   const snapshot = await admin
     .firestore()
     .collection('facilities')
@@ -93,11 +101,7 @@ async function tenantBalance(facilityId: string, tenantId: string): Promise<numb
     .where('tenantId', '==', tenantId)
     .where('status', '==', 'posted')
     .get();
-  let balance = 0;
-  for (const doc of snapshot.docs) {
-    balance += Number(doc.data()?.amount) || 0;
-  }
-  return balance;
+  return splitLedgerBalance(snapshot.docs.map((doc) => doc.data())).collectible;
 }
 
 function toDate(value: any): Date | null {

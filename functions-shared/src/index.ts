@@ -320,6 +320,14 @@ export {
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
 
+export type { LedgerBalanceSplit } from './ledger/disputeEntries';
+export {
+  DISPUTE_LEDGER_TYPE,
+  DISPUTE_REVERSAL_LEDGER_TYPE,
+  isDisputeLedgerRow,
+  splitLedgerBalance,
+} from './ledger/disputeEntries';
+
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {
   enabledOnlineUnitTypes,
