@@ -1359,14 +1359,42 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           }
         }
 
+        // A tenant picked for a unit they don't hold yet is assigned through
+        // UnitService.assignTenantToUnit, after the fields below are saved
+        // (so this unit's rate as saved here is the one added to theirs).
+        // Written here with the unit, the tenant was never billed for it.
+        final previous = widget.unit!;
+        final assigning = finalTenantId != null &&
+            finalTenantId.isNotEmpty &&
+            !(previous.tenantId == finalTenantId &&
+                previous.status != UnitStatus.available);
+        final holder = previous.tenantId?.trim() ?? '';
+        if (assigning &&
+            holder.isNotEmpty &&
+            previous.status != UnitStatus.available) {
+          // Overwriting the link left the tenant in it billed for a unit
+          // someone else now had.
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Unit ${previous.unitNumber} is assigned to '
+                  '${previous.tenantName ?? 'another tenant'}. Nothing was '
+                  'saved. Unassign them first (Units > unit '
+                  '${previous.unitNumber} > Unassign Tenant), then assign '
+                  '${finalTenantName ?? 'the new tenant'}.';
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+
         await UnitService.updateUnit(
           facilityId: widget.facilityId,
           unitId: widget.unit!.id,
           unitNumber: _unitNumberController.text.trim(),
           unitType: _selectedUnitType,
-          status: _selectedStatus,
-          tenantId: finalTenantId,
-          tenantName: finalTenantName,
+          status: assigning ? null : _selectedStatus,
+          tenantId: assigning ? null : finalTenantId,
+          tenantName: assigning ? null : finalTenantName,
           monthlyRate: double.parse(_monthlyRateController.text),
           securityDeposit: _securityDepositController.text.trim().isEmpty
               ? null
@@ -1382,13 +1410,32 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           publicListingEnabled: _publicListingEnabled,
           internalUse: _internalUse,
         );
+        final notice = assigning
+            ? await UnitService.assignTenantToUnit(
+                facilityId: widget.facilityId,
+                unitId: previous.id,
+                tenantId: finalTenantId,
+                tenantName: finalTenantName ?? '',
+                status: _selectedStatus,
+              )
+            : null;
 
         if (mounted) {
+          // The tenant's new rent, or a request to check it.
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unit updated successfully!')),
+            SnackBar(
+              content: Text(notice == null
+                  ? 'Unit updated successfully!'
+                  : 'Unit updated. $notice'),
+              duration: Duration(seconds: notice == null ? 4 : 10),
+            ),
           );
           // Invalidate providers to refresh unit lists
           ref.invalidate(facilityUnitsProvider(widget.facilityId));
+          if (assigning) {
+            ref.invalidate(
+                tenant_provider.facilityTenantsProvider(widget.facilityId));
+          }
           Navigator.of(context).pop();
         }
       }

@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import '../models/facility_model.dart';
 import '../models/facility_creator_account_model.dart';
@@ -1132,6 +1133,25 @@ class FacilityService {
     if (kDebugMode) {
       _facilityServiceDebugLog('✅ Facility deleted permanently: $facilityId');
     }
+  }
+
+  /// Why the owner can't delete [facilityId] yet, or null. The
+  /// deleteFacilityPermanently callable refuses a facility with active
+  /// tenants in the same words (facilityHasActiveTenantsMessage); asking
+  /// here says so before the typed confirmation and the email code. Super
+  /// admins are exempt there too. Active is exactly true, as everywhere.
+  static Future<String?> facilityDeleteBlocker(
+    String facilityId, {
+    bool? superAdmin,
+  }) async {
+    if (superAdmin ?? SuperAdminService.isSuperAdmin()) return null;
+    final active =
+        await FacilitySubcollections.activeTenants(facilityId).count().get();
+    final count = active.count ?? 0;
+    if (count == 0) return null;
+    final tenants = count == 1 ? '1 active tenant' : '$count active tenants';
+    return 'Nothing was deleted: this facility still has $tenants. '
+        'Move them out or archive them first, then delete the facility.';
   }
 
   static Future<Object?> _callDeleteFacilityPermanently(

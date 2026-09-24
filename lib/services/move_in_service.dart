@@ -112,7 +112,13 @@ MoveInUnitConflict? moveInUnitConflict({
 /// Service for managing move-in workflow
 class MoveInService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // A getter, not a final field, so a test can sign a fake user in and run
+  // the real move-in (see authForTesting).
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// Calculate move-in charges
   /// Returns list of invoice line items with prorated amounts
@@ -320,6 +326,7 @@ class MoveInService {
       }
 
       final facilityId = moveInData.unit.facilityId;
+      String? rentNotice;
       TenantModel tenant;
       ContractModel contract;
       List<String> ledgerEntryIds = [];
@@ -343,7 +350,8 @@ class MoveInService {
         // Update tenant with move-in info
         // Note: Insurance status should be set via the wizard UI, not here
         // Never frees a unit the tenant already rents (a second unit).
-        await TenantService.recordMoveInUnit(
+        // A unit added to ones they hold adds its rate; the wizard shows it.
+        rentNotice = await TenantService.recordMoveInUnit(
           tenantId: tenant.id,
           facilityId: facilityId,
           unitNumber: moveInData.unit.unitNumber,
@@ -507,6 +515,7 @@ class MoveInService {
         tenantId: tenant.id,
         contractId: contract.id,
         ledgerEntryIds: ledgerEntryIds,
+        notice: rentNotice,
       );
     } catch (e) {
       if (kDebugMode) {
@@ -529,6 +538,10 @@ class MoveInResult {
   final List<String> ledgerEntryIds;
   final String? error;
 
+  /// For the owner after a finished move-in, e.g. the tenant's new monthly
+  /// rent when the unit was added to others they rent.
+  final String? notice;
+
   /// Set when the unit already had a tenant, so the wizard can point the
   /// owner at the ledger instead of inviting a retry.
   final MoveInUnitConflict? conflict;
@@ -539,6 +552,7 @@ class MoveInResult {
     this.contractId,
     this.ledgerEntryIds = const [],
     this.error,
+    this.notice,
     this.conflict,
   });
 }

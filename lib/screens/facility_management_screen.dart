@@ -8,25 +8,27 @@ import '../providers/auth_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/email_usage_card.dart';
+import 'package:sfcapp/widgets/facility_delete_gate.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/facility_creation_policy.dart';
 import '../services/facility_service.dart';
 import '../services/facility_stats_service.dart';
 import '../services/superadmin_service.dart';
 import '../providers/dashboard_provider.dart';
-import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
-import '../services/modern_navigation_service.dart';
-import 'facility_creation_wizard.dart';
 import 'subscription_test_screen.dart';
-import '../router/app_router.dart';
 import '../router/app_route.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/keyed_memo.dart';
 import '../utils/two_factor_helper.dart';
 
 class FacilityManagementScreen extends ConsumerStatefulWidget {
-  const FacilityManagementScreen({super.key});
+  const FacilityManagementScreen({super.key, this.deleteBlocker});
+
+  /// Why Delete Permanently can't go ahead, or null; see
+  /// facilityDeleteAllowed. Tests only: the app always checks with
+  /// FacilityService.facilityDeleteBlocker.
+  final Future<String?> Function(String facilityId)? deleteBlocker;
 
   @override
   ConsumerState<FacilityManagementScreen> createState() => _FacilityManagementScreenState();
@@ -668,6 +670,12 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
   }
 
   Future<void> _deleteFacility(FacilityModel facility) async {
+    if (!await facilityDeleteAllowed(context, facility,
+            blocker: widget.deleteBlocker ??
+                FacilityService.facilityDeleteBlocker) ||
+        !mounted) {
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => _DeleteConfirmationDialog(facilityName: facility.name),
