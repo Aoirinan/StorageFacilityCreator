@@ -8,6 +8,15 @@
                'notes', 'doNotRent', 'doNotRentReason', 'consent', 'stayCount', 'lastStayAt', 'createdAt', 'createdBy',
                'updatedAt', 'updatedBy']);
         }
+        function optStr(v, max) {
+          return v == null || (v is string && v.size() <= max);
+        }
+        function vehicleOk(v) {
+          return v == null || (v is map && v.keys().hasOnly(['plate', 'state', 'make', 'rvType', 'rvLengthFt'])
+            && optStr(v.get('plate', null), 20) && optStr(v.get('state', null), 40)
+            && optStr(v.get('make', null), 60) && optStr(v.get('rvType', null), 60)
+            && (v.get('rvLengthFt', null) == null || (v.rvLengthFt is int && v.rvLengthFt >= 0 && v.rvLengthFt <= 80)));
+        }
         function valuesOk() {
           let d = request.resource.data;
           return d.get('facilityId', null) == facilityId
@@ -17,6 +26,7 @@
             && d.get('notes', '') is string && d.get('notes', '').size() <= 2000
             && d.get('doNotRent', false) is bool
             && (d.get('doNotRentReason', null) == null || (d.doNotRentReason is string && d.doNotRentReason.size() <= 500))
+            && vehicleOk(d.get('vehicle', null))
             && d.get('updatedBy', null) == request.auth.uid && d.get('updatedAt', null) == request.time;
         }
         function consentStamped(c) {

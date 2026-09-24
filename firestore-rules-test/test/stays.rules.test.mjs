@@ -172,6 +172,8 @@ async function seed() {
     await set('stays/blk1', stayDoc({ kind: 'owner_block', source: 'owner', origin: 'sfc', guestDisplayName: '' }));
     await set('stays/cx1', stayDoc({ status: 'cancelled' }));
     await set('stays/in1', stayDoc({ arrivalState: 'checked_in', checkedInAt: serverTimestamp() }));
+    await set('stays/out1', stayDoc({ arrivalState: 'checked_out', checkedInAt: serverTimestamp(), checkedOutAt: serverTimestamp() }));
+    await set('stays/cxin1', stayDoc({ status: 'cancelled', arrivalState: 'checked_in', checkedInAt: serverTimestamp() }));
     await set(DOCS.stayPrivate, { stayId: 's1', guestProfileId: null, fullName: null, phoneLast4: '1234', privateNotes: '' });
     await set(DOCS.stayAccess, { stayId: 's1', doorCode: '1234', gateCode: null, accessNotes: '', source: 'phone_last4' });
     await set(DOCS.stayFolios, { stayId: 's1', totalCents: 45000, paidCents: 0, balanceCents: 45000 });
@@ -180,6 +182,7 @@ async function seed() {
     await set('stayTasks/t_mine', taskDoc({ assigneeUid: EMPLOYEE, assigneeName: 'Emp' }));
     await set('stayTasks/t_other', taskDoc({ assigneeUid: EMPLOYEE2, assigneeName: 'Other' }));
     await set('stayTasks/t_cancelled', taskDoc({ status: 'cancelled' }));
+    await set('stayTasks/t_done', taskDoc({ status: 'done', completedBy: EMPLOYEE, completedAt: serverTimestamp() }));
     await set(DOCS.stayIncome, { grossCents: 5000, netCents: 5000, status: 'posted', countsAsIncome: true });
     await set(DOCS.stayExpenses, { amountCents: 2500, status: 'posted' });
     await set(DOCS.stayImportBatches, { kind: 'airbnb_earnings', status: 'committed' });
@@ -315,6 +318,40 @@ test('employees cannot undo, move, re-status, create or delete stays', async () 
   await assertFails(employee.doc('stays/cx1').update({ arrivalState: 'checked_in', checkedInAt: serverTimestamp(), ...stamp(EMPLOYEE) }));
 });
 
+test('tags and message marks are bounded element by element', async () => {
+  const stay = as(EMPLOYEE).doc(DOCS.stays);
+  await assertSucceeds(stay.update({ tags: ['late arrival', 'pets'], ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ tags: [{ big: 'x'.repeat(5000) }], ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ tags: [new Date()], ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ tags: ['x|'.repeat(300)], ...stamp(EMPLOYEE) }));
+  await assertSucceeds(stay.update({ tags: Array.from({ length: 10 }, (_, i) => 't'.repeat(40 - i)), ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ tags: ['x'.repeat(41)], ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ tags: [''], ...stamp(EMPLOYEE) }));
+  // A mark is this request's time under a template key; nothing else.
+  await assertSucceeds(stay.update({ messageMarks: { airbnb_check_in: serverTimestamp() }, ...stamp(EMPLOYEE) }));
+  await assertSucceeds(stay.update({ messageMarks: { airbnb_check_in: serverTimestamp(), checkout: serverTimestamp() }, ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ messageMarks: { note: 'x'.repeat(5000) }, ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ messageMarks: { checkout: new Date('2026-01-01') }, ...stamp(EMPLOYEE) }));
+  await assertFails(stay.update({ messageMarks: { 'Bad Key!': serverTimestamp() }, ...stamp(EMPLOYEE) }));
+});
+
+test('check-out needs a stay that still holds its nights', async () => {
+  const employee = as(EMPLOYEE);
+  await assertFails(employee.doc('stays/cxin1').update({ arrivalState: 'checked_out', checkedOutAt: serverTimestamp(), ...stamp(EMPLOYEE) }));
+  await assertFails(as(MANAGER).doc('stays/cxin1').update({ arrivalState: 'checked_out', checkedOutAt: serverTimestamp(), ...stamp(MANAGER) }));
+  await assertSucceeds(employee.doc('stays/in1').update({ arrivalState: 'checked_out', checkedOutAt: serverTimestamp(), ...stamp(EMPLOYEE) }));
+});
+
+test('an undo clears its time: anything else in checkedInAt or checkedOutAt is refused', async () => {
+  const manager = as(MANAGER);
+  await assertFails(manager.doc('stays/in1').update({ arrivalState: 'upcoming', checkedInAt: 'yesterday', ...stamp(MANAGER) }));
+  await assertFails(manager.doc('stays/in1').update({ arrivalState: 'upcoming', checkedInAt: new Date('2026-01-01'), ...stamp(MANAGER) }));
+  await assertFails(manager.doc('stays/in1').update({ arrivalState: 'upcoming', ...stamp(MANAGER) }));
+  await assertFails(manager.doc('stays/out1').update({ arrivalState: 'checked_in', checkedOutAt: 'later', ...stamp(MANAGER) }));
+  await assertFails(manager.doc('stays/out1').update({ arrivalState: 'checked_in', checkedOutAt: null, checkedInAt: null, ...stamp(MANAGER) }));
+  await assertSucceeds(manager.doc('stays/out1').update({ arrivalState: 'checked_in', checkedOutAt: null, ...stamp(MANAGER) }));
+});
+
 test('owners and managers may undo a check-in, but still cannot create, delete or re-date stays', async () => {
   const manager = as(MANAGER);
   await assertSucceeds(manager.doc('stays/in1').update({ arrivalState: 'upcoming', checkedInAt: null, ...stamp(MANAGER) }));
@@ -429,6 +466,26 @@ test('employees work unassigned tasks and their own, with the allowed keys only'
   await assertFails(as(VIEWER).doc(DOCS.stayTasks).update({ status: 'in_progress', ...stamp(VIEWER) }));
 });
 
+test('completion is signed and timed only as a task becomes done', async () => {
+  const employee = as(EMPLOYEE);
+  // Rewriting who finished a done task, or when.
+  await assertFails(employee.doc('stayTasks/t_done').update({ completedBy: EMPLOYEE2, ...stamp(EMPLOYEE) }));
+  await assertFails(employee.doc('stayTasks/t_done').update({ completedAt: serverTimestamp(), ...stamp(EMPLOYEE) }));
+  // Signing a task that is not being finished.
+  await assertFails(employee.doc('stayTasks/t_mine').update({ completedBy: EMPLOYEE, completedAt: serverTimestamp(), ...stamp(EMPLOYEE) }));
+  // Finishing with a backdated time, or without one.
+  await assertFails(
+    employee.doc('stayTasks/t_mine').update({ status: 'done', completedBy: EMPLOYEE, completedAt: new Date('2026-01-01'), ...stamp(EMPLOYEE) }),
+  );
+  await assertFails(employee.doc('stayTasks/t_mine').update({ status: 'done', completedBy: EMPLOYEE, ...stamp(EMPLOYEE) }));
+  // Starting with a backdated time.
+  await assertFails(employee.doc('stayTasks/t_mine').update({ status: 'in_progress', startedAt: new Date('2026-01-01'), ...stamp(EMPLOYEE) }));
+  // Reopening may clear the signature, not change it.
+  await assertFails(employee.doc('stayTasks/t_done').update({ status: 'todo', completedBy: EMPLOYEE2, ...stamp(EMPLOYEE) }));
+  await assertSucceeds(employee.doc('stayTasks/t_done').update({ status: 'todo', completedBy: null, completedAt: null, ...stamp(EMPLOYEE) }));
+  await assertFails(as(MANAGER).doc('stayTasks/t_other').update({ completedBy: MANAGER, ...stamp(MANAGER) }));
+});
+
 test('managers assign tasks and create manual ones, but not automatic turnovers', async () => {
   const manager = as(MANAGER);
   await assertSucceeds(manager.doc(DOCS.stayTasks).update({ assigneeUid: EMPLOYEE, assigneeName: 'Emp', priority: 'high', ...stamp(MANAGER) }));
@@ -439,6 +496,16 @@ test('managers assign tasks and create manual ones, but not automatic turnovers'
   await assertFails(manager.doc('stayTasks/turnover_s9').set(manual));
   await assertFails(manager.doc('stayTasks/manual2').set({ ...manual, category: 'turnover' }));
   await assertFails(manager.doc('stayTasks/manual3').set({ ...manual, createdBy: OWNER }));
+  // Manual tasks carry task keys only, a real date and no premade signature.
+  await assertFails(manager.doc('stayTasks/manual4').set({ ...manual, payload: 'x'.repeat(1000) }));
+  await assertFails(manager.doc('stayTasks/manual5').set({ ...manual, plannedDigest: 'abc' }));
+  await assertFails(manager.doc('stayTasks/manual6').set({ ...manual, dueDate: 'tomorrow' }));
+  await assertFails(manager.doc('stayTasks/manual7').set({ ...manual, dueDate: 20261006 }));
+  await assertFails(manager.doc('stayTasks/manual8').set({ ...manual, completedBy: MANAGER, completedAt: serverTimestamp() }));
+  await assertFails(manager.doc('stayTasks/manual9').set({ ...manual, title: 'x'.repeat(121) }));
+  await assertSucceeds(
+    manager.doc('stayTasks/manual10').set({ ...manual, status: 'done', completedBy: MANAGER, completedAt: serverTimestamp() }),
+  );
   await assertFails(manager.doc(DOCS.stayTasks).delete());
 });
 
@@ -466,6 +533,18 @@ test('templates are copy-only: no autoSend key, kind must be copy', async () => 
   await assertFails(manager.doc('stayMessageTemplates/tpl6').set({ ...tpl, channelHint: 'push' }));
   await assertSucceeds(as(EMPLOYEE).doc(DOCS.stayMessageTemplates).get());
   await assertFails(as(EMPLOYEE).doc('stayMessageTemplates/tpl7').set({ ...tpl, ...stamp(EMPLOYEE) }));
+  // Only the server seeds; the creator and creation time are fixed.
+  await assertFails(manager.doc('stayMessageTemplates/tpl8').set({ ...tpl, seeded: true }));
+  await assertFails(manager.doc('stayMessageTemplates/tpl9').set({ ...tpl, createdBy: OWNER }));
+  await assertFails(manager.doc('stayMessageTemplates/tpl10').set({ ...tpl, createdAt: new Date('2020-01-01') }));
+  await assertFails(manager.doc('stayMessageTemplates/tpl11').set({ ...tpl, key: 'Bad Key' }));
+  const tpl2 = manager.doc('stayMessageTemplates/tpl2');
+  await assertSucceeds(tpl2.update({ body: 'Checkout is at {{checkOutTime}}.', ...stamp(MANAGER) }));
+  await assertFails(tpl2.update({ createdBy: OWNER, ...stamp(MANAGER) }));
+  await assertFails(tpl2.update({ createdAt: serverTimestamp(), ...stamp(MANAGER) }));
+  await assertFails(tpl2.update({ seeded: true, ...stamp(MANAGER) }));
+  await assertFails(manager.doc(DOCS.stayMessageTemplates).update({ seeded: false, ...stamp(MANAGER) }));
+  await assertSucceeds(manager.doc(DOCS.stayMessageTemplates).update({ name: 'Check-in', ...stamp(MANAGER) }));
   await assertSucceeds(manager.doc('stayMessageTemplates/tpl2').delete());
 });
 
@@ -504,6 +583,13 @@ test('guest profiles: stamped consent, server-owned counts, deletable by owners 
       consent: { email: true, sms: false, method: 'verbal', recordedAt: serverTimestamp(), recordedBy: OWNER },
     }),
   );
+  // The vehicle is a small, known-shape map.
+  const vehicle = { plate: 'ABC123', state: 'TX', make: 'Winnebago', rvType: 'Class A', rvLengthFt: 38 };
+  await assertSucceeds(manager.doc('stayGuestProfiles/gpv1').set({ ...profile, vehicle }));
+  await assertFails(manager.doc('stayGuestProfiles/gpv2').set({ ...profile, vehicle: 'x'.repeat(50_000) }));
+  await assertFails(manager.doc('stayGuestProfiles/gpv3').set({ ...profile, vehicle: { ...vehicle, vin: '1HGCM82633A004352' } }));
+  await assertFails(manager.doc('stayGuestProfiles/gpv4').set({ ...profile, vehicle: { ...vehicle, make: 'x'.repeat(61) } }));
+  await assertFails(manager.doc('stayGuestProfiles/gpv5').set({ ...profile, vehicle: { ...vehicle, rvLengthFt: 'long' } }));
   await assertSucceeds(
     manager.doc('stayGuestProfiles/gp8').set({
       ...profile,
@@ -566,6 +652,8 @@ test('employees upload turnover photos: images under 10 MB only', async (t) => {
   await assertSucceeds(uploadBytes(photoRef(EMPLOYEE, 'ok.jpg'), small, { contentType: 'image/jpeg' }));
   await assertSucceeds(getBytes(photoRef(EMPLOYEE, 'ok.jpg')));
   await assertFails(uploadBytes(photoRef(EMPLOYEE, 'notes.txt'), small, { contentType: 'text/plain' }));
+  await assertFails(uploadBytes(photoRef(EMPLOYEE, 'x.svg'), small, { contentType: 'image/svg+xml' }));
+  await assertSucceeds(uploadBytes(photoRef(EMPLOYEE, 'ok.heic'), small, { contentType: 'image/heic' }));
   await assertFails(uploadBytes(photoRef(EMPLOYEE, 'huge.jpg'), new Uint8Array(10 * 1024 * 1024), { contentType: 'image/jpeg' }));
   await assertFails(uploadBytes(photoRef(OUTSIDER, 'x.jpg'), small, { contentType: 'image/jpeg' }));
   await assertFails(uploadBytes(photoRef(VIEWER, 'x.jpg'), small, { contentType: 'image/jpeg' }));

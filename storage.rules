@@ -125,11 +125,13 @@ service firebase.storage {
     function isFacilityStaffStorage(facilityId) {
       return isFacilityOwnerOrManager(facilityId) || facilityRole(facilityId) == 'employee';
     }
+    // Photos only: raster types phones and browsers produce, not SVG (a
+    // document that can carry script).
     match /facilities/{facilityId}/stayTaskPhotos/{taskId}/{fileName} {
       allow read: if isSuperAdmin() || isFacilityStaffStorage(facilityId);
       allow create: if isFacilityStaffStorage(facilityId)
         && request.resource.size < 10 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+        && request.resource.contentType.matches('image/(jpeg|png|webp|gif|heic|heif)');
       allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
     }
     

@@ -1,14 +1,18 @@
       // Stays bookings and blocks. No personal data or money amounts here.
       // Creating, deleting, dates, listing, status and version go through the
       // callables (night locks must be transactional); staff may make quick
-      // edits and check guests in and out.
+      // edits and check guests in and out. Viewers read the whole doc,
+      // staffNotes and cleanerNotes included, and the app says so.
       match /stays/{stayId} {
+        // Kept equal to STAY_STAFF_FIELDS in contracts.ts plus the stamp
+        // (functions-stays stayWriter.test.ts compares them).
         function quickKeys() {
           return ['guestDisplayName', 'adults', 'children', 'pets', 'rvLengthFt', 'staffNotes', 'cleanerNotes', 'tags',
                   'messageMarks', 'arrivalState', 'checkedInAt', 'checkedOutAt', 'updatedAt', 'updatedBy'];
         }
         function quickValuesOk() {
           let d = request.resource.data;
+          let marks = d.get('messageMarks', {});
           return d.get('guestDisplayName', '') is string && d.get('guestDisplayName', '').size() <= 60
             && d.get('adults', 0) is int && d.get('adults', 0) >= 0 && d.get('adults', 0) <= 50
             && d.get('children', 0) is int && d.get('children', 0) >= 0 && d.get('children', 0) <= 50
@@ -16,25 +20,39 @@
             && (d.get('rvLengthFt', null) == null || (d.rvLengthFt is int && d.rvLengthFt >= 0 && d.rvLengthFt <= 80))
             && d.get('staffNotes', '') is string && d.get('staffNotes', '').size() <= 2000
             && d.get('cleanerNotes', '') is string && d.get('cleanerNotes', '').size() <= 2000
+            // Up to 10 short tags. The rules cannot loop, and a check per
+            // index costs more than the 1000-expression budget allows, so the
+            // tags are joined: join() refuses maps and timestamps, and the
+            // text must be 1-40 character pieces, 409 characters at most.
+            // The app writes strings.
             && d.get('tags', []) is list && d.get('tags', []).size() <= 10
-            && d.get('messageMarks', {}) is map && d.get('messageMarks', {}).size() <= 30;
+            && d.get('tags', []).join('|').size() <= 409
+            && (d.get('tags', []).size() == 0 || d.get('tags', []).join('|').matches('[^|]{1,40}([|][^|]{1,40})*'))
+            // templateKey → when it was copied: known-shape keys, and every
+            // value either one already stored or this request's time.
+            && marks is map && marks.size() <= 30
+            && marks.keys().join('|').matches('([a-z0-9_]{1,40}([|][a-z0-9_]{1,40})*)?')
+            && marks.values().hasOnly(resource.data.get('messageMarks', {}).values().concat([request.time]));
         }
         // Staff: upcoming → checked_in (a reservation that holds its nights)
-        // and checked_in → checked_out, each stamped with request.time.
-        // Owners and managers may also undo either step.
+        // and checked_in → checked_out (one that still does), each stamped
+        // with request.time. Owners and managers may also undo either step,
+        // which clears its time.
         function arrivalOk() {
           let b = resource.data.get('arrivalState', 'upcoming');
           let a = request.resource.data.get('arrivalState', 'upcoming');
-          let inSame = request.resource.data.get('checkedInAt', null) == resource.data.get('checkedInAt', null);
-          let outSame = request.resource.data.get('checkedOutAt', null) == resource.data.get('checkedOutAt', null);
+          let holdsNights = resource.data.get('status', '') in ['confirmed', 'conflict'];
+          let inAt = request.resource.data.get('checkedInAt', null);
+          let outAt = request.resource.data.get('checkedOutAt', null);
+          let inSame = inAt == resource.data.get('checkedInAt', null);
+          let outSame = outAt == resource.data.get('checkedOutAt', null);
           return (a == b && inSame && outSame)
             || (b == 'upcoming' && a == 'checked_in' && resource.data.get('kind', '') == 'reservation'
-                && resource.data.get('status', '') in ['confirmed', 'conflict']
-                && request.resource.data.get('checkedInAt', null) == request.time && outSame)
-            || (b == 'checked_in' && a == 'checked_out'
-                && request.resource.data.get('checkedOutAt', null) == request.time && inSame)
+                && holdsNights && inAt == request.time && outSame)
+            || (b == 'checked_in' && a == 'checked_out' && holdsNights && outAt == request.time && inSame)
             || (isFacilityOwnerOrManager(facilityId)
-                && ((b == 'checked_in' && a == 'upcoming') || (b == 'checked_out' && a == 'checked_in')));
+                && ((b == 'checked_in' && a == 'upcoming' && inAt == null && outSame)
+                    || (b == 'checked_out' && a == 'checked_in' && outAt == null && inSame)));
         }
         allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow create, delete: if false; // callables only: night locks must be transactional
