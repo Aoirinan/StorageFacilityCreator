@@ -25,6 +25,18 @@ function slugify(raw: string): string {
   return normalized.length === 0 ? 'facility-map' : normalized;
 }
 
+/**
+ * The unit's rent as published: a finite number, or a string holding one, as the app's UnitModel
+ * reads it and Number() reads it for the move-in charge; anything else 0, the app's default. This
+ * published the stored value as it was, so a rate typed in as '100' went out as a string (the
+ * rental portal reads it as a number and failed to load) while the app's publish wrote 100, and a
+ * missing rate went out as undefined, which Firestore rejects, failing the sync for every unit.
+ */
+function publishedMonthlyRate(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
 function statusToPublicStatus(status: string): string {
   const s = String(status || '').toLowerCase();
   if (s === 'available') return 'available';
@@ -150,7 +162,11 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // with buildPublicUnitInventoryMaps.
     const storedStatus = typeof d.status === 'string' ? d.status : '';
     const st = storedStatus.toLowerCase();
-    const unitNumNorm = String(d.unitNumber || '').trim().toLowerCase();
+    // As the app's UnitModel reads it: a number as its text (101 is '101'), missing as ''. This
+    // published the stored value, so an imported 101 went out as a number here and as '101' from
+    // the app's publish, and a missing one as undefined, which Firestore rejects.
+    const unum = String(d.unitNumber ?? '');
+    const unitNumNorm = unum.trim().toLowerCase();
     const hasTenantLink =
       typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
     const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
@@ -181,7 +197,6 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       size = `${Math.round(width)}x${Math.round(depth)}`;
     }
 
-    const unum = d.unitNumber;
     units.push({
       unitId: doc.id,
       unitNumber: showUnitNumbers ? unum : null,
@@ -193,7 +208,7 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
       categorySlug,
       size,
       description: d.description ?? null,
-      monthlyRate: showPublicPricing ? d.monthlyRate : null,
+      monthlyRate: showPublicPricing ? publishedMonthlyRate(d.monthlyRate) : null,
       isRentable,
       publicListingEnabled,
     });
