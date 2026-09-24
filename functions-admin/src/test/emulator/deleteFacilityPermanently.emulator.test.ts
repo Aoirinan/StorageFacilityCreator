@@ -117,6 +117,16 @@ async function seedFacility(): Promise<void> {
       .doc(`token-${suffix}`)
       .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
     await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
+    // Public map docs of slugs left behind: one from before slug changes left
+    // pointers, units and prices frozen, and one pointer.
+    await db
+      .collection('publicFacilityMaps')
+      .doc(`stale-${suffix}`)
+      .set({ facilityId, publicSettings: { facilityName: 'Acme Storage' }, units: [{ unitId: 'u1', monthlyRate: 99 }] });
+    await db
+      .collection('publicFacilityMaps')
+      .doc(`moved-${suffix}`)
+      .set({ facilityId, movedToSlug: `stale-${suffix}`, movedAt: new Date(NOW) });
   }
 }
 
@@ -131,6 +141,8 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
+  'publicFacilityMaps/moved-theirs',
+  'publicFacilityMaps/stale-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
   'user_roles/role-theirs',
@@ -138,6 +150,10 @@ const THEIR_KEYED_ROWS = [
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
+  // The current slug's (mapEngine/meta.publicSlug 'Acme').
+  'publicFacilityMaps/acme',
+  'publicFacilityMaps/moved-mine',
+  'publicFacilityMaps/stale-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
   'user_roles/role-mine',
@@ -201,8 +217,9 @@ test('the owner deletes the whole facility: tenants, nested records and all', { 
   // The CSV exports (tenant lists) too: the daily cleanup finds them through
   // exportJobs, which the subtree delete removes.
   assert.deepEqual(calls.storage, [`facilities/${FACILITY}/`, `exports/${FACILITY}/`]);
-  // Its roles, public reservations, payment links and domain claims go;
-  // another facility's stay.
+  // Its roles, public reservations, payment links, domain claims and every
+  // public map doc (old slugs too, not just the current one) go; another
+  // facility's stay.
   assert.deepEqual(await keyedRowsLeft(), THEIR_KEYED_ROWS);
 });
 

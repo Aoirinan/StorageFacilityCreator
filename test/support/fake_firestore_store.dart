@@ -10,8 +10,9 @@ import 'package:flutter_test/flutter_test.dart';
 /// An in-memory Firestore keyed by document path ('facilities/f1/invites/i1')
 /// that answers what the app's permission code asks of it: equality `where`,
 /// `limit`, `get` on collections and collection groups, and `doc`, `add`,
-/// `get`, `set` (with merge), `update` and `delete` on documents, plus
-/// `parent` and `collection` for walking paths. Anything else fails the test.
+/// `get`, `set` (with merge), `update` and `delete` on documents, the same
+/// three in a `batch`, plus `parent` and `collection` for walking paths.
+/// Anything else fails the test.
 class FakeStore {
   final Map<String, Map<String, dynamic>> _docs = {};
   int _nextId = 0;
@@ -25,6 +26,10 @@ class FakeStore {
       throw FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied');
     }
   }
+
+  /// Reads of a doc path this matches are refused the way the rules refuse
+  /// them (permission-denied).
+  bool Function(String path)? refuseRead;
 
   /// Every write, in order: 'set PATH', 'update PATH' or 'delete PATH'.
   final List<String> writes = [];
@@ -46,6 +51,10 @@ class FakeStore {
 
   CollectionReference<Map<String, dynamic>> collection(String path) =>
       _StoreCollection(this, path);
+
+  /// A batch: its writes land together on commit, or none do when [refuseWrite]
+  /// refuses any of them, as Firestore commits a batch.
+  WriteBatch batch() => _StoreBatch(this);
 
   Query<Map<String, dynamic>> collectionGroup(String collectionId) => _StoreQuery(
         this,
@@ -193,6 +202,9 @@ class _StoreDocRef extends Fake implements DocumentReference<Map<String, dynamic
 
   @override
   Future<DocumentSnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
+    if (_store.refuseRead?.call(path) ?? false) {
+      throw FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied');
+    }
     final data = _store._docs[path];
     if (data == null) return _StoreMissing(this);
     return _StoreDoc(this, data);
@@ -223,6 +235,41 @@ class _StoreDocRef extends Fake implements DocumentReference<Map<String, dynamic
     _store._checkWrite(path);
     _store.writes.add('delete $path');
     _store._docs.remove(path);
+  }
+}
+
+class _StoreBatch extends Fake implements WriteBatch {
+  _StoreBatch(this._store);
+
+  final FakeStore _store;
+  final List<(String, Future<void> Function())> _ops = [];
+
+  @override
+  void set<T>(DocumentReference<T> document, T data, [SetOptions? options]) {
+    final ref = document as DocumentReference<Map<String, dynamic>>;
+    _ops.add((ref.path, () => ref.set(data as Map<String, dynamic>, options)));
+  }
+
+  @override
+  void update(DocumentReference document, Map<String, dynamic> data) {
+    final ref = document as DocumentReference<Map<String, dynamic>>;
+    _ops.add((ref.path, () => ref.update(data)));
+  }
+
+  @override
+  void delete(DocumentReference document) {
+    final ref = document as DocumentReference<Map<String, dynamic>>;
+    _ops.add((ref.path, ref.delete));
+  }
+
+  @override
+  Future<void> commit() async {
+    for (final (path, _) in _ops) {
+      _store._checkWrite(path);
+    }
+    for (final (_, write) in _ops) {
+      await write();
+    }
   }
 }
 

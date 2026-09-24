@@ -1140,6 +1140,66 @@ test('an operator cannot seize another operator’s public storefront slug', asy
   );
 });
 
+test("a slug change's one batch passes, and the old slug's pointer stays the owner's", async () => {
+  // FacilityMapV2Service.setPublicSlug writes the meta, the map carried to the
+  // new slug and a pointer over the old one in a single batch: if the rules
+  // refused any of them, no slug could change at all.
+  const RIVAL_FACILITY = 'fac-rival-1';
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(RIVAL_FACILITY).set({
+      ownerUid: OUTSIDER_UID,
+      roles: { [OUTSIDER_UID]: 'owner' },
+    });
+    await db.collection('publicFacilityMaps').doc('old-slug').set({
+      facilityId: FACILITY_ID,
+      facilitySlug: 'old-slug',
+      publicSettings: { enabled: true },
+      units: [{ unitId: 'u1', isRentable: true }],
+    });
+  });
+
+  const ownerDb = testEnv.authenticatedContext(OWNER_UID).firestore();
+  const batch = ownerDb.batch();
+  batch.set(
+    ownerDb.doc(`facilities/${FACILITY_ID}/mapEngine/meta`),
+    { facilityId: FACILITY_ID, publicSlug: 'new-slug', updatedAt: serverTimestamp(), updatedBy: OWNER_UID },
+    { merge: true },
+  );
+  batch.set(ownerDb.collection('publicFacilityMaps').doc('new-slug'), {
+    facilityId: FACILITY_ID,
+    facilitySlug: 'new-slug',
+    publicSettings: { enabled: true },
+    units: [{ unitId: 'u1', isRentable: true }],
+  });
+  batch.set(ownerDb.collection('publicFacilityMaps').doc('old-slug'), {
+    facilityId: FACILITY_ID,
+    movedToSlug: 'new-slug',
+    movedAt: serverTimestamp(),
+  });
+  await assertSucceeds(batch.commit());
+
+  // The pointer keeps the old slug reserved: another operator can neither
+  // take it over nor delete it, and anyone can read it (it is a public link).
+  const rivalDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const pointer = rivalDb.collection('publicFacilityMaps').doc('old-slug');
+  await assertFails(pointer.set({ facilityId: RIVAL_FACILITY, units: [] }));
+  await assertFails(pointer.update({ movedToSlug: 'rival-slug' }));
+  await assertFails(pointer.delete());
+  await assertSucceeds(testEnv.unauthenticatedContext().firestore().collection('publicFacilityMaps').doc('old-slug').get());
+
+  // Staff cannot move the storefront (owners and managers only).
+  const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
+  await assertFails(
+    staffDb.collection('publicFacilityMaps').doc('new-slug').set({
+      facilityId: FACILITY_ID,
+      movedToSlug: 'elsewhere',
+      movedAt: serverTimestamp(),
+    }),
+  );
+});
+
 test('audit logs are immutable once written', async () => {
   // Two rule blocks used to match this path: a broad `allow write` for
   // owners/managers, and the intended immutable block. Rules OR together, so the

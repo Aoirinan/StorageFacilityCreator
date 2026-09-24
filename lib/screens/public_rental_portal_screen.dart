@@ -115,9 +115,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         return;
       }
 
-      final snapshot =
-          await FacilityMapV2Service.getPublicSnapshotBySlug(resolvedSlug);
-      if (snapshot == null) {
+      // An old slug forwards to the current one; from here on the page uses
+      // the slug the map lives at (links, the inventory re-read).
+      final published =
+          await FacilityMapV2Service.resolvePublicMap(resolvedSlug);
+      if (published == null) {
         setState(() {
           _error =
               'Public rental inventory is not published yet. Ask the facility owner to publish online rentals.';
@@ -126,6 +128,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         return;
       }
 
+      final snapshot = published.snapshot;
       final settings = snapshot.publicSettings;
       final publicUnits = snapshot.units
           .map((raw) => _PublicUnitView.fromMap(raw))
@@ -154,7 +157,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               .toList();
 
       setState(() {
-        _facilitySlug = resolvedSlug;
+        _facilitySlug = published.slug;
         _facilityId = snapshot.facilityId;
         _facilityName =
             settings['facilityName']?.toString().trim().isNotEmpty == true

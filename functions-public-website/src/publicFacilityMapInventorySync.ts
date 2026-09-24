@@ -6,6 +6,7 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  movedToSlugOf,
 } from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
@@ -121,6 +122,21 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
   const publicRef = db.collection('publicFacilityMaps').doc(publicSlug);
   const publicSnap = await publicRef.get();
   if (!publicSnap.exists) return;
+  // Never a pointer left at an old slug (it carries no units, by design), nor
+  // a doc another facility owns: the rules pin a slug to its facility, but this
+  // runs as admin, so a meta naming someone else's slug would have written this
+  // facility's units into their storefront.
+  const publicData = (publicSnap.data() || {}) as Record<string, unknown>;
+  const owner = publicData.facilityId;
+  if (movedToSlugOf(publicData) !== null || (typeof owner === 'string' && owner !== '' && owner !== facilityId)) {
+    functions.logger.warn('publicFacilityMap inventory sync skipped: not this facility\'s published map', {
+      facilityId,
+      publicSlug,
+      owner,
+      movedToSlug: movedToSlugOf(publicData),
+    });
+    return;
+  }
 
   const settingsSnap = await db.doc(`facilities/${facilityId}/settings/public`).get();
   const settings = (settingsSnap.data() || {}) as Record<string, any>;

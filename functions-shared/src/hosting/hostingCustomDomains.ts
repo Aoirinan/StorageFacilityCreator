@@ -11,6 +11,7 @@ import {
   mergeDomainRecords,
   planDomainPair,
 } from './facilityDomainPlan';
+import { readPublicFacilityMap } from './publicFacilityMapSlug';
 
 function normalizeHostname(raw: string): string {
   return raw
@@ -83,7 +84,8 @@ async function syncFacilityCustomDomain(facilityId: string, hostname: string): P
   );
 }
 
-async function resolveFacilitySlugFromInput(input: {
+/** Exported for tests. */
+export async function resolveFacilitySlugFromInput(input: {
   facilityId?: string;
   slug?: string;
   hostname?: string;
@@ -106,18 +108,20 @@ async function resolveFacilitySlugFromInput(input: {
   }
 
   if (directSlug) {
-    const mapSnap = await db.collection('publicFacilityMaps').doc(directSlug).get();
-    if (!mapSnap.exists) {
+    // An old slug is a pointer to the current one (readPublicFacilityMap
+    // follows it), so the slug reported back is the one the site serves now.
+    const map = await readPublicFacilityMap(db, directSlug);
+    if (!map) {
       throw new functions.https.HttpsError(
         'not-found',
         'No published website found for that Website URL name. Confirm it in Website Setup, then try again.',
       );
     }
-    const facilityId = String(mapSnap.get('facilityId') || '').trim();
+    const facilityId = String(map.data.facilityId || '').trim();
     if (!facilityId) {
       throw new functions.https.HttpsError('failed-precondition', 'publicFacilityMaps entry is missing facilityId.');
     }
-    return { facilityId, slug: directSlug };
+    return { facilityId, slug: map.slug };
   }
 
   if (normalizedHost) {
