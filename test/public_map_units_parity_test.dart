@@ -39,7 +39,7 @@ void main() {
   });
 
   test('the fixture has the cases the two sides share', () {
-    expect(cases.length, greaterThanOrEqualTo(7));
+    expect(cases.length, greaterThanOrEqualTo(10));
   });
 
   for (final raw in cases) {
@@ -66,12 +66,19 @@ void main() {
             FacilityMapV2Service.claimedUnitNumbersFromActiveTenants(tenants),
       );
 
+      // The fields each unit's entry names (isRentable and status in all of
+      // them); a unit the fixture does not expect shows up as an extra key.
+      final expected = c['expected']! as Map<String, Object?>;
       expect(
         {
           for (final m in maps)
-            m['unitId']: {'isRentable': m['isRentable'], 'status': m['status']},
+            m['unitId']: {
+              for (final field in (expected[m['unitId']] as Map?)?.keys ??
+                  const ['isRentable', 'status'])
+                field: m[field],
+            },
         },
-        c['expected'],
+        expected,
       );
     });
   }
