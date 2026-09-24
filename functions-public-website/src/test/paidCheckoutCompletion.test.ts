@@ -558,12 +558,30 @@ test('a payment made for another reservation is refused, and the owner is told',
   assertOwnerAlerted(h, 'cs_1', 'pi_other', 'refused');
 });
 
+test('the webhook does not complete a move-in with a payment that names no reservation', async () => {
+  const h = setUp();
+  await h.checkout();
+  // Every move-in checkout tags its payment; one that names no reservation
+  // was not made through it, whatever the record says.
+  pay(h, 'pi_untagged');
+  h.paymentIntents.pi_untagged.metadata = {};
+  recordPaidCheckout(h, 'cs_1', 'pi_untagged');
+
+  assert.equal(await h.webhook('cs_1'), 'refused');
+
+  assertNotMovedIn(h);
+  assert.equal(
+    h.inMemory.read(checkoutPath('cs_1'))?.refusal,
+    'This payment was made for a different reservation. Contact the facility.',
+  );
+  assertOwnerAlerted(h, 'cs_1', 'pi_untagged', 'refused');
+});
+
 test('a payment that already completed another move-in is refused, and the owner is told', async () => {
   const h = setUp();
   await h.checkout();
-  // Names no reservation, so only its record of use can refuse it.
+  // Tagged for this reservation, so only its record of use can refuse it.
   pay(h, 'pi_used');
-  h.paymentIntents.pi_used.metadata = {};
   h.inMemory.seed('publicMoveInPayments/pi_used', {
     paymentIntentId: 'pi_used',
     facilityId: FACILITY,

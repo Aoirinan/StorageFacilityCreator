@@ -1439,6 +1439,15 @@ async function completeMoveInOnce(params: MoveInCompletionRequest): Promise<Move
       if (finishingAfterLapsedHold && paidReservationId !== String(reservationId)) {
         throw new functions.https.HttpsError('failed-precondition', 'Reservation has expired');
       }
+      // The paid-checkout trigger completes a move-in unasked, so only with a
+      // payment made through this reservation's checkout, which names it.
+      // Untagged payments are accepted from the renter's browser only.
+      if (caller.kind === 'paidCheckout' && paidReservationId !== String(reservationId)) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'This payment was made for a different reservation. Contact the facility.',
+        );
+      }
 
       verifiedPaymentIntentId = String(paymentIntent.id || '').trim();
       if (!verifiedPaymentIntentId) {
