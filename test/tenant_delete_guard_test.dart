@@ -11,7 +11,9 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/screens/unit_detail_screen.dart';
 import 'package:sfcapp/services/move_out_service.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 
 /// One write a guard made, as the fake store saw it.
@@ -97,13 +99,17 @@ class _FakeRecords implements TenantRecordsStore {
       _read('units', () => this[tenantId].units);
 
   @override
+  Future<UnitModel?> unit(String unitId) => _read('unit',
+      () => facilityUnits.where((u) => u.id == unitId).firstOrNull);
+
+  @override
   Future<List<String>> activeGateAccessIds(String tenantId) =>
       _read('gateAccess', () => this[tenantId].gateIds);
 
   @override
   Future<void> transaction(
       Future<void> Function(TenantRecordsTransaction txn) body) async {
-    final txn = _FakeTransaction(unitHolders);
+    final txn = _FakeTransaction(unitHolders, (id) => this[id].doc);
     await body(txn);
     transactions.add(txn.writes);
   }
@@ -176,9 +182,10 @@ class _FakeEffects extends TenantUpdateEffects {
 }
 
 class _FakeTransaction implements TenantRecordsTransaction {
-  _FakeTransaction(this.holders);
+  _FakeTransaction(this.holders, this.tenantDoc);
 
   final Map<String, String?> holders;
+  final Map<String, dynamic>? Function(String tenantId) tenantDoc;
   final writes = <_Write>[];
 
   @override
@@ -186,6 +193,12 @@ class _FakeTransaction implements TenantRecordsTransaction {
     // Firestore refuses a read after a write in the same transaction.
     if (writes.isNotEmpty) throw StateError('read after write');
     return holders[unitId];
+  }
+
+  @override
+  Future<Map<String, dynamic>?> tenant(String tenantId) async {
+    if (writes.isNotEmpty) throw StateError('read after write');
+    return tenantDoc(tenantId);
   }
 
   @override
@@ -646,7 +659,19 @@ void main() {
                   'Nothing was deleted: too many records to change in one go.')))
               .message,
           'Nothing was deleted: too many records to change in one go.');
-      expect((await failure(_CallableError('internal', 'INTERNAL'))).message,
+      // A bare internal error, in any case, may be a dropped connection
+      // (the web SDK's 'internal'/'internal'): the delete may have happened.
+      for (final bare in ['INTERNAL', 'internal']) {
+        expect((await failure(_CallableError('internal', bare))).message,
+            contains('the delete may not have gone through'),
+            reason: bare);
+      }
+      expect(
+          (await failure(_CallableError('internal',
+                  "Couldn't delete. Refresh the tenant list to see what changed, then try again.")))
+              .message,
+          startsWith("Couldn't delete."));
+      expect((await failure(_CallableError('unknown', 'UNKNOWN'))).message,
           contains('Something went wrong on our side'));
     });
 
@@ -875,6 +900,21 @@ void main() {
   });
 
   group('runPermanentDelete', () {
+    test('with no way to ask about held units, nothing is freed or deleted', () async {
+      final committed = <List<TenantDeletePlan>>[];
+      final result = await TenantService.runPermanentDelete(
+        tenantIds: ['t1'],
+        loadPlan: (id) async => const TenantDeletePlan(
+          tenantId: 't1',
+          tenantName: 'Ada Park',
+          heldUnits: [HeldUnit('101', UnitStatus.occupied)],
+        ),
+        commit: (plans) async => committed.add(plans),
+      );
+      expect(result, isNull);
+      expect(committed, isEmpty);
+    });
+
     test('bulk is all or nothing and names every blocked tenant', () async {
       var committed = false;
       final future = TenantService.runPermanentDelete(
@@ -1230,10 +1270,236 @@ void main() {
       expect(store.allWrites, ['update tenants/t1']);
       expect(store['t1'].doc!['unitNumber'], '');
     });
+
+    test('an inactive tenant is never given a unit by an edit', () async {
+      final store = _FakeRecords();
+      store['t1'].doc = {'name': 'Ada Park', 'isActive': false, 'unitNumber': ''};
+      store.facilityUnits.add(unit('102', UnitStatus.available, null));
+      await update(store, unitNumber: '102', phone: '555');
+      expect(store.allWrites, ['update tenants/t1']);
+    });
+
+    group('a doc with no isActive is inactive, as TenantModel reads it', () {
+      test('switching it off is a plain save, not a refused deactivation', () async {
+        // `?? true` ran the deactivation guard on it and refused the save.
+        final store = _FakeRecords();
+        store['t1']
+          ..doc = {'name': 'Ada Park', 'unitNumber': '101'}
+          ..units = [unit('101', UnitStatus.occupied, 't1')];
+        await update(store, isActive: false);
+        expect(store.allWrites, ['update tenants/t1']);
+        expect(store['t1'].doc!['isActive'], isFalse);
+      });
+
+      test('an edit does not link a unit to it', () async {
+        final store = _FakeRecords();
+        store['t1'].doc = {'name': 'Ada Park', 'unitNumber': ''};
+        store.facilityUnits.add(unit('102', UnitStatus.available, null));
+        await update(store, unitNumber: '102');
+        expect(store.allWrites, ['update tenants/t1']);
+      });
+    });
+
+    group('an unchanged unit number another tenant now holds', () {
+      UnitModel bosUnit() => UnitModel(
+            id: 'u101',
+            facilityId: 'f1',
+            unitNumber: '101',
+            unitType: 'standard',
+            status: UnitStatus.occupied,
+            tenantId: 't2',
+            tenantName: 'Bo Diaz',
+            monthlyRate: 100,
+            createdAt: day,
+            updatedAt: day,
+            createdBy: 'owner',
+          );
+
+      test('saves the other fields, links nothing, and says why', () async {
+        // After Unassign Tenant left '101' on Ada and the unit went to Bo, a
+        // phone change for Ada failed with "Nothing was saved".
+        final store = _FakeRecords();
+        store['t1'].doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101'};
+        store.facilityUnits.add(bosUnit());
+        final notice = await TenantService.updateTenant(
+          facilityId: 'f1',
+          tenantId: 't1',
+          unitNumber: '101',
+          phone: '555',
+          records: store,
+          effects: _FakeEffects(),
+          actingUid: 'owner',
+        );
+        expect(store.allWrites, ['update tenants/t1']);
+        expect(store['t1'].doc!['phone'], '555');
+        expect(
+          notice,
+          'Unit 101 is now assigned to Bo Diaz, so it was not linked to Ada '
+          "Park. Update Ada Park's unit number if they moved.",
+        );
+      });
+
+      test('a changed number another tenant holds is still refused', () async {
+        final store = _FakeRecords();
+        store['t1'].doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '100'};
+        store.facilityUnits.add(bosUnit());
+        await expectLater(update(store, unitNumber: '101', phone: '555'),
+            throwsA(isA<UnitHeldByAnotherTenantException>()));
+        expect(store.allWrites, isEmpty);
+      });
+    });
+
+    group('Edit Tenant giving a tenant a different unit', () {
+      // The picker fills in the new unit's number and rate (120 here).
+      Future<String?> pick(
+        _FakeRecords store, {
+        ConfirmFreeUnit? confirm,
+        _FakeEffects? effects,
+      }) =>
+          TenantService.updateTenant(
+            facilityId: 'f1',
+            tenantId: 't1',
+            unitNumber: '102',
+            monthlyRate: 120,
+            confirmFreeOldUnit: confirm,
+            records: store,
+            effects: effects ?? _FakeEffects(),
+            actingUid: 'owner',
+          );
+
+      _FakeRecords holding101() {
+        final store = _FakeRecords();
+        store['t1']
+          ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 100}
+          ..units = [unit('101', UnitStatus.occupied, 't1')];
+        store.facilityUnits.addAll([
+          unit('101', UnitStatus.occupied, 't1'),
+          unit('102', UnitStatus.available, null),
+        ]);
+        store.unitHolders['u101'] = 't1';
+        return store;
+      }
+
+      test('asks "Also free unit 101?"; yes frees it with the link, rate the new unit\'s', () async {
+        final store = holding101();
+        final asked = <String>[];
+        final effects = _FakeEffects();
+        final notice = await pick(store, effects: effects, confirm: (n) async {
+          asked.add(n);
+          return true;
+        });
+        expect(asked, ['101']);
+        expect(store.allWrites,
+            ['update tenants/t1', 'update units/u101', 'update units/u102']);
+        final freed = store.transactions.single.first.fields!;
+        expect(freed['status'], 'available');
+        expect(freed['updatedBy'], 'owner');
+        expect(store['t1'].doc!['monthlyRate'], 120);
+        expect(store['t1'].doc!['unitNumber'], '102');
+        expect(notice, isNull);
+        expect(effects.audits.single['unitsReleased'], ['101']);
+        expect(effects.mapSyncs, 1);
+      });
+
+      test('no keeps both, and the rate becomes the sum of the two', () async {
+        final store = holding101();
+        final notice = await pick(store, confirm: (_) async => false);
+        expect(store.allWrites, ['update tenants/t1', 'update units/u102']);
+        expect(store['t1'].doc!['monthlyRate'], 220);
+        expect(notice, r'Monthly rent is now $220.00 for units 101 and 102.');
+      });
+
+      test('with no way to ask, nothing is freed: both kept, rate summed', () async {
+        final store = holding101();
+        await pick(store);
+        expect(store.allWrites, ['update tenants/t1', 'update units/u102']);
+        expect(store['t1'].doc!['monthlyRate'], 220);
+      });
+
+      test('freeing one of two units keeps the other in the rate', () async {
+        final store = holding101();
+        store['t1']
+          ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 250}
+          ..units = [unit('101', UnitStatus.occupied, 't1'), unit('103', UnitStatus.occupied, 't1')];
+        final notice = await pick(store, confirm: (_) async => true);
+        // 250 - 100 (unit 101) + 120 (unit 102).
+        expect(store['t1'].doc!['monthlyRate'], 270);
+        expect(notice, r'Monthly rent is now $270.00 for units 103 and 102.');
+      });
+
+      test('a unit 101 given to someone else meanwhile is not freed', () async {
+        final store = holding101();
+        store.unitHolders['u101'] = 't2';
+        await pick(store, confirm: (_) async => true);
+        expect(store.writtenPaths, ['update units/u102']);
+      });
+    });
+  });
+
+  group('Unassign Tenant takes the unit off its tenant too', () {
+    setUp(() => UnitService.authForTesting =
+        MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner')));
+    tearDown(() => UnitService.authForTesting = null);
+
+    Future<void> unassign(_FakeRecords store, String unitId) =>
+        UnitService.removeTenantFromUnit(
+            facilityId: 'f1', unitId: unitId, records: store);
+
+    _FakeRecords holdingTwo() {
+      final store = _FakeRecords();
+      final u101 = unit('101', UnitStatus.occupied, 't1');
+      final u102 = unit('102', UnitStatus.lockout, 't1');
+      store['t1']
+        ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 250}
+        ..units = [u101, u102];
+      store.facilityUnits.addAll([u101, u102]);
+      store.unitHolders.addAll({'u101': 't1', 'u102': 't1'});
+      return store;
+    }
+
+    test('its rate comes off theirs and their unit number moves to the unit they keep', () async {
+      // It only freed the unit: the tenant kept '101' (so once 101 went to
+      // someone else, saving either tenant failed) and kept paying for it.
+      final store = holdingTwo();
+      await unassign(store, 'u101');
+      expect(store.writtenPaths, ['update units/u101', 'update tenants/t1']);
+      final unitWrite = store.transactions.single.first.fields!;
+      expect(unitWrite['status'], 'available');
+      expect(unitWrite['updatedBy'], 'owner');
+      final tenantWrite = store.transactions.single.last.fields!;
+      expect(tenantWrite['monthlyRate'], 150);
+      expect(tenantWrite['unitNumber'], '102');
+    });
+
+    test('their last unit: the unit number is cleared and the rate never goes below 0', () async {
+      final store = holdingTwo();
+      store['t1']
+        ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 60}
+        ..units = [unit('101', UnitStatus.occupied, 't1')];
+      await unassign(store, 'u101');
+      final tenantWrite = store.transactions.single.last.fields!;
+      expect(tenantWrite['monthlyRate'], 0);
+      expect(tenantWrite['unitNumber'], '');
+    });
+
+    test('a unit number naming another unit is left alone', () async {
+      final store = holdingTwo();
+      await unassign(store, 'u102');
+      final tenantWrite = store.transactions.single.last.fields!;
+      expect(tenantWrite['monthlyRate'], 150);
+      expect(tenantWrite.containsKey('unitNumber'), isFalse);
+    });
+
+    test('a unit that changed hands meanwhile is freed, and nobody else is touched', () async {
+      final store = holdingTwo();
+      store.unitHolders['u101'] = 't2';
+      await unassign(store, 'u101');
+      expect(store.writtenPaths, ['update units/u101']);
+    });
   });
 
   group('move-in of an additional unit', () {
-    Future<void> moveIn(_FakeRecords store, String unitNumber, double rate) =>
+    Future<String?> moveIn(_FakeRecords store, String unitNumber, double rate) =>
         TenantService.recordMoveInUnit(
           facilityId: 'f1',
           tenantId: 't1',
@@ -1244,7 +1510,9 @@ void main() {
           actingUid: 'owner',
         );
 
-    test('the first unit is kept: not freed, still their unit number and rate', () async {
+    test("the first unit is kept, and the new unit's rate is added to theirs", () async {
+      // The rent job bills one monthlyRate per tenant. It was left at the
+      // first unit's rate, so the second unit was never billed.
       final store = _FakeRecords();
       store['t1']
         ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 100}
@@ -1253,20 +1521,54 @@ void main() {
         unit('101', UnitStatus.occupied, 't1'),
         unit('102', UnitStatus.available, null),
       ]);
-      await moveIn(store, '102', 35);
-      expect(store.allWrites, ['update units/u102']);
+      // 35 is the prorated first month; the unit's full rate (100) is added.
+      final notice = await moveIn(store, '102', 35);
+      expect(store.allWrites, ['update tenants/t1', 'update units/u102']);
       expect(store['t1'].doc!['unitNumber'], '101');
-      expect(store['t1'].doc!['monthlyRate'], 100);
+      expect(store['t1'].doc!['monthlyRate'], 200);
+      expect(store['t1'].doc!['isActive'], isTrue);
+      expect(notice, r'Monthly rent is now $200.00 for units 101 and 102.');
     });
 
     test("a tenant's first unit becomes their unit number and rate, as before", () async {
       final store = _FakeRecords();
       store['t1'].doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '', 'monthlyRate': 0};
       store.facilityUnits.add(unit('102', UnitStatus.available, null));
-      await moveIn(store, '102', 80);
+      expect(await moveIn(store, '102', 80), isNull);
       expect(store.allWrites, ['update tenants/t1', 'update units/u102']);
       expect(store['t1'].doc!['unitNumber'], '102');
       expect(store['t1'].doc!['monthlyRate'], 80);
+    });
+
+    test('a stale unit number is not a held unit: it is a first unit, prorated rate and all', () async {
+      // Their unitNumber names a unit they no longer hold. Counting it as
+      // held kept the stale number and added to the old rate.
+      final store = _FakeRecords();
+      store['t1'].doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 100};
+      store.facilityUnits.add(unit('102', UnitStatus.available, null));
+      expect(await moveIn(store, '102', 35), isNull);
+      expect(store['t1'].doc!['unitNumber'], '102');
+      expect(store['t1'].doc!['monthlyRate'], 35);
+    });
+
+    test('a returning archived tenant is made active again, and their unit linked', () async {
+      // Move-in never passed isActive, so they stayed inactive: rent,
+      // autopay and lockout all skip inactive tenants.
+      final store = _FakeRecords();
+      store['t1'].doc = {'name': 'Ada Park', 'isActive': false, 'unitNumber': '', 'monthlyRate': 0};
+      store.facilityUnits.add(unit('102', UnitStatus.available, null));
+      await moveIn(store, '102', 80);
+      expect(store['t1'].doc!['isActive'], isTrue);
+      expect(store.allWrites, ['update tenants/t1', 'update units/u102']);
+    });
+
+    test("a returning archived tenant can't be moved into a unit someone else holds", () async {
+      final store = _FakeRecords();
+      store['t1'].doc = {'name': 'Ada Park', 'isActive': false, 'unitNumber': '101'};
+      store.facilityUnits.add(unit('102', UnitStatus.occupied, 't2'));
+      await expectLater(
+          moveIn(store, '102', 80), throwsA(isA<UnitHeldByAnotherTenantException>()));
+      expect(store.allWrites, isEmpty);
     });
 
     test("another tenant's unit is refused before anything is written", () async {
@@ -1317,6 +1619,37 @@ void main() {
         ..units = [unit('101', UnitStatus.occupied, 't1')];
       expect(await settle(store), isNull);
       expect(store.allWrites, isEmpty);
+    });
+
+    test("the unit they left comes off their rate, which is the sum of their units'", () async {
+      // It used to stay, so they went on paying for the unit they gave up.
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '102', 'monthlyRate': 250}
+        ..units = [unit('101', UnitStatus.occupied, 't1')];
+      store.facilityUnits.addAll([
+        unit('101', UnitStatus.occupied, 't1'),
+        // The unit moved out of, already freed; 100 a month.
+        unit('102', UnitStatus.available, null),
+      ]);
+      expect(await settle(store), isNull);
+      final fields = store.directWrites.single.fields!;
+      expect(fields['monthlyRate'], 150);
+      expect(fields['unitNumber'], '101');
+      expect(store['t1'].doc!['isActive'], isTrue);
+    });
+
+    test('with the unit number still naming a unit they hold, only the rate changes', () async {
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': '101', 'monthlyRate': 60}
+        ..units = [unit('101', UnitStatus.occupied, 't1')];
+      store.facilityUnits.add(unit('102', UnitStatus.available, null));
+      expect(await settle(store), isNull);
+      expect(store.allWrites, ['update tenants/t1']);
+      // Never below 0.
+      expect(store['t1'].doc!['monthlyRate'], 0);
+      expect(store['t1'].doc!['unitNumber'], '101');
     });
 
     test('their last unit: switched off, gate codes with it, in one transaction', () async {

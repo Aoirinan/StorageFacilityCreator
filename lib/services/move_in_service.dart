@@ -281,6 +281,7 @@ class MoveInService {
       }
 
       final facilityId = moveInData.unit.facilityId;
+      String? rentNotice;
       TenantModel tenant;
       ContractModel contract;
       List<String> ledgerEntryIds = [];
@@ -304,7 +305,8 @@ class MoveInService {
         // Update tenant with move-in info
         // Note: Insurance status should be set via the wizard UI, not here
         // Never frees a unit the tenant already rents (a second unit).
-        await TenantService.recordMoveInUnit(
+        // A unit added to ones they hold adds its rate; the wizard shows it.
+        rentNotice = await TenantService.recordMoveInUnit(
           tenantId: tenant.id,
           facilityId: facilityId,
           unitNumber: moveInData.unit.unitNumber,
@@ -468,6 +470,7 @@ class MoveInService {
         tenantId: tenant.id,
         contractId: contract.id,
         ledgerEntryIds: ledgerEntryIds,
+        notice: rentNotice,
       );
     } catch (e) {
       if (kDebugMode) {
@@ -489,12 +492,17 @@ class MoveInResult {
   final List<String> ledgerEntryIds;
   final String? error;
 
+  /// For the owner after a finished move-in, e.g. the tenant's new monthly
+  /// rent when the unit was added to others they rent.
+  final String? notice;
+
   MoveInResult({
     required this.success,
     this.tenantId,
     this.contractId,
     this.ledgerEntryIds = const [],
     this.error,
+    this.notice,
   });
 }
 

@@ -31,6 +31,7 @@ import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
 import '../services/autopay_service.dart';
 import '../router/app_route.dart';
+import 'package:sfcapp/router/back_navigation.dart';
 import '../widgets/tenant_facility_unit_picker.dart';
 import 'package:sfcapp/widgets/dnr_blocking_dialog.dart';
 import '../constants/location_options.dart';
@@ -38,6 +39,7 @@ import '../ui/payments/tenant_billing_panel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
+import 'package:sfcapp/widgets/confirm_free_old_unit_dialog.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
@@ -163,17 +165,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     if (saved != true || !mounted) { nameCtrl.dispose(); emailCtrl.dispose(); phoneCtrl.dispose(); unitCtrl.dispose(); rateCtrl.dispose(); return; }
 
     try {
-      await ref.read(tenantOperationsProvider.notifier).updateTenant(
+      final notice = await ref.read(tenantOperationsProvider.notifier).updateTenant(
         facilityId: tenant.facilityId, tenantId: tenant.id,
         name: nameCtrl.text.trim(), email: emailCtrl.text.trim(), phone: phoneCtrl.text.trim(),
         unitNumber: unitCtrl.text.trim(), monthlyRate: double.parse(rateCtrl.text.trim()),
         smsOptInDate: smsConsent && !tenant.smsOptOut ? DateTime.now() : null,
+        // As in Edit Tenant: a different unit asks before freeing the old one.
+        confirmFreeOldUnit: (oldUnitNumber) => confirmFreeOldUnitDialog(context,
+            tenantName: tenant.name, oldUnitNumber: oldUnitNumber, newUnitNumber: unitCtrl.text.trim()),
       );
       if (mounted) {
         ref.invalidate(facilityTenantsProvider(tenant.facilityId));
         ref.invalidate(facilityUnitsProvider(tenant.facilityId));
         ref.invalidate(unitsForFacilityProvider(tenant.facilityId));
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contact info updated'), backgroundColor: AppTheme.success, duration: Duration(seconds: 2)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notice == null ? 'Contact info updated' : 'Contact info updated. $notice'), backgroundColor: AppTheme.success, duration: Duration(seconds: notice == null ? 2 : 8)));
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: AppTheme.error));
@@ -1524,19 +1529,21 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       confirmUnitsFreedDialog(screenContext, freeing),
                 );
 
-                if (deleted && context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                // The page's context: this dialog's was closed above, so its
+                // mounted check was always false and neither ran.
+                if (deleted && screenContext.mounted) {
+                  ScaffoldMessenger.of(screenContext).showSnackBar(
                     const SnackBar(
                       content: Text('Tenant deleted successfully'),
                       backgroundColor: AppTheme.success,
                     ),
                   );
-                  // Navigate back since tenant no longer exists
-                  Navigator.of(context).pop();
+                  // The tenant no longer exists: leave their page.
+                  popOrGo(screenContext, AppRoute.tenants);
                 }
               } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                if (screenContext.mounted) {
+                  ScaffoldMessenger.of(screenContext).showSnackBar(
                     SnackBar(
                       content: Text('Error deleting tenant: $e'),
                       backgroundColor: AppTheme.error,

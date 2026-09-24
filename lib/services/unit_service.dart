@@ -6,6 +6,7 @@ import 'audit_service.dart';
 import 'facility_limits_service.dart';
 import 'facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/tenant_service.dart';
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -454,11 +455,14 @@ class UnitService {
     };
   }
 
-  // Remove tenant from unit
+  // Remove tenant from unit (Unassign Tenant). The tenant's side changes in
+  // the same transaction: see TenantService.unassignUnit. [records] is for
+  // tests.
   static Future<void> removeTenantFromUnit({
     required String facilityId,
     required String unitId,
     DateTime? moveOutDate,
+    TenantRecordsStore? records,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -470,15 +474,12 @@ class UnitService {
         print('🔄 Removing tenant from unit $unitId');
       }
 
-      final updateData =
-          tenantUnlinkFields(updatedBy: user.uid, moveOutDate: moveOutDate);
-
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('units')
-          .doc(unitId)
-          .update(updateData);
+      await TenantService.unassignUnit(
+        records ?? TenantService.recordsFor(facilityId),
+        unitId: unitId,
+        uid: user.uid,
+        moveOutDate: moveOutDate,
+      );
 
       if (kDebugMode) {
         print('✅ Tenant removed from unit successfully');

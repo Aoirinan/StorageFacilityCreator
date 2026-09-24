@@ -89,7 +89,9 @@ void main() {
     });
 
     // The calendar opens the wizard with go; nothing is underneath it.
-    Future<GoRouter> pumpWizard(WidgetTester tester) async {
+    // [shell]: an outer Scaffold, as the app shell gives, so a snackbar
+    // shown while leaving is still on screen on the page left to.
+    Future<GoRouter> pumpWizard(WidgetTester tester, {bool shell = false}) async {
       // Made in the test's fake-async zone, or its completion is never seen
       // by pump.
       moveIn = Completer<MoveInResult>();
@@ -118,7 +120,12 @@ void main() {
       );
       addTearDown(router.dispose);
       await tester.pumpWidget(
-        ProviderScope(child: MaterialApp.router(routerConfig: router)),
+        ProviderScope(
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: shell ? (context, child) => Scaffold(body: child) : null,
+          ),
+        ),
       );
       await tester.pumpAndSettle();
       return router;
@@ -163,6 +170,34 @@ void main() {
       expect(moveIns, 1);
       // Opened with go, so it lands on the tenant's page.
       expect(find.text('TENANT t1'), findsOneWidget);
+    });
+
+    testWidgets("a unit added to an existing tenant's shows their new rent", (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(
+        success: true,
+        tenantId: 't1',
+        notice: r'Monthly rent is now $200.00 for units 101 and A1.',
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('TENANT t1'), findsOneWidget);
+      expect(
+        find.text(r'Move-in completed. Monthly rent is now $200.00 for units 101 and A1.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a first unit keeps the plain success message', (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
+      expect(find.text('Move-in completed successfully!'), findsOneWidget);
     });
 
     testWidgets('a failed move-in can be tried again', (tester) async {
