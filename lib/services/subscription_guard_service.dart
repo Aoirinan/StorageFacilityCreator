@@ -407,8 +407,9 @@ class SubscriptionGuardService {
   /// the account, the rule the route guard applies, without the guard's
   /// logging (the overlay asks every 10 s). `locked` is null when a read
   /// failed. No route is passed, so subscription pages get no exemption: the
-  /// sidebar stays locked on them. `message` says why, for a lock with no
-  /// account to explain it (a team member whose owner lapsed).
+  /// sidebar stays locked on them. `message` says why (the lock overlay shows
+  /// it ahead of the account's status: a suspended account's reads
+  /// "cancelled").
   static Future<({FacilityCreatorAccountModel? account, bool? locked, String? message})>
       shellLock(
     String uid, {

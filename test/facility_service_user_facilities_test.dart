@@ -438,6 +438,50 @@ void main() {
       expect(errors, isEmpty);
     });
 
+    test("a failed owned listener keeps the owner's facilities, still marked theirs", () async {
+      // It set owned to nothing, so the owner's facilities came back through
+      // their owner role rows as someone else's for the rest of the session.
+      final mine = FacilityModel(
+        id: 'o1',
+        name: 'Mine',
+        ownerUid: 'staff-1',
+        createdAt: DateTime(2026),
+      );
+      owned.add([mine]);
+      roles.add({'o1', 'f1'});
+      await pumpEventQueue();
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+
+      owned.addError(StateError('owned listener failed'));
+      await pumpEventQueue();
+      expect(
+        {for (final f in emitted.last) f.id: f.currentUserOwnsFacility},
+        {'o1': true, 'f1': false},
+      );
+      expect(docs.containsKey('o1'), isFalse, reason: 'still served by the owned query');
+    });
+
+    test('a role facility the user owns is marked theirs, even with no owned answer', () async {
+      // The owned listener failed before its first answer, so the owner's
+      // facilities reached the list only through their owner role rows.
+      owned.addError(StateError('owned listener failed'));
+      roles.add({'o1', 'f1'});
+      await pumpEventQueue();
+      docs['o1']!.add(FacilityModel(
+        id: 'o1',
+        name: 'Mine',
+        ownerUid: 'staff-1',
+        createdAt: DateTime(2026),
+      ));
+      docs['f1']!.add(roleFacility('f1', 'Theirs'));
+      await pumpEventQueue();
+      expect(
+        {for (final f in emitted.last) f.id: f.currentUserOwnsFacility},
+        {'o1': true, 'f1': false},
+      );
+    });
+
     test('with nothing left to show, a failure is an error, not "no facilities"', () async {
       final errors = <Object>[];
       sub.onError(errors.add);

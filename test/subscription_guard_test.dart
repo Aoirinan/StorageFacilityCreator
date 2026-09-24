@@ -7,6 +7,7 @@ import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
+import 'package:sfcapp/widgets/subscription_lock_overlay.dart';
 
 import 'support/fake_facility_collection.dart';
 
@@ -605,6 +606,38 @@ void main() {
       expect(lock.locked, isTrue);
     });
 
+    test('and the lock overlay says it is suspended, not "reactivate"', () async {
+      // The overlay read the rule's reason only when there was no account, so
+      // a suspended account (status cancelled) was told to reactivate its
+      // subscription, and paying does not lift a suspension.
+      final lock = await SubscriptionGuardService.shellLock(
+        'user_1',
+        accountProvider: (_) async => suspendedInPaidPeriod,
+        facilitiesProvider: () async => const [],
+      );
+      final shown = SubscriptionLockOverlay.lockMessage(
+        account: lock.account,
+        accessMessage: lock.message,
+      );
+      expect(shown, contains('suspended'));
+      expect(shown, isNot(contains('reactivate')));
+    });
+
+    test("the overlay falls back to the account's status only without a reason", () {
+      final lapsed = _account(
+        status: SubscriptionStatus.cancelled,
+        periodEnd: DateTime.now().subtract(const Duration(days: 10)),
+      );
+      expect(
+        SubscriptionLockOverlay.lockMessage(account: lapsed, accessMessage: null),
+        contains('cancelled'),
+      );
+      expect(
+        SubscriptionLockOverlay.lockMessage(account: null, accessMessage: null),
+        'Please subscribe to continue.',
+      );
+    });
+
     test('an unsuspended cancelled account still keeps its paid period', () async {
       final result = await SubscriptionGuardService.checkAccess(
         authOverride: mockAuth,
@@ -882,6 +915,40 @@ void main() {
           'ownerAccountStanding': {'accountId': 'acct_owner', 'subscriptionStatus': 'cancelled'},
         }))).canAccess,
         isFalse,
+      );
+    });
+
+    test('a facility the list did not mark either way counts as their own', () {
+      // Only a facility marked someone else's (currentUserOwnsFacility false)
+      // is a team facility. One read without the mark (null) is taken as the
+      // user's own, as every facility was before the team rule, so an owner
+      // with no account is not locked out because a lapsed owner also
+      // invited them.
+      final lapsedTeam = FacilityModel(
+        id: 'theirs',
+        name: 'Lapsed Storage',
+        ownerUid: 'owner_2',
+        createdAt: DateTime(2026),
+        ownerAccountStanding: const OwnerAccountStanding(
+          accountId: 'acct_lapsed',
+          subscriptionStatus: SubscriptionStatus.cancelled,
+        ),
+        currentUserOwnsFacility: false,
+      );
+      final unmarked = FacilityModel(
+        id: 'mine',
+        name: 'My Storage',
+        ownerUid: 'user_1',
+        createdAt: DateTime(2026),
+      );
+      expect(unmarked.currentUserOwnsFacility, isNull);
+      expect(
+        SubscriptionGuardService.accessWithoutAccount([lapsedTeam]).canAccess,
+        isFalse,
+      );
+      expect(
+        SubscriptionGuardService.accessWithoutAccount([unmarked, lapsedTeam]).canAccess,
+        isTrue,
       );
     });
   });
