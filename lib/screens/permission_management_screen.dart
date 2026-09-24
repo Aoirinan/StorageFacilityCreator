@@ -877,6 +877,7 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                   );
                 } else if (!result.inviteSaved) {
                   // Refused or not written: there is no invite to resend.
+                  if (!pageContext.mounted) return;
                   ScaffoldMessenger.of(pageContext).showSnackBar(
                     SnackBar(
                       content: Text(

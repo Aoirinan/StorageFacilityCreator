@@ -949,7 +949,7 @@ void main() {
       expect(accounts.writes.single.$3['subscriptionStatus'], 'pendingApproval');
     });
 
-    test("a new invitee whose invites could not be accepted is retried, not settled", () async {
+    test('a new invitee whose invites could not be accepted is retried, not settled', () async {
       // The production ensure on fakes. Settling left the invitee on an empty
       // dashboard with no role for the rest of the session.
       final invites = [
