@@ -52,7 +52,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   final _damageFeeController = TextEditingController();
   final _otherFeesController = TextEditingController();
   final _notesController = TextEditingController();
-  bool _prorateRent = true;
+  // Off until the owner ticks it. The prorated line counts days from the
+  // 1st of the month whatever the tenancy: it charged a tenant whose tenancy
+  // starts on 1 Oct for 24 September days, and for days already covered by
+  // rent posted and paid at move-in.
+  bool _prorateRent = false;
   bool _processRefund = false;
   String? _refundMethod;
   final _refundReferenceController = TextEditingController();
@@ -424,7 +428,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
               value: _prorateRent,
               onChanged: (value) {
                 setState(() {
-                  _prorateRent = value ?? true;
+                  _prorateRent = value ?? false;
                 });
               },
             ),
