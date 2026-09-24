@@ -2,6 +2,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
   enforceAppCheckOrThrow,
+  findOwnerAccountDoc,
   getOrCreateAddOnPriceId,
   getOrCreateBasePriceId,
   getStripeClient,
@@ -30,11 +31,13 @@ export const reconcileAccountFacilityIds = functions.runWith({ secrets: STRIPE_S
   const uid = context.auth.uid;
   const db = admin.firestore();
 
-  const accountSnap = await db.collection('facilityCreatorAccounts').where('ownerUid', '==', uid).limit(1).get();
-  if (accountSnap.empty) {
+  // The owner's preferred account (the one the app uses), not whichever
+  // duplicate limit(1) happened to return: facilities are linked, and Stripe
+  // quantities synced, against that one.
+  const accountDoc = await findOwnerAccountDoc(db, uid);
+  if (!accountDoc) {
     throw new functions.https.HttpsError('not-found', 'No account found for user');
   }
-  const accountDoc = accountSnap.docs[0];
   const accountId = accountDoc.id;
   const accountData = accountDoc.data();
 

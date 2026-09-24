@@ -8,7 +8,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { serverTimestamp } from 'firebase/firestore';
+import { deleteField, serverTimestamp } from 'firebase/firestore';
 import { getBytes, ref as storageRef, uploadBytes } from 'firebase/storage';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -276,6 +276,47 @@ test('facility owners cannot write platform or website subscription entitlements
   // account. A writable link therefore lets a non-paying operator inherit a
   // paying one's premium entitlements, so it is backend-only.
   await assertFails(facilityRef.update({ facilityCreatorAccountId: 'account-1' }));
+});
+
+test("facility owners cannot write the owner account standing their staff are let in on", async () => {
+  // Invited staff cannot read the owner's account, so the app decides from
+  // this backend-written copy whether the owner's billing still covers them.
+  // An owner who could write it could keep staff working after a lapse or a
+  // suspension.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      name: 'Keepsake',
+      roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+      ownerAccountStanding: { accountId: 'account-1', subscriptionStatus: 'cancelled', suspended: true },
+    });
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const facilityRef = owner.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(
+    facilityRef.update({
+      ownerAccountStanding: { accountId: 'account-1', subscriptionStatus: 'active', suspended: false },
+    }),
+  );
+  await assertFails(facilityRef.update({ 'ownerAccountStanding.suspended': false }));
+  await assertFails(facilityRef.update({ ownerAccountStanding: deleteField() }));
+  // Other edits still go through with the copy in place.
+  await assertSucceeds(facilityRef.update({ name: 'Keepsake Storage' }));
+
+  // Nor can a new facility start out with one.
+  await assertFails(
+    owner.firestore().collection('facilities').doc('facility-new').set({
+      name: 'New',
+      ownerUid: OWNER_UID,
+      createdAt: serverTimestamp(),
+      active: true,
+      ownerAccountStanding: { accountId: 'account-1', subscriptionStatus: 'active' },
+    }),
+  );
+  // Staff read it (that is what it is for).
+  const staff = testEnv.authenticatedContext(STAFF_UID);
+  await assertSucceeds(staff.firestore().collection('facilities').doc(FACILITY_ID).get());
 });
 
 test('facility owners cannot forge A2P texting approval state', async () => {
