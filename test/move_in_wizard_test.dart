@@ -12,6 +12,13 @@ import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/detail_routes.dart';
 import 'package:sfcapp/screens/move_in_wizard_screen.dart';
 import 'package:sfcapp/services/move_in_service.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
+
+import 'support/fake_facility_collection.dart';
+import 'support/fake_facility_firestore.dart';
 
 final _tenant = TenantModel(
   id: 't1',
@@ -91,7 +98,9 @@ void main() {
     });
 
     // The calendar opens the wizard with go; nothing is underneath it.
-    Future<GoRouter> pumpWizard(WidgetTester tester) async {
+    // [shell]: an outer Scaffold, as the app shell gives, so a snackbar
+    // shown while leaving is still on screen on the page left to.
+    Future<GoRouter> pumpWizard(WidgetTester tester, {bool shell = false}) async {
       // Made in the test's fake-async zone, or its completion is never seen
       // by pump.
       moveIn = Completer<MoveInResult>();
@@ -127,7 +136,12 @@ void main() {
       );
       addTearDown(router.dispose);
       await tester.pumpWidget(
-        ProviderScope(child: MaterialApp.router(routerConfig: router)),
+        ProviderScope(
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: shell ? (context, child) => Scaffold(body: child) : null,
+          ),
+        ),
       );
       await tester.pumpAndSettle();
       return router;
@@ -172,6 +186,34 @@ void main() {
       expect(moveIns, 1);
       // Opened with go, so it lands on the tenant's page.
       expect(find.text('TENANT t1'), findsOneWidget);
+    });
+
+    testWidgets("a unit added to an existing tenant's shows their new rent", (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(
+        success: true,
+        tenantId: 't1',
+        notice: r'Monthly rent is now $200.00 for units 101 and A1.',
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('TENANT t1'), findsOneWidget);
+      expect(
+        find.text(r'Move-in completed. Monthly rent is now $200.00 for units 101 and A1.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a first unit keeps the plain success message', (tester) async {
+      await pumpWizard(tester, shell: true);
+      await continueToReview(tester);
+      await tester.tap(continueButton());
+      await tester.pump();
+      moveIn.complete(MoveInResult(success: true, tenantId: 't1'));
+      await tester.pumpAndSettle();
+      expect(find.text('Move-in completed successfully!'), findsOneWidget);
     });
 
     testWidgets('a failed move-in can be tried again', (tester) async {
@@ -416,6 +458,56 @@ void main() {
       final source = File('lib/services/move_in_service.dart').readAsStringSync();
       expect(source, contains('if (conflict != null) throw conflict;'));
       expect(source, contains('conflict: e is MoveInUnitConflict ? e : null,'));
+    });
+  });
+
+  group("completeMoveIn, with the app's own stores", () {
+    // Nothing ran completeMoveIn itself, so dropping the rent notice from
+    // its result left every test passing while the wizard said nothing.
+    late FakeFacilityFirestore db;
+
+    setUp(() {
+      db = FakeFacilityFirestore('f1', {
+        'tenants': [
+          FakeDoc('t1', {'name': 'Pat Renter', 'isActive': true, 'unitNumber': 'A0', 'monthlyRate': 100}),
+        ],
+        'units': [
+          FakeDoc('u0', {'facilityId': 'f1', 'unitNumber': 'A0', 'status': 'occupied', 'tenantId': 't1', 'monthlyRate': 100}),
+          FakeDoc('u1', {'facilityId': 'f1', 'unitNumber': 'A1', 'status': 'available', 'monthlyRate': 150}),
+        ],
+      });
+      final auth = MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+      TenantService.firestoreForTesting = db;
+      TenantService.authForTesting = auth;
+      UnitService.authForTesting = auth;
+      MoveInService.authForTesting = auth;
+      FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+    });
+    tearDown(() {
+      TenantService.firestoreForTesting = null;
+      TenantService.authForTesting = null;
+      UnitService.authForTesting = null;
+      MoveInService.authForTesting = null;
+      FacilitySubcollections.overrideForTesting(null);
+    });
+
+    test("a unit added to a tenant's others: the new rent reaches the wizard", () async {
+      final result = await MoveInService.completeMoveIn(
+        moveInData: MoveInData(
+          existingTenant: _tenant,
+          unit: _unit(),
+          contract: _lease,
+          lineItems: const [],
+          totalAmount: 0,
+          moveInDate: DateTime(2026, 9, 23),
+        ),
+        skipPayment: true,
+      );
+      expect(result.success, isTrue, reason: result.error);
+      expect(result.notice, r'Monthly rent is now $250.00 for units A0 and A1.');
+      expect(db.data('tenants', 't1')!['monthlyRate'], 250);
+      expect(db.data('units', 'u1')!['tenantId'], 't1');
+      expect(db.data('units', 'u1')!['status'], 'occupied');
     });
   });
 }

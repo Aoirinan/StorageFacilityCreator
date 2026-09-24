@@ -233,7 +233,8 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     }
   }
 
-  Future<void> assignTenantToUnit({
+  /// The rent notice [UnitService.assignTenantToUnit] returns.
+  Future<String?> assignTenantToUnit({
     required String facilityId,
     required String unitId,
     required String tenantId,
@@ -242,7 +243,7 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
   }) async {
     state = const AsyncValue.loading();
     try {
-      await UnitService.assignTenantToUnit(
+      final notice = await UnitService.assignTenantToUnit(
         facilityId: facilityId,
         unitId: unitId,
         tenantId: tenantId,
@@ -250,25 +251,28 @@ class UnitOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         moveInDate: moveInDate,
       );
       state = const AsyncValue.data(null);
+      return notice;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;
     }
   }
 
-  Future<void> removeTenantFromUnit({
+  /// The rent notice [UnitService.removeTenantFromUnit] returns.
+  Future<String?> removeTenantFromUnit({
     required String facilityId,
     required String unitId,
     DateTime? moveOutDate,
   }) async {
     state = const AsyncValue.loading();
     try {
-      await UnitService.removeTenantFromUnit(
+      final notice = await UnitService.removeTenantFromUnit(
         facilityId: facilityId,
         unitId: unitId,
         moveOutDate: moveOutDate,
       );
       state = const AsyncValue.data(null);
+      return notice;
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
       rethrow;

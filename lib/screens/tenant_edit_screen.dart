@@ -11,6 +11,7 @@ import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/services/modern_navigation_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/tenant_contact_validation.dart';
+import 'package:sfcapp/widgets/confirm_free_old_unit_dialog.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
@@ -915,7 +916,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
         throw Exception('Missing facility context for this tenant record.');
       }
 
-      await ref.read(tenantOperationsProvider.notifier).updateTenant(
+      final notice = await ref.read(tenantOperationsProvider.notifier).updateTenant(
         facilityId: _facilityId,
         tenantId: widget.tenant.id,
         name: _nameController.text.trim(),
@@ -942,17 +943,28 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
         portalWelcomeMessage: portalWelcomeForUpdate,
         portalLastAccessAt: _portalLastAccessAt,
         resetPortalStats: resetPortalStats,
+        // A different unit for a tenant who still holds theirs: ask, rather
+        // than leave the old one assigned unannounced.
+        confirmFreeOldUnit: (oldUnitNumber) => confirmFreeOldUnitDialog(
+          context,
+          tenantName: widget.tenant.name,
+          oldUnitNumber: oldUnitNumber,
+          newUnitNumber: _unitController.text.trim(),
+        ),
       );
 
       if (mounted) {
         ref.invalidate(facilityTenantsProvider(_facilityId));
         ref.invalidate(facilityUnitsProvider(_facilityId));
         ref.invalidate(unitsForFacilityProvider(_facilityId));
+        // The new rent, or why the unit number was not linked.
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${widget.tenant.name} updated successfully!'),
+            content: Text(notice == null
+                ? '${widget.tenant.name} updated successfully!'
+                : '${widget.tenant.name} updated. $notice'),
             backgroundColor: AppTheme.success,
-            duration: const Duration(seconds: 2),
+            duration: Duration(seconds: notice == null ? 2 : 8),
           ),
         );
 

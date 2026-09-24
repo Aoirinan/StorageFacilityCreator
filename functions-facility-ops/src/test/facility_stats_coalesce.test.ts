@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as admin from 'firebase-admin';
-import { statsCoalesceTestUtils, StatsCoalesceHooks } from '../facility_stats';
+import {
+  statsCoalesceTestUtils,
+  StatsClaimOutcome,
+  StatsCoalesceHooks,
+  StatsDrainClaim,
+} from '../facility_stats';
 
 const {
   shouldClaimStatsRecompute,
@@ -282,7 +287,14 @@ test('a failed pass releases its claim to a short backoff, not to zero', async (
  */
 function claimStore(initial?: Record<string, unknown>) {
   let claimDoc: Record<string, unknown> | undefined = initial ? { ...initial } : undefined;
-  const claimRef = { path: 'facilities/fac-1/stats/recompute' };
+  const claimRef = {
+    path: 'facilities/fac-1/stats/recompute',
+    // releaseStatsClaim writes through the ref, outside a transaction.
+    update: async (data: Record<string, unknown>) => {
+      if (!claimDoc) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+      claimDoc = { ...claimDoc, ...data };
+    },
+  };
   const db = {
     collection: (name: string) => {
       assert.equal(name, 'facilities');
@@ -314,14 +326,36 @@ function claimStore(initial?: Record<string, unknown>) {
         },
       }),
   };
-  return { db: db as unknown as admin.firestore.Firestore, doc: () => claimDoc };
+  return {
+    db: db as unknown as admin.firestore.Firestore,
+    ref: claimRef as unknown as admin.firestore.DocumentReference,
+    doc: () => claimDoc,
+  };
+}
+
+/** The production claim, drain and release against [store], with [over] for the rest. */
+function storeHooks(
+  store: ReturnType<typeof claimStore>,
+  over: Partial<StatsCoalesceHooks> = {},
+): StatsCoalesceHooks {
+  return {
+    claim: (facilityId) => claimStatsRecompute(facilityId, store.db),
+    consumeDirty: (facilityId, claim) => consumeStatsDirtyFlag(facilityId, claim, store.db),
+    recompute: async () => {},
+    release: (facilityId) => releaseStatsClaim(facilityId, store.ref),
+    ...over,
+  };
+}
+
+function claimedAtMs(store: ReturnType<typeof claimStore>): number {
+  return (store.doc()?.claimedAt as admin.firestore.Timestamp).toMillis();
 }
 
 test('a drain that finds nothing waiting ends the claim, so the next write recomputes', async () => {
   const now = Date.now();
   const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: false });
 
-  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db, () => now), false);
+  assert.equal(await consumeStatsDirtyFlag('fac-1', 'end-when-idle', store.db), false);
 
   // Before: the claim stayed live for the rest of its window, so this write
   // only marked the facility dirty, and the holder had already stopped
@@ -333,7 +367,7 @@ test('a drain that finds writes waiting consumes them and keeps the claim', asyn
   const now = Date.now();
   const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: true });
 
-  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db, () => now), true);
+  assert.equal(await consumeStatsDirtyFlag('fac-1', 'end-when-idle', store.db), true);
   assert.equal(store.doc()?.dirty, false);
   assert.equal((store.doc()?.claimedAt as admin.firestore.Timestamp).toMillis(), now);
   // Still coalescing: the holder runs another pass for these writes.
@@ -341,22 +375,21 @@ test('a drain that finds writes waiting consumes them and keeps the claim', asyn
 });
 
 test('a drain does not recreate a claim doc deleted with its facility', async () => {
-  const store = claimStore();
-  assert.equal(await consumeStatsDirtyFlag('fac-1', store.db), false);
-  assert.equal(store.doc(), undefined);
+  for (const claim of ['end-when-idle', 'keep', 'end'] as StatsDrainClaim[]) {
+    const store = claimStore();
+    assert.equal(await consumeStatsDirtyFlag('fac-1', claim, store.db), false, claim);
+    assert.equal(store.doc(), undefined, claim);
+  }
 });
 
 test('a write after the holder finished is recomputed, not stranded in the window', async () => {
   const store = claimStore();
   let recomputes = 0;
-  const h: StatsCoalesceHooks = {
-    claim: (facilityId) => claimStatsRecompute(facilityId, store.db),
-    consumeDirty: (facilityId) => consumeStatsDirtyFlag(facilityId, store.db),
+  const h = storeHooks(store, {
     recompute: async () => {
       recomputes++;
     },
-    release: async () => {},
-  };
+  });
 
   // Create a tenant, then assign it a unit a few seconds later, well inside
   // the window the first write claimed.
@@ -367,4 +400,97 @@ test('a write after the holder finished is recomputed, not stranded in the windo
   // nothing drained it.
   assert.equal(recomputes, 2);
   assert.notEqual(store.doc()?.dirty, true);
+});
+
+test('an ended claim reads as ended to a writer whose clock runs behind', async () => {
+  const now = Date.now();
+  const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: false });
+
+  await consumeStatsDirtyFlag('fac-1', 'end-when-idle', store.db);
+
+  // Before: ended at the consumer's now minus the window, so a writer whose
+  // clock ran a minute behind still saw a live claim, only marked the
+  // facility dirty, and nobody drained it.
+  assert.equal(shouldClaimStatsRecompute(claimedAtMs(store), now - 60_000), true);
+  assert.equal(claimedAtMs(store), 0);
+});
+
+test('a drain after a failed pass consumes the flag but keeps the claim', async () => {
+  const now = Date.now();
+  const store = claimStore({ claimedAt: admin.firestore.Timestamp.fromMillis(now), dirty: true });
+
+  assert.equal(await consumeStatsDirtyFlag('fac-1', 'keep', store.db), true);
+  assert.equal(store.doc()?.dirty, false);
+  assert.equal(claimedAtMs(store), now);
+
+  assert.equal(await consumeStatsDirtyFlag('fac-1', 'keep', store.db), false);
+  assert.equal(claimedAtMs(store), now, 'nothing waiting still keeps it');
+});
+
+test('a failed pass with nothing waiting holds its claim until it releases to the backoff', async () => {
+  const store = claimStore();
+  let writerDuringFailure: StatsClaimOutcome | undefined;
+  const h = storeHooks(store, {
+    recompute: async () => {
+      throw new Error('deadline-exceeded');
+    },
+    release: async (facilityId) => {
+      // Another write lands between the failed pass's drain and the release.
+      writerDuringFailure = await claimStatsRecompute(facilityId, store.db);
+      await releaseStatsClaim(facilityId, store.ref);
+    },
+  });
+
+  await recomputeFacilityStatsCoalesced('fac-1', 'tenant change', h);
+
+  // Before: the drain ended the claim, so this writer claimed and started a
+  // pass on a facility that was failing, and the release then cut its new
+  // claim short.
+  assert.equal(writerDuringFailure, 'coalesced');
+  // Released to the backoff, not ended: the next write waits it out.
+  assert.equal(shouldClaimStatsRecompute(claimedAtMs(store), Date.now()), false);
+  assert.equal(store.doc()?.dirty, true, 'the write stays marked for the next holder');
+});
+
+test('a burst that outlasts the drain passes ends the claim, so the next write recomputes', async () => {
+  const store = claimStore();
+  let recomputes = 0;
+  const h = storeHooks(store, {
+    recompute: async (facilityId) => {
+      recomputes++;
+      // A write lands during every pass.
+      assert.equal(await claimStatsRecompute(facilityId, store.db), 'coalesced');
+    },
+  });
+
+  await recomputeFacilityStatsCoalesced('fac-1', 'tenant change', h);
+
+  assert.equal(recomputes, STATS_MAX_DRAIN_PASSES);
+  // Before: the last drain consumed the flag and the claim stayed live, so
+  // this write was only marked dirty and nothing recomputed it.
+  assert.equal(await claimStatsRecompute('fac-1', store.db), 'claimed');
+});
+
+test('the drain keeps the claim after a failure and ends it on the last pass', async () => {
+  const seen: StatsDrainClaim[] = [];
+  let recomputes = 0;
+  const { hooks: h } = hooks({
+    recompute: async () => {
+      recomputes++;
+      if (recomputes === 1) throw new Error('deadline-exceeded');
+    },
+    consumeDirty: async (_facilityId, claim) => {
+      seen.push(claim);
+      return true;
+    },
+  });
+
+  await recomputeFacilityStatsCoalesced('fac-1', 'tenant change', h);
+
+  // One failed pass (retried), then every drain pass the retry allows.
+  assert.deepEqual(seen, [
+    'keep',
+    ...Array.from({ length: STATS_MAX_DRAIN_PASSES - 1 }, () => 'end-when-idle'),
+    'end',
+  ]);
 });

@@ -98,7 +98,23 @@ class AutopayService {
         .snapshots();
   }
 
-  /// Mark notification as read
+  /// Facility notifications of one [type] (a FacilityNotificationType value),
+  /// read or not. Filtered on type alone, so no composite index is needed;
+  /// the kinds shown this way are rare, and callers drop the read ones.
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchFacilityNotificationsOfType(
+    String facilityId,
+    String type,
+  ) {
+    return FirebaseFirestore.instance
+        .collection('facilities')
+        .doc(facilityId)
+        .collection('Notifications')
+        .where('type', isEqualTo: type)
+        .snapshots();
+  }
+
+  /// Mark notification as read. Staff may set readAt and nothing else
+  /// (firestore-rules-src/facilities/32-Notifications.rules).
   static Future<void> markNotificationRead({
     required String facilityId,
     required String notificationId,

@@ -13,9 +13,11 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_creator_account_model.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/utils/verified_email_token.dart';
 
 import 'support/fake_facility_collection.dart';
+import 'support/fake_firestore_store.dart';
 
 /// A collection whose reads fail the way an offline Firestore does, and
 /// which records any attempt to write a doc.
@@ -465,7 +467,7 @@ void main() {
       required bool activeRole,
       required bool ownsFacility,
       bool pendingInvite = false,
-      Future<void> Function(User user, String emailLower)? fulfil,
+      Future<bool> Function(User user, String emailLower)? fulfil,
     }) {
       final roles = [
         if (activeRole)
@@ -502,6 +504,7 @@ void main() {
                 roles.add(FakeDoc('role_${d.id}',
                     {'userId': u.uid, 'isActive': true, 'facilityId': d.data()['facilityId']}));
               }
+              return true;
             },
       );
     }
@@ -570,12 +573,35 @@ void main() {
         expect(events, ['fulfil:owner@example.com', 'invite check']);
       });
 
-      test('an invite that could not be accepted still keeps them from an account', () async {
+      test('an invite that could not be accepted keeps them from an account, and is a failure',
+          () async {
+        // Settling on "no account" left the invitee with no role for the
+        // rest of the session; failing lets ensureAccountOnce try again.
+        for (final fulfil in <Future<bool> Function(User, String)>[
+          (_, __) async => throw StateError('permission-denied'),
+          (_, __) async => false,
+        ]) {
+          serve(activeRole: false, ownsFacility: false, pendingInvite: true, fulfil: fulfil);
+          await expectLater(ensure(newSignupsOnly: true), throwsA(anything));
+        }
+        expect(creates, 0);
+      });
+
+      test('but not when they have a role after all, or it only skipped invites', () async {
+        // One of several accepted: they are on a team now. Skipped (they
+        // accept through the link): nothing failed.
+        serve(
+          activeRole: true,
+          ownsFacility: false,
+          pendingInvite: true,
+          fulfil: (_, __) async => false,
+        );
+        expect(await ensure(newSignupsOnly: true), isNull);
         serve(
           activeRole: false,
           ownsFacility: false,
           pendingInvite: true,
-          fulfil: (_, __) async => throw StateError('permission-denied'),
+          fulfil: (_, __) async => true,
         );
         expect(await ensure(newSignupsOnly: true), isNull);
         expect(creates, 0);
@@ -647,7 +673,10 @@ void main() {
           order.add('invite query');
           return FakeCollection([]);
         },
-        fulfillPendingInvites: (_, __) async => order.add('fulfil'),
+        fulfillPendingInvites: (_, __) async {
+          order.add('fulfil');
+          return true;
+        },
       );
       addTearDown(FacilityCreatorAccountService.overrideForTesting);
       await FacilityCreatorAccountService.ensureAccountFor(
@@ -659,6 +688,99 @@ void main() {
       );
       expect(order.first, 'refresh');
       expect(order, containsAllInOrder(['refresh', 'fulfil', 'invite query']));
+    });
+
+    test('so do the screens, which accept no invites first', () async {
+      // Nothing else refreshes on the screens' path: a stale token had the
+      // rules refuse the invite query, and the whole ensure failed.
+      final user = _TokenUser(verified: true, claimVerified: false);
+      final order = <String>[];
+      user.onForcedRefresh = () => order.add('refresh');
+      FacilityCreatorAccountService.overrideForTesting(
+        collection: (name) => FakeCollection([]),
+        collectionGroup: (_) {
+          order.add('invite query');
+          return FakeCollection([]);
+        },
+        fulfillPendingInvites: (_, __) async => fail('the screens accept no invites'),
+      );
+      addTearDown(FacilityCreatorAccountService.overrideForTesting);
+      await FacilityCreatorAccountService.ensureAccountFor(
+        user,
+        readAccount: (_) async => null,
+        create: (_) async => _account('acct_new',
+            status: SubscriptionStatus.pendingApproval, createdAt: DateTime(2026, 9, 23)),
+      );
+      expect(order, ['refresh', 'invite query']);
+    });
+  });
+
+  group("the route guard's ensure with PermissionService's own acceptance", () {
+    // Both services' reads and writes on one fake Firestore: the production
+    // path from the guard's first-load ensure to the invite and role writes.
+    late FakeStore store;
+    final User user = MockUser(uid: 'u1', email: 'Staff@Example.com');
+
+    setUp(() {
+      FacilityCreatorAccountService.resetEnsuredForTesting();
+      store = FakeStore();
+      FacilityCreatorAccountService.overrideForTesting(
+        collection: store.collection,
+        collectionGroup: store.collectionGroup,
+        currentUser: () => user,
+      );
+      PermissionService.overrideForTesting(
+        collection: store.collection,
+        collectionGroup: store.collectionGroup,
+        currentUser: () => user,
+      );
+    });
+    tearDown(() {
+      FacilityCreatorAccountService.overrideForTesting();
+      PermissionService.overrideForTesting();
+    });
+
+    void pendingInvite(String facilityId) =>
+        store.put('facilities/$facilityId/invites/inv_$facilityId', {
+          'facilityId': facilityId,
+          'email': 'staff@example.com',
+          'emailLower': 'staff@example.com',
+          'roleType': 'employee',
+          'status': 'pending',
+          'invitedBy': '$facilityId-owner',
+          'invitedAt': Timestamp.fromDate(DateTime.now().subtract(const Duration(days: 1))),
+        });
+    String? inviteStatus(String facilityId) =>
+        store.data('facilities/$facilityId/invites/inv_$facilityId')?['status'] as String?;
+
+    test('a genuinely new invitee lands on the team, with no account', () async {
+      pendingInvite('keepsake');
+      expect(
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true),
+        isTrue,
+      );
+      expect(inviteStatus('keepsake'), 'accepted');
+      expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
+    });
+
+    test('existing staff and a removed team member are not put on a team without a click',
+        () async {
+      // Every verified user with no account had every pending invite
+      // accepted on their next load, once per session.
+      for (final isActive in [true, false]) {
+        FacilityCreatorAccountService.resetEnsuredForTesting();
+        store.put('user_roles/r1', {
+          'userId': 'u1',
+          'facilityId': 'caprock',
+          'roleType': 'employee',
+          'isActive': isActive,
+        });
+        pendingInvite('keepsake');
+        await FacilityCreatorAccountService.ensureAccountOnce(user, createOnlyForNewSignups: true);
+        expect(inviteStatus('keepsake'), 'pending', reason: 'isActive: $isActive');
+        expect(store.idsIn('user_roles'), ['r1']);
+        expect(store.idsIn('facilityCreatorAccounts'), isEmpty);
+      }
     });
   });
 
@@ -814,7 +936,7 @@ void main() {
         },
         collectionGroup: (_) => FakeCollection([]),
         currentUser: () => user,
-        fulfillPendingInvites: (_, __) async {},
+        fulfillPendingInvites: (_, __) async => true,
       );
       addTearDown(FacilityCreatorAccountService.overrideForTesting);
 
@@ -825,6 +947,51 @@ void main() {
       expect(accounts.writes, isEmpty);
       expect(await FacilityCreatorAccountService.ensureAccountOnce(user), isTrue);
       expect(accounts.writes.single.$3['subscriptionStatus'], 'pendingApproval');
+    });
+
+    test('a new invitee whose invites could not be accepted is retried, not settled', () async {
+      // The production ensure on fakes. Settling left the invitee on an empty
+      // dashboard with no role for the rest of the session.
+      final invites = [
+        FakeDoc('inv_1', {
+          'facilityId': 'keepsake',
+          'emailLower': 'new@example.com',
+          'status': 'pending',
+        }),
+      ];
+      final roles = <FakeDoc>[];
+      var accepting = false;
+      var attempts = 0;
+      FacilityCreatorAccountService.overrideForTesting(
+        collection: (name) => switch (name) {
+          'facilityCreatorAccounts' => FakeCollection([]),
+          'user_roles' => FakeCollection(roles),
+          'facilities' => FakeCollection([]),
+          _ => throw StateError('unexpected collection $name'),
+        },
+        collectionGroup: (_) => FakeCollection(invites),
+        currentUser: () => user,
+        fulfillPendingInvites: (u, emailLower) async {
+          attempts += 1;
+          if (!accepting) return false;
+          invites.single.data()['status'] = 'accepted';
+          roles.add(FakeDoc('role_1', {'userId': u.uid, 'isActive': true, 'facilityId': 'keepsake'}));
+          return true;
+        },
+      );
+      addTearDown(FacilityCreatorAccountService.overrideForTesting);
+
+      final t0 = DateTime(2026, 9, 23, 12);
+      Future<bool> at(Duration after) => FacilityCreatorAccountService.ensureAccountOnce(user,
+          createOnlyForNewSignups: true, clock: () => t0.add(after));
+
+      expect(await at(Duration.zero), isFalse);
+      expect(await at(const Duration(seconds: 30)), isFalse);
+      expect(attempts, 1);
+      accepting = true;
+      expect(await at(FacilityCreatorAccountService.ensureRetryAfter), isTrue);
+      expect(attempts, 2);
+      expect(roles.single.data()['facilityId'], 'keepsake');
     });
 
     test('by default it runs the real ensure (which fails here, with no Firebase) without throwing',

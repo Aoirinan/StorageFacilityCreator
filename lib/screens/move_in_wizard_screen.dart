@@ -73,15 +73,22 @@ class MoveInWizardServices {
 /// is nothing to pop" after the move-in had written the contract, charges and
 /// payment; the wizard reported that as a failed move-in and invited a retry
 /// that duplicated them.
+///
+/// [notice] (the tenant's new rent when the unit was added to others they
+/// rent) is shown with the success message, and for longer.
 void leaveAfterMoveIn(
   BuildContext context, {
   required String facilityId,
   String? tenantId,
+  String? notice,
 }) {
   ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text('Move-in completed successfully!'),
+    SnackBar(
+      content: Text(notice == null
+          ? 'Move-in completed successfully!'
+          : 'Move-in completed. $notice'),
       backgroundColor: AppTheme.success,
+      duration: Duration(seconds: notice == null ? 4 : 10),
     ),
   );
   popOrGo(
@@ -480,6 +487,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
       context,
       facilityId: widget.facilityId,
       tenantId: completed.tenantId ?? _selectedTenant?.id,
+      notice: completed.notice,
     );
   }
 

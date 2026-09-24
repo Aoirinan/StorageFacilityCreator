@@ -77,6 +77,12 @@ class AuditService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  /// When set, [logEvent] hands each entry here instead of writing it, with
+  /// the actor left blank. Tests have no Firebase app, so without this every
+  /// logEvent call is silently dropped and cannot be checked.
+  @visibleForTesting
+  static void Function(AuditLogEntry entry)? recordForTesting;
+
   /// Standardized audit log method - all other methods should use this
   static Future<void> logEvent({
     required String facilityId,
@@ -91,6 +97,23 @@ class AuditService {
     String? ipAddress,
     String? userAgent,
   }) async {
+    final record = recordForTesting;
+    if (record != null) {
+      record(AuditLogEntry(
+        eventType: eventType,
+        actorUid: '',
+        actorRole: actorRole,
+        targetType: targetType,
+        targetId: targetId,
+        facilityId: facilityId,
+        tenantId: tenantId,
+        before: before,
+        after: after,
+        timestamp: DateTime.now(),
+        metadata: metadata,
+      ));
+      return;
+    }
     try {
       final user = _auth.currentUser;
       if (user == null) return;

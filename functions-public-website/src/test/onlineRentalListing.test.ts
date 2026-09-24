@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
+import { computePublicMoveInCharges } from '../moveInCharges';
 import { InMemoryFirestore, installInMemoryFirestore } from './support/inMemoryFirestore';
 
 const testEnv = firebaseFunctionsTest({ projectId: 'in-memory-test' });
@@ -28,11 +29,26 @@ const NOT_AVAILABLE = 'Unit is not currently available';
 const NOT_OFFERED: Array<[string, Record<string, unknown>]> = [
   ['not listed on the public website', { publicListingEnabled: false }],
   ['kept for internal use', { internalUse: true }],
+  // An office whose listing switch was left on is still internal use.
+  ['kept for internal use with its listing on', { internalUse: true, publicListingEnabled: true }],
   ['archived', { archived: true }],
 ];
 
-function loadPublicMoveIn(inMemory: InMemoryFirestore) {
+/** Loads publicMoveIn against [inMemory], with Stripe reporting [amountReceived] paid. */
+function loadPublicMoveIn(inMemory: InMemoryFirestore, amountReceived = 0) {
   installInMemoryFirestore(inMemory);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const shared = require('@sfc/functions-shared') as typeof import('@sfc/functions-shared');
+  Object.defineProperty(shared, 'getStripeClient', {
+    configurable: true,
+    writable: true,
+    value: () =>
+      ({
+        paymentIntents: {
+          retrieve: async (id: string) => ({ id, amount_received: amountReceived, status: 'succeeded' }),
+        },
+      }) as unknown as ReturnType<typeof shared.getStripeClient>,
+  });
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const moveIn = require('../publicMoveIn') as typeof import('../publicMoveIn');
   return {
@@ -205,8 +221,121 @@ for (const [why, fields] of NOT_OFFERED) {
     assert.equal(inMemory.read(UNIT_PATH)?.status, 'available');
     assert.equal(inMemory.read(UNIT_PATH)?.tenantId, undefined);
     assert.equal(inMemory.read(`publicReservations/${RESERVATION}`)?.status, 'pending');
+    // Nothing was paid, so there is nothing to tell the owner.
+    assert.equal(inMemory.listCollection(`facilities/${FACILITY}/Notifications`).length, 0);
   });
 }
+
+test('a unit type the owner has not opened to online rental cannot be held, and nothing is written', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacility(inMemory, { publicRentalsEnabled: true, enabledPublicUnitTypes: ['climateControlled'] });
+  seedUnit(inMemory, { unitType: 'standard' });
+  const { hold } = loadPublicMoveIn(inMemory);
+
+  // Before: the public map showed it as not rentable, but a direct call
+  // held it.
+  await assert.rejects(() => hold(holdRequest), refusedWith(NOT_AVAILABLE));
+
+  assertNothingHeld(inMemory);
+});
+
+test('a unit type the owner opened to online rental can be held', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedFacility(inMemory, { publicRentalsEnabled: true, enabledPublicUnitTypes: [' standard '] });
+  seedUnit(inMemory, { unitType: 'standard' });
+  const { hold } = loadPublicMoveIn(inMemory);
+
+  const result = (await hold(holdRequest)) as { success?: boolean };
+
+  assert.equal(result.success, true);
+});
+
+/**
+ * Stripe Connect is set up, so this move-in was paid through Checkout.
+ * Returns what Checkout charged: the server's own quote for the unit.
+ */
+function seedPaidMoveIn(inMemory: InMemoryFirestore, unitFields: Record<string, unknown>): number {
+  const facilityData = {
+    name: 'Listing Storage',
+    stripeConnectAccountId: 'acct_listing',
+    stripeConnectOnboardingComplete: true,
+  };
+  inMemory.seed(`facilities/${FACILITY}`, facilityData);
+  seedUnit(inMemory, unitFields);
+  seedReservation(inMemory);
+  const reservation = inMemory.read(`publicReservations/${RESERVATION}`) as Record<string, any>;
+  const quote = computePublicMoveInCharges({
+    reservation,
+    unitData: inMemory.read(UNIT_PATH) as Record<string, any>,
+    facilityData,
+    publicSettings: {},
+    moveInDate: (reservation.moveInDate as Timestamp).toDate(),
+  });
+  assert.ok(quote.totalCents > 0);
+  return quote.totalCents;
+}
+
+const paidCompleteRequest = { ...completeRequest, skipPayment: false, paymentIntentId: 'pi_listing' };
+
+for (const [why, fields, reason] of [
+  ['not listed on the public website', { publicListingEnabled: false }, 'unlisted'],
+  ['kept for internal use', { internalUse: true }, 'internal-use'],
+  ['archived', { archived: true }, 'archived'],
+] as Array<[string, Record<string, unknown>, string]>) {
+  test(`a renter who has paid moves into a unit ${why} since the hold, and the owner is told`, async () => {
+    const inMemory = new InMemoryFirestore();
+    const paidCents = seedPaidMoveIn(inMemory, fields);
+    const { complete } = loadPublicMoveIn(inMemory, paidCents);
+
+    const result = (await complete(paidCompleteRequest)) as { success?: boolean; tenantId?: string };
+
+    // Before: refused after Checkout had charged, with no tenancy, no
+    // refund and nothing said to the owner.
+    assert.equal(result.success, true);
+    assert.equal(inMemory.read(UNIT_PATH)?.status, 'occupied');
+    assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+    assert.equal(inMemory.read(`publicReservations/${RESERVATION}`)?.status, 'completed');
+    // The payment is spent on this move-in, as for any other.
+    assert.equal(inMemory.read('publicMoveInPayments/pi_listing')?.reservationId, RESERVATION);
+
+    const alerts = inMemory.listCollection(`facilities/${FACILITY}/Notifications`);
+    assert.equal(alerts.length, 1);
+    const alert = inMemory.read(alerts[0]) as Record<string, any>;
+    // The type the app's alert banner shows.
+    assert.equal(alert.type, 'ONLINE_MOVE_IN_REVIEW');
+    assert.equal(alert.tenantId, result.tenantId);
+    assert.equal(alert.tenantName, 'Rita Renter');
+    assert.equal(alert.readAt, null);
+    assert.match(String(alert.message), /unit L1/);
+    assert.equal(alert.metadata.reason, reason);
+    assert.equal(alert.metadata.unitId, UNIT);
+    assert.equal(alert.metadata.reservationId, RESERVATION);
+    assert.equal(alert.metadata.paymentIntentId, 'pi_listing');
+  });
+}
+
+test('a paid move-in into a unit still offered online sends the owner no alert', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidMoveIn(inMemory, {});
+  const { complete } = loadPublicMoveIn(inMemory, paidCents);
+
+  const result = (await complete(paidCompleteRequest)) as { success?: boolean };
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.listCollection(`facilities/${FACILITY}/Notifications`).length, 0);
+});
+
+test('an underpaid move-in into a unit no longer offered is still refused on the payment', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidMoveIn(inMemory, { internalUse: true });
+  // Checkout took less than the quote: this is not a paid renter.
+  const { complete } = loadPublicMoveIn(inMemory, paidCents - 1);
+
+  await assert.rejects(() => complete(paidCompleteRequest), refusedWith('Payment not completed or amount mismatch'));
+
+  assert.equal(inMemory.listCollection(`facilities/${FACILITY}/tenants`).length, 0);
+  assert.equal(inMemory.listCollection(`facilities/${FACILITY}/Notifications`).length, 0);
+});
 
 test.after(() => {
   testEnv.cleanup();

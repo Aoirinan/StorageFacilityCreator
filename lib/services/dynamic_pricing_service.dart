@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/pricing_rule_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 
 /// Service for dynamic pricing calculations and recommendations
@@ -96,59 +97,76 @@ class DynamicPricingService {
       final units = await UnitService.getUnitsForFacility(facilityId);
       final rules = await getPricingRules(facilityId);
 
-      // Calculate occupancy rate
-      final totalUnits = units.length;
-      final occupiedUnits = units.where((u) => u.status == UnitStatus.occupied).length;
-      final occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0.0;
-
-      final recommendations = <PricingRecommendation>[];
-
-      for (final unit in units) {
-        // Only recommend for available units
-        if (unit.status != UnitStatus.available) continue;
-
-        double adjustedPrice = unit.monthlyRate;
-        final appliedRules = <String>[];
-        final reasons = <String>[];
-
-        // Apply each applicable rule
-        for (final rule in rules) {
-          if (_ruleAppliesToUnit(rule, unit, occupancyRate)) {
-            adjustedPrice = rule.calculateAdjustedPrice(adjustedPrice);
-            appliedRules.add(rule.name);
-
-            // Build reason
-            reasons.add('${rule.name}: ${rule.adjustmentDescription}');
-          }
-        }
-
-        final adjustmentAmount = adjustedPrice - unit.monthlyRate;
-        final adjustmentPercentage = unit.monthlyRate > 0
-            ? (adjustmentAmount / unit.monthlyRate) * 100
-            : 0.0;
-
-        // Only create recommendation if price would change
-        if (adjustmentAmount.abs() > 0.01) {
-          recommendations.add(PricingRecommendation(
-            unitId: unit.id,
-            unitNumber: unit.unitNumber,
-            currentPrice: unit.monthlyRate,
-            recommendedPrice: adjustedPrice,
-            adjustmentAmount: adjustmentAmount,
-            adjustmentPercentage: adjustmentPercentage,
-            appliedRules: appliedRules,
-            reason: reasons.join(', '),
-          ));
-        }
-      }
-
-      return recommendations;
+      return recommendationsFor(allUnits: units, rules: rules);
     } catch (e) {
       if (kDebugMode) {
         print('❌ [DynamicPricing] Error calculating recommendations: $e');
       }
       return [];
     }
+  }
+
+  /// Pricing recommendations for a facility's non-archived [allUnits].
+  ///
+  /// Internal-use space (office, residence) is left out of the occupancy
+  /// rate and gets no recommendation, by the same test as the dashboard
+  /// ([FacilityStatsService.countsTowardOccupancy]). It was counted, so an
+  /// occupancy-based rule saw a different rate from the one the dashboard
+  /// shows, and a vacant office was offered a new price.
+  static List<PricingRecommendation> recommendationsFor({
+    required List<UnitModel> allUnits,
+    required List<PricingRule> rules,
+  }) {
+    final units =
+        allUnits.where(FacilityStatsService.countsTowardOccupancy).toList();
+
+    // Calculate occupancy rate
+    final totalUnits = units.length;
+    final occupiedUnits = units.where((u) => u.status == UnitStatus.occupied).length;
+    final occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0.0;
+
+    final recommendations = <PricingRecommendation>[];
+
+    for (final unit in units) {
+      // Only recommend for available units
+      if (unit.status != UnitStatus.available) continue;
+
+      double adjustedPrice = unit.monthlyRate;
+      final appliedRules = <String>[];
+      final reasons = <String>[];
+
+      // Apply each applicable rule
+      for (final rule in rules) {
+        if (_ruleAppliesToUnit(rule, unit, occupancyRate)) {
+          adjustedPrice = rule.calculateAdjustedPrice(adjustedPrice);
+          appliedRules.add(rule.name);
+
+          // Build reason
+          reasons.add('${rule.name}: ${rule.adjustmentDescription}');
+        }
+      }
+
+      final adjustmentAmount = adjustedPrice - unit.monthlyRate;
+      final adjustmentPercentage = unit.monthlyRate > 0
+          ? (adjustmentAmount / unit.monthlyRate) * 100
+          : 0.0;
+
+      // Only create recommendation if price would change
+      if (adjustmentAmount.abs() > 0.01) {
+        recommendations.add(PricingRecommendation(
+          unitId: unit.id,
+          unitNumber: unit.unitNumber,
+          currentPrice: unit.monthlyRate,
+          recommendedPrice: adjustedPrice,
+          adjustmentAmount: adjustmentAmount,
+          adjustmentPercentage: adjustmentPercentage,
+          appliedRules: appliedRules,
+          reason: reasons.join(', '),
+        ));
+      }
+    }
+
+    return recommendations;
   }
 
   /// Check if a rule applies to a unit

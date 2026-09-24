@@ -130,6 +130,7 @@ class _NotificationTile extends StatelessWidget {
       case FacilityNotificationType.autopayRequested:
         return AppTheme.warning;
       case FacilityNotificationType.stripeActionRequired:
+      case FacilityNotificationType.onlineMoveInReview:
         return AppTheme.warning;
     }
   }
@@ -143,6 +144,7 @@ class _NotificationTile extends StatelessWidget {
       case FacilityNotificationType.autopayRequested:
         return Icons.schedule;
       case FacilityNotificationType.stripeActionRequired:
+      case FacilityNotificationType.onlineMoveInReview:
         return Icons.warning;
     }
   }

@@ -19,25 +19,39 @@ class CallableFailureException implements Exception {
 /// [unreachable] are specific to the action. Other codes carry our own
 /// callables' messages, which are written for owners; a bare code
 /// ("INTERNAL") gets a generic line instead.
+///
+/// Codes and bare messages are matched whatever their case: on the web a
+/// dropped connection (HTTP status 0) comes back from the Firebase JS SDK
+/// as code 'internal' with the message 'internal', which the old
+/// case-sensitive check showed as "Error deleting facility: internal".
+/// A bare internal error is worded like [unreachable]: the call may have
+/// reached the server and finished, so the person refreshes to check
+/// rather than retrying blind (a facility delete runs for minutes).
 CallableFailureException callableFailure(
   FirebaseFunctionsException error, {
   required String permissionDenied,
   required String notFound,
   required String unreachable,
 }) {
+  final code = error.code
+      .trim()
+      .toLowerCase()
+      .replaceFirst('functions/', '')
+      .replaceAll('_', '-');
   final text = (error.message ?? '').trim();
-  final bareCode = text.isEmpty ||
-      text == error.code.toUpperCase().replaceAll('-', '_');
-  final message = switch (error.code) {
+  final normalizedText = text.toLowerCase().replaceAll('_', '-');
+  final bareCode = text.isEmpty || normalizedText == code;
+  final message = switch (code) {
     'permission-denied' => permissionDenied,
     'not-found' => notFound,
     'unauthenticated' =>
       'Your sign-in has expired. Sign in again, then try again.',
     // The call may have reached the server and finished.
     'unavailable' || 'deadline-exceeded' => unreachable,
+    'internal' when bareCode => unreachable,
     _ when !bareCode => text,
     _ => 'Something went wrong on our side. Try again, and contact support '
         'if it keeps happening.',
   };
-  return CallableFailureException(message, code: error.code);
+  return CallableFailureException(message, code: code);
 }

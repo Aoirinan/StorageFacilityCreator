@@ -759,7 +759,9 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       // Assign tenant to unit
       setState(() => _isLoading = true);
       
-      await UnitService.assignTenantToUnit(
+      // Adds the unit's rate to the tenant's rent too; the notice says what
+      // it is now, or asks the owner to check it.
+      final notice = await UnitService.assignTenantToUnit(
         facilityId: widget.facilityId,
         unitId: widget.unitId,
         tenantId: tenant.id,
@@ -767,17 +769,17 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         moveInDate: DateTime.now(),
       );
 
-      // Log assignment (using DNR action for now - can be enhanced later)
-      // Note: A generic logEvent method could be added to AuditService if needed
-
       // Refresh unit data
       await _loadUnit();
 
       if (mounted) {
+        ref.invalidate(facilityTenantsProvider(widget.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tenant.name} assigned to Unit ${_unit!.unitNumber}'),
+            content: Text('${tenant.name} assigned to Unit ${_unit!.unitNumber}'
+                '${notice == null ? '' : '. $notice'}'),
             backgroundColor: AppTheme.success,
+            duration: Duration(seconds: notice == null ? 4 : 10),
           ),
         );
       }
@@ -819,7 +821,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
     if (confirmed == true && _unit!.tenantId != null) {
       try {
-        await UnitService.removeTenantFromUnit(
+        final notice = await UnitService.removeTenantFromUnit(
           facilityId: widget.facilityId,
           unitId: widget.unitId,
           moveOutDate: DateTime.now(),
@@ -828,10 +830,14 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         if (mounted) {
           ref.invalidate(facilityUnitsProvider(widget.facilityId));
           ref.invalidate(facilityTenantsProvider(widget.facilityId));
+          // The tenant's new rent, or a request to check it.
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Tenant unassigned successfully'),
+            SnackBar(
+              content: Text(notice == null
+                  ? 'Tenant unassigned successfully'
+                  : 'Tenant unassigned. $notice'),
               backgroundColor: AppTheme.success,
+              duration: Duration(seconds: notice == null ? 4 : 10),
             ),
           );
           unawaited(_loadUnit());

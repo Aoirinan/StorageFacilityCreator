@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,13 +9,42 @@ import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+/// What [SubscriptionGuardService.shellLock] answers.
+typedef ShellLockAnswer = ({
+  FacilityCreatorAccountModel? account,
+  bool? locked,
+  String? message,
+});
 
 /// Global overlay that disables all features when trial expired or no active subscription
 /// Blocks all user interactions until subscription is active
 class SubscriptionLockOverlay extends StatefulWidget {
   final Widget child;
 
-  const SubscriptionLockOverlay({super.key, required this.child});
+  /// The signed-in user, the lock's answer for a uid and what "Contact
+  /// support" does: Firebase Auth, [SubscriptionGuardService.shellLock] and
+  /// an email to [supportEmail], unless a test passes its own.
+  final User? Function()? currentUser;
+  final Future<ShellLockAnswer> Function(String uid)? shellLock;
+  final Future<void> Function()? contactSupport;
+
+  const SubscriptionLockOverlay({
+    super.key,
+    required this.child,
+    this.currentUser,
+    this.shellLock,
+    this.contactSupport,
+  });
+
+  static const String supportEmail = 'support@storagefacilitycreator.com';
+
+  /// Whether the lock is a suspension. Paying does not lift one, so the
+  /// overlay offers support instead of Subscribe and Manage Subscription.
+  /// (An exempt account is never locked, suspended or not.)
+  @visibleForTesting
+  static bool isSuspension(FacilityCreatorAccountModel? account) => account?.suspended == true;
 
   /// What the lock says: [accessMessage], the reason the access rule gave
   /// ([SubscriptionGuardService.shellLock]), whenever there is one. It used to
@@ -55,6 +86,9 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
   String? _lockMessage;
   bool _isLoading = true;
   bool _isLocked = false;
+  Timer? _poll;
+
+  User? _signedInUser() => (widget.currentUser ?? () => FirebaseAuth.instance.currentUser)();
 
   @override
   void initState() {
@@ -66,17 +100,30 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
     _listenToAccount();
   }
 
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
   void _listenToAccount() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      // Poll for account updates every 10 seconds
-      Future.delayed(const Duration(seconds: 10), () {
-        if (mounted) {
-          _checkSubscription();
-          _listenToAccount();
-        }
+    if (_signedInUser() != null) {
+      // Poll for account updates every 10 seconds. A periodic timer that
+      // dispose cancels, rather than a chain of delayed futures left pending.
+      _poll = Timer.periodic(const Duration(seconds: 10), (_) {
+        if (mounted) _checkSubscription();
       });
     }
+  }
+
+  Future<void> _contactSupport() async {
+    final contact = widget.contactSupport;
+    if (contact != null) return contact();
+    await launchUrl(Uri(
+      scheme: 'mailto',
+      path: SubscriptionLockOverlay.supportEmail,
+      query: 'subject=${Uri.encodeComponent('Suspended account')}',
+    ));
   }
 
   Future<void> _checkSubscription() async {
@@ -84,8 +131,8 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
       print('🔒 [SubscriptionLock] _checkSubscription() called');
     }
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      
+      final user = _signedInUser();
+
       if (user == null) {
         if (mounted) {
           setState(() {
@@ -114,7 +161,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
       // own) and a cancelled account still inside its paid period are let
       // in, and were locked out here. Pending approval is handled by its own
       // route guard/screen, not this overlay.
-      final lock = await SubscriptionGuardService.shellLock(user.uid);
+      final lock = await (widget.shellLock ?? SubscriptionGuardService.shellLock)(user.uid);
 
       if (mounted) {
         final locked = lock.locked;
@@ -182,6 +229,8 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
       return widget.child; // No lock needed
     }
 
+    final suspended = SubscriptionLockOverlay.isSuspension(_account);
+
     // CRITICAL: Show blocking overlay - MUST block ALL interactions
     // Use Material to ensure proper z-index and blocking
     return Material(
@@ -218,7 +267,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          'Subscription Required',
+                          suspended ? 'Account Suspended' : 'Subscription Required',
                           style: TextStyle(
                             fontSize: 24,
                             fontWeight: FontWeight.bold,
@@ -235,24 +284,40 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
                           ),
                         ),
                         const SizedBox(height: 32),
-                        FilledButton.icon(
-                          onPressed: () => context.go(AppRoute.subscription),
-                          icon: const Icon(Icons.payment, size: 20),
-                          label: const Text('Subscribe your facility (\$75/mo)'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: AppTheme.error,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            minimumSize: const Size(200, 48),
+                        // Paying does not lift a suspension, so a suspended
+                        // account is pointed at support, not at billing.
+                        if (suspended) ...[
+                          FilledButton.icon(
+                            onPressed: _contactSupport,
+                            icon: const Icon(Icons.mail_outline, size: 20),
+                            label: const Text('Contact support'),
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              minimumSize: const Size(200, 48),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 16),
-                        TextButton(
-                          onPressed: () {
-                            context.go(AppRoute.subscription);
-                          },
-                          child: const Text('Manage Subscription'),
-                        ),
+                          const SizedBox(height: 16),
+                          const SelectableText(SubscriptionLockOverlay.supportEmail),
+                        ] else ...[
+                          FilledButton.icon(
+                            onPressed: () => context.go(AppRoute.subscription),
+                            icon: const Icon(Icons.payment, size: 20),
+                            label: const Text('Subscribe your facility (\$75/mo)'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppTheme.error,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              minimumSize: const Size(200, 48),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextButton(
+                            onPressed: () {
+                              context.go(AppRoute.subscription);
+                            },
+                            child: const Text('Manage Subscription'),
+                          ),
+                        ],
                       ],
                     ),
                   ),

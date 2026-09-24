@@ -707,7 +707,7 @@ void main() {
 
     /// Accepts [user]'s pending invites the way PermissionService does: an
     /// active role row, and the invite marked accepted.
-    Future<void> acceptInvites(User user, String emailLower) async {
+    Future<bool> acceptInvites(User user, String emailLower) async {
       for (final invite in invites) {
         final data = invite.data();
         if (data['emailLower'] != emailLower || data['status'] != 'pending') continue;
@@ -719,9 +719,10 @@ void main() {
           'isActive': true,
         }));
       }
+      return true;
     }
 
-    void serve(User user, {Future<void> Function(User user, String emailLower)? fulfil}) {
+    void serve(User user, {Future<bool> Function(User user, String emailLower)? fulfil}) {
       FacilityCreatorAccountService.overrideForTesting(
         collection: (name) => switch (name) {
           'facilityCreatorAccounts' => FakeCollection(accountDocs, log: accountWrites),

@@ -43,9 +43,11 @@ export class FacilityBillingNotStoppedError extends Error {
 /**
  * Stops the facility's billing, then deletes its public map entry (when it
  * points here), takes it off its creator account (and realigns that
- * account's legacy subscription), removes its Storage files best effort,
- * and finally its whole Firestore subtree. [accountId] is the creator
- * account to take it off, or null.
+ * account's legacy subscription), deletes the top-level rows keyed by it
+ * (roles, public reservations and payment links, domain claims), removes
+ * its Storage files and exports best effort, and finally its whole
+ * Firestore subtree. [accountId] is the creator account to take it off, or
+ * null.
  */
 export async function purgeFacility(
   db: admin.firestore.Firestore,
@@ -103,9 +105,53 @@ export async function purgeFacility(
     }
   }
 
+  // Before the subtree, so a failure here leaves the facility doc for a
+  // retry to find.
+  await deleteFacilityKeyedRecords(db, facilityId);
+
   await deps.deleteStoragePrefix(`facilities/${facilityId}/`);
+  // Tenant, payment and audit-log CSV exports. The daily cleanup finds them
+  // through facilities/{id}/exportJobs, which the recursiveDelete below
+  // removes, so anything left here would stay in the bucket for good.
+  await deps.deleteStoragePrefix(`exports/${facilityId}/`);
   await db.recursiveDelete(facilityRef);
   return { subscriptionOutcomes };
+}
+
+/**
+ * Top-level collections whose rows each name one facility in `facilityId`:
+ * a staff role at it, a public reservation or payment link for it, a
+ * custom domain it claimed. Outside the facility's subtree, so the
+ * recursiveDelete missed them: roles kept pointing former staff at a
+ * facility that no longer existed, payment links kept tenants' names and
+ * amounts, and a claimed hostname could never be claimed again.
+ */
+export const FACILITY_KEYED_COLLECTIONS = [
+  'user_roles',
+  'publicReservations',
+  'publicPaymentLinks',
+  'customDomainClaims',
+] as const;
+
+/** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */
+export async function deleteFacilityKeyedRecords(
+  db: admin.firestore.Firestore,
+  facilityId: string,
+): Promise<Record<string, number>> {
+  const deleted: Record<string, number> = {};
+  for (const collection of FACILITY_KEYED_COLLECTIONS) {
+    deleted[collection] = 0;
+    // A page at a time: deleted rows drop out of the next query.
+    for (;;) {
+      const page = await db.collection(collection).where('facilityId', '==', facilityId).limit(400).get();
+      if (page.empty) break;
+      const batch = db.batch();
+      for (const doc of page.docs) batch.delete(doc.ref);
+      await batch.commit();
+      deleted[collection] += page.size;
+    }
+  }
+  return deleted;
 }
 
 /**

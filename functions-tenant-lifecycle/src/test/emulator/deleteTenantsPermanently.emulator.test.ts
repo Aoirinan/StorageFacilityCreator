@@ -146,6 +146,45 @@ test('a clean selection: units freed, gate code off, tenants gone, audited, in o
   assert.deepEqual((bulk[0].metadata as Record<string, unknown>).tenantIds, ['clean', 'occupant']);
 });
 
+/** Every doc under [path] that exists, the doc itself included. */
+async function docsUnder(path: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (doc: FirebaseFirestore.DocumentReference) => {
+    if ((await doc.get()).exists) out.push(doc.path);
+    for (const col of await doc.listCollections()) {
+      for (const d of await col.listDocuments()) await walk(d);
+    }
+  };
+  await walk(emulatorDb().doc(path));
+  return out.sort();
+}
+
+test("a deleted tenant's own subcollections go with it; a refused one's stay", { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  // What a tenant with no history can still have under its doc: a switched-off
+  // card, billing/default, insurance, contact logs, a failed card payment.
+  const clean = fac().collection('tenants').doc('clean');
+  await clean.collection('paymentMethods').doc('pm1').set({ isActive: false, last4: '4242' });
+  await clean.collection('billing').doc('default').set({ autopayEnabled: false, stripeCustomerId: 'cus_1' });
+  await clean.collection('insurance').doc('i1').set({ provider: 'Acme' });
+  await clean.collection('contactLogs').doc('c1').set({ type: 'call' });
+  await clean.collection('payments').doc('p1').set({ status: 'failed' });
+  await clean.collection('contactLogs').doc('c1').collection('attachments').doc('a1').set({ name: 'note' });
+
+  assert.equal((await call(['clean'])).status, 'deleted');
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}/tenants/clean`), []);
+  // A refusal writes nothing, so the autopay tenant's card stays.
+  assert.equal((await call(['autopay'])).status, 'refused');
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}/tenants/autopay`), [
+    `facilities/${FACILITY}/tenants/autopay`,
+    `facilities/${FACILITY}/tenants/autopay/paymentMethods/pm1`,
+  ]);
+  // Deleting the same id again finds nothing to refuse and clears anything left.
+  await clean.collection('insurance').doc('late').set({ provider: 'Late write' });
+  assert.equal((await call(['clean'])).status, 'deleted');
+  assert.deepEqual(await docsUnder(`facilities/${FACILITY}/tenants/clean`), []);
+});
+
 test('a super admin (the claim) with no role at the facility can delete', { skip: skipWithoutEmulator }, async () => {
   await seed();
   await fac().update({ platformSubscriptionStatus: 'past_due' });

@@ -1,3 +1,4 @@
+import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import {
@@ -33,14 +34,23 @@ export async function handleSubscriptionUpdate(subscription: Stripe.Subscription
   }
 
   if (facilityId && tenantId) {
-    const billingRef = admin
+    const tenantRef = admin
       .firestore()
       .collection('facilities')
       .doc(facilityId)
       .collection('tenants')
-      .doc(tenantId)
-      .collection('billing')
-      .doc('default');
+      .doc(tenantId);
+    // A merge write under a deleted tenant (or facility) recreated a billing
+    // doc that nothing in the app could reach.
+    if (!(await tenantRef.get()).exists) {
+      functions.logger.info('Autopay subscription event for a deleted tenant; nothing to update', {
+        facilityId,
+        tenantId,
+        subscriptionId: subscription.id,
+      });
+      return;
+    }
+    const billingRef = tenantRef.collection('billing').doc('default');
     const periodEnd = subPeriodEnd(subscription);
     const nextDue = periodEnd ? admin.firestore.Timestamp.fromDate(new Date(periodEnd * 1000)) : null;
     await billingRef.set(

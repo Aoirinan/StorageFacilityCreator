@@ -51,6 +51,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     'tenant.deleted',
     'tenant.bulkDeleted',
     'unit.statusChanged',
+    'unit.internalUseChanged',
     'unit.deleted',
     'payment.created',
     'payment.charged',

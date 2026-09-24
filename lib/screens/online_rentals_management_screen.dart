@@ -19,6 +19,7 @@ import '../services/facility_service.dart';
 import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/renter_account_message.dart';
+import 'package:sfcapp/utils/save_then_publish.dart';
 
 class OnlineRentalsManagementScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -231,45 +232,49 @@ class _OnlineRentalsManagementScreenState
       _error = null;
     });
     try {
-      await FacilityPublicService.updatePublicSettings(
-        facilityId: widget.facilityId,
-        enabled: true,
-        publicRentalsEnabled: _publicRentalsEnabled,
-        publicPricingEnabled: _publicPricingEnabled,
-        publicUnitNumbersEnabled: _publicUnitNumbersEnabled,
-        allowAutoAssign: _allowAutoAssign,
-        allowUnitSelection: _allowUnitSelection,
-        showAvailabilityCount: _showAvailabilityCount,
-        hideUnavailableTypes: _hideUnavailableTypes,
-        chargeNextMonthAfterMidMonthMoveIn: _chargeNextMonthAfterMidMonthMoveIn,
-        chargeInsuranceAtMoveIn: _chargeInsuranceAtMoveIn,
-        publicInsuranceAmount: insuranceAmount > 0 ? insuranceAmount : null,
-        chargeSecurityDepositAtMoveIn: _chargeSecurityDepositAtMoveIn,
-        publicSecurityDepositAmount:
-            securityDepositAmount > 0 ? securityDepositAmount : null,
-        enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
-        publicRentalSlug: slug,
-        customDomain: customDomain.isEmpty ? null : customDomain,
-        marketingContent: marketingContent.isEmpty ? null : marketingContent,
-        publicLogoUrl: logoUrl.isEmpty ? null : logoUrl,
-        featuredImages: _featuredImages,
-        customStyles: <String, dynamic>{
-          'heroGradientStart': _normalizeHexColor(_heroGradientStartController.text),
-          'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text),
-          'heroTextColor': _normalizeHexColor(_heroTextColorController.text),
-          'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text),
+      await saveThenPublish(
+        save: () => FacilityPublicService.updatePublicSettings(
+          facilityId: widget.facilityId,
+          enabled: true,
+          publicRentalsEnabled: _publicRentalsEnabled,
+          publicPricingEnabled: _publicPricingEnabled,
+          publicUnitNumbersEnabled: _publicUnitNumbersEnabled,
+          allowAutoAssign: _allowAutoAssign,
+          allowUnitSelection: _allowUnitSelection,
+          showAvailabilityCount: _showAvailabilityCount,
+          hideUnavailableTypes: _hideUnavailableTypes,
+          chargeNextMonthAfterMidMonthMoveIn: _chargeNextMonthAfterMidMonthMoveIn,
+          chargeInsuranceAtMoveIn: _chargeInsuranceAtMoveIn,
+          publicInsuranceAmount: insuranceAmount > 0 ? insuranceAmount : null,
+          chargeSecurityDepositAtMoveIn: _chargeSecurityDepositAtMoveIn,
+          publicSecurityDepositAmount:
+              securityDepositAmount > 0 ? securityDepositAmount : null,
+          enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
+          publicRentalSlug: slug,
+          customDomain: customDomain.isEmpty ? null : customDomain,
+          marketingContent: marketingContent.isEmpty ? null : marketingContent,
+          publicLogoUrl: logoUrl.isEmpty ? null : logoUrl,
+          featuredImages: _featuredImages,
+          customStyles: <String, dynamic>{
+            'heroGradientStart': _normalizeHexColor(_heroGradientStartController.text),
+            'heroGradientEnd': _normalizeHexColor(_heroGradientEndController.text),
+            'heroTextColor': _normalizeHexColor(_heroTextColorController.text),
+            'ctaButtonColor': _normalizeHexColor(_ctaButtonColorController.text),
+          },
+          unitTypeImageUrls:
+              _unitTypeImageUrls.isEmpty ? null : _unitTypeImageUrls,
+          replaceOnlineMoveInContractTemplate: true,
+          onlineMoveInContractTemplateId: _onlineMoveInContractTemplateId,
+        ),
+        publish: () async {
+          await FacilityMapV2Service.setPublicSlug(
+            facilityId: widget.facilityId,
+            slug: slug,
+          );
+          await FacilityMapV2Service.publishCurrentDraft(
+              facilityId: widget.facilityId);
         },
-        unitTypeImageUrls:
-            _unitTypeImageUrls.isEmpty ? null : _unitTypeImageUrls,
-        replaceOnlineMoveInContractTemplate: true,
-        onlineMoveInContractTemplateId: _onlineMoveInContractTemplateId,
       );
-      await FacilityMapV2Service.setPublicSlug(
-        facilityId: widget.facilityId,
-        slug: slug,
-      );
-      await FacilityMapV2Service.publishCurrentDraft(
-          facilityId: widget.facilityId);
 
       if (!mounted) return;
       setState(() {
@@ -286,7 +291,7 @@ class _OnlineRentalsManagementScreenState
       if (!mounted) return;
       setState(() {
         _isSaving = false;
-        _error = 'Failed to save settings: $e';
+        _error = saveThenPublishErrorText(e, saveFailed: 'Failed to save settings');
       });
     }
   }

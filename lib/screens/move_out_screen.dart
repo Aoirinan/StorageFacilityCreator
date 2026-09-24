@@ -205,10 +205,17 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
             SnackBar(
               content: Text(
                 'Move-out completed successfully${result.refund != null && result.refund! > 0 ? '\nRefund: \$${result.refund!.toStringAsFixed(2)}' : ''}'
+                // The tenant's new rent, or a request to check it.
+                '${result.notice != null ? '\n${result.notice}' : ''}'
                 '${result.warning != null ? '\n${result.warning}' : ''}',
               ),
               backgroundColor: result.warning != null ? AppTheme.warning : AppTheme.success,
-              duration: Duration(seconds: result.warning != null ? 15 : 5),
+              duration: Duration(
+                  seconds: result.warning != null
+                      ? 15
+                      : result.notice != null
+                          ? 10
+                          : 5),
             ),
           );
         }

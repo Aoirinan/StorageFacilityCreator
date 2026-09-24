@@ -12,8 +12,13 @@ import '../services/superadmin_service.dart';
 class InviteResult {
   final bool success;
   final String? errorMessage;
-  
-  InviteResult({required this.success, this.errorMessage});
+
+  /// Whether the invite was saved. False when it was refused (the invitee
+  /// already has access, the caller may not invite) or the write failed; the
+  /// team screen said "Invite created but email failed to send" for those too.
+  final bool inviteSaved;
+
+  InviteResult({required this.success, this.errorMessage, this.inviteSaved = false});
 }
 
 /// Result of sending invite email
@@ -35,6 +40,35 @@ class AssignRoleResult {
 class PermissionService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  // Where this service's collections, collection groups and signed-in user
+  // come from: Firestore and Auth, unless a test points them at fakes so the
+  // service's own queries and writes run.
+  static CollectionReference<Map<String, dynamic>> Function(String path) _collection =
+      _firestoreCollection;
+  static Query<Map<String, dynamic>> Function(String collectionId) _collectionGroup =
+      _firestoreCollectionGroup;
+  static User? Function() _currentUser = _authCurrentUser;
+
+  static CollectionReference<Map<String, dynamic>> _firestoreCollection(String path) =>
+      _firestore.collection(path);
+  static Query<Map<String, dynamic>> _firestoreCollectionGroup(String collectionId) =>
+      _firestore.collectionGroup(collectionId);
+  static User? _authCurrentUser() => _auth.currentUser;
+
+  /// Serves [collection], [collectionGroup] and [currentUser] instead of
+  /// Firestore and Auth; null restores them.
+  @visibleForTesting
+  static void overrideForTesting({
+    CollectionReference<Map<String, dynamic>> Function(String path)? collection,
+    Query<Map<String, dynamic>> Function(String collectionId)? collectionGroup,
+    User? Function()? currentUser,
+  }) {
+    _collection = collection ?? _firestoreCollection;
+    _collectionGroup = collectionGroup ?? _firestoreCollectionGroup;
+    _currentUser = currentUser ?? _authCurrentUser;
+  }
+
   static const String _userRolesCollection = 'user_roles';
   static String get userRolesCollection => _userRolesCollection;
   static const String _permissionsCollection = 'permissions';
@@ -191,7 +225,7 @@ class PermissionService {
   }
 
   static Future<CurrentFacilityRoleSummary?> getCurrentUserRoleSummary(String facilityId) async {
-    final user = _auth.currentUser;
+    final user = _currentUser();
     if (user == null || facilityId.isEmpty) return null;
     final userRole = await _getUserRole(user.uid, facilityId);
     if (userRole == null) {
@@ -212,7 +246,7 @@ class PermissionService {
 
   static Future<Map<String, dynamic>?> getUserProfile(String userId) async {
     try {
-      final doc = await _firestore.collection(_usersCollection).doc(userId).get();
+      final doc = await _collection(_usersCollection).doc(userId).get();
       if (!doc.exists) return null;
       return doc.data();
     } catch (e) {
@@ -256,7 +290,7 @@ class PermissionService {
     String? facilityId,
   }) async {
     try {
-      final currentUser = _auth.currentUser;
+      final currentUser = _currentUser();
       if (currentUser == null) {
         return const PermissionCheck(
           hasPermission: false,
@@ -309,7 +343,7 @@ class PermissionService {
       // (FacilityService.getFacility only returns the facility for the current owner,
       // which would skip managers and cause inconsistent permission results)
       if (facilityId != null) {
-        final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
+        final facilityDoc = await _collection('facilities').doc(facilityId).get();
         if (facilityDoc.exists) {
           final facilityData = facilityDoc.data();
           final ownerUid = facilityData?['ownerUid'] as String?;
@@ -343,8 +377,7 @@ class PermissionService {
 
       if (facilityId == null) {
         // For global permissions, get the highest level role
-        final querySnapshot = await _firestore
-            .collection(_userRolesCollection)
+        final querySnapshot = await _collection(_userRolesCollection)
             .where('userId', isEqualTo: userId)
             .where('isActive', isEqualTo: true)
             .get();
@@ -381,8 +414,7 @@ class PermissionService {
         return highestRole;
       } else {
         // For facility-specific permissions
-        final querySnapshot = await _firestore
-            .collection(_userRolesCollection)
+        final querySnapshot = await _collection(_userRolesCollection)
             .where('userId', isEqualTo: userId)
             .where('facilityId', isEqualTo: facilityId)
             .where('isActive', isEqualTo: true)
@@ -405,7 +437,7 @@ class PermissionService {
         }
 
         // Fall back to facility ownership/managers if no explicit role exists
-        final facilityDoc = await _firestore.collection('facilities').doc(facilityId).get();
+        final facilityDoc = await _collection('facilities').doc(facilityId).get();
         if (!facilityDoc.exists) {
           return null;
         }
@@ -465,7 +497,7 @@ class PermissionService {
   }) async {
     try {
       // Check super admin status
-      final currentUser = _auth.currentUser;
+      final currentUser = _currentUser();
       final isSuperAdmin = currentUser != null && SuperAdminService.isSuperAdmin(currentUser);
       print('🔐 [PermissionService.assignRole] Super admin check: $isSuperAdmin (user: ${currentUser?.email})');
       
@@ -478,7 +510,7 @@ class PermissionService {
       // Always log for debugging
       print('🔄 [PermissionService.assignRole] Assigning role $roleType to user $userId for facility $facilityId');
 
-      final facilityRef = _firestore.collection('facilities').doc(facilityId);
+      final facilityRef = _collection('facilities').doc(facilityId);
 
       // Check if user already has a role for this facility
       final existingRole = await _getUserRole(userId, facilityId);
@@ -500,13 +532,12 @@ class PermissionService {
           if (userEmail != null) 'userEmail': userEmail,
           if (fulfilledInviteId != null) 'inviteId': fulfilledInviteId,
         };
-        await _firestore
-            .collection(_userRolesCollection)
+        await _collection(_userRolesCollection)
             .doc(existingRole.id)
             .set(payload, SetOptions(merge: true));
       } else {
         // Create new role assignment
-        await _firestore.collection(_userRolesCollection).add({
+        await _collection(_userRolesCollection).add({
           'userId': userId,
           'facilityId': facilityId,
           'roleType': roleType.name,
@@ -555,14 +586,23 @@ class PermissionService {
         print('🔄 Removing role from user $userId for facility $facilityId');
       }
 
-      final facilityRef = _firestore.collection('facilities').doc(facilityId);
+      final facilityRef = _collection('facilities').doc(facilityId);
 
-      final querySnapshot = await _firestore
-          .collection(_userRolesCollection)
+      final querySnapshot = await _collection(_userRolesCollection)
           .where('userId', isEqualTo: userId)
           .where('facilityId', isEqualTo: facilityId)
           .where('isActive', isEqualTo: true)
           .get();
+
+      // Their pending invites here go first: one left pending gave a removed
+      // team member their access straight back through its link. If this
+      // fails nothing has been removed yet, so the failure shows and the
+      // owner can try again.
+      await _cancelPendingInvitesOf(
+        userId: userId,
+        facilityId: facilityId,
+        roleDocs: querySnapshot.docs,
+      );
 
       for (final doc in querySnapshot.docs) {
         await doc.reference.set({
@@ -589,11 +629,51 @@ class PermissionService {
     }
   }
 
+  /// Marks cancelled every pending invite at [facilityId] addressed to the
+  /// user [userId]. Invites are keyed by email, so this uses the addresses
+  /// the user is known by there: the email on their role rows ([roleDocs])
+  /// and on any invite they accepted there.
+  static Future<void> _cancelPendingInvitesOf({
+    required String userId,
+    required String facilityId,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> roleDocs,
+  }) async {
+    final invitesRef =
+        _collection('facilities').doc(facilityId).collection(_facilityInvitesCollection);
+    final emails = <String>{
+      for (final doc in roleDocs)
+        if (_normalizedEmail(doc.data()['userEmail']) case final email?) email,
+    };
+    final accepted = await invitesRef.where('acceptedBy', isEqualTo: userId).get();
+    for (final doc in accepted.docs) {
+      if (_normalizedEmail(doc.data()['emailLower']) case final email?) emails.add(email);
+    }
+    final cancelledAt = Timestamp.fromDate(DateTime.now());
+    for (final email in emails) {
+      final pending = await invitesRef
+          .where('emailLower', isEqualTo: email)
+          .where('status', isEqualTo: 'pending')
+          .get();
+      for (final doc in pending.docs) {
+        await doc.reference.update({
+          'status': 'cancelled',
+          'cancelledAt': cancelledAt,
+          'cancelledReason': 'access_removed',
+        });
+      }
+    }
+  }
+
+  static String? _normalizedEmail(Object? raw) {
+    if (raw is! String) return null;
+    final email = raw.trim().toLowerCase();
+    return email.isEmpty ? null : email;
+  }
+
   // Get all users with roles for a facility
   static Future<List<UserRole>> getFacilityUsers(String facilityId) async {
     try {
-      final querySnapshot = await _firestore
-          .collection(_userRolesCollection)
+      final querySnapshot = await _collection(_userRolesCollection)
           .where('facilityId', isEqualTo: facilityId)
           .where('isActive', isEqualTo: true)
           .get();
@@ -623,8 +703,7 @@ class PermissionService {
 
   static Future<List<FacilityInvite>> getFacilityInvites(String facilityId) async {
     try {
-      final snapshot = await _firestore
-          .collection('facilities')
+      final snapshot = await _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection)
           .orderBy('invitedAt', descending: true)
@@ -643,8 +722,7 @@ class PermissionService {
         }
         // Try again without orderBy as fallback
         try {
-          final fallbackSnapshot = await _firestore
-              .collection('facilities')
+          final fallbackSnapshot = await _collection('facilities')
               .doc(facilityId)
               .collection(_facilityInvitesCollection)
               .get();
@@ -678,8 +756,7 @@ class PermissionService {
     required String inviteId,
   }) async {
     try {
-      final doc = await _firestore
-          .collection('facilities')
+      final doc = await _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection)
           .doc(inviteId)
@@ -703,13 +780,12 @@ class PermissionService {
   }) async {
     final normalizedEmail = email.toLowerCase().trim();
     try {
-      final invitesRef = _firestore
-          .collection('facilities')
+      final invitesRef = _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection);
 
       // Allow the facility owner to always invite
-      final currentUser = _auth.currentUser;
+      final currentUser = _currentUser();
       if (currentUser == null) {
         return InviteResult(success: false, errorMessage: 'User not authenticated');
       }
@@ -735,6 +811,20 @@ class PermissionService {
         if (!check.hasPermission) {
           return InviteResult(success: false, errorMessage: 'Insufficient permissions to invite users');
         }
+      }
+
+      // Someone already on the team needs no invite, and one left pending for
+      // them outlived their removal: its link gave the access back.
+      if (await _hasAccessAt(
+        facilityId: facilityId,
+        emailLower: normalizedEmail,
+        inviter: currentUser,
+      )) {
+        return InviteResult(
+          success: false,
+          errorMessage: '$email already has access to this facility. To change '
+              'what they can do, use Change role on the Users tab.',
+        );
       }
 
       // Reuse existing pending invite when possible
@@ -799,6 +889,7 @@ class PermissionService {
       return InviteResult(
         success: emailResult.success,
         errorMessage: emailResult.errorMessage,
+        inviteSaved: true,
       );
     } catch (e) {
       if (kDebugMode) {
@@ -806,6 +897,36 @@ class PermissionService {
       }
       return InviteResult(success: false, errorMessage: 'Error creating invite: $e');
     }
+  }
+
+  /// Whether [emailLower] already has a role at [facilityId]: it is the
+  /// [inviter]'s own address, or an invite to it was accepted there by a user
+  /// who still holds a role (the facility's roles map, which [assignRole] and
+  /// [removeRole] keep, or its legacy managers map, which removeRole leaves).
+  /// Staff join through invites, so that is how an address is tied to a user
+  /// here; the role rows are not readable by every manager who may invite.
+  static Future<bool> _hasAccessAt({
+    required String facilityId,
+    required String emailLower,
+    required User inviter,
+  }) async {
+    if (_normalizedEmail(inviter.email) == emailLower) return true;
+    final facilityRef = _collection('facilities').doc(facilityId);
+    final accepted = await facilityRef
+        .collection(_facilityInvitesCollection)
+        .where('emailLower', isEqualTo: emailLower)
+        .where('status', isEqualTo: 'accepted')
+        .get();
+    final acceptedBy = <String>{
+      for (final doc in accepted.docs)
+        if (doc.data()['acceptedBy'] case final String uid) uid,
+    };
+    if (acceptedBy.isEmpty) return false;
+    final facility = (await facilityRef.get()).data() ?? const <String, dynamic>{};
+    final roles = facility['roles'];
+    final managers = facility['managers'];
+    return acceptedBy.any((uid) =>
+        (roles is Map && roles[uid] != null) || (managers is Map && managers[uid] == true));
   }
 
   static Future<void> cancelFacilityInvite({
@@ -817,8 +938,7 @@ class PermissionService {
         print('🔄 [PermissionService] Cancelling invite: inviteId=$inviteId, facilityId=$facilityId');
       }
       
-      await _firestore
-          .collection('facilities')
+      await _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection)
           .doc(inviteId)
@@ -842,8 +962,7 @@ class PermissionService {
     required String inviteId,
   }) async {
     try {
-      final inviteRef = _firestore
-          .collection('facilities')
+      final inviteRef = _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection)
           .doc(inviteId);
@@ -889,8 +1008,7 @@ class PermissionService {
     String? email,
   }) async {
     try {
-      final inviteRef = _firestore
-          .collection('facilities')
+      final inviteRef = _collection('facilities')
           .doc(facilityId)
           .collection(_facilityInvitesCollection)
           .doc(inviteId);
@@ -969,21 +1087,42 @@ class PermissionService {
     }
   }
 
-  /// Fulfill ALL pending invites for a user (used during signup/login)
-  /// This auto-accepts all pending invites when a user first signs up or logs in
-  static Future<void> fulfillPendingInvitesForUser({
+  /// How long after it was last sent an invite may still be accepted without
+  /// the invitee opening its link ([fulfillPendingInvitesForUser]). An older
+  /// one still works through its link.
+  static const Duration inviteAutoAcceptWindow = Duration(days: 30);
+
+  /// Whether the invite [data] may be accepted without the invitee opening
+  /// its link at [now]: pending, and sent within [inviteAutoAcceptWindow].
+  /// With no send time it may not.
+  @visibleForTesting
+  static bool inviteAutoAcceptable(Map<String, dynamic> data, DateTime now) {
+    if (data['status'] != 'pending') return false;
+    final sent = data['lastSentAt'] ?? data['invitedAt'];
+    if (sent is! Timestamp) return false;
+    return now.difference(sent.toDate()) <= inviteAutoAcceptWindow;
+  }
+
+  /// Accepts the pending invites addressed to [emailLower] without the
+  /// invitee opening a link (on signup, and on the route guard's first load),
+  /// but only for a genuinely new invitee: no role row at any facility,
+  /// active or not, and no facility of their own. Anyone else accepts through
+  /// the invite's link ([fulfillSpecificInvite]). This used to accept every
+  /// pending invite for every verified user with no owner account: existing
+  /// staff were put on teams without a click, and a removed team member whose
+  /// old invite was still pending got their access back.
+  ///
+  /// Only invites [inviteAutoAcceptable] are accepted. Never throws: false
+  /// when a read failed or an invite it should have accepted was not, true
+  /// otherwise (including when there was nothing it should accept).
+  static Future<bool> fulfillPendingInvitesForUser({
     required String userId,
     required String emailLower,
     String? displayName,
     String? email,
   }) async {
     try {
-      if (kDebugMode) {
-        print('🔄 [PermissionService] Fulfilling ALL pending invites for: $emailLower');
-      }
-      
-      final invitesSnapshot = await _firestore
-          .collectionGroup(_facilityInvitesCollection)
+      final invitesSnapshot = await _collectionGroup(_facilityInvitesCollection)
           .where('emailLower', isEqualTo: emailLower)
           .where('status', isEqualTo: 'pending')
           .get();
@@ -991,48 +1130,80 @@ class PermissionService {
       if (kDebugMode) {
         print('📧 [PermissionService] Found ${invitesSnapshot.docs.length} pending invite(s)');
       }
+      if (invitesSnapshot.docs.isEmpty) return true;
 
+      if (!await _isNewInvitee(userId)) {
+        if (kDebugMode) {
+          print('⏭️ [PermissionService] $userId already has a role or facility; '
+              'their invites are accepted through the link');
+        }
+        return true;
+      }
+
+      final now = DateTime.now();
+      var allAccepted = true;
       var anyInviteAccepted = false;
       for (final doc in invitesSnapshot.docs) {
+        final data = doc.data();
+        if (!inviteAutoAcceptable(data, now)) continue;
         final facilityRef = doc.reference.parent.parent;
         if (facilityRef == null) continue;
         final facilityId = facilityRef.id;
-        final data = doc.data();
         final roleTypeName = data['roleType'] as String? ?? RoleType.viewer.name;
         final roleType = roleTypeFromFirestoreString(roleTypeName);
         final invitedBy = data['invitedBy'] as String? ?? 'invite';
 
-        final assigned = await assignRole(
-          userId: userId,
-          facilityId: facilityId,
-          roleType: roleType,
-          assignedBy: invitedBy,
-          userDisplayName: displayName,
-          userEmail: email ?? emailLower,
-          fulfilledInviteId: doc.id,
-        );
-
-        if (assigned.success) {
+        try {
+          final assigned = await assignRole(
+            userId: userId,
+            facilityId: facilityId,
+            roleType: roleType,
+            assignedBy: invitedBy,
+            userDisplayName: displayName,
+            userEmail: email ?? emailLower,
+            fulfilledInviteId: doc.id,
+          );
+          if (!assigned.success) {
+            allAccepted = false;
+            continue;
+          }
           anyInviteAccepted = true;
           await doc.reference.update({
             'status': 'accepted',
             'acceptedAt': Timestamp.fromDate(DateTime.now()),
             'acceptedBy': userId,
           });
-          
+
           if (kDebugMode) {
             print('✅ [PermissionService] Auto-accepted invite for facility: $facilityId');
+          }
+        } catch (e) {
+          allAccepted = false;
+          if (kDebugMode) {
+            print('❌ [PermissionService] Error accepting invite ${doc.id}: $e');
           }
         }
       }
       if (anyInviteAccepted) {
         FacilityService.clearFacilitiesCache();
       }
+      return allAccepted;
     } catch (e) {
       if (kDebugMode) {
         print('❌ [PermissionService] Error fulfilling invites for $emailLower: $e');
       }
+      return false;
     }
+  }
+
+  /// No role row for [userId] at any facility, active or not, and no
+  /// facility of their own.
+  static Future<bool> _isNewInvitee(String userId) async {
+    final results = await Future.wait([
+      _collection(_userRolesCollection).where('userId', isEqualTo: userId).limit(1).get(),
+      _collection('facilities').where('ownerUid', isEqualTo: userId).limit(1).get(),
+    ]);
+    return results.every((snapshot) => snapshot.docs.isEmpty);
   }
 
   static Future<EmailSendResult> _sendInviteEmail({

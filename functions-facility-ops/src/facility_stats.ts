@@ -585,15 +585,37 @@ async function releaseStatsClaim(
 }
 
 /**
- * Consume the dirty flag set by writers that arrived during our recompute.
+ * What a drain does to the claim, besides consuming the dirty flag.
  *
- * When nothing is waiting, the claim ends here, in the same transaction:
- * the holder is about to stop draining. It used to stay live for the rest of
- * the window, so a write landing after this check only marked the facility
- * dirty and nothing recomputed it until the next write or the nightly job
- * (create a tenant, assign a unit 5 s later: the mirror kept the old counts).
- * A writer whose claim transaction runs before this one is seen as dirty and
- * drained; one that runs after it finds no live claim and recomputes itself.
+ * - 'end-when-idle': after a good pass. Nothing waiting means the holder is
+ *   about to stop draining, so the claim ends in the same transaction.
+ * - 'keep': after a failed pass. The holder either retries or releases to
+ *   the backoff (releaseStatsClaim); ending the claim here opened a gap in
+ *   which another writer could claim and start a pass on a failing
+ *   facility, and the release then cut that writer's new claim short.
+ * - 'end': the last pass allowed (STATS_MAX_DRAIN_PASSES). The holder stops
+ *   whatever is waiting, so the claim ends and the next write recomputes;
+ *   it used to stay live, and writes in the rest of the window were only
+ *   marked dirty with nobody left to drain them.
+ */
+export type StatsDrainClaim = 'end-when-idle' | 'keep' | 'end';
+
+/**
+ * An ended claim. Epoch 0, not "now minus the window": that was the
+ * consumer's clock, so a writer whose clock ran d ms behind still saw a live
+ * claim for d ms, and a write in that gap was marked dirty and stranded.
+ */
+const ENDED_STATS_CLAIM_AT_MS = 0;
+
+/**
+ * Consume the dirty flag set by writers that arrived during our recompute,
+ * and end or keep the claim as [claim] says, in the same transaction.
+ *
+ * Ending the claim once nothing is waiting is what stops a write that lands
+ * after the holder's last check from being stranded (create a tenant, assign
+ * a unit 5 s later: the mirror kept the old counts). A writer whose claim
+ * transaction runs before this one is seen as dirty and drained; one that
+ * runs after it finds no live claim and recomputes itself.
  *
  * Bursts still coalesce: while writes keep landing during passes the flag is
  * dirty and the holder keeps draining. If a pass outlived the window and
@@ -603,36 +625,35 @@ async function releaseStatsClaim(
  */
 async function consumeStatsDirtyFlag(
   facilityId: string,
+  claim: StatsDrainClaim,
   db: admin.firestore.Firestore = getFirestore(),
-  nowMs: () => number = Date.now,
 ): Promise<boolean> {
   const ref = db.collection('facilities').doc(facilityId).collection('stats').doc('recompute');
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (!snap.data()?.dirty) {
-      if (snap.exists) {
-        tx.update(ref, {
-          claimedAt: admin.firestore.Timestamp.fromMillis(nowMs() - STATS_COALESCE_WINDOW_MS),
-        });
-      }
-      return false;
-    }
-    tx.set(ref, { dirty: false }, { merge: true });
-    return true;
+    const dirty = Boolean(snap.data()?.dirty);
+    if (!snap.exists) return dirty;
+    const endClaim = claim === 'end' || (claim === 'end-when-idle' && !dirty);
+    const update: Record<string, unknown> = {};
+    if (dirty) update.dirty = false;
+    if (endClaim) update.claimedAt = admin.firestore.Timestamp.fromMillis(ENDED_STATS_CLAIM_AT_MS);
+    if (Object.keys(update).length > 0) tx.update(ref, update);
+    return dirty;
   });
 }
 
 /** Seams for tests; production passes the real Firestore-backed implementations. */
 export interface StatsCoalesceHooks {
   claim: (facilityId: string) => Promise<StatsClaimOutcome>;
-  consumeDirty: (facilityId: string) => Promise<boolean>;
+  consumeDirty: (facilityId: string, claim: StatsDrainClaim) => Promise<boolean>;
   recompute: (facilityId: string) => Promise<void>;
   release: (facilityId: string) => Promise<void>;
 }
 
 const firestoreStatsCoalesceHooks: StatsCoalesceHooks = {
   claim: (facilityId: string) => claimStatsRecompute(facilityId),
-  consumeDirty: (facilityId: string) => consumeStatsDirtyFlag(facilityId),
+  consumeDirty: (facilityId: string, claim: StatsDrainClaim) =>
+    consumeStatsDirtyFlag(facilityId, claim),
   release: (facilityId: string) => releaseStatsClaim(facilityId),
   recompute: async (facilityId: string) => {
     await recomputeAndPersistFacilityStats(facilityId);
@@ -675,12 +696,18 @@ async function recomputeFacilityStatsCoalesced(
       try {
         await hooks.recompute(facilityId);
       } catch (error) {
-        if (retried || !(await hooks.consumeDirty(facilityId))) throw error;
+        // Keep the claim: release() below or the retry decides what happens
+        // to it (see StatsDrainClaim).
+        if (retried || !(await hooks.consumeDirty(facilityId, 'keep'))) throw error;
         retried = true;
         console.warn(`⚠️ Stats pass for ${facilityId} failed with writes waiting; retrying once (${reason}):`, error);
         continue;
       }
-      if (!(await hooks.consumeDirty(facilityId))) break;
+      const lastPass = pass + 1 >= STATS_MAX_DRAIN_PASSES + (retried ? 1 : 0);
+      if (!(await hooks.consumeDirty(facilityId, lastPass ? 'end' : 'end-when-idle'))) break;
+      if (lastPass) {
+        console.warn(`⚠️ Stats for ${facilityId} still had writes waiting after ${pass + 1} passes; the next write recomputes (${reason})`);
+      }
     }
 
     console.log(`✅ Stats updated for facility ${facilityId} (${reason})`);

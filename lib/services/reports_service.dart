@@ -11,6 +11,7 @@ import 'package:sfcapp/models/report_models.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/deposit_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
+import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -1169,50 +1170,62 @@ class ReportsService {
       final user = _auth.currentUser;
       if (user == null) throw Exception('Not signed in');
 
-      // Get all units
-      final units = await UnitService.getUnitsForFacility(facilityId);
-      
-      int totalUnits = units.length;
-      int occupiedUnits = units.where((u) => u.status == UnitStatus.occupied).length;
-      int availableUnits = units.where((u) => u.status == UnitStatus.available).length;
-      int reservedUnits = units.where((u) => u.status == UnitStatus.reserved).length;
-      int maintenanceUnits = units.where((u) => 
-        u.status == UnitStatus.maintenance || u.status == UnitStatus.outOfOrder
-      ).length;
-
-      final occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0.0;
-
-      // Calculate average monthly rate
-      final occupiedUnitsWithRates = units.where((u) => 
-        u.status == UnitStatus.occupied && u.monthlyRate > 0
-      ).toList();
-      final averageMonthlyRate = occupiedUnitsWithRates.isEmpty
-          ? 0.0
-          : occupiedUnitsWithRates.fold(0.0, (sum, u) => sum + u.monthlyRate) / occupiedUnitsWithRates.length;
-
-      // Calculate potential revenue (all units at average rate)
-      final potentialMonthlyRevenue = totalUnits * averageMonthlyRate;
-
-      // Calculate actual revenue (from occupied units)
-      final actualMonthlyRevenue = occupiedUnitsWithRates.fold(0.0, (sum, u) => sum + u.monthlyRate);
-
-      return OccupancyMetrics(
-        totalUnits: totalUnits,
-        occupiedUnits: occupiedUnits,
-        availableUnits: availableUnits,
-        reservedUnits: reservedUnits,
-        maintenanceUnits: maintenanceUnits,
-        occupancyRate: occupancyRate,
-        averageMonthlyRate: averageMonthlyRate,
-        potentialMonthlyRevenue: potentialMonthlyRevenue,
-        actualMonthlyRevenue: actualMonthlyRevenue,
-      );
+      return occupancyMetricsFor(
+          await UnitService.getUnitsForFacility(facilityId));
     } catch (e) {
       if (kDebugMode) {
         print('❌ [Reports] Error generating occupancy report: $e');
       }
       rethrow;
     }
+  }
+
+  /// The occupancy report's figures for a facility's non-archived [allUnits].
+  ///
+  /// Internal-use space (office, residence) is left out, by the same test as
+  /// the dashboard and the stats function
+  /// ([FacilityStatsService.countsTowardOccupancy]). It was counted here, so
+  /// the report's Total and occupancy rate disagreed with the dashboard, and
+  /// potential revenue priced the office as rentable space.
+  static OccupancyMetrics occupancyMetricsFor(List<UnitModel> allUnits) {
+    final units =
+        allUnits.where(FacilityStatsService.countsTowardOccupancy).toList();
+
+    int totalUnits = units.length;
+    int occupiedUnits = units.where((u) => u.status == UnitStatus.occupied).length;
+    int availableUnits = units.where((u) => u.status == UnitStatus.available).length;
+    int reservedUnits = units.where((u) => u.status == UnitStatus.reserved).length;
+    int maintenanceUnits = units.where((u) =>
+      u.status == UnitStatus.maintenance || u.status == UnitStatus.outOfOrder
+    ).length;
+
+    final occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0.0;
+
+    // Calculate average monthly rate
+    final occupiedUnitsWithRates = units.where((u) =>
+      u.status == UnitStatus.occupied && u.monthlyRate > 0
+    ).toList();
+    final averageMonthlyRate = occupiedUnitsWithRates.isEmpty
+        ? 0.0
+        : occupiedUnitsWithRates.fold(0.0, (sum, u) => sum + u.monthlyRate) / occupiedUnitsWithRates.length;
+
+    // Calculate potential revenue (all units at average rate)
+    final potentialMonthlyRevenue = totalUnits * averageMonthlyRate;
+
+    // Calculate actual revenue (from occupied units)
+    final actualMonthlyRevenue = occupiedUnitsWithRates.fold(0.0, (sum, u) => sum + u.monthlyRate);
+
+    return OccupancyMetrics(
+      totalUnits: totalUnits,
+      occupiedUnits: occupiedUnits,
+      availableUnits: availableUnits,
+      reservedUnits: reservedUnits,
+      maintenanceUnits: maintenanceUnits,
+      occupancyRate: occupancyRate,
+      averageMonthlyRate: averageMonthlyRate,
+      potentialMonthlyRevenue: potentialMonthlyRevenue,
+      actualMonthlyRevenue: actualMonthlyRevenue,
+    );
   }
 
   /// Generate Delinquency Report

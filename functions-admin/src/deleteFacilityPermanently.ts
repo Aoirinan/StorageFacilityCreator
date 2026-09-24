@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
+import { hasAutopaySubscription, tenantDisplayName } from '@sfc/functions-shared';
 import { enforceAppCheckOrThrow } from '@sfc/functions-shared/auth/appCheck';
 import { summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
 import { findOwnerAccountDoc } from '@sfc/functions-shared/platform/ownerAccount';
@@ -33,6 +34,61 @@ export const FACILITY_BILLING_NOT_STOPPED_MESSAGE =
 
 export const FACILITY_DELETE_FAILED_MESSAGE =
   "The facility couldn't be fully deleted. Refresh the list to see what changed, then try again.";
+
+/** The refusal while tenants are active; the app's pre-check words it the same way. */
+export function facilityHasActiveTenantsMessage(count: number): string {
+  const tenants = count === 1 ? '1 active tenant' : `${count} active tenants`;
+  return (
+    `Nothing was deleted: this facility still has ${tenants}. ` +
+    'Move them out or archive them first, then delete the facility.'
+  );
+}
+
+/** The refusal while tenants still have autopay set up, naming a few of them. */
+export function facilityHasAutopayTenantsMessage(names: string[]): string {
+  const shown = names.slice(0, 5);
+  const more = names.length - shown.length;
+  const who = more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+  const tenants = names.length === 1 ? '1 tenant' : `${names.length} tenants`;
+  return (
+    `Nothing was deleted: autopay is still set up for ${tenants} (${who}), ` +
+    "and deleting the facility wouldn't stop it. Open each tenant and press " +
+    'Disable autopay, then delete the facility.'
+  );
+}
+
+/** Tenant collections a facility may have; oldTenants is the legacy one. */
+const TENANT_COLLECTIONS = ['tenants', 'oldTenants'] as const;
+
+/** billing/default docs read per getAll. */
+const BILLING_READ_BATCH = 300;
+
+/**
+ * Names of the facility's tenants, active or not, whose autopay is still
+ * set up: a Stripe subscription id or autopayEnabled on billing/default.
+ * The purge cancels the facility's own subscriptions only, so a tenant's
+ * (an archived tenant's, say) went on charging them after the facility and
+ * every record of it were gone.
+ */
+export async function tenantsWithAutopay(
+  db: admin.firestore.Firestore,
+  facilityRef: admin.firestore.DocumentReference,
+): Promise<string[]> {
+  const names: string[] = [];
+  for (const collection of TENANT_COLLECTIONS) {
+    const tenants = (await facilityRef.collection(collection).select('name').get()).docs;
+    for (let i = 0; i < tenants.length; i += BILLING_READ_BATCH) {
+      const batch = tenants.slice(i, i + BILLING_READ_BATCH);
+      const billing = await db.getAll(...batch.map((t) => t.ref.collection('billing').doc('default')));
+      billing.forEach((snap, j) => {
+        if (snap.exists && hasAutopaySubscription(snap.data())) {
+          names.push(tenantDisplayName(batch[j].data(), batch[j].id));
+        }
+      });
+    }
+  }
+  return names;
+}
 
 export function parseDeleteFacilityRequest(data: unknown): { facilityId: string } {
   const input = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
@@ -83,6 +139,29 @@ export async function deleteFacilityPermanentlyHandler(
   // Owner only, as the old delete rule: managers can't delete a facility.
   if (!superAdmin && facility.ownerUid !== uid) {
     throw new functions.https.HttpsError('permission-denied', 'Only the facility owner can delete it.');
+  }
+
+  // An owner's delete took every active tenant's ledger, invoices, liens and
+  // contracts with it in one click, while a single tenant with any history
+  // can't be deleted at all. Active tenants are moved out or archived first,
+  // and any tenant's autopay is switched off. Checked before the email code
+  // is spent. Active is exactly true, as in TenantModel and the server jobs.
+  if (!superAdmin) {
+    const active = await facilityRef.collection('tenants').where('isActive', '==', true).count().get();
+    const count = active.data().count;
+    if (count > 0) {
+      throw new functions.https.HttpsError('failed-precondition', facilityHasActiveTenantsMessage(count), {
+        reason: 'active-tenants',
+        activeTenants: count,
+      });
+    }
+    const autopay = await tenantsWithAutopay(db, facilityRef);
+    if (autopay.length > 0) {
+      throw new functions.https.HttpsError('failed-precondition', facilityHasAutopayTenantsMessage(autopay), {
+        reason: 'tenant-autopay',
+        tenants: autopay.length,
+      });
+    }
   }
 
   await consumeRecentTwoFactor(db, uid, DELETE_FACILITY_OTP_PURPOSE, 'deleteFacilityPermanently', deps.nowMs());

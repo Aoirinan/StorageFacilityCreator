@@ -59,9 +59,9 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stripe: { amountReceived?
     value: () =>
       ({
         paymentIntents: {
-          retrieve: async () => {
+          retrieve: async (id: string) => {
             stripeCalls.push('paymentIntents.retrieve');
-            return { amount_received: stripe.amountReceived ?? 0, status: 'succeeded' };
+            return { id, amount_received: stripe.amountReceived ?? 0, status: 'succeeded' };
           },
         },
         checkout: {

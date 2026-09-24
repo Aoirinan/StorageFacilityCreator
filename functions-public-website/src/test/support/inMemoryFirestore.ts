@@ -13,6 +13,12 @@ export class InMemoryFirestore {
   /** When set, every `count()` query rejects with it (a failed aggregate read). */
   countError: Error | null = null;
 
+  /** A query's `get()` on a collection path listed here rejects with its error. */
+  readonly queryErrors = new Map<string, Error>();
+
+  /** The last transaction queued; the next one starts when it settles. */
+  private transactionTail: Promise<unknown> = Promise.resolve();
+
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
   }
@@ -136,6 +142,8 @@ export class InMemoryFirestore {
       }
 
       async get(): Promise<{ empty: boolean; size: number; docs: DocSnapshot[] }> {
+        const queryError = owner.queryErrors.get(this.path);
+        if (queryError) throw queryError;
         const prefix = `${this.path}/`;
         const docs = [...store.keys()]
           .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/'))
@@ -197,13 +205,19 @@ export class InMemoryFirestore {
       batch(): WriteBatch {
         return new WriteBatch();
       },
+      /**
+       * Transactions run one at a time. Writes still land as they are made,
+       * so a transaction that throws part way leaves its earlier writes.
+       */
       runTransaction<T>(fn: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
         const tx = {
           get: async (ref: DocRef) => ref.get(),
           set: async (ref: DocRef, data: DocData) => ref.set(data),
           update: async (ref: DocRef, data: DocData) => ref.update(data),
         };
-        return fn(tx);
+        const run = owner.transactionTail.then(() => fn(tx));
+        owner.transactionTail = run.catch(() => undefined);
+        return run;
       },
       FieldValue,
     };
