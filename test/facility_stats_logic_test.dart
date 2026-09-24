@@ -46,6 +46,7 @@ UnitModel _unit(
   UnitStatus status = UnitStatus.available,
   String? tenantId,
   bool publicListingEnabled = true,
+  bool internalUse = false,
 }) {
   return UnitModel(
     id: id,
@@ -59,10 +60,11 @@ UnitModel _unit(
     updatedAt: DateTime(2026, 1, 1),
     createdBy: 'test',
     publicListingEnabled: publicListingEnabled,
+    internalUse: internalUse,
   );
 }
 
-/// The six cases behind the dashboard/Units list disagreement (82/74 against
+/// The seven cases behind the dashboard/Units list disagreement (82/74 against
 /// 78/72 at one facility).
 List<UnitModel> _mixedFacility() => [
       _unit('active', status: UnitStatus.occupied, tenantId: 'active-t'),
@@ -70,10 +72,16 @@ List<UnitModel> _mixedFacility() => [
       _unit('office',
           status: UnitStatus.occupied,
           tenantId: 'active-t',
+          internalUse: true,
           publicListingEnabled: false),
       _unit('orphan', status: UnitStatus.occupied, tenantId: 'deleted-t'),
       _unit('reserved', status: UnitStatus.reserved, tenantId: 'active-t'),
       _unit('free'),
+      // Kept off the website only: still a unit the owner rents.
+      _unit('unlisted',
+          status: UnitStatus.occupied,
+          tenantId: 'active-t',
+          publicListingEnabled: false),
     ];
 
 void main() {
@@ -136,16 +144,48 @@ void main() {
   });
 
   group('countUnits (the one definition every screen uses)', () {
-    test('leaves staff-only units out and counts archived tenants as occupying', () {
+    test('leaves internal-use units out and counts archived tenants as occupying', () {
       final counts = FacilityStatsService.countUnits(
         _mixedFacility(),
         {'active-t', 'archived-t'},
       );
-      // Staff-only office excluded from the total; orphan and reserved are
-      // vacant. The dashboard's old inline count gave 6 total / 2 occupied
-      // here (office counted, archived tenant's unit not).
-      expect(counts.totalUnits, 5);
-      expect(counts.occupiedUnits, 2);
+      // Internal-use office excluded from the total; orphan and reserved are
+      // vacant; the unit kept off the website counts.
+      expect(counts.totalUnits, 6);
+      expect(counts.occupiedUnits, 3);
+    });
+
+    test('units kept off the public website still count', () {
+      // One owner's rental page was not live yet, so 86 of 89 units had
+      // "List on public website" off. Counting that switch showed 3 units.
+      final units = [
+        for (var i = 0; i < 86; i++)
+          _unit('u$i',
+              status: i < 40 ? UnitStatus.occupied : UnitStatus.available,
+              tenantId: i < 40 ? 't$i' : null,
+              publicListingEnabled: false),
+        for (var i = 86; i < 89; i++) _unit('u$i'),
+      ];
+      final counts = FacilityStatsService.countUnits(
+        units,
+        {for (var i = 0; i < 40; i++) 't$i'},
+      );
+      expect(counts.totalUnits, 89);
+      expect(counts.occupiedUnits, 40);
+    });
+
+    test('countsTowardOccupancy is false only for internal use', () {
+      expect(FacilityStatsService.countsTowardOccupancy(_unit('a')), isTrue);
+      expect(
+        FacilityStatsService.countsTowardOccupancy(
+            _unit('b', publicListingEnabled: false)),
+        isTrue,
+      );
+      expect(
+        FacilityStatsService.countsTowardOccupancy(
+            _unit('c', internalUse: true)),
+        isFalse,
+      );
     });
 
     test('an archived tenant id missing from the set means the unit reads vacant', () {
@@ -154,12 +194,12 @@ void main() {
         _mixedFacility(),
         {'active-t'},
       );
-      expect(counts.occupiedUnits, 1);
+      expect(counts.occupiedUnits, 2);
     });
 
-    test('a facility of only staff-only units has a rentable total of zero', () {
+    test('a facility of only internal-use units has a total of zero', () {
       final counts = FacilityStatsService.countUnits(
-        [_unit('office', publicListingEnabled: false)],
+        [_unit('office', internalUse: true)],
         const {},
       );
       expect(counts.totalUnits, 0);
@@ -168,10 +208,11 @@ void main() {
   });
 
   group('cachedUnitTotalDrifted', () {
-    test('a cache holding the rentable count is not stale when a staff-only unit exists', () {
+    test('a cache holding the counted total is not stale when an internal-use unit exists', () {
       final units = [
-        ...List.generate(79, (i) => _unit('u$i')),
-        _unit('office', publicListingEnabled: false),
+        ...List.generate(78, (i) => _unit('u$i')),
+        _unit('unlisted', publicListingEnabled: false),
+        _unit('office', internalUse: true),
       ];
       // Before: compared against all 80 units, so this recomputed on every
       // load forever.

@@ -21,6 +21,7 @@ UnitModel _unit(
   String? tenantId = 't1',
   DateTime? moveOutNoticeDate,
   bool publicListingEnabled = true,
+  bool internalUse = false,
 }) {
   return UnitModel(
     id: id,
@@ -35,6 +36,7 @@ UnitModel _unit(
     createdBy: 'test',
     moveOutNoticeDate: moveOutNoticeDate,
     publicListingEnabled: publicListingEnabled,
+    internalUse: internalUse,
   );
 }
 
@@ -169,6 +171,12 @@ void main() {
             'unitNumber': 'OFF',
             'status': 'occupied',
             'tenantId': 'active-t',
+            'internalUse': true,
+          }),
+          // Off the website only (rental page not live): still counted.
+          FakeDoc('u-unlisted', {
+            'unitNumber': '5',
+            'status': 'available',
             'publicListingEnabled': false,
           }),
           FakeDoc('u-gone', {'unitNumber': '0', 'status': 'available', 'archived': true}),
@@ -187,12 +195,13 @@ void main() {
       // Units held by the active and the archived tenant; the orphan is not
       // occupied. Counting from active tenants only gave 1.
       expect(stats.occupiedUnits, 2);
-      // Rentable, non-archived units, including the one with no unitNumber
-      // (an ordered, capped unit read left it out).
-      expect(stats.totalUnits, 5);
-      expect(stats.availableUnits, 3);
-      expect(stats.totalUnitDocs, 6);
-      expect(stats.staffOnlyUnits, 1);
+      // Non-archived units that are not internal-use, including the one with
+      // no unitNumber (an ordered, capped unit read left it out) and the one
+      // kept off the website.
+      expect(stats.totalUnits, 6);
+      expect(stats.availableUnits, 4);
+      expect(stats.totalUnitDocs, 7);
+      expect(stats.internalUseUnits, 1);
       // The partial doc is not an active tenant, as on the server. It used to
       // read as active because a missing isActive defaulted to true.
       expect(stats.totalTenants, 1);
@@ -201,27 +210,26 @@ void main() {
   });
 
   group('facilityUnitCounts (what the dashboard shows per facility)', () {
-    test("counts an archived tenant's unit and leaves staff-only units out", () {
+    test("counts an archived tenant's unit and leaves internal-use units out", () {
       final counts = facilityUnitCounts(
         [
           _unit('active', tenantId: 'active-t'),
           _unit('archived', tenantId: 'archived-t'),
-          _unit('office', tenantId: 'active-t', publicListingEnabled: false),
+          _unit('office', tenantId: 'active-t', internalUse: true),
+          _unit('unlisted', tenantId: 'active-t', publicListingEnabled: false),
           _unit('orphan', tenantId: 'deleted-t'),
           _unit('free', status: UnitStatus.available, tenantId: null),
         ],
         [_tenant('active-t'), _tenant('archived-t', isActive: false)],
       );
-      // Before: the dashboard counted every unit doc and only active
-      // tenants' units, giving 5 total / 2 occupied here (the office in, the
-      // archived tenant's unit out) against the Units list's 4 / 2.
-      expect(counts.totalUnits, 4);
-      expect(counts.occupiedUnits, 2);
-      expect(counts.unitDocs, 5);
+      // The office is left out; the unit kept off the website is counted.
+      expect(counts.totalUnits, 5);
+      expect(counts.occupiedUnits, 3);
+      expect(counts.unitDocs, 6);
     });
   });
 
-  test('staff-only units are reported, never negative', () {
+  test('internal-use units are reported, never negative', () {
     DashboardStats stats(int total, int docs) => DashboardStats(
           totalFacilities: 1,
           totalTenants: 0,
@@ -234,7 +242,7 @@ void main() {
           pastDueCount: 0,
           openLeads: 0,
         );
-    expect(stats(78, 82).staffOnlyUnits, 4);
-    expect(stats(3, 0).staffOnlyUnits, 0);
+    expect(stats(78, 82).internalUseUnits, 4);
+    expect(stats(3, 0).internalUseUnits, 0);
   });
 }

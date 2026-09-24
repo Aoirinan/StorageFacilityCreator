@@ -30,7 +30,8 @@ interface UnitInput {
   id: string;
   status: string;
   tenantId?: string | null;
-  publicListingEnabled?: boolean;
+  /** Office, manager residence or personal-use space; see countsTowardOccupancy. */
+  internalUse?: boolean;
   archived?: boolean;
   /** When the pass read the unit; a heal applies only if it is unchanged since. */
   updateTime?: admin.firestore.Timestamp;
@@ -43,22 +44,25 @@ interface OrphanUnit {
 }
 
 /**
- * Units that count toward rentable-inventory stats (Total/Occupied/Vacant/
- * Available Units). Excludes staff-only spaces (manager residence, office,
- * personal-use) that have `publicListingEnabled === false` — the same flag
- * that already keeps them off the public map/website (mirrors Flutter
- * FacilityStatsService.countUnits), so an operator's internal-use
- * tracking entries don't inflate their own dashboard numbers. Orphan healing
- * below deliberately still scans every unit, rentable or not.
+ * Units that count toward Total/Occupied/Vacant: every unit except archived
+ * ones and internal-use space (office, manager residence, personal use,
+ * `internalUse === true`). The app applies the same test
+ * (FacilityStatsService.countsTowardOccupancy plus UnitService's archived
+ * filter); test/fixtures/unit_occupancy_counts.json at the repo root holds the
+ * cases both sides are tested against. Orphan healing below deliberately
+ * still scans every unit, counted or not.
  *
- * Archived units are excluded too. They were counted here but not in the app,
- * so the facility-doc mirror (facility cards, search, super admin) ran higher
- * than every screen that counts units itself. `(archived ?? false) === false`
- * is the exact test Flutter's UnitService applies, so a stray non-boolean
- * value is dropped by both sides rather than by one.
+ * This used to exclude `publicListingEnabled === false`, the "List on public
+ * website" switch. Owners whose rental page is not live turn that off for
+ * most units (86 of 89 at one facility), and the mirror then said 3 units.
+ * That switch now only decides what the public map shows.
+ *
+ * `(archived ?? false) === false` is the exact test Flutter's UnitService
+ * applies, so a stray non-boolean value is dropped by both sides rather than
+ * by one. Only an exact `true` marks internal use, as in the app's UnitModel.
  */
-function isRentableUnit(unit: UnitInput): boolean {
-  return unit.publicListingEnabled !== false && (unit.archived ?? false) === false;
+function countsTowardOccupancy(unit: UnitInput): boolean {
+  return unit.internalUse !== true && (unit.archived ?? false) === false;
 }
 
 function countCanonicalOccupied(
@@ -154,8 +158,8 @@ export interface FacilityStatsDeps {
 
 /**
  * Counts and delinquency for one facility from inputs already in hand. Units
- * are limited to rentable ones (see isRentableUnit); revenue and past due come
- * from active tenants only.
+ * are limited to counted ones (see countsTowardOccupancy); revenue and past
+ * due come from active tenants only.
  *
  * A tenant doc whose dates cannot be read (no createdAt, or a paidThrough
  * that is not a Timestamp) is logged and left out of the past-due buckets;
@@ -166,9 +170,9 @@ function summarizeFacilityStats(
   inputs: FacilityStatsInputs,
   now: Date = new Date(),
 ): Record<string, number> {
-  const rentable = inputs.units.filter(isRentableUnit);
-  const { occupiedUnits } = countCanonicalOccupied(rentable, inputs.allTenantIds);
-  const totalUnits = rentable.length;
+  const counted = inputs.units.filter(countsTowardOccupancy);
+  const { occupiedUnits } = countCanonicalOccupied(counted, inputs.allTenantIds);
+  const totalUnits = counted.length;
   const availableUnits = Math.max(0, totalUnits - occupiedUnits);
 
   let scheduledMonthlyRevenue = 0;
@@ -256,7 +260,7 @@ async function loadFacilityStatsInputs(
     ...(doc.data() as {
       status: string;
       tenantId?: string | null;
-      publicListingEnabled?: boolean;
+      internalUse?: boolean;
       archived?: boolean;
     }),
     id: doc.id,
@@ -421,8 +425,8 @@ async function computeFacilityStats(
     return null;
   }
 
-  // Healing scans every unit (archived and staff-only too) so a stale tenantId
-  // anywhere still gets cleared; only the counts are limited to rentable units.
+  // Healing scans every unit (archived and internal-use too) so a stale
+  // tenantId anywhere still gets cleared; only the counts are limited.
   const { orphanIds } = countCanonicalOccupied(inputs.units, inputs.allTenantIds);
   if (orphanIds.length > 0) {
     const orphanIdSet = new Set(orphanIds);
@@ -460,7 +464,7 @@ export const facilityStatsTestUtils = {
   isTenantLate,
   calculateDaysLate,
   countCanonicalOccupied,
-  isRentableUnit,
+  countsTowardOccupancy,
   summarizeFacilityStats,
   computeFacilityStats,
   recomputeAndPersistFacilityStats,

@@ -5,7 +5,7 @@
 - **Reconcile:** removed. Orphan occupancy is healed only by the `functions-facility-ops` Cloud Function (see `docs/OCCUPANCY_SYNC_VERIFICATION.md`). Nothing creates placeholder unit documents up to `facility.totalUnits`.
 - **Sync counts:** "Sync counts" on the dashboard calls the `updateFacilityStatsManual` Cloud Function for each facility (server heal + stats, no mass unit creation).
 - **Facility edit:** Saving a new `totalUnits` only changes capacity on the facility doc; no unit rows are created and no stats step runs.
-- **Counts today:** Total/Occupied exclude staff-only units and use unit docs, not capacity; the checklist below predates that and is kept for history.
+- **Counts today:** Total/Occupied exclude internal-use units (`internalUse == true`) and archived units, and use unit docs, not capacity. "List on public website" does not affect counts. See `docs/OCCUPANCY_SYNC_VERIFICATION.md`; the checklist below predates that and is kept for history.
 - **Unit List:** Denominator is always facility capacity (`totalUnits`). Occupied = canonical (unit.status==occupied and tenant exists). Display: `occupied / totalCapacity units`.
 - **Edit Unit:** Unit List and Unit Detail "Edit" open `/units/edit` with unit as extra → `UnitCreationScreen(facilityId, unit)`.
 - **View Details:** Unchanged → `/units/detail?facilityId=&unitId=`.

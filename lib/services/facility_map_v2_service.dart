@@ -9,6 +9,7 @@ import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 
 class FacilityMapV2Service {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -294,46 +295,32 @@ class FacilityMapV2Service {
         mapSettings: const <String, dynamic>{'migratedFromLegacy': true});
   }
 
+  /// Every non-archived unit, sorted by number, for the public map.
+  ///
+  /// It used its own read, `orderBy('unitNumber').limit(400)` with archived
+  /// units dropped after the cap, so archived units used up the cap and units
+  /// past it or with no unitNumber were never published. It also returned []
+  /// on a failed read, and the publish or inventory refresh then wrote an
+  /// empty unit list over the live one. A failure now throws: publish reports
+  /// it, and the refresh logs it and writes nothing. Which units the public
+  /// sees is still decided per unit by `publicListingEnabled`
+  /// ([buildPublicUnitInventoryMaps]).
   static Future<List<UnitModel>> _fetchActiveUnitsOrdered(
       String facilityId) async {
     try {
-      QuerySnapshot<Map<String, dynamic>> snapshot;
-      try {
-        snapshot = await _firestore
-            .collection('facilities')
-            .doc(facilityId)
-            .collection('units')
-            .orderBy('unitNumber')
-            .limit(400)
-            .get();
-      } catch (orderingError) {
-        final msg = orderingError.toString();
-        if (msg.contains('failed-precondition') && msg.contains('index')) {
-          snapshot = await _firestore
-              .collection('facilities')
-              .doc(facilityId)
-              .collection('units')
-              .limit(400)
-              .get();
-        } else {
-          rethrow;
-        }
-      }
-      final activeDocs = snapshot.docs.where((doc) {
-        final archived = doc.data()['archived'] ?? false;
-        return archived == false;
-      }).toList();
-      final units =
-          activeDocs.map((doc) => UnitModel.fromFirestore(doc)).toList();
-      units.sort((a, b) => a.unitNumber.compareTo(b.unitNumber));
-      return units;
+      return await UnitService.readFacilityUnits(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error fetching units for public map: $e');
       }
-      return [];
+      rethrow;
     }
   }
+
+  @visibleForTesting
+  static Future<List<UnitModel>> fetchActiveUnitsForTesting(
+          String facilityId) =>
+      _fetchActiveUnitsOrdered(facilityId);
 
   /// Normalized unit numbers (trim + lower case) for active tenants — catches
   /// dashboard tenants whose unit doc was never set to occupied.

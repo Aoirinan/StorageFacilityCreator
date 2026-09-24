@@ -48,8 +48,9 @@ class _DashboardOwnerTipsDialogState extends State<DashboardOwnerTipsDialog> {
       icon: Icons.refresh,
       title: 'Sync counts',
       body:
-          'The dashboard counts your units each time you open it. Units with “List on public website” '
-          'turned off are staff-only and are not counted. If a unit still shows as rented to a tenant '
+          'The dashboard counts your units each time you open it. Units marked “Internal use” (office, '
+          'residence, personal space) are not counted; “List on public website” only controls what your '
+          'website shows and does not change the counts. If a unit still shows as rented to a tenant '
           'who was deleted, use the refresh icon next to the facility switcher: the server rechecks '
           'every unit, frees any left pointing at a deleted tenant, and updates the counts on your '
           'facility cards.',

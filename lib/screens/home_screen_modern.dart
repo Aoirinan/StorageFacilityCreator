@@ -882,11 +882,11 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
     );
   }
 
-  /// " · 4 staff-only not counted" when there are staff-only units, else "".
-  /// Total/Occupied/Vacant leave them out, so without this the dashboard
+  /// " · 2 internal-use not counted" when there are internal-use units, else
+  /// "". Total/Occupied/Vacant leave them out, so without this the dashboard
   /// shows fewer units than the Units list has rows.
-  String _staffOnlyNote(DashboardStats stats) => stats.staffOnlyUnits > 0
-      ? ' · ${stats.staffOnlyUnits} staff-only not counted'
+  String _internalUseNote(DashboardStats stats) => stats.internalUseUnits > 0
+      ? ' · ${stats.internalUseUnits} internal-use not counted'
       : '';
 
   Widget _buildMetricsGrid(DashboardStats stats) {
@@ -942,7 +942,7 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
               title: 'Total Units',
               value: stats.totalUnits.toString(),
               subtitle:
-                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant${_staffOnlyNote(stats)}',
+                  '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant${_internalUseNote(stats)}',
               icon: Icons.home_work,
               color: AppTheme.info,
             ),
@@ -1087,14 +1087,14 @@ class _HomeScreenModernContentState extends ConsumerState<_HomeScreenModernConte
       ));
     }
     
-    // Unit docs, not the rentable total: a facility whose units are all
-    // staff-only has units, and totalUnits alone hid the row for it.
+    // Unit docs, not the counted total: a facility whose units are all
+    // internal-use has units, and totalUnits alone hid the row for it.
     if (stats.totalUnitDocs > 0) {
       activities.add(activity.ActivityItem(
         title: 'Total Units',
         subtitle: multiFacility
-            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)${_staffOnlyNote(stats)}'
-            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total${_staffOnlyNote(stats)}',
+            ? '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total (combined)${_internalUseNote(stats)}'
+            : '${stats.occupiedUnits} occupied · ${stats.availableUnits} vacant · ${stats.totalUnits} total${_internalUseNote(stats)}',
         icon: Icons.home_work,
         iconColor: AppTheme.info,
         timestamp: DateTime.now().subtract(const Duration(minutes: 10)),
