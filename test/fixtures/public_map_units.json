@@ -187,6 +187,30 @@
         "zero": { "isRentable": true, "status": "available", "publicListingEnabled": true },
         "off": { "isRentable": false, "status": "unavailable", "publicListingEnabled": false }
       }
+    },
+    {
+      "name": "a unit number or rate stored as the other type is read, and published the same by both",
+      "units": [
+        { "id": "num", "data": { "unitNumber": 101, "status": "available", "unitType": "standard", "monthlyRate": 100 } },
+        { "id": "text-rate", "data": { "unitNumber": "B1", "status": "available", "unitType": "standard", "monthlyRate": "100" } },
+        { "id": "padded-rate", "data": { "unitNumber": "B2", "status": "available", "unitType": "standard", "monthlyRate": " 75.50 " } },
+        { "id": "word-rate", "data": { "unitNumber": "B3", "status": "available", "unitType": "standard", "monthlyRate": "call us" } },
+        { "id": "claimed", "data": { "unitNumber": 102, "status": "available", "unitType": "standard", "monthlyRate": 90 } },
+        { "id": "text-dims", "data": { "unitNumber": "B4", "status": "available", "unitType": "standard", "monthlyRate": 80, "dimensions": { "width": "10", "depth": "15" } } },
+        { "id": "number-link", "data": { "unitNumber": "B5", "status": "available", "unitType": "standard", "monthlyRate": 80, "tenantId": 5 } },
+        { "id": "junk", "data": { "unitNumber": "B6", "status": "available", "unitType": "standard", "monthlyRate": 60, "tenantName": 7, "description": 12, "notes": 3, "features": "climate", "dimensions": "10x10", "customFields": "none", "createdAt": "2026-01-01", "moveInDate": 1700000000000, "mapLayout": "left", "overlock": { "isOverlocked": false, "updatedAt": "yesterday", "updatedByUid": 9 } } }
+      ],
+      "tenants": [{ "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "102" } }],
+      "expected": {
+        "num": { "isRentable": true, "status": "available", "unitNumber": "101", "unitLabel": "101", "displayName": "Unit 101", "monthlyRate": 100 },
+        "text-rate": { "isRentable": true, "status": "available", "monthlyRate": 100 },
+        "padded-rate": { "isRentable": true, "status": "available", "monthlyRate": 75.5 },
+        "word-rate": { "isRentable": true, "status": "available", "monthlyRate": 0 },
+        "claimed": { "isRentable": false, "status": "rented", "unitNumber": "102" },
+        "text-dims": { "isRentable": true, "status": "available", "size": "10x15" },
+        "number-link": { "isRentable": true, "status": "available" },
+        "junk": { "isRentable": true, "status": "available", "unitNumber": "B6", "monthlyRate": 60, "size": null }
+      }
     }
   ]
 }

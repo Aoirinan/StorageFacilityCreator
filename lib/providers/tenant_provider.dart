@@ -341,7 +341,8 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
         ));
   }
 
-  Future<void> updateTenant({
+  /// The notice [TenantService.updateTenant] returns, for the screen.
+  Future<String?> updateTenant({
     required String facilityId,
     required String tenantId,
     String? name,
@@ -368,6 +369,7 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     DateTime? portalLastAccessAt,
     bool resetPortalStats = false,
     DateTime? smsOptInDate,
+    ConfirmFreeUnit? confirmFreeOldUnit,
   }) {
     return _run(() => TenantService.updateTenant(
           facilityId: facilityId,
@@ -396,6 +398,7 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
           portalLastAccessAt: portalLastAccessAt,
           resetPortalStats: resetPortalStats,
           smsOptInDate: smsOptInDate,
+          confirmFreeOldUnit: confirmFreeOldUnit,
         ));
   }
 

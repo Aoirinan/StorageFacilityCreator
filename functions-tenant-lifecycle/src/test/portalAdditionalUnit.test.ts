@@ -133,23 +133,53 @@ test('a portal tenant can hold a unit the owner offers online', async () => {
   assert.ok(inMemory.read(holdPath('listed')));
 });
 
-for (const [why, fields] of NOT_OFFERED) {
+/** Units the list leaves out for reasons of its own, which the hold did not share. */
+const NOT_OFFERED_TO_PORTAL: Array<[string, Record<string, unknown>]> = [
+  ...NOT_OFFERED,
+  ['deactivated', { isActive: false }],
+  ['of a type the owner has not opened to online rental', { unitType: 'vehicle' }],
+];
+
+/** Online rental opened to standard units only, as the owner's settings write it. */
+function seedStandardUnitsOnly(inMemory: InMemoryFirestore) {
+  inMemory.seed(`facilities/${FACILITY}/settings/public`, { enabledPublicUnitTypes: ['standard'] });
+}
+
+function refusedAsUnavailable(err: unknown): boolean {
+  const e = err as { code?: string; message?: string };
+  assert.equal(e.code, 'failed-precondition');
+  assert.equal(e.message, 'Unit is not currently available');
+  return true;
+}
+
+for (const [why, fields] of NOT_OFFERED_TO_PORTAL) {
   test(`a portal tenant cannot hold a unit ${why} by sending its id, and nothing is written`, async () => {
     const inMemory = new InMemoryFirestore();
     seedPortalTenant(inMemory);
+    seedStandardUnitsOnly(inMemory);
     seedUnit(inMemory, 'kept', fields);
     const { hold } = loadPortal(inMemory);
 
-    await assert.rejects(
-      () => hold('kept'),
-      (err: unknown) => {
-        const e = err as { code?: string; message?: string };
-        assert.equal(e.code, 'failed-precondition');
-        assert.equal(e.message, 'Unit is not currently available');
-        return true;
-      },
-    );
+    // Before: a deactivated unit, or a type the owner had turned off, was
+    // held although the list left it out.
+    await assert.rejects(() => hold('kept'), refusedAsUnavailable);
 
     assertNothingHeld(inMemory, 'kept');
   });
 }
+
+test('the portal lists only the unit types the owner opened to online rental', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPortalTenant(inMemory);
+  seedStandardUnitsOnly(inMemory);
+  seedUnit(inMemory, 's1');
+  seedUnit(inMemory, 'v1', { unitType: 'vehicle' });
+  seedUnit(inMemory, 'off', { isActive: false });
+  const { list, hold } = loadPortal(inMemory);
+
+  const { units } = await list();
+
+  // Before: the list offered every type, as the public map does not.
+  assert.deepEqual(units.map((u) => u.id), ['s1']);
+  assert.equal((await hold('s1')).success, true);
+});

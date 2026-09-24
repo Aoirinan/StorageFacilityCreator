@@ -1,15 +1,20 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/facility_map_v2_models.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import 'package:sfcapp/models/map_shape_model.dart';
+import 'package:sfcapp/models/permission_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
+import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 
 class FacilityMapV2Service {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -162,6 +167,12 @@ class FacilityMapV2Service {
         await FacilityPublicService.getPublicSettings(facilityId);
     final tenants = await TenantService.getTenantsForFacility(facilityId);
     final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
+    final inventory = publicUnitInventory(
+      facilityId: facilityId,
+      units: units,
+      publicSettings: publicSettings,
+      tenantClaimedUnitNumbers: claimedUnits,
+    );
     final snapshot = _buildPublicSnapshot(
       facilityId: facilityId,
       slug: meta.publicSlug,
@@ -171,14 +182,21 @@ class FacilityMapV2Service {
       facilityLogoUrl: facilityData['logoUrl']?.toString(),
       publishedVersionId: versionDoc.id,
       elements: elements,
-      units: units,
+      publicUnits: inventory.units,
       publicSettingsModel: publicSettings,
       mapSettings: version.mapSettings,
-      tenantClaimedUnitNumbers: claimedUnits,
     );
     final publicRef =
         _firestore.collection('publicFacilityMaps').doc(meta.publicSlug);
-    batch.set(publicRef, snapshot.toMap(), SetOptions(merge: true));
+    batch.set(
+      publicRef,
+      {
+        ...snapshot.toMap(),
+        'unitsTotal': inventory.unitsTotal,
+        'unitsOmitted': inventory.unitsOmitted,
+      },
+      SetOptions(merge: true),
+    );
 
     await batch.commit();
     return versionDoc.id;
@@ -295,6 +313,55 @@ class FacilityMapV2Service {
         mapSettings: const <String, dynamic>{'migratedFromLegacy': true});
   }
 
+  /// [migrateLegacyMapToInitialVersion], with a failure handed to [onError]
+  /// instead of escaping. The map builder starts it unawaited, so a failure
+  /// (a failed unit read now fails the publish rather than publishing no
+  /// units) was an uncaught async error the owner never saw.
+  ///
+  /// Only a user who can publish the map ([canPublish], by default
+  /// [currentUserCanPublishMap]) is told: for anyone else the migration
+  /// always fails on the rules, and staff opening a map with no version yet
+  /// got a red permission-denied snackbar every time.
+  static Future<void> migrateLegacyMapReportingFailure(
+    String facilityId,
+    void Function(Object error) onError, {
+    @visibleForTesting Future<void> Function(String facilityId)? migrate,
+    @visibleForTesting Future<bool> Function(String facilityId)? canPublish,
+  }) async {
+    try {
+      await (migrate ?? migrateLegacyMapToInitialVersion)(facilityId);
+    } catch (e) {
+      var tell = false;
+      try {
+        tell = await (canPublish ?? currentUserCanPublishMap)(facilityId);
+      } catch (roleError) {
+        debugPrint('⚠️ [FacilityMapV2] Could not check who may publish: '
+            '$roleError');
+      }
+      if (tell) {
+        onError(e);
+      } else {
+        debugPrint('⚠️ [FacilityMapV2] Legacy map migration failed for a '
+            'user who cannot publish: $e');
+      }
+    }
+  }
+
+  /// Permission an owner or manager holds and staff do not; the map is
+  /// published only by owners and managers (mapEngine and publicFacilityMaps
+  /// rules, isFacilityOwnerOrManager).
+  static const PermissionType publishMapPermission =
+      PermissionType.editFacility;
+
+  /// Whether the signed-in user may publish [facilityId]'s map.
+  static Future<bool> currentUserCanPublishMap(String facilityId) async {
+    final check = await PermissionService.hasPermission(
+      permission: publishMapPermission,
+      facilityId: facilityId,
+    );
+    return check.hasPermission;
+  }
+
   /// Every non-archived unit, sorted by number, for the public map.
   ///
   /// It used its own read, `orderBy('unitNumber').limit(400)` with archived
@@ -351,8 +418,10 @@ class FacilityMapV2Service {
 
     return units.map((unit) {
       final dims = unit.dimensions ?? const <String, dynamic>{};
-      final width = (dims['width'] as num?)?.toDouble();
-      final depth = (dims['depth'] as num?)?.toDouble();
+      // Was `as num?`, which threw on a width typed in as '10' and failed the
+      // publish for every unit; the sync reads these with Number().
+      final width = numberFromField(dims['width']);
+      final depth = numberFromField(dims['depth']);
       String? size;
       if (width != null && depth != null) {
         size = '${width.toStringAsFixed(0)}x${depth.toStringAsFixed(0)}';
@@ -416,6 +485,74 @@ class FacilityMapV2Service {
     }).toList();
   }
 
+  /// Byte budget for the published unit list, the server's
+  /// MAX_PUBLISHED_UNITS_BYTES (publicFacilityMapInventorySync.ts). The list
+  /// lives in one document, capped at 1 MiB with other fields beside it, and
+  /// a write that overshoots fails outright.
+  static const int maxPublishedUnitsBytes = 700000;
+
+  /// Trims a sorted unit list from the end until it fits in one document
+  /// ([maxBytes] of JSON), and says how many went. A port of the server's
+  /// fitUnitsToDocument: the app's publish and refresh had no guard, so a
+  /// facility too big for one document (one imported on the server, say)
+  /// could not publish at all, and the refresh failed and left the map as
+  /// it was.
+  static ({List<Map<String, dynamic>> published, int omitted})
+      fitUnitsToDocument(
+    List<Map<String, dynamic>> units, {
+    int maxBytes = maxPublishedUnitsBytes,
+  }) {
+    int bytes(List<Map<String, dynamic>> list) =>
+        utf8.encode(jsonEncode(list)).length;
+    if (bytes(units) <= maxBytes) return (published: units, omitted: 0);
+
+    var published = units;
+    // A tenth at a time converges in a few steps and, since the floor of
+    // 0.9 * n is below n for any n > 1, cannot stall.
+    while (published.length > 1 && bytes(published) > maxBytes) {
+      published = published.sublist(0, (published.length * 0.9).floor());
+    }
+    return (published: published, omitted: units.length - published.length);
+  }
+
+  /// The unit fields of a [publicFacilityMaps] document, as the server's
+  /// inventory sync writes them: the list ([buildPublicUnitInventoryMaps])
+  /// trimmed to fit ([fitUnitsToDocument]), how many units there were, and
+  /// how many were left out. Both the publish and the refresh write these,
+  /// so neither leaves the other's counts behind.
+  static ({List<Map<String, dynamic>> units, int unitsTotal, int unitsOmitted})
+      publicUnitInventory({
+    required String facilityId,
+    required List<UnitModel> units,
+    required FacilityPublicSettings? publicSettings,
+    Set<String> tenantClaimedUnitNumbers = const <String>{},
+    int maxBytes = maxPublishedUnitsBytes,
+  }) {
+    final all = buildPublicUnitInventoryMaps(
+      units: units,
+      publicSettings: publicSettings,
+      tenantClaimedUnitNumbers: tenantClaimedUnitNumbers,
+    );
+    final fitted = fitUnitsToDocument(all, maxBytes: maxBytes);
+    if (fitted.omitted > 0) {
+      final message = 'Public map for facility $facilityId: ${all.length} '
+          'units do not fit in one document; published the first '
+          '${fitted.published.length}, left out ${fitted.omitted}.';
+      debugPrint('⚠️ [FacilityMapV2] $message');
+      // Reaches Sentry through main.dart's FlutterError.onError.
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: StateError(message),
+        stack: StackTrace.current,
+        library: 'facility_map_v2_service',
+      ));
+    }
+    return (
+      units: fitted.published,
+      unitsTotal: all.length,
+      unitsOmitted: fitted.omitted,
+    );
+  }
+
   /// Updates [publicFacilityMaps] inventory from live units (no full republish).
   static Future<void> refreshPublicMapInventoryFromLiveUnits(
       String facilityId) async {
@@ -437,14 +574,17 @@ class FacilityMapV2Service {
       final units = await _fetchActiveUnitsOrdered(facilityId);
       final tenants = await TenantService.getTenantsForFacility(facilityId);
       final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
-      final unitMaps = buildPublicUnitInventoryMaps(
+      final inventory = publicUnitInventory(
+        facilityId: facilityId,
         units: units,
         publicSettings: publicSettings,
         tenantClaimedUnitNumbers: claimedUnits,
       );
 
       await publicRef.update({
-        'units': unitMaps,
+        'units': inventory.units,
+        'unitsTotal': inventory.unitsTotal,
+        'unitsOmitted': inventory.unitsOmitted,
         'inventorySyncedAt': FieldValue.serverTimestamp(),
       });
     } catch (e) {
@@ -463,10 +603,9 @@ class FacilityMapV2Service {
     required String? facilityLogoUrl,
     required String publishedVersionId,
     required List<FacilityMapElement> elements,
-    required List<UnitModel> units,
+    required List<Map<String, dynamic>> publicUnits,
     required FacilityPublicSettings? publicSettingsModel,
     required Map<String, dynamic> mapSettings,
-    Set<String> tenantClaimedUnitNumbers = const <String>{},
   }) {
     final showPublicPricing = publicSettingsModel?.publicPricingEnabled ?? true;
     final allowReservation = publicSettingsModel?.publicRentalsEnabled ?? false;
@@ -494,11 +633,6 @@ class FacilityMapV2Service {
             .toList();
 
     final visibleElements = elements.where((e) => e.visiblePublic).toList();
-    final safeUnits = buildPublicUnitInventoryMaps(
-      units: units,
-      publicSettings: publicSettingsModel,
-      tenantClaimedUnitNumbers: tenantClaimedUnitNumbers,
-    );
 
     final publicDescription =
         publicSettingsModel?.marketingContent?.trim().isNotEmpty == true
@@ -556,7 +690,7 @@ class FacilityMapV2Service {
         'websiteConfig': websiteConfig,
       },
       elements: visibleElements,
-      units: safeUnits,
+      units: publicUnits,
       rentalRouteTemplate: '/f/$slug/rent?unitId={unitId}',
       moveInRouteTemplate: '/public-move-in?token={token}',
     );

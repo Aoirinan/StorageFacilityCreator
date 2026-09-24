@@ -902,3 +902,40 @@ test('an invitee can list the pending invites addressed to their own verified em
   assert.equal(ownerList.size, 2);
   await assertFails(facilityInvites(testEnv.authenticatedContext(STAFF_UID).firestore()));
 });
+
+test('facility notifications: staff may mark one read and change nothing else', async () => {
+  // Written only by Cloud Functions (autopay events, and a paid online
+  // move-in into a unit taken off online rental). Every client write was
+  // refused, so the app's "Mark read" failed and no alert could be cleared.
+  await seedFacility();
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('Notifications')
+      .doc('n1')
+      .set({
+        type: 'ONLINE_MOVE_IN_REVIEW',
+        facilityId: FACILITY_ID,
+        tenantId: TENANT_ID,
+        message: 'Rita Renter paid online and was moved into unit L1.',
+        createdAt: new Date(),
+        readAt: null,
+      });
+  });
+  const notifications = (db) =>
+    db.collection('facilities').doc(FACILITY_ID).collection('Notifications');
+  const staff = notifications(testEnv.authenticatedContext(STAFF_UID).firestore());
+  const outsider = notifications(testEnv.authenticatedContext(OUTSIDER_UID).firestore());
+
+  // The banner's query, as staff.
+  await assertSucceeds(staff.where('type', '==', 'ONLINE_MOVE_IN_REVIEW').get());
+  await assertFails(outsider.doc('n1').update({ readAt: serverTimestamp() }));
+  await assertFails(staff.doc('n1').update({ readAt: 'yesterday' }));
+  await assertFails(staff.doc('n1').update({ readAt: serverTimestamp(), message: 'nothing to see' }));
+  await assertSucceeds(staff.doc('n1').update({ readAt: serverTimestamp() }));
+  await assertFails(staff.doc('n1').update({ type: 'AUTOPAY_ENABLED' }));
+  await assertFails(staff.doc('n1').delete());
+  await assertFails(staff.doc('n2').set({ type: 'ONLINE_MOVE_IN_REVIEW', message: 'forged', readAt: null }));
+});

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/screens/unit_creation_screen.dart';
+import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/unit_service.dart';
 
@@ -163,6 +164,57 @@ void main() {
     });
   });
 
+  group('UnitService.updateUnit audit log', () {
+    late List<AuditLogEntry> logged;
+    setUp(() {
+      logged = [];
+      AuditService.recordForTesting = logged.add;
+    });
+    tearDown(() => AuditService.recordForTesting = null);
+
+    test('turning internal use on or off is logged', () async {
+      _serveUnits([
+        FakeDoc('u1', {'unitNumber': 'OFF', 'status': 'available'}),
+      ]);
+
+      await UnitService.updateUnit(
+          facilityId: 'fac1', unitId: 'u1', internalUse: true);
+      await UnitService.updateUnit(
+          facilityId: 'fac1', unitId: 'u1', internalUse: false);
+
+      // Before: nothing, although each change moves Total, Occupied and
+      // Vacant.
+      expect(logged.map((e) => e.eventType),
+          ['unit.internalUseChanged', 'unit.internalUseChanged']);
+      expect(logged[0].targetType, 'unit');
+      expect(logged[0].targetId, 'u1');
+      expect(logged[0].facilityId, 'fac1');
+      expect(logged[0].before, {'internalUse': false});
+      expect(logged[0].after, {'internalUse': true});
+      expect(logged[0].metadata?['unitNumber'], 'OFF');
+      expect(logged[1].before, {'internalUse': true});
+      expect(logged[1].after, {'internalUse': false});
+    });
+
+    test('a save that leaves internal use as it was logs nothing', () async {
+      _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'OFF',
+          'status': 'available',
+          'internalUse': true,
+        }),
+      ]);
+
+      // The editor sends internalUse on every save.
+      await UnitService.updateUnit(
+          facilityId: 'fac1', unitId: 'u1', internalUse: true, notes: 'x');
+      await UnitService.updateUnit(
+          facilityId: 'fac1', unitId: 'u1', notes: 'y');
+
+      expect(logged, isEmpty);
+    });
+  });
+
   group('UnitCreationScreen', () {
     testWidgets(
         'creating an internal-use unit saves it as internal use and unlisted',
@@ -218,6 +270,106 @@ void main() {
       expect(log.writes.single.$3['internalUse'], isTrue);
     });
 
+    testWidgets('the listing switch is off and locked while internal use is on',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {'unitNumber': 'OFF', 'status': 'available'}),
+      ]);
+      await _openScreen(tester, unit: _unit());
+
+      await _tapVisible(tester, find.text(_internalUseLabel));
+      final listing = tester.widget<SwitchListTile>(
+          find.widgetWithText(SwitchListTile, 'List on public website'));
+      // Before: it stayed switchable, so an office could be listed again
+      // and the public map offered it as rentable.
+      expect(listing.onChanged, isNull);
+      expect(listing.value, isFalse);
+
+      await _tapVisible(tester, find.text('List on public website'));
+      expect(_switchValue(tester, 'List on public website'), isFalse);
+
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+      expect(log.writes.single.$3['internalUse'], isTrue);
+      expect(log.writes.single.$3['publicListingEnabled'], isFalse);
+    });
+
+    testWidgets(
+        'turning internal use on and off again puts a listed unit back on the website',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {'unitNumber': 'A1', 'status': 'available'}),
+      ]);
+      await _openScreen(tester, unit: _unit());
+
+      expect(_switchValue(tester, 'List on public website'), isTrue);
+      await _tapVisible(tester, find.text(_internalUseLabel));
+      await _tapVisible(tester, find.text(_internalUseLabel));
+
+      // Before: the auto-unlist stuck, and the save quietly took a listed
+      // unit off the website.
+      expect(_switchValue(tester, _internalUseLabel), isFalse);
+      expect(_switchValue(tester, 'List on public website'), isTrue);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+      expect(log.writes.single.$3['internalUse'], isFalse);
+      expect(log.writes.single.$3['publicListingEnabled'], isTrue);
+    });
+
+    testWidgets('an unlisted unit stays unlisted after the same round trip',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'A1',
+          'status': 'available',
+          'publicListingEnabled': false,
+        }),
+      ]);
+      await _openScreen(tester, unit: _unit(publicListingEnabled: false));
+
+      await _tapVisible(tester, find.text(_internalUseLabel));
+      await _tapVisible(tester, find.text(_internalUseLabel));
+
+      expect(_switchValue(tester, 'List on public website'), isFalse);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+      expect(log.writes.single.$3['publicListingEnabled'], isFalse);
+    });
+
+    testWidgets(
+        'a stored internal-use unit whose listing is on opens with the listing switch off',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'OFF',
+          'status': 'available',
+          'internalUse': true,
+          'publicListingEnabled': true,
+        }),
+      ]);
+      // An office saved before the switch was locked, with listing left on.
+      await _openScreen(
+        tester,
+        unit: _unit(internalUse: true, publicListingEnabled: true),
+      );
+
+      // The website and online rentals leave it out whatever the field says,
+      // so showing the switch on would tell the owner it is listed.
+      final listing = tester.widget<SwitchListTile>(
+          find.widgetWithText(SwitchListTile, 'List on public website'));
+      expect(listing.value, isFalse);
+      expect(listing.onChanged, isNull);
+
+      // Turning internal use off offers the unit online again: the listing
+      // it was saved with comes back.
+      await _tapVisible(tester, find.text(_internalUseLabel));
+      expect(_switchValue(tester, 'List on public website'), isTrue);
+      await _tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+      expect(log.writes.single.$3['internalUse'], isFalse);
+      expect(log.writes.single.$3['publicListingEnabled'], isTrue);
+    });
+
     testWidgets('editing can mark a unit internal use', (tester) async {
       final log = _serveUnits([
         FakeDoc('u1', {'unitNumber': 'OFF', 'status': 'available'}),
@@ -230,5 +382,45 @@ void main() {
 
       expect(log.writes.single.$3['internalUse'], isTrue);
     });
+  });
+
+  group('UnitCreationScreen amounts', () {
+    test('only finite amounts of at least zero are accepted', () {
+      expect(parseUnitAmount('129.5'), 129.5);
+      expect(parseUnitAmount(' 0 '), 0);
+      // double.tryParse accepts all of these, and none is below zero.
+      for (final bad in ['Infinity', 'NaN', '1e999', '-Infinity', '-1', 'abc']) {
+        expect(parseUnitAmount(bad), isNull, reason: bad);
+      }
+    });
+
+    for (final (field, value, error) in [
+      ('Monthly Rate *', 'Infinity', 'Please enter a valid monthly rate'),
+      ('Monthly Rate *', 'NaN', 'Please enter a valid monthly rate'),
+      ('Security Deposit', '1e999', 'Please enter a valid security deposit'),
+      ('Width (ft)', 'Infinity', 'Enter a valid width'),
+      ('Depth/Length (ft)', 'NaN', 'Enter a valid depth'),
+      ('Height (ft)', 'Infinity', 'Enter a valid height'),
+    ]) {
+      testWidgets('$field "$value" is refused and nothing is saved',
+          (tester) async {
+        final log = _serveUnits([]);
+        await _openScreen(tester);
+
+        await tester.enterText(
+            find.widgetWithText(TextFormField, 'Unit Number *'), 'A1');
+        await tester.enterText(
+            find.widgetWithText(TextFormField, 'Monthly Rate *'), '100');
+        await tester.enterText(find.widgetWithText(TextFormField, field), value);
+        await _tapVisible(
+            tester, find.widgetWithText(ElevatedButton, 'Create Unit'));
+
+        // Before: saved; a rate of Infinity or NaN then read back as $0 and
+        // went on the public map at that price.
+        expect(find.text(error), findsOneWidget);
+        expect(log.writes, isEmpty);
+        expect(find.byType(UnitCreationScreen), findsOneWidget);
+      });
+    }
   });
 }

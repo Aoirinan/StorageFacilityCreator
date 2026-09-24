@@ -40,6 +40,23 @@ export function invoiceSubscriptionId(inv: Stripe.Invoice): string | null {
   return typeof sub === 'string' ? sub : (sub as Stripe.Subscription)?.id ?? null;
 }
 
+/**
+ * Updates [ref] only if it still exists; false when it doesn't. A facility
+ * or account delete cancels its subscriptions and then deletes the docs, so
+ * their Stripe events can arrive after the docs are gone. A plain update
+ * failed with NOT_FOUND and Stripe retried the event for days.
+ */
+export async function updateIfExists(
+  ref: admin.firestore.DocumentReference,
+  fields: admin.firestore.UpdateData<admin.firestore.DocumentData>,
+): Promise<boolean> {
+  return ref.firestore.runTransaction(async (transaction) => {
+    if (!(await transaction.get(ref)).exists) return false;
+    transaction.update(ref, fields);
+    return true;
+  });
+}
+
 export function isWebsiteAddonSubscription(subscription: Stripe.Subscription): boolean {
   return subscription.metadata?.subscriptionType === 'website_addon';
 }
@@ -62,11 +79,11 @@ export async function updateFacilityFromWebsiteSubscription(
   const stripeEntitled = status === 'active' || status === 'trialing';
   const settingsRef = facilityRef.collection('settings').doc('public');
   let isEntitled = stripeEntitled;
-  await db.runTransaction(async (transaction) => {
+  const found = await db.runTransaction(async (transaction) => {
     const facilitySnap = await transaction.get(facilityRef);
-    if (!facilitySnap.exists) {
-      throw new Error(`Facility ${facilityId} not found`);
-    }
+    // Deleted (its subscriptions are cancelled first): throwing made Stripe
+    // retry the event for days, and there is nothing left to update.
+    if (!facilitySnap.exists) return false;
     isEntitled = stripeEntitled ||
       hasActiveWebsiteAdminTrial(
         (facilitySnap.data() || {}) as Record<string, unknown>,
@@ -92,7 +109,15 @@ export async function updateFacilityFromWebsiteSubscription(
         { merge: true },
       );
     }
+    return true;
   });
+  if (!found) {
+    functions.logger.info('Website subscription event for a deleted facility; nothing to update', {
+      facilityId,
+      subscriptionId: subscription.id,
+    });
+    return;
+  }
   functions.logger.info('Facility website subscription updated', {
     facilityId,
     subscriptionId: subscription.id,
@@ -103,11 +128,17 @@ export async function updateFacilityFromWebsiteSubscription(
 
 export async function updateFacilityFromPlatformSubscription(facilityId: string, subscriptionId: string) {
   try {
+    const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
+    // Deleted: nothing to update, so no Stripe read and no NOT_FOUND error.
+    if (!(await facilityRef.get()).exists) {
+      functions.logger.info(`Platform subscription ${subscriptionId} event for deleted facility ${facilityId}; nothing to update`);
+      return;
+    }
     const stripe = getStripeClient();
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const status = mapSubscriptionStatus(subscription.status);
 
-    await admin.firestore().collection('facilities').doc(facilityId).update({
+    const updated = await updateIfExists(facilityRef, {
       stripePlatformSubscriptionId: subscriptionId,
       platformSubscriptionStatus: status,
       platformSubscriptionCurrentPeriodStart: subPeriodStart(subscription)
@@ -122,7 +153,11 @@ export async function updateFacilityFromPlatformSubscription(facilityId: string,
         : null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    functions.logger.info(`Facility ${facilityId} updated from platform subscription ${subscriptionId}`);
+    functions.logger.info(
+      updated
+        ? `Facility ${facilityId} updated from platform subscription ${subscriptionId}`
+        : `Facility ${facilityId} deleted while platform subscription ${subscriptionId} was read; nothing updated`,
+    );
   } catch (error: any) {
     functions.logger.error(`Error updating facility from subscription: ${error.message}`, error);
   }

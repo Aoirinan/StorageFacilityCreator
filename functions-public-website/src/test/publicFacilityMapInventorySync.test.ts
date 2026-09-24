@@ -268,3 +268,19 @@ test('turning internal use on or off resyncs the public map', async () => {
   await trigger({ ...office, notes: 'a' }, { ...office, notes: 'b' });
   assert.equal(inMemory.read(`publicFacilityMaps/${MAP_SLUG}`)?.inventorySyncedAt, undefined);
 });
+
+test('a unit type the owner has not opened to online rental is not rentable', async () => {
+  const inMemory = new InMemoryFirestore();
+  seedPublishedMap(inMemory);
+  inMemory.seed(`facilities/${MAP_FACILITY}/settings/public`, { enabledPublicUnitTypes: [' standard '] });
+  inMemory.seed(`facilities/${MAP_FACILITY}/units/A2`, {
+    unitNumber: 'A2', status: 'available', unitType: 'vehicle',
+  });
+
+  const units = await publishedUnits(inMemory);
+
+  // Read through the shared helper (functions-shared enabledOnlineUnitTypes,
+  // entries trimmed), so the map and the hold callables agree on the types.
+  assert.equal(units.A1.isRentable, true);
+  assert.equal(units.A2.isRentable, false);
+});

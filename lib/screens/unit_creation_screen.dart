@@ -9,6 +9,26 @@ import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
+/// The amount typed into a unit's rate, deposit or size field, or null when
+/// it is not a finite number of at least zero.
+///
+/// double.tryParse accepts 'Infinity', 'NaN' and '1e999', and neither
+/// infinity nor NaN is below zero, so the editor saved them. UnitModel reads
+/// a stored non-finite rate back as 0, so the unit went on the public map at
+/// $0 (and, before that read, made fitUnitsToDocument's jsonEncode throw).
+double? parseUnitAmount(String value) {
+  final amount = double.tryParse(value.trim());
+  if (amount == null || !amount.isFinite || amount < 0) return null;
+  return amount;
+}
+
+/// [message] when an optional amount field holds something other than a
+/// valid amount ([parseUnitAmount]); null when it is empty or valid.
+String? _optionalAmountError(String? value, String message) {
+  if (value == null || value.trim().isEmpty) return null;
+  return parseUnitAmount(value) == null ? message : null;
+}
+
 class UnitCreationScreen extends ConsumerStatefulWidget {
   final String facilityId;
   final UnitModel? unit; // For editing existing unit
@@ -41,6 +61,11 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   List<String> _selectedFeatures = [];
   bool _publicListingEnabled = true;
   bool _internalUse = false;
+
+  /// The listing switch as it was when Internal use was turned on in this
+  /// edit, so turning Internal use back off puts it back. Null when Internal
+  /// use was not turned on here (it was already on, or is off).
+  bool? _listingBeforeInternalUse;
   bool _isLoading = false;
   String? _errorMessage;
   bool _isBulkCreateMode = false;
@@ -512,8 +537,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                           value.trim().isEmpty) {
                                         return 'Monthly rate is required';
                                       }
-                                      final rate = double.tryParse(value);
-                                      if (rate == null || rate < 0) {
+                                      if (parseUnitAmount(value) == null) {
                                         return 'Please enter a valid monthly rate';
                                       }
                                       return null;
@@ -530,15 +554,9 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       prefixIcon: Icon(Icons.security),
                                     ),
                                     keyboardType: TextInputType.number,
-                                    validator: (value) {
-                                      if (value != null && value.isNotEmpty) {
-                                        final deposit = double.tryParse(value);
-                                        if (deposit == null || deposit < 0) {
-                                          return 'Please enter a valid security deposit';
-                                        }
-                                      }
-                                      return null;
-                                    },
+                                    validator: (value) =>
+                                        _optionalAmountError(value,
+                                            'Please enter a valid security deposit'),
                                   ),
                                 ),
                               ],
@@ -580,6 +598,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Width (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid width'),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -590,6 +610,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Depth/Length (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid depth'),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -600,6 +622,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                       labelText: 'Height (ft)',
                                     ),
                                     keyboardType: TextInputType.number,
+                                    validator: (value) => _optionalAmountError(
+                                        value, 'Enter a valid height'),
                                   ),
                                 ),
                               ],
@@ -730,18 +754,28 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                             SwitchListTile.adaptive(
                               contentPadding: EdgeInsets.zero,
                               title: const Text('List on public website'),
-                              subtitle: const Text(
-                                'Turn off to keep this unit off your public website and '
-                                'online rentals. It still counts in your occupancy.',
+                              subtitle: Text(
+                                _internalUse
+                                    ? 'Internal-use space is never offered online. '
+                                        'Turn off Internal use to list this unit.'
+                                    : 'Turn off to keep this unit off your public website and '
+                                        'online rentals. It still counts in your occupancy.',
                               ),
-                              value: _publicListingEnabled,
-                              onChanged: (enabled) {
-                                if (mounted) {
-                                  setState(() {
-                                    _publicListingEnabled = enabled;
-                                  });
-                                }
-                              },
+                              // Shown off and locked while Internal use is on:
+                              // the website shows internal-use units as
+                              // unavailable and online rentals refuse them
+                              // whatever this says, so it could be turned on
+                              // here with no effect.
+                              value: _publicListingEnabled && !_internalUse,
+                              onChanged: _internalUse
+                                  ? null
+                                  : (enabled) {
+                                      if (mounted) {
+                                        setState(() {
+                                          _publicListingEnabled = enabled;
+                                        });
+                                      }
+                                    },
                             ),
                             const SizedBox(height: 8),
                             SwitchListTile.adaptive(
@@ -759,12 +793,24 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                 if (mounted) {
                                   setState(() {
                                     _internalUse = enabled;
-                                    // Space that is not rented is not
-                                    // offered online either: the public map
-                                    // and the online rental callables refuse
-                                    // internal-use units whatever the
-                                    // listing switch says.
-                                    if (enabled) _publicListingEnabled = false;
+                                    if (enabled) {
+                                      // Space that is not rented is not
+                                      // offered online either: the public map
+                                      // and the online rental callables refuse
+                                      // internal-use units whatever the
+                                      // listing switch says.
+                                      _listingBeforeInternalUse =
+                                          _publicListingEnabled;
+                                      _publicListingEnabled = false;
+                                    } else if (_listingBeforeInternalUse !=
+                                        null) {
+                                      // Turned on and off again in this edit:
+                                      // it used to leave a listed unit
+                                      // quietly off the website.
+                                      _publicListingEnabled =
+                                          _listingBeforeInternalUse!;
+                                      _listingBeforeInternalUse = null;
+                                    }
                                   });
                                 }
                               },
@@ -1313,14 +1359,42 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           }
         }
 
+        // A tenant picked for a unit they don't hold yet is assigned through
+        // UnitService.assignTenantToUnit, after the fields below are saved
+        // (so this unit's rate as saved here is the one added to theirs).
+        // Written here with the unit, the tenant was never billed for it.
+        final previous = widget.unit!;
+        final assigning = finalTenantId != null &&
+            finalTenantId.isNotEmpty &&
+            !(previous.tenantId == finalTenantId &&
+                previous.status != UnitStatus.available);
+        final holder = previous.tenantId?.trim() ?? '';
+        if (assigning &&
+            holder.isNotEmpty &&
+            previous.status != UnitStatus.available) {
+          // Overwriting the link left the tenant in it billed for a unit
+          // someone else now had.
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Unit ${previous.unitNumber} is assigned to '
+                  '${previous.tenantName ?? 'another tenant'}. Nothing was '
+                  'saved. Unassign them first (Units > unit '
+                  '${previous.unitNumber} > Unassign Tenant), then assign '
+                  '${finalTenantName ?? 'the new tenant'}.';
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+
         await UnitService.updateUnit(
           facilityId: widget.facilityId,
           unitId: widget.unit!.id,
           unitNumber: _unitNumberController.text.trim(),
           unitType: _selectedUnitType,
-          status: _selectedStatus,
-          tenantId: finalTenantId,
-          tenantName: finalTenantName,
+          status: assigning ? null : _selectedStatus,
+          tenantId: assigning ? null : finalTenantId,
+          tenantName: assigning ? null : finalTenantName,
           monthlyRate: double.parse(_monthlyRateController.text),
           securityDeposit: _securityDepositController.text.trim().isEmpty
               ? null
@@ -1336,13 +1410,32 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           publicListingEnabled: _publicListingEnabled,
           internalUse: _internalUse,
         );
+        final notice = assigning
+            ? await UnitService.assignTenantToUnit(
+                facilityId: widget.facilityId,
+                unitId: previous.id,
+                tenantId: finalTenantId,
+                tenantName: finalTenantName ?? '',
+                status: _selectedStatus,
+              )
+            : null;
 
         if (mounted) {
+          // The tenant's new rent, or a request to check it.
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unit updated successfully!')),
+            SnackBar(
+              content: Text(notice == null
+                  ? 'Unit updated successfully!'
+                  : 'Unit updated. $notice'),
+              duration: Duration(seconds: notice == null ? 4 : 10),
+            ),
           );
           // Invalidate providers to refresh unit lists
           ref.invalidate(facilityUnitsProvider(widget.facilityId));
+          if (assigning) {
+            ref.invalidate(
+                tenant_provider.facilityTenantsProvider(widget.facilityId));
+          }
           Navigator.of(context).pop();
         }
       }

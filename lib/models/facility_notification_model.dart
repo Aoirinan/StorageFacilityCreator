@@ -5,6 +5,11 @@ enum FacilityNotificationType {
   autopayEnabled,
   autopayRequested,
   stripeActionRequired,
+
+  /// A renter who had paid online was moved into a unit taken off online
+  /// rental after they reserved it (functions-public-website
+  /// onlineMoveInReview.ts). Shown by OnlineMoveInReviewBanner.
+  onlineMoveInReview,
 }
 
 extension FacilityNotificationTypeX on FacilityNotificationType {
@@ -18,6 +23,8 @@ extension FacilityNotificationTypeX on FacilityNotificationType {
         return 'AUTOPAY_REQUESTED';
       case FacilityNotificationType.stripeActionRequired:
         return 'STRIPE_ACTION_REQUIRED';
+      case FacilityNotificationType.onlineMoveInReview:
+        return 'ONLINE_MOVE_IN_REVIEW';
     }
   }
 
@@ -31,6 +38,8 @@ extension FacilityNotificationTypeX on FacilityNotificationType {
         return FacilityNotificationType.autopayRequested;
       case 'STRIPE_ACTION_REQUIRED':
         return FacilityNotificationType.stripeActionRequired;
+      case 'ONLINE_MOVE_IN_REVIEW':
+        return FacilityNotificationType.onlineMoveInReview;
       default:
         return FacilityNotificationType.autopayRequested;
     }

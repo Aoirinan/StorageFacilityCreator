@@ -1,0 +1,113 @@
+{
+  "about": "rentAfterUnitChange cases run by functions-tenant-lifecycle (moveOutTenantFields.test.ts) and the app (test/tenant_delete_guard_test.dart). Units are [unitNumber, monthlyRate]. Change the rule on one side, change the other and add a case here.",
+  "cases": [
+    {
+      "name": "the sum rule holds: the freed unit comes off",
+      "current": 250,
+      "heldBefore": [["101", 100], ["102", 150]],
+      "released": [["101", 100]],
+      "added": null,
+      "monthlyRate": 150,
+      "notice": "Monthly rent is now $150.00 for unit 102."
+    },
+    {
+      "name": "one rate for two units (from before the rule): left alone, and the owner is asked to check",
+      "current": 100,
+      "heldBefore": [["101", 100], ["102", 150]],
+      "released": [["101", 100]],
+      "added": null,
+      "monthlyRate": null,
+      "notice": "Check Ada Park's rent: they now hold unit 102; their rent is $100.00."
+    },
+    {
+      "name": "a rate that already is the rest: left alone, nothing to check",
+      "current": 100,
+      "heldBefore": [["101", 100], ["102", 150]],
+      "released": [["102", 150]],
+      "added": null,
+      "monthlyRate": null,
+      "notice": null
+    },
+    {
+      "name": "the sum rule holds: an added unit's rate is added",
+      "current": 100,
+      "heldBefore": [["101", 100]],
+      "released": [],
+      "added": ["102", 150],
+      "monthlyRate": 250,
+      "notice": "Monthly rent is now $250.00 for units 101 and 102."
+    },
+    {
+      "name": "a prorated first month is not the sum: nothing added, check",
+      "current": 35,
+      "heldBefore": [["101", 100]],
+      "released": [],
+      "added": ["102", 150],
+      "monthlyRate": null,
+      "notice": "Check Ada Park's rent: they now hold units 101 and 102; their rent is $35.00."
+    },
+    {
+      "name": "a first unit for a tenant at 0 sets it",
+      "current": 0,
+      "heldBefore": [],
+      "released": [],
+      "added": ["7", 80],
+      "monthlyRate": 80,
+      "notice": "Monthly rent is now $80.00 for unit 7."
+    },
+    {
+      "name": "a first unit for a tenant with another rate: check",
+      "current": 100,
+      "heldBefore": [],
+      "released": [],
+      "added": ["7", 80],
+      "monthlyRate": null,
+      "notice": "Check Ada Park's rent: they now hold unit 7; their rent is $100.00."
+    },
+    {
+      "name": "a first unit at the tenant's rate: nothing to do",
+      "current": 80,
+      "heldBefore": [],
+      "released": [],
+      "added": ["7", 80],
+      "monthlyRate": null,
+      "notice": null
+    },
+    {
+      "name": "never 0 while they hold a unit",
+      "current": 100,
+      "heldBefore": [["101", 100], ["102", 0]],
+      "released": [["101", 100]],
+      "added": null,
+      "monthlyRate": null,
+      "notice": "Check Ada Park's rent: they now hold unit 102; their rent is $100.00."
+    },
+    {
+      "name": "rounded to the cent",
+      "current": 250.3,
+      "heldBefore": [["101", 100.1], ["102", 150.2]],
+      "released": [],
+      "added": ["103", 0.35],
+      "monthlyRate": 250.65,
+      "notice": "Monthly rent is now $250.65 for units 101, 102 and 103."
+    },
+    {
+      "name": "freed and added together (Edit Tenant)",
+      "current": 250,
+      "heldBefore": [["101", 100], ["103", 150]],
+      "released": [["101", 100]],
+      "added": ["102", 120],
+      "monthlyRate": 270,
+      "notice": "Monthly rent is now $270.00 for units 103 and 102."
+    },
+    {
+      "name": "their last unit: nothing to say, the rate is kept as history",
+      "current": 100,
+      "heldBefore": [["101", 100]],
+      "released": [["101", 100]],
+      "added": null,
+      "monthlyRate": null,
+      "notice": null
+    }
+  ]
+}

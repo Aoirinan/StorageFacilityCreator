@@ -302,4 +302,13 @@ export {
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
 
-export { isUnitOfferedOnline } from './units/onlineRental';
+export type { UnitNotOfferedReason } from './units/onlineRental';
+export {
+  enabledOnlineUnitTypes,
+  isArchivedForOnlineRental,
+  isInternalUseUnit,
+  isUnitOfferedOnline,
+  isUnitTypeOfferedOnline,
+  isUnlistedUnit,
+  unitNotOfferedOnlineReason,
+} from './units/onlineRental';

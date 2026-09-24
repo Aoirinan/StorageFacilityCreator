@@ -33,6 +33,7 @@ const RESERVATION_PATH = `publicReservations/${RESERVATION}`;
 const MINUTE = 60 * 1000;
 const EXPIRED = 'Reservation has expired';
 const NOT_AVAILABLE = 'Unit is not currently available';
+const OTHER_RESERVATION = 'This payment was made for a different reservation. Contact the facility.';
 
 /** Stripe Connect is set up, so the move-in is paid through Checkout. */
 const FACILITY_DATA = {
@@ -70,7 +71,12 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, paymentMetadata: Record<s
         paymentIntents: {
           retrieve: async () => {
             stripeCalls.push({ method: 'paymentIntents.retrieve' });
-            return { amount_received: quoteCents(inMemory), status: 'succeeded', metadata: paymentMetadata };
+            return {
+              id: 'pi_hold',
+              amount_received: quoteCents(inMemory),
+              status: 'succeeded',
+              metadata: paymentMetadata,
+            };
           },
         },
       }) as unknown as ReturnType<typeof shared.getStripeClient>,
@@ -298,16 +304,19 @@ test('a renter who paid finishes the move-in after their hold lapsed', async () 
   assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
 });
 
-for (const [why, metadata] of [
-  ['made for another reservation', { reservationId: 'res-other' }],
-  ['that names no reservation', {}],
-] as Array<[string, Record<string, string>]>) {
+for (const [why, metadata, refusal] of [
+  // Refused for any move-in, lapsed or not, by the one-payment-one-move-in check.
+  ['made for another reservation', { reservationId: 'res-other' }, OTHER_RESERVATION],
+  // Accepted for a live hold, since payments taken before checkout tagged
+  // them name no reservation, but not to finish after the hold lapsed.
+  ['that names no reservation', {}, EXPIRED],
+] as Array<[string, Record<string, string>, string]>) {
   test(`a payment ${why} does not finish a move-in whose hold lapsed`, async () => {
     const inMemory = new InMemoryFirestore();
     seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 120, checkoutStarted: true });
     const { complete } = loadPublicMoveIn(inMemory, metadata);
 
-    await assert.rejects(() => complete(), refusedWith(EXPIRED));
+    await assert.rejects(() => complete(), refusedWith(refusal));
 
     assertNoMoveIn(inMemory);
   });
