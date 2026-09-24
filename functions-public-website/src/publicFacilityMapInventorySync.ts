@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import { isUnitOfferedOnline } from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
 const INVENTORY_KEYS = [
@@ -14,6 +15,7 @@ const INVENTORY_KEYS = [
   'archived',
   'isActive',
   'publicListingEnabled',
+  'internalUse',
 ];
 
 function slugify(raw: string): string {
@@ -147,13 +149,18 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
     const statusAllowsRental = st === 'available' || st === 'reserved';
     const publicListingEnabled = d.publicListingEnabled !== false;
+    // The online rental callables rent only what isUnitOfferedOnline allows:
+    // listed and not internal use. This looked at the listing switch alone, so
+    // an office or residence left listed was advertised as rentable and then
+    // refused at the hold. Keep in step with buildPublicUnitInventoryMaps.
+    const offeredOnline = isUnitOfferedOnline(d);
     const isRentable =
       statusAllowsRental &&
       !hasTenantLink &&
       !claimedByActiveTenant &&
       isPubliclyEnabledType &&
-      publicListingEnabled;
-    const publicStatus = !publicListingEnabled
+      offeredOnline;
+    const publicStatus = !offeredOnline
       ? 'unavailable'
       : hasTenantLink || claimedByActiveTenant
       ? 'rented'
