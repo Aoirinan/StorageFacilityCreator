@@ -204,10 +204,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Move-out completed successfully${result.refund != null && result.refund! > 0 ? '\nRefund: \$${result.refund!.toStringAsFixed(2)}' : ''}',
+                'Move-out completed successfully${result.refund != null && result.refund! > 0 ? '\nRefund: \$${result.refund!.toStringAsFixed(2)}' : ''}'
+                '${result.warning != null ? '\n${result.warning}' : ''}',
               ),
-              backgroundColor: AppTheme.success,
-              duration: const Duration(seconds: 5),
+              backgroundColor: result.warning != null ? AppTheme.warning : AppTheme.success,
+              duration: Duration(seconds: result.warning != null ? 15 : 5),
             ),
           );
         }

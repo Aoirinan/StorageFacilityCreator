@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +18,43 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+
+/// Whether the unit menu offers Remove Lockout. Not only on occupied units:
+/// Set Lockout moves the unit to lockout status, and the tenant-archive and
+/// delete refusals send the owner here to remove it before unassigning.
+@visibleForTesting
+bool unitOffersRemoveLockout(UnitModel unit) =>
+    (unit.isOccupied && unit.isOverlocked) ||
+    unit.status == UnitStatus.lockout ||
+    unit.status == UnitStatus.overlocked;
+
+/// The status Remove Lockout leaves: occupied while a tenant holds the unit,
+/// available when none does. It always said occupied, and Remove Lockout is
+/// now offered on any locked-out unit, so a unit with no tenant was counted
+/// as rented.
+@visibleForTesting
+UnitStatus statusAfterRemovingLockout(UnitModel unit) =>
+    (unit.tenantId ?? '').trim().isEmpty
+        ? UnitStatus.available
+        : UnitStatus.occupied;
+
+/// What the unit screen reads for its tenant and writes for Remove Lockout.
+/// A provider so widget tests can open the real menu without Firebase.
+class UnitDetailActions {
+  const UnitDetailActions();
+
+  Future<TenantModel?> tenant(String facilityId, String tenantId) =>
+      TenantService.getTenantById(facilityId, tenantId);
+
+  Future<double> balance(String facilityId, String tenantId) =>
+      LedgerService.getLedgerBalance(tenantId: tenantId, facilityId: facilityId);
+
+  Future<void> setStatus(String facilityId, String unitId, UnitStatus status) =>
+      UnitService.updateUnit(facilityId: facilityId, unitId: unitId, status: status);
+}
+
+final unitDetailActionsProvider =
+    Provider<UnitDetailActions>((ref) => const UnitDetailActions());
 
 class UnitDetailScreen extends ConsumerStatefulWidget {
   final String facilityId;
@@ -79,7 +118,8 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
       // Load tenant if unit is occupied
       if (_unit!.tenantId != null && _unit!.tenantId!.isNotEmpty) {
-        final tenant = await TenantService.getTenantById(widget.facilityId, _unit!.tenantId!);
+        final actions = ref.read(unitDetailActionsProvider);
+        final tenant = await actions.tenant(widget.facilityId, _unit!.tenantId!);
         setState(() {
           _tenant = tenant;
         });
@@ -87,10 +127,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         // Load balance for occupied units
         if (tenant != null) {
           try {
-            final balance = await LedgerService.getLedgerBalance(
-              tenantId: tenant.id,
-              facilityId: widget.facilityId,
-            );
+            final balance = await actions.balance(widget.facilityId, tenant.id);
             setState(() {
               _balance = balance;
             });
@@ -224,16 +261,19 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                       contentPadding: EdgeInsets.zero,
                     ),
                   ),
-                if (_unit!.isOverlocked)
-                  const PopupMenuItem(
-                    value: 'remove_lockout',
-                    child: ListTile(
-                      leading: Icon(Icons.lock_open, color: Colors.green),
-                      title: Text('Remove Lockout'),
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
               ],
+              // Outside the occupied block: Set Lockout moves the unit to
+              // lockout status, so Remove Lockout vanished the moment it was
+              // needed, and the tenant could not be unassigned either.
+              if (unitOffersRemoveLockout(_unit!))
+                const PopupMenuItem(
+                  value: 'remove_lockout',
+                  child: ListTile(
+                    leading: Icon(Icons.lock_open, color: Colors.green),
+                    title: Text('Remove Lockout'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
               if (!_unit!.isOccupied) ...[
                 const PopupMenuItem(
                   value: 'reserve_unit',
@@ -442,7 +482,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color, width: 1.5),
       ),
@@ -655,6 +695,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       );
 
       if (dnrMatches.isNotEmpty) {
+        if (!mounted) return;
         // Show DNR warning dialog
         final override = await showDialog<bool>(
           context: context,
@@ -671,7 +712,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                 ...dnrMatches.take(3).map((dnr) => Padding(
                   padding: const EdgeInsets.only(bottom: 8.0),
                   child: Text(
-                    '• ${dnr.name} - ${dnr.reason ?? "No reason provided"}',
+                    '• ${dnr.name} - ${dnr.reason}',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 )),
@@ -793,7 +834,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
               backgroundColor: AppTheme.success,
             ),
           );
-          _loadUnit();
+          unawaited(_loadUnit());
         }
       } catch (e) {
         if (mounted) {
@@ -853,7 +894,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
               backgroundColor: AppTheme.success,
             ),
           );
-          _loadUnit(); // Refresh
+          unawaited(_loadUnit()); // Refresh
         }
       } catch (e) {
         if (mounted) {
@@ -961,7 +1002,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
               backgroundColor: AppTheme.success,
             ),
           );
-          _loadUnit(); // Refresh balance
+          unawaited(_loadUnit()); // Refresh balance
         }
       } catch (e) {
         if (mounted) {
@@ -1017,7 +1058,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        _loadUnit(); // Refresh
+        unawaited(_loadUnit()); // Refresh
       }
     } catch (e) {
       if (mounted) {
@@ -1033,11 +1074,11 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 
   Future<void> _removeLockout() async {
     try {
-      await UnitService.updateUnit(
-        facilityId: widget.facilityId,
-        unitId: widget.unitId,
-        status: UnitStatus.occupied,
-      );
+      await ref.read(unitDetailActionsProvider).setStatus(
+            widget.facilityId,
+            widget.unitId,
+            statusAfterRemovingLockout(_unit!),
+          );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1046,7 +1087,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
             backgroundColor: AppTheme.success,
           ),
         );
-        _loadUnit(); // Refresh
+        unawaited(_loadUnit()); // Refresh
       }
     } catch (e) {
       if (mounted) {

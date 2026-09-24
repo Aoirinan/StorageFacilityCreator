@@ -24,8 +24,10 @@
         facilityInviteRoleMergeAllowed(facilityId)
       );
       
-      // Allow delete only by owner
-      allow delete: if request.auth != null && 
-        resource.data.ownerUid == request.auth.uid;
+      // Owners delete through the deleteFacilityPermanently callable, which
+      // removes the whole subtree. The app's own delete skipped subcollections
+      // it couldn't delete (tenants among them) and then deleted this doc,
+      // leaving tenant records with no facility.
+      allow delete: if isSuperAdmin();
       
       // Sub-collections under facilities

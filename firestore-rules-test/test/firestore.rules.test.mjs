@@ -204,6 +204,61 @@ test('outsider cannot create manual tenant payments', async () => {
   );
 });
 
+test('tenant docs: only a super admin deletes directly; owners and managers use the callable', async () => {
+  // A paid facility, so the old rule (owner or manager on a paid or trialing
+  // facility) would have allowed these deletes. They skipped the history
+  // check and orphaned the tenant's ledger, invoices and payments; now only
+  // the deleteTenantsPermanently callable deletes for owners and managers.
+  const MANAGER_UID = 'manager-user';
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      managers: { [MANAGER_UID]: true },
+      roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+      platformSubscriptionStatus: 'active',
+    });
+    await db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).set({
+      facilityId: FACILITY_ID,
+      name: 'Test Tenant',
+      isActive: true,
+    });
+  });
+  const tenantAs = (context) =>
+    context.firestore().collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID);
+
+  await assertFails(tenantAs(testEnv.authenticatedContext(OWNER_UID)).delete());
+  await assertFails(tenantAs(testEnv.authenticatedContext(MANAGER_UID)).delete());
+  await assertFails(tenantAs(testEnv.authenticatedContext(STAFF_UID)).delete());
+  await assertFails(tenantAs(testEnv.authenticatedContext(OUTSIDER_UID)).delete());
+
+  // Archive (an update) is unchanged for the owner.
+  await assertSucceeds(tenantAs(testEnv.authenticatedContext(OWNER_UID)).update({ isActive: false }));
+
+  await assertSucceeds(
+    tenantAs(testEnv.authenticatedContext('admin-user', { superadmin: true })).delete(),
+  );
+});
+
+test('facility docs: only a super admin deletes directly; owners use the callable', async () => {
+  // The app's own facility delete skipped subcollections it couldn't delete
+  // (tenants, now super-admin only) and then deleted the facility doc,
+  // leaving the tenant records behind. The deleteFacilityPermanently
+  // callable removes the whole subtree instead.
+  await seedFacility();
+  const facilityAs = (context) => context.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(facilityAs(testEnv.authenticatedContext(OWNER_UID)).delete());
+  await assertFails(facilityAs(testEnv.authenticatedContext(STAFF_UID)).delete());
+  await assertFails(facilityAs(testEnv.authenticatedContext(OUTSIDER_UID)).delete());
+  // The owner can still edit it.
+  await assertSucceeds(facilityAs(testEnv.authenticatedContext(OWNER_UID)).update({ name: 'Renamed' }));
+
+  await assertSucceeds(
+    facilityAs(testEnv.authenticatedContext('admin-user', { superadmin: true })).delete(),
+  );
+});
+
 test('unmatched collections like stripeWebhookEvents deny client access', async () => {
   const authed = testEnv.authenticatedContext(OWNER_UID);
   await assertFails(

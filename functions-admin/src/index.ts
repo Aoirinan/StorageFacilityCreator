@@ -46,6 +46,8 @@ export {
 
 export { superAdminCreateFacilityForOwner } from './superAdminCreateFacilityForOwner';
 
+export { deleteFacilityPermanently } from './deleteFacilityPermanently';
+
 export { enableStripeConnectAdmin } from './enableStripeConnectAdmin';
 
 export { getStripePublishableKey } from './getStripePublishableKey';

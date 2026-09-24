@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/utils/callable_failure.dart';
 import '../models/facility_model.dart';
 import '../models/facility_creator_account_model.dart';
 import 'permission_service.dart';
@@ -1035,121 +1037,50 @@ class FacilityService {
     return await deleteFacility(facilityId);
   }
 
-  // Delete facility permanently (hard delete)
-  static Future<void> deleteFacility(String facilityId) async {
+  // Delete facility permanently (hard delete). The deleteFacilityPermanently
+  // callable (functions-admin) checks the caller owns it and has just
+  // entered the email code, stops its billing, and removes the whole
+  // subtree. The app used to delete subcollection by subcollection, carry on
+  // past any it couldn't, and then delete the facility doc, leaving tenant
+  // records (names, ID numbers, portal codes) behind. [callable] is for tests.
+  static Future<void> deleteFacility(
+    String facilityId, {
+    Future<Object?> Function(Map<String, Object?> payload)? callable,
+  }) async {
+    if (kDebugMode) {
+      _facilityServiceDebugLog('🔄 Deleting facility permanently: $facilityId');
+    }
     try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Not signed in');
-      }
-
-      // First verify ownership
-      final facility = await getFacility(facilityId);
-      if (facility == null) {
-        throw Exception('Facility not found or access denied');
-      }
-
+      await (callable ?? _callDeleteFacilityPermanently)(
+          {'facilityId': facilityId});
+    } on FirebaseFunctionsException catch (e) {
       if (kDebugMode) {
-        _facilityServiceDebugLog('🔄 Deleting facility permanently: $facilityId');
+        _facilityServiceDebugLog('❌ Error deleting facility: ${e.code} ${e.message}');
       }
-
-      // Keep account.facilityIds in sync before we delete the facility doc
-      bool accountSyncOk = false;
-      try {
-        final account = await FacilityCreatorAccountService.getOrCreateAccountForCurrentUser();
-        await FacilityCreatorAccountService.removeFacilityFromAccount(
-          accountId: account.accountId,
-          facilityId: facilityId,
-        );
-        accountSyncOk = true;
-      } catch (e) {
-        if (kDebugMode) {
-          _facilityServiceDebugLog('⚠️ Could not remove facility from account (deleting anyway): $e');
-        }
-      }
-
-      // Delete all sub-collections first (tenants, units, etc.)
-      await _deleteFacilitySubCollections(facilityId);
-
-      // Delete the facility document
-      await _firestore.collection('facilities').doc(facilityId).delete();
-
-      // Fallback: if we couldn't remove from account, reconcile now (facility is gone)
-      if (!accountSyncOk) {
-        try {
-          await FacilityCreatorAccountService.callReconcileAccountFacilityIds();
-        } catch (_) {}
-      }
-
-      if (kDebugMode) {
-        _facilityServiceDebugLog('✅ Facility deleted permanently: $facilityId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        _facilityServiceDebugLog('❌ Error deleting facility: $e');
-      }
-      rethrow;
+      throw callableFailure(
+        e,
+        permissionDenied:
+            "Only the facility's owner can delete it. Nothing was deleted.",
+        notFound:
+            "This facility wasn't found; it may already be deleted. Refresh the list.",
+        unreachable: "Couldn't reach the server, so the delete may not have "
+            'finished. Refresh the list to see what changed.',
+      );
+    }
+    if (kDebugMode) {
+      _facilityServiceDebugLog('✅ Facility deleted permanently: $facilityId');
     }
   }
 
-  // Helper method to delete all sub-collections in batches
-  static Future<void> _deleteFacilitySubCollections(String facilityId) async {
-    try {
-      final db = _firestore;
-      final base = db.collection('facilities').doc(facilityId);
-      
-      // List of subcollections to delete
-      final subcollections = [
-        'contracts',
-        'dnr',
-        'payments',
-        'oldTenants',
-        'tenants',
-        'units',
-        'map',
-        'reminders',
-        'unitTypes',
-      ];
-      
-      // Delete each subcollection in batches
-      for (final subcollection in subcollections) {
-        await _deleteSubcollectionInBatches(base, subcollection);
-      }
-
-      if (kDebugMode) {
-        _facilityServiceDebugLog('✅ All sub-collections deleted for facility: $facilityId');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        _facilityServiceDebugLog('❌ Error deleting sub-collections: $e');
-      }
-      rethrow;
-    }
-  }
-
-  // Helper method to delete a subcollection in batches of 200
-  static Future<void> _deleteSubcollectionInBatches(DocumentReference base, String subcollection) async {
-    try {
-      while (true) {
-        final snapshot = await base.collection(subcollection).limit(200).get();
-        if (snapshot.docs.isEmpty) break;
-        
-        final batch = _firestore.batch();
-        for (final doc in snapshot.docs) {
-          batch.delete(doc.reference);
-        }
-        await batch.commit();
-        
-        if (kDebugMode) {
-          _facilityServiceDebugLog('🔄 Deleted batch of ${snapshot.docs.length} documents from $subcollection');
-        }
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        _facilityServiceDebugLog('❌ Error deleting subcollection $subcollection: $e');
-      }
-      // Continue with other subcollections even if one fails
-    }
+  static Future<Object?> _callDeleteFacilityPermanently(
+      Map<String, Object?> payload) async {
+    final result = await FirebaseFunctions.instance
+        .httpsCallable(
+          'deleteFacilityPermanently',
+          options: HttpsCallableOptions(timeout: const Duration(minutes: 9)),
+        )
+        .call<dynamic>(payload);
+    return result.data;
   }
 
 }

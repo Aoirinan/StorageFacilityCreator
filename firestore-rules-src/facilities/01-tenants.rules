@@ -1,9 +1,11 @@
       match /tenants/{tenantId} {
         allow read: if canReadFacilityCalendarAndLists(facilityId);
         allow create, update: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
-        allow delete: if isSuperAdmin() || (
-          isFacilityOwnerOrManager(facilityId) && facilityAllowsPermanentTenantDelete(facilityId)
-        );
+        // Owners and managers delete through the deleteTenantsPermanently
+        // callable, which refuses tenants with billing or legal history or a
+        // unit. A direct delete (an old app tab, the API) skipped that check
+        // and orphaned the tenant's ledger, invoices and payments.
+        allow delete: if isSuperAdmin();
 
         // Per-tenant insurance docs (InsuranceService: tenants/{tenantId}/insurance)
         match /insurance/{insuranceId} {

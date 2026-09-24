@@ -434,6 +434,26 @@ class UnitService {
     }
   }
 
+  /// The unit fields [removeTenantFromUnit] writes: tenant fields deleted,
+  /// status available. Shared so a batched unlink (tenant delete) makes the
+  /// same change as Unassign Tenant.
+  static Map<String, dynamic> tenantUnlinkFields({
+    required String updatedBy,
+    DateTime? moveOutDate,
+  }) {
+    return <String, dynamic>{
+      'status': UnitStatus.available.name,
+      'tenantId': FieldValue.delete(),
+      'tenantName': FieldValue.delete(),
+      'moveInDate': FieldValue.delete(),
+      'moveOutDate': moveOutDate != null
+          ? Timestamp.fromDate(moveOutDate)
+          : FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'updatedBy': updatedBy,
+    };
+  }
+
   // Remove tenant from unit
   static Future<void> removeTenantFromUnit({
     required String facilityId,
@@ -450,18 +470,8 @@ class UnitService {
         print('🔄 Removing tenant from unit $unitId');
       }
 
-      // Explicitly delete tenant fields and set status to available
-      final updateData = <String, dynamic>{
-        'status': UnitStatus.available.name,
-        'tenantId': FieldValue.delete(),
-        'tenantName': FieldValue.delete(),
-        'moveInDate': FieldValue.delete(),
-        'moveOutDate': moveOutDate != null 
-            ? Timestamp.fromDate(moveOutDate) 
-            : FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'updatedBy': user.uid,
-      };
+      final updateData =
+          tenantUnlinkFields(updatedBy: user.uid, moveOutDate: moveOutDate);
 
       await _firestore
           .collection('facilities')
@@ -519,6 +529,10 @@ class UnitService {
       rethrow;
     }
   }
+
+  /// For callers that change units in their own batch (tenant delete).
+  static void schedulePublicMapInventorySync(String facilityId) =>
+      _schedulePublicMapInventorySync(facilityId);
 
   static void _schedulePublicMapInventorySync(String facilityId) {
     FacilityMapV2Service.refreshPublicMapInventoryFromLiveUnits(facilityId)
