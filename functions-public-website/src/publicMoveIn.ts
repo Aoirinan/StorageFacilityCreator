@@ -21,6 +21,11 @@ import {
 } from './moveInCharges';
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
+import {
+  CHECKOUT_SESSION_ID_FIELD,
+  recordCheckoutSession,
+  reusableCheckoutSession,
+} from './checkoutSessionReuse';
 import { generateAccessCode } from './accessCode';
 import { createAutopayNotificationAndEvent } from './autopayNotification';
 import { resolveSmsConsentFields } from './smsConsent';
@@ -743,6 +748,26 @@ export const createPublicMoveInCheckout = functions
 
   try {
     const stripe = getStripeClient();
+    // After every check above, so a session is handed back only for a unit
+    // that can still be rented. One payable session per reservation
+    // (checkoutSessionReuse.ts).
+    const sessionLookup = {
+      reservationId: String(reservationId),
+      cents,
+      stripeAccount: connectAccountId,
+      now: new Date(),
+    };
+    const reusable = await reusableCheckoutSession(
+      stripe.checkout.sessions,
+      reservation[CHECKOUT_SESSION_ID_FIELD],
+      sessionLookup,
+    );
+    if (reusable) {
+      return {
+        checkoutUrl: reusable.url,
+        sessionId: reusable.id,
+      };
+    }
     const session = await stripe.checkout.sessions.create(
       {
         mode: 'payment',
@@ -796,9 +821,17 @@ export const createPublicMoveInCheckout = functions
       );
     }
 
+    // Recorded before its link is handed out, so the next press finds it.
+    const payable = await recordCheckoutSession(
+      stripe.checkout.sessions,
+      reservationRef,
+      reservation[CHECKOUT_SESSION_ID_FIELD],
+      { id: session.id, url: session.url },
+      sessionLookup,
+    );
     return {
-      checkoutUrl: session.url,
-      sessionId: session.id,
+      checkoutUrl: payable.url,
+      sessionId: payable.id,
     };
   } catch (err: unknown) {
     if (err instanceof functions.https.HttpsError) {
