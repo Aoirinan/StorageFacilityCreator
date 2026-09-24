@@ -64,6 +64,13 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       TextEditingController();
   bool _publicRentalsEnabled = false;
   bool _websiteEnabled = false;
+  // Whether the facility has the website add-on. Starts from the facility
+  // this screen opened with and is re-read on return from Website Setup,
+  // where the add-on is bought.
+  late bool _websiteEntitled = widget.facility.hasActiveWebsiteSubscription;
+  // The slug as last read from the saved settings, so a return from Website
+  // Setup can tell whether the slug was changed there.
+  String? _savedSlug;
   bool _publicPricingEnabled = true;
   bool _publicUnitNumbersEnabled = true;
   bool _allowAutoAssign = true;
@@ -170,6 +177,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _hideUnavailableTypes = settings.hideUnavailableTypes;
         _enabledPublicUnitTypes = settings.enabledPublicUnitTypes.toSet();
         _publicRentalSlugController.text = safeSlug;
+        _savedSlug = safeSlug;
         _publicSettingsLoaded = true;
         _isLoadingPublicSettings = false;
       });
@@ -232,6 +240,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       if (!mounted) return;
       setState(() {
         _publicRentalSlugController.text = slug;
+        _savedSlug = slug;
         _isSavingPublicSettings = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -249,16 +258,39 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     }
   }
 
-  /// Opens Website Setup, where the public website is switched, then
-  /// re-reads only the website setting: a full [_loadPublicRentalSettings]
-  /// would drop unsaved rental edits here.
+  /// Opens Website Setup, where the public website is switched and the
+  /// add-on bought, then re-reads what can change there: the website
+  /// setting, the add-on, and the public URL name, which Website Setup also
+  /// edits. A full [_loadPublicRentalSettings] would drop unsaved rental
+  /// edits here, and keeping the old URL name would put it back on the next
+  /// save here.
   Future<void> _openWebsiteSetup() async {
     await context
         .push('${AppRoute.websiteSetup}?facilityId=${widget.facility.id}');
-    final settings =
-        await FacilityPublicService.getPublicSettings(widget.facility.id);
-    if (!mounted || settings == null) return;
-    setState(() => _websiteEnabled = settings.enabled);
+    final settingsFuture =
+        FacilityPublicService.getPublicSettings(widget.facility.id);
+    final facilityFuture = FacilityService.getFacility(widget.facility.id)
+        .then<FacilityModel?>((f) => f, onError: (_) => null);
+    final settings = await settingsFuture;
+    final facility = await facilityFuture;
+    if (!mounted) return;
+    setState(() {
+      if (facility != null) {
+        _websiteEntitled = facility.hasActiveWebsiteSubscription;
+      }
+      if (settings == null) return;
+      _websiteEnabled = settings.enabled;
+      final storedSlug = settings.publicRentalSlug?.trim();
+      // Take a URL name changed in Website Setup, unless the owner has
+      // an unsaved one typed here.
+      if (storedSlug != null &&
+          storedSlug.isNotEmpty &&
+          storedSlug != _savedSlug &&
+          _publicRentalSlugController.text.trim() == _savedSlug) {
+        _publicRentalSlugController.text = storedSlug;
+        _savedSlug = storedSlug;
+      }
+    });
   }
 
   /// Shown, not switched: the website is switched in Website Setup, and
@@ -270,8 +302,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   /// open the rental portal (PublicRentalPortalScreen) directly, which does
   /// not check the website setting.
   Widget _buildWebsiteStatus() {
-    final websiteLive =
-        _websiteEnabled && widget.facility.hasActiveWebsiteSubscription;
+    final websiteLive = _websiteEnabled && _websiteEntitled;
     final String title;
     final String subtitle;
     if (websiteLive) {
