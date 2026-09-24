@@ -61,6 +61,55 @@ abstract final class StaysCallableNames {
   ];
 }
 
+/// A caller's role in Stays (STAY_ROLES); role_not_allowed errors name one in details.role.
+abstract final class StayRoles {
+  static const String owner = 'owner';
+  static const String manager = 'manager';
+  static const String employee = 'employee';
+  static const String viewer = 'viewer';
+  static const List<String> all = [owner, manager, employee, viewer];
+}
+
+/// StaysWarning.code values (STAYS_WARNING_CODES). A code the app does not
+/// know is shown by its message alone.
+abstract final class StaysWarningCodes {
+  static const String facilityTimezoneMismatch = 'facility_timezone_mismatch';
+  static const String shortLead = 'short_lead';
+  static const String softNights = 'soft_nights';
+  static const String freshSyncFailed = 'fresh_sync_failed';
+  static const String freshSyncSkipped = 'fresh_sync_skipped';
+  static const String overCapacity = 'over_capacity';
+  static const String petsNotAllowed = 'pets_not_allowed';
+  static const String rvTooLong = 'rv_too_long';
+  static const String doNotRent = 'do_not_rent';
+  static const String orphanGap = 'orphan_gap';
+  static const String feedEmpty = 'feed_empty';
+  static const String feedSuspicious = 'feed_suspicious';
+  static const String eventsSkipped = 'events_skipped';
+  static const String recurringEventsSkipped = 'recurring_events_skipped';
+  static const String farFutureClamped = 'far_future_clamped';
+  static const String repasteRequired = 'repaste_required';
+
+  static const List<String> all = [
+    facilityTimezoneMismatch,
+    shortLead,
+    softNights,
+    freshSyncFailed,
+    freshSyncSkipped,
+    overCapacity,
+    petsNotAllowed,
+    rvTooLong,
+    doNotRent,
+    orphanGap,
+    feedEmpty,
+    feedSuspicious,
+    eventsSkipped,
+    recurringEventsSkipped,
+    farFutureClamped,
+    repasteRequired,
+  ];
+}
+
 /// In-app notification types Stays writes (STAY_NOTIFICATION_TYPES).
 abstract final class StayNotificationTypes {
   static const List<String> all = [
@@ -165,10 +214,13 @@ class StaysWarning {
 
   static List<StaysWarning> listFrom(Object? value) => stayMapList(value).map(StaysWarning.fromJson).toList();
 
-  /// e.g. 'facility_timezone_mismatch', 'short_lead'.
+  /// One of StaysWarningCodes, e.g. 'facility_timezone_mismatch'.
   final String code;
   final String message;
   final Map<String, dynamic> details;
+
+  /// Whether [code] is one this app knows.
+  bool get isKnown => StaysWarningCodes.all.contains(code);
 }
 
 Map<String, dynamic> _withoutNulls(Map<String, dynamic> map) => {

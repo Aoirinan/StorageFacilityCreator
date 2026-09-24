@@ -167,8 +167,11 @@ class StayTaxLine {
   /// Basis points, 0–3000. No rates are hardcoded anywhere; the owner enters them.
   final int rateBps;
 
-  /// 'lodging' | 'cleaning' | 'pet' | 'extra_guest'.
+  /// Some of [appliesToValues].
   final List<String> appliesTo;
+
+  /// What a tax line can apply to (TAX_APPLIES_TO).
+  static const List<String> appliesToValues = ['lodging', 'cleaning', 'pet', 'extra_guest'];
 
   Map<String, dynamic> toMap() => {
         'code': code,

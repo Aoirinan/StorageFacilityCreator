@@ -4,8 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_notification_model.dart';
 import 'package:sfcapp/models/stays/stay_controls.dart';
 import 'package:sfcapp/models/stays/stay_enums.dart';
+import 'package:sfcapp/models/stays/stay_listing.dart';
 import 'package:sfcapp/models/stays/stays_callable_models.dart';
 import 'package:sfcapp/services/stays/stays_collections.dart';
+import 'package:sfcapp/services/stays/stays_repository.dart';
 
 // The app and the Stays functions share one contract: callable names, error
 // reasons, notification types, enum wire values and collection names. The
@@ -98,6 +100,17 @@ void main() {
 
   test('the default payment methods match DEFAULT_PAYMENT_METHODS', () {
     expect(StayControls.defaultPaymentMethods.map((m) => m.wire).toList(), _tsArray('DEFAULT_PAYMENT_METHODS'));
+  });
+
+  test('the value sets beside the enums match too', () {
+    expect(StayIncomeMethod.manual.map((m) => m.wire).toList(), _tsArray('MANUAL_PAYMENT_METHODS'));
+    expect(StaySource.values.where((s) => s.isSfcBooking).map((s) => s.wire).toList(), _tsArray('SFC_BOOKING_SOURCES'));
+    expect(StaySource.values.where((s) => s.isChannel).map((s) => s.wire).toList(), _tsArray('OTA_SOURCES'));
+    expect(StayTaxLine.appliesToValues, _tsArray('TAX_APPLIES_TO'));
+    expect(StayRoles.all, _tsArray('STAY_ROLES'));
+    expect(StaysWarningCodes.all, _tsArray('STAYS_WARNING_CODES'));
+    // Every key the app quick-edits is one the writer treats as staff-owned.
+    expect(_tsArray('STAY_STAFF_FIELDS'), containsAll(stayQuickEditKeys));
   });
 
   test('collection names match STAY_COLLECTIONS', () {
