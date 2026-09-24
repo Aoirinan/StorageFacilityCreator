@@ -198,3 +198,59 @@ test('sync removes the mirror when the owner has no account left', async () => {
   assert.deepEqual(result, { facilities: 2, updated: 1 });
   assert.deepEqual(writes, [['fac_1', null]]);
 });
+
+test("an exempt owner's standing says so, and exemption alone reaches their facilities", () => {
+  // Staff of the operator's own billing-exempt accounts are let in on this
+  // copy. A standing that always said billingExempt:false, or a sync that
+  // never compared it, would lock them out.
+  const exempt = buildOwnerAccountStanding(
+    doc('acct_exempt', { subscriptionStatus: 'cancelled', billingExempt: true }),
+  );
+  assert.equal(exempt.billingExempt, true);
+  assert.equal(
+    buildOwnerAccountStanding(doc('acct_x', { subscriptionStatus: 'active', billingExempt: 'yes' })).billingExempt,
+    false,
+    'only a real true exempts',
+  );
+  assert.equal(sameOwnerAccountStanding({ ...exempt, billingExempt: false }, exempt), false);
+  assert.equal(sameOwnerAccountStanding({ ...exempt }, exempt), true);
+});
+
+test('a trial extension reaches the facilities: the trial end is compared', () => {
+  const standing = buildOwnerAccountStanding(
+    doc('acct_1', { subscriptionStatus: 'trialing', subscriptionTrialEnd: ts('2026-10-01T00:00:00Z') }),
+  );
+  assert.equal(
+    sameOwnerAccountStanding({ ...standing, subscriptionTrialEnd: ts('2026-09-20T00:00:00Z') }, standing),
+    false,
+  );
+  assert.equal(sameOwnerAccountStanding({ ...standing, subscriptionTrialEnd: null }, standing), false);
+  assert.equal(
+    sameOwnerAccountStanding({ ...standing, subscriptionTrialEnd: ts('2026-10-01T00:00:00Z') }, standing),
+    true,
+  );
+});
+
+test('every account field the mirror depends on wakes the trigger', () => {
+  // Each of these changes either what the standing says (billingExempt, the
+  // paid period) or which account or facilities carry it (ownerUid, and
+  // createdAt, which picks the preferred account among duplicates).
+  const base = {
+    ownerUid: 'o',
+    subscriptionStatus: 'cancelled',
+    subscriptionCurrentPeriodEnd: ts('2026-10-01T00:00:00Z'),
+    billingExempt: false,
+    facilityIds: ['f1'],
+    createdAt: ts('2026-01-01T00:00:00Z'),
+  };
+  const changes: Array<[string, Record<string, unknown>]> = [
+    ['billingExempt', { billingExempt: true }],
+    ['subscriptionCurrentPeriodEnd', { subscriptionCurrentPeriodEnd: ts('2026-11-01T00:00:00Z') }],
+    ['subscriptionCurrentPeriodEnd removed', { subscriptionCurrentPeriodEnd: null }],
+    ['createdAt', { createdAt: ts('2025-06-01T00:00:00Z') }],
+    ['ownerUid', { ownerUid: 'o2' }],
+  ];
+  for (const [label, change] of changes) {
+    assert.equal(accountWriteAffectsStanding(base, { ...base, ...change }), true, label);
+  }
+});

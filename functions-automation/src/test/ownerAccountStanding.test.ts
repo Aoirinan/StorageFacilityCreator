@@ -118,3 +118,26 @@ test('the nightly sweep syncs each owner once and carries on past a failure', as
   assert.deepEqual(summary, { owners: 3, updated: 2, failed: 1 });
   assert.deepEqual(writes.map(([id]) => id), ['fac_1', 'fac_3']);
 });
+
+test('an account moved to another owner re-syncs both owners', async () => {
+  // The old owner's facilities must lose the standing (they have no account
+  // left), and the new owner's must gain it. Syncing only one left the other
+  // owner's staff on the wrong standing.
+  const moved = { ownerUid: 'owner-new', subscriptionStatus: 'active', createdAt: { toMillis: () => 1 } };
+  const { deps, writes } = fakeDeps(
+    { 'owner-new': [doc('acct_1', moved)] },
+    {
+      'owner-old': [doc('fac_old', { ownerAccountStanding: { accountId: 'acct_1' } })],
+      'owner-new': [doc('fac_new', {})],
+    },
+  );
+  const result = await handleAccountWriteForStanding({ ...moved, ownerUid: 'owner-old' }, moved, deps);
+  assert.deepEqual(result, { owners: 2, updated: 2 });
+  assert.deepEqual(
+    writes.map(([id, s]) => [id, s?.accountId ?? null]).sort(),
+    [
+      ['fac_new', 'acct_1'],
+      ['fac_old', null],
+    ],
+  );
+});

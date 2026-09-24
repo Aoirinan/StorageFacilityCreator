@@ -123,12 +123,14 @@ final VerifiedUserRecheck verifiedUserRecheck = VerifiedUserRecheck();
 /// navigation carries on, and the next one tries again.
 const Duration _ensureAccountTimeout = Duration(seconds: 8);
 
-/// Whether the guard makes sure the signed-in user has an owner account
+/// Whether the guard makes sure a signed-in new signup has an owner account
 /// before checking their access (see
-/// [FacilityCreatorAccountService.ensureAccountOnce], which also leaves
-/// invited staff without one). Not on public pages, not for super admins,
-/// and not before the email is verified: the account's creation sends the
-/// owner and the platform the onboarding emails.
+/// [FacilityCreatorAccountService.ensureAccountOnce] with
+/// `createOnlyForNewSignups`, which first accepts any invites addressed to
+/// their email and creates nothing for staff, the invited or an owner who
+/// already has facilities). Not on public pages, not for super admins, and
+/// not before the email is verified: the account's creation sends the owner
+/// and the platform the onboarding emails.
 bool guardEnsuresOwnerAccount({
   required bool isPublicRoute,
   required bool isSuperAdmin,
@@ -561,8 +563,10 @@ Future<String?> evaluateRouteGuard({
   // First authenticated load: a new signup gets their pendingApproval account
   // here, before the access check reads it, rather than only once they open a
   // screen that creates one (so their onboarding emails went out late, and
-  // they saw an unlocked, empty dashboard). Once per session per user; it
-  // never throws.
+  // they saw an unlocked, empty dashboard). An invited signup's invites are
+  // accepted here first, so they arrive as staff instead of being given an
+  // account that held them on /pending-approval. Once per session per user
+  // (a failure waits a minute before the next try); it never throws.
   if (isAuthenticated &&
       guardEnsuresOwnerAccount(
         isPublicRoute: isPublicRoute,
@@ -572,9 +576,12 @@ Future<String?> evaluateRouteGuard({
     final ensured = await (ensureOwnerAccount ??
         (User user) => FacilityCreatorAccountService.ensureAccountOnce(
               user,
+              createOnlyForNewSignups: true,
               timeout: _ensureAccountTimeout,
+              clock: clock,
             ))(effectiveUser ?? firebaseUser);
-    // An answer cached before the account existed no longer holds.
+    // An answer cached before the account existed, or before the user's
+    // invites were accepted, no longer holds.
     if (ensured) SubscriptionGuardService.routeGuardCache.clear();
   }
 

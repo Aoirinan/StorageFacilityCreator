@@ -9,6 +9,7 @@ import '../models/facility_model.dart';
 import 'package:sfcapp/services/error_reporter.dart';
 import 'package:sfcapp/services/permission_service.dart';
 import 'package:sfcapp/utils/single_flight.dart';
+import 'package:sfcapp/utils/verified_email_token.dart';
 import 'referral_program_service.dart';
 
 /// Thrown by [FacilityCreatorAccountService.getOrCreateAccountForCurrentUser]
@@ -23,31 +24,81 @@ class InvitedStaffAccountException implements Exception {
       'owner account of its own.';
 }
 
+/// What decides whether a user with no account is given one: their ties to
+/// facilities (see [FacilityCreatorAccountService.ensureAccountFor]).
+@immutable
+class AccountTies {
+  const AccountTies({
+    required this.activeRole,
+    required this.ownsFacility,
+    required this.pendingInvite,
+  });
+
+  /// An active `user_roles` row at any facility (owners have one too).
+  final bool activeRole;
+
+  /// A facility whose ownerUid is theirs.
+  final bool ownsFacility;
+
+  /// A pending invite addressed to their email.
+  final bool pendingInvite;
+
+  /// Works at someone else's facility, or is invited to, and owns none. They
+  /// work in the owner's account and must not be given one of their own.
+  bool get invitedStaffOnly => (activeRole || pendingInvite) && !ownsFacility;
+
+  /// A genuinely new signup: no role, no facility and no invite anywhere.
+  bool get newSignup => !activeRole && !ownsFacility && !pendingInvite;
+}
+
+/// When [FacilityCreatorAccountService.ensureAccountFor] may create an
+/// account.
+enum _Creates { newSignupsOnly, unlessInvitedStaff, always }
+
 /// Service for managing Facility Creator Accounts
 class FacilityCreatorAccountService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  // Where this service's top-level collections and signed-in user come from.
-  // Firestore and Auth, unless a test points them at fakes so the service's
+  // Where this service's top-level collections, collection groups, signed-in
+  // user and invite fulfilment come from. Firestore, Auth and
+  // PermissionService, unless a test points them at fakes so the service's
   // own queries and checks run.
   static CollectionReference<Map<String, dynamic>> Function(String name) _collection =
       _firestoreCollection;
+  static Query<Map<String, dynamic>> Function(String name) _collectionGroup =
+      _firestoreCollectionGroup;
   static User? Function() _currentUser = _authCurrentUser;
+  static Future<void> Function(User user, String emailLower) _fulfillInvites =
+      _permissionServiceFulfillInvites;
 
   static CollectionReference<Map<String, dynamic>> _firestoreCollection(String name) =>
       _firestore.collection(name);
+  static Query<Map<String, dynamic>> _firestoreCollectionGroup(String name) =>
+      _firestore.collectionGroup(name);
   static User? _authCurrentUser() => _auth.currentUser;
+  static Future<void> _permissionServiceFulfillInvites(User user, String emailLower) =>
+      PermissionService.fulfillPendingInvitesForUser(
+        userId: user.uid,
+        emailLower: emailLower,
+        email: user.email,
+        displayName: user.displayName,
+      );
 
-  /// Serves [collection] and [currentUser] instead of Firestore and Auth;
+  /// Serves [collection], [collectionGroup], [currentUser] and
+  /// [fulfillPendingInvites] instead of Firestore, Auth and PermissionService;
   /// null restores them.
   @visibleForTesting
   static void overrideForTesting({
     CollectionReference<Map<String, dynamic>> Function(String name)? collection,
+    Query<Map<String, dynamic>> Function(String name)? collectionGroup,
     User? Function()? currentUser,
+    Future<void> Function(User user, String emailLower)? fulfillPendingInvites,
   }) {
     _collection = collection ?? _firestoreCollection;
+    _collectionGroup = collectionGroup ?? _firestoreCollectionGroup;
     _currentUser = currentUser ?? _authCurrentUser;
+    _fulfillInvites = fulfillPendingInvites ?? _permissionServiceFulfillInvites;
   }
 
   /// Create a new Facility Creator Account
@@ -205,8 +256,7 @@ class FacilityCreatorAccountService {
   /// Get account by account ID
   static Future<FacilityCreatorAccountModel?> getAccount(String accountId) async {
     try {
-      final doc = await _firestore
-          .collection('facilityCreatorAccounts')
+      final doc = await _collection('facilityCreatorAccounts')
           .doc(accountId)
           .get();
 
@@ -527,32 +577,66 @@ class FacilityCreatorAccountService {
     return account;
   }
 
-  // Users whose account was ensured this session: an owner's found or
-  // created, or a team member's confirmed as having none.
+  // What ensureAccountOnce settled this session, per user and mode (see
+  // _onceKey): an account found or created, or confirmed as not wanted.
   static final Set<String> _ensuredThisSession = <String>{};
 
-  /// Makes sure [user] has an account if they should (an owner, a brand-new
-  /// signup included; never invited staff, see [ensureAccountFor]), once per
-  /// session. Never throws: a failure is reported, and the next call tries
-  /// again.
+  // When ensureAccountOnce last failed, per user and mode.
+  static final Map<String, DateTime> _failedAt = <String, DateTime>{};
+
+  /// How long [ensureAccountOnce] leaves a failure before trying again. The
+  /// route guard awaits it on every navigation until it succeeds, so while it
+  /// kept failing (offline, a refused write) each click paid the account read,
+  /// the staff queries and the failed write again.
+  @visibleForTesting
+  static const Duration ensureRetryAfter = Duration(seconds: 60);
+
+  static String _onceKey(String uid, {required bool createOnlyForNewSignups}) =>
+      createOnlyForNewSignups ? '$uid/new-signups' : uid;
+
+  /// Makes sure [user] has an account if they should (see
+  /// [ensureAccountFor]), once per session. Never throws: a failure is
+  /// reported, and a call after [ensureRetryAfter] tries again.
   ///
-  /// The route guard runs this on the first authenticated load, so a new
-  /// signup's pendingApproval account is created, and the onboarding and
-  /// admin-alert emails it triggers go out, as soon as they are in the app.
-  /// It used to happen only when they opened a screen that created it.
+  /// The route guard runs this with [createOnlyForNewSignups] on the first
+  /// authenticated load, so a new signup's pendingApproval account is
+  /// created, and the onboarding and admin-alert emails it triggers go out,
+  /// as soon as they are in the app. It used to happen only when they opened
+  /// a screen that created it.
   ///
-  /// True the first time it succeeds for [user]: anything decided before the
-  /// account existed (the guard's cached answer) is stale.
+  /// True the first time it succeeds for [user] in that mode: anything
+  /// decided before the account existed or invites were accepted (the
+  /// guard's cached answer) is stale.
   static Future<bool> ensureAccountOnce(
     User user, {
+    bool createOnlyForNewSignups = false,
     Future<FacilityCreatorAccountModel?> Function(User user)? ensure,
     Duration timeout = const Duration(seconds: 15),
+    DateTime Function()? clock,
   }) async {
-    if (_ensuredThisSession.contains(user.uid)) return false;
+    final key = _onceKey(user.uid, createOnlyForNewSignups: createOnlyForNewSignups);
+    if (_ensuredThisSession.contains(key)) return false;
+    final now = clock ?? DateTime.now;
+    final failedAt = _failedAt[key];
+    if (failedAt != null && now().difference(failedAt) < ensureRetryAfter) {
+      return false;
+    }
     try {
-      await (ensure ?? ensureAccountFor)(user).timeout(timeout);
-      return _ensuredThisSession.add(user.uid);
+      final account = await (ensure ??
+              (User u) => ensureAccountFor(u, createOnlyForNewSignups: createOnlyForNewSignups))(
+          user)
+          .timeout(timeout);
+      _failedAt.remove(key);
+      // An account settles both modes. "None wanted" settles only this one:
+      // the route guard leaves an owner who has no account to the screens
+      // that create one, as before.
+      if (account != null) {
+        _ensuredThisSession
+            .add(_onceKey(user.uid, createOnlyForNewSignups: !createOnlyForNewSignups));
+      }
+      return _ensuredThisSession.add(key);
     } catch (e, st) {
+      _failedAt[key] = now();
       ErrorReporter.reportError(e, st,
           context: 'FacilityCreatorAccountService.ensureAccountOnce',
           metadata: {'uid': user.uid});
@@ -579,20 +663,33 @@ class FacilityCreatorAccountService {
     }
   }
 
-  /// Forgets which users were ensured, e.g. on sign-out. Exposed for tests.
+  /// Forgets which users were ensured and which failed, e.g. on sign-out.
+  /// Exposed for tests.
   @visibleForTesting
-  static void resetEnsuredForTesting() => _ensuredThisSession.clear();
+  static void resetEnsuredForTesting() {
+    _ensuredThisSession.clear();
+    _failedAt.clear();
+  }
 
-  /// [user]'s account, created when they have none, or null for invited staff
-  /// unless [createForInvitedStaff].
+  /// [user]'s account, created when they have none and should have one, or
+  /// null when they should not:
+  ///
+  /// - By default (the screens), anyone but invited staff: a role or a
+  ///   pending invite at a facility, and no facility of their own
+  ///   ([AccountTies.invitedStaffOnly]). Staff were given a pendingApproval
+  ///   account by the first screen that called this, and the route guard
+  ///   then held them on /pending-approval.
+  /// - [createOnlyForNewSignups] (the route guard): only a genuinely new
+  ///   signup ([AccountTies.newSignup]), after accepting any invites
+  ///   addressed to their email. An invited signup was given an account
+  ///   before their invite was accepted, and an owner who already had
+  ///   facilities but no account one they were then locked out on; such an
+  ///   owner is left to the screens that create one, as before.
+  /// - [createForInvitedStaff] (creating a facility of their own): always.
   ///
   /// Every read throws on failure, so a failed read never creates anything:
   /// the old lookup turned a failed read into "no account" and created a
   /// second, pendingApproval account for owners who already had one.
-  ///
-  /// Invited staff (active roles, no facility of their own) were given a
-  /// pendingApproval account by the first screen that called this, and the
-  /// route guard then held them on /pending-approval.
   ///
   /// One run per user at a time: the route guard's first-load ensure and a
   /// screen's could otherwise both read "no account" and both create one.
@@ -603,63 +700,118 @@ class FacilityCreatorAccountService {
   static Future<FacilityCreatorAccountModel?> ensureAccountFor(
     User user, {
     bool createForInvitedStaff = false,
+    bool createOnlyForNewSignups = false,
     Future<FacilityCreatorAccountModel?> Function(String uid)? readAccount,
-    Future<bool> Function(String uid)? isInvitedStaffOnly,
+    Future<AccountTies> Function(User user)? readTies,
     Future<FacilityCreatorAccountModel> Function(User user)? create,
   }) async {
-    Future<FacilityCreatorAccountModel?> run({required bool forStaff}) =>
-        _ensureFlight.run(
-          user.uid,
-          () => _ensureAccountFor(
+    final creates = createForInvitedStaff
+        ? _Creates.always
+        : createOnlyForNewSignups
+            ? _Creates.newSignupsOnly
+            : _Creates.unlessInvitedStaff;
+    Future<FacilityCreatorAccountModel?> run() => _ensureFlight.run(user.uid, () {
+          _inFlightCreates[user.uid] = creates;
+          return _ensureAccountFor(
             user,
-            createForInvitedStaff: forStaff,
+            creates,
             readAccount: readAccount,
-            isInvitedStaffOnly: isInvitedStaffOnly,
+            readTies: readTies,
             create: create,
-          ),
-        );
-    final account = await run(forStaff: false);
-    if (account != null || !createForInvitedStaff) return account;
-    // Invited staff creating a facility of their own: only after the shared
-    // run has settled, so it cannot race another create.
-    return run(forStaff: true);
+          );
+        });
+    final joined = _ensureFlight.isInFlight(user.uid) ? _inFlightCreates[user.uid] : null;
+    final account = await run();
+    if (account != null || joined == null || joined == creates) return account;
+    // Joined another caller's run, which found no account and decided on its
+    // own terms (the route guard's, while a screen or a new facility asked):
+    // ask again on this caller's, now that it has settled and cannot race a
+    // create.
+    return run();
   }
 
   static final SingleFlight<String, FacilityCreatorAccountModel?> _ensureFlight =
       SingleFlight<String, FacilityCreatorAccountModel?>();
 
+  // What the run in _ensureFlight for each uid creates for.
+  static final Map<String, _Creates> _inFlightCreates = <String, _Creates>{};
+
   static Future<FacilityCreatorAccountModel?> _ensureAccountFor(
-    User user, {
-    required bool createForInvitedStaff,
+    User user,
+    _Creates creates, {
     Future<FacilityCreatorAccountModel?> Function(String uid)? readAccount,
-    Future<bool> Function(String uid)? isInvitedStaffOnly,
+    Future<AccountTies> Function(User user)? readTies,
     Future<FacilityCreatorAccountModel> Function(User user)? create,
   }) async {
     final existing = await (readAccount ?? getAccountByOwnerUidOrThrow)(user.uid);
     if (existing != null) return existing;
 
-    if (!createForInvitedStaff &&
-        await (isInvitedStaffOnly ?? _isInvitedStaffOnly)(user.uid)) {
-      return null;
+    switch (creates) {
+      case _Creates.always:
+        break;
+      case _Creates.unlessInvitedStaff:
+        if ((await (readTies ?? _readTies)(user)).invitedStaffOnly) return null;
+      case _Creates.newSignupsOnly:
+        // Invites first, so an invited signup is on their facility's team,
+        // not mistaken for a new owner, before anything is decided.
+        await _fulfillPendingInvites(user);
+        if (!(await (readTies ?? _readTies)(user)).newSignup) return null;
     }
     return (create ?? _createAccountFor)(user);
   }
 
-  /// Whether [uid] has an active role at a facility and owns none. Owners can
-  /// have role rows too (an owner row per facility), hence the second read.
-  static Future<bool> _isInvitedStaffOnly(String uid) async {
+  static String? _emailLowerOf(User user) {
+    final email = user.email?.trim().toLowerCase();
+    return email == null || email.isEmpty ? null : email;
+  }
+
+  /// Accepts the pending invites addressed to [user]'s email. Never throws:
+  /// an invite left pending still counts in [_readTies], so a failure here
+  /// cannot turn an invited signup into a new owner.
+  static Future<void> _fulfillPendingInvites(User user) async {
+    final emailLower = _emailLowerOf(user);
+    if (emailLower == null) return;
+    try {
+      await refreshStaleEmailVerifiedClaim(user);
+      await _fulfillInvites(user, emailLower);
+    } catch (e, st) {
+      ErrorReporter.reportError(e, st,
+          context: 'FacilityCreatorAccountService._fulfillPendingInvites',
+          metadata: {'uid': user.uid});
+    }
+  }
+
+  /// [user]'s ties to facilities. Owners can have role rows too (an owner row
+  /// per facility), hence the owned read; an invited signup has no role until
+  /// their invite is accepted, hence the invite read. Only for a verified
+  /// email: the rules refuse the invite query otherwise, which would fail
+  /// every ensure for that user, and an unverified address proves nothing
+  /// about whose invite it is.
+  static Future<AccountTies> _readTies(User user) async {
+    final emailLower = user.emailVerified ? _emailLowerOf(user) : null;
+    if (emailLower != null) await refreshStaleEmailVerifiedClaim(user);
     final results = await Future.wait([
       _collection(PermissionService.userRolesCollection)
-          .where('userId', isEqualTo: uid)
+          .where('userId', isEqualTo: user.uid)
           .where('isActive', isEqualTo: true)
           .limit(1)
           .get(),
       _collection('facilities')
-          .where('ownerUid', isEqualTo: uid)
+          .where('ownerUid', isEqualTo: user.uid)
           .limit(1)
           .get(),
+      if (emailLower != null)
+        _collectionGroup('invites')
+            .where('emailLower', isEqualTo: emailLower)
+            .where('status', isEqualTo: 'pending')
+            .limit(1)
+            .get(),
     ]);
-    return results[0].docs.isNotEmpty && results[1].docs.isEmpty;
+    return AccountTies(
+      activeRole: results[0].docs.isNotEmpty,
+      ownsFacility: results[1].docs.isNotEmpty,
+      pendingInvite: results.length > 2 && results[2].docs.isNotEmpty,
+    );
   }
 
   static Future<FacilityCreatorAccountModel> _createAccountFor(User user) async {

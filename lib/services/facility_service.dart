@@ -669,8 +669,10 @@ class FacilityService {
     var roleIds = <String>{};
     var ownedLoaded = false;
     var rolesLoaded = false;
-    // How the owned or roles listener failed, while it has. A failed source
-    // counts as empty so the other keeps the list going.
+    String? signedInUid;
+    // How the owned or roles listener failed, while it has. Either failing
+    // leaves the other to keep the list going: the owned facilities stay as
+    // last read (none, if it never answered), the role facilities go.
     (Object, StackTrace)? ownedFailure;
     (Object, StackTrace)? rolesFailure;
 
@@ -688,9 +690,14 @@ class FacilityService {
       }
       final list = <FacilityModel>[
         for (final f in owned.values) f.copyWith(currentUserOwnsFacility: true),
+        // Owners reach their own facilities through their owner role row
+        // too, so a role facility is theirs when its ownerUid says so. When
+        // the owned listener had failed, they all came back as someone
+        // else's, and settings, the website setup, Stripe onboarding and the
+        // facility editor treated the owner as staff for the session.
         for (final id in listened)
           if (roleDocs[id] case final f? when f.active)
-            f.copyWith(currentUserOwnsFacility: false),
+            f.copyWith(currentUserOwnsFacility: f.ownerUid == signedInUid),
       ]..sort((a, b) => a.name.compareTo(b.name));
       // With nothing to show, a failure is the answer: never pass it off as
       // "no facilities".
@@ -740,6 +747,7 @@ class FacilityService {
         controller.close();
         return;
       }
+      signedInUid = uid;
 
       ownedSub = ownedFacilities(uid).listen((list) {
         owned = {for (final f in list) f.id: f};
@@ -748,9 +756,10 @@ class FacilityService {
         syncRoleListeners();
         emit();
       }, onError: (Object e, StackTrace st) {
-        // Counted as owning nothing, so role facilities keep coming. Only
-        // the error used to reach the list, and nothing after it.
-        owned = {};
+        // Role facilities keep coming. Only the error used to reach the list,
+        // and nothing after it. The owned facilities last read are kept: the
+        // listener does not recover, and dropping them handed the owner's own
+        // facilities back through their owner role rows as someone else's.
         ownedLoaded = true;
         ownedFailure = (e, st);
         reportSourceFailure('owned', e, st);
