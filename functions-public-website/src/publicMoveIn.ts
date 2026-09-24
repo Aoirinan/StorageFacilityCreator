@@ -7,6 +7,7 @@ import {
   enforceRateLimit,
   escapeHtml,
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   getStripeClient,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
@@ -273,7 +274,9 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
     .doc('public')
     .get();
   const settings = (settingsSnap.data() || {}) as Record<string, unknown>;
-  if (settings.publicRentalsEnabled !== true) {
+  // The public website shows "Rent now" by the same test
+  // (facilityAcceptsPublicRentals), so it never links to this refusal.
+  if (!facilityTakesOnlineRentals(settings)) {
     throw new functions.https.HttpsError('failed-precondition', ONLINE_RENTALS_OFF_MESSAGE);
   }
   return settings;

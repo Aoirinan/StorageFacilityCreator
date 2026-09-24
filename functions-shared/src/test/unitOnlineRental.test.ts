@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   isArchivedForOnlineRental,
   isInternalUseUnit,
   isUnitOfferedOnline,
@@ -106,7 +107,26 @@ test('with enabled unit types, only those types are offered online', () => {
   assert.equal(isUnitTypeOfferedOnline({}, types), false);
 });
 
+test('a facility takes online rentals only when its switch is exactly true', () => {
+  assert.equal(facilityTakesOnlineRentals({ publicRentalsEnabled: true }), true);
+  // Off, never set up (no settings doc, or no field), or a stray non-boolean:
+  // the hold refuses all of these, so no public page may offer a rental.
+  const off: Array<Record<string, unknown> | null | undefined> = [
+    { publicRentalsEnabled: false },
+    {},
+    null,
+    undefined,
+    { publicRentalsEnabled: 'true' },
+    { publicRentalsEnabled: 1 },
+    { publicRentalsEnabled: null },
+  ];
+  for (const settings of off) {
+    assert.equal(facilityTakesOnlineRentals(settings), false, JSON.stringify(settings));
+  }
+});
+
 test('the online rental rules are exported from the package root the callables import', () => {
+  assert.equal(shared.facilityTakesOnlineRentals, facilityTakesOnlineRentals);
   assert.equal(shared.isUnitOfferedOnline, isUnitOfferedOnline);
   assert.equal(shared.isArchivedForOnlineRental, isArchivedForOnlineRental);
   assert.equal(shared.isInternalUseUnit, isInternalUseUnit);

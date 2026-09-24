@@ -305,6 +305,7 @@ export {
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {
   enabledOnlineUnitTypes,
+  facilityTakesOnlineRentals,
   isArchivedForOnlineRental,
   isInternalUseUnit,
   isUnitOfferedOnline,
