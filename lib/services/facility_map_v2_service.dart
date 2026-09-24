@@ -10,6 +10,7 @@ import 'package:sfcapp/services/facility_public_service.dart';
 import 'package:sfcapp/services/map_layout_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 
 class FacilityMapV2Service {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -351,8 +352,10 @@ class FacilityMapV2Service {
 
     return units.map((unit) {
       final dims = unit.dimensions ?? const <String, dynamic>{};
-      final width = (dims['width'] as num?)?.toDouble();
-      final depth = (dims['depth'] as num?)?.toDouble();
+      // Was `as num?`, which threw on a width typed in as '10' and failed the
+      // publish for every unit; the sync reads these with Number().
+      final width = numberFromField(dims['width']);
+      final depth = numberFromField(dims['depth']);
       String? size;
       if (width != null && depth != null) {
         size = '${width.toStringAsFixed(0)}x${depth.toStringAsFixed(0)}';

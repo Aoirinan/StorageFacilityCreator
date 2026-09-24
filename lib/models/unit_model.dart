@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/utils/firestore_field_read.dart';
 import 'overlock_model.dart';
 
 enum UnitStatus {
@@ -120,52 +121,52 @@ class UnitModel {
     this.internalUse = false,
   });
 
+  /// Reads every field so that a value of the wrong type never throws (see
+  /// lib/utils/firestore_field_read.dart): UnitService builds a facility's
+  /// units in one pass, so one unit that threw emptied the Units list and
+  /// failed the public map publish.
   factory UnitModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    final layout = data['mapLayout'] as Map<String, dynamic>?;
+    final layout = mapFromField(data['mapLayout']);
+    final overlock = mapFromField(data['overlock']);
     return UnitModel(
       id: doc.id,
-      facilityId: data['facilityId'] ?? '',
-      unitNumber: data['unitNumber'] ?? '',
-      unitType: data['unitType'] ?? 'standard',
+      facilityId: textFromField(data['facilityId']) ?? '',
+      unitNumber: textFromField(data['unitNumber']) ?? '',
+      unitType: textFromField(data['unitType']) ?? 'standard',
       status: UnitStatus.values.firstWhere(
         (e) => e.name == data['status'],
         orElse: () => UnitStatus.available,
       ),
       storedStatus: data['status'] is String ? data['status'] as String : '',
-      tenantId: data['tenantId'],
-      tenantName: data['tenantName'],
-      monthlyRate: (data['monthlyRate'] ?? 0.0).toDouble(),
-      securityDeposit: data['securityDeposit']?.toDouble(),
-      description: data['description'],
-      dimensions: data['dimensions'] != null 
-          ? Map<String, dynamic>.from(data['dimensions'])
-          : null,
-      features: data['features'] != null 
-          ? List<String>.from(data['features'])
-          : null,
-      notes: data['notes'],
-      lastMaintenance: data['lastMaintenance']?.toDate(),
-      nextMaintenance: data['nextMaintenance']?.toDate(),
-      moveInDate: data['moveInDate']?.toDate(),
-      moveOutDate: data['moveOutDate']?.toDate(),
-      moveOutNoticeDate: data['moveOutNoticeDate']?.toDate(),
-      reservationExpiry: data['reservationExpiry']?.toDate(),
-      reservedBy: data['reservedBy'],
-      customFields: data['customFields'] != null 
-          ? Map<String, dynamic>.from(data['customFields'])
-          : null,
-      createdAt: data['createdAt']?.toDate() ?? DateTime.now(),
-      updatedAt: data['updatedAt']?.toDate() ?? DateTime.now(),
-      createdBy: data['createdBy'] ?? '',
-      updatedBy: data['updatedBy'],
-      mapX: (layout?['x'] as num?)?.toDouble(),
-      mapY: (layout?['y'] as num?)?.toDouble(),
-      mapWidth: (layout?['width'] as num?)?.toDouble(),
-      mapHeight: (layout?['height'] as num?)?.toDouble(),
-      overlock: data['overlock'] != null
-          ? OverlockInfo.fromMap(Map<String, dynamic>.from(data['overlock'] as Map))
-          : null,
+      // A link only when it is a string, not its text: the public map sync
+      // and the stats function (facility_stats.ts) ignore any other value, so
+      // reading 5 as '5' would count the unit rented here and free there.
+      tenantId: data['tenantId'] is String ? data['tenantId'] as String : null,
+      tenantName: textFromField(data['tenantName']),
+      monthlyRate: numberFromField(data['monthlyRate']) ?? 0.0,
+      securityDeposit: numberFromField(data['securityDeposit']),
+      description: textFromField(data['description']),
+      dimensions: mapFromField(data['dimensions']),
+      features: textListFromField(data['features']),
+      notes: textFromField(data['notes']),
+      lastMaintenance: dateFromField(data['lastMaintenance']),
+      nextMaintenance: dateFromField(data['nextMaintenance']),
+      moveInDate: dateFromField(data['moveInDate']),
+      moveOutDate: dateFromField(data['moveOutDate']),
+      moveOutNoticeDate: dateFromField(data['moveOutNoticeDate']),
+      reservationExpiry: dateFromField(data['reservationExpiry']),
+      reservedBy: textFromField(data['reservedBy']),
+      customFields: mapFromField(data['customFields']),
+      createdAt: dateFromField(data['createdAt']) ?? DateTime.now(),
+      updatedAt: dateFromField(data['updatedAt']) ?? DateTime.now(),
+      createdBy: textFromField(data['createdBy']) ?? '',
+      updatedBy: textFromField(data['updatedBy']),
+      mapX: numberFromField(layout?['x']),
+      mapY: numberFromField(layout?['y']),
+      mapWidth: numberFromField(layout?['width']),
+      mapHeight: numberFromField(layout?['height']),
+      overlock: overlock != null ? OverlockInfo.fromMap(overlock) : null,
       // Was `as bool? ?? true`, which threw on a stray 'false' or 0 and so
       // failed the whole unit read: the Units list came back empty and the
       // public map publish failed.
