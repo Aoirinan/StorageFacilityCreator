@@ -212,12 +212,14 @@ void main() {
       final units = [
         ...List.generate(78, (i) => _unit('u$i')),
         _unit('unlisted', publicListingEnabled: false),
-        _unit('office', internalUse: true),
+        _unit('office', internalUse: true, publicListingEnabled: false),
       ];
-      // Before: compared against all 80 units, so this recomputed on every
-      // load forever.
+      // Compared against all 80 units, this recomputed on every load
+      // forever; against the listed units (78), it recomputed a cache the
+      // writer had just filled with the counted total.
       expect(FacilityStatsService.cachedUnitTotalDrifted(79, units), isFalse);
       expect(FacilityStatsService.cachedUnitTotalDrifted(80, units), isTrue);
+      expect(FacilityStatsService.cachedUnitTotalDrifted(78, units), isTrue);
     });
   });
 
