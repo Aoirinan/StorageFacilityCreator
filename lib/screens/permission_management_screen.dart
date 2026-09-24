@@ -875,6 +875,16 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                       duration: const Duration(seconds: 4),
                     ),
                   );
+                } else if (!result.inviteSaved) {
+                  // Refused or not written: there is no invite to resend.
+                  ScaffoldMessenger.of(pageContext).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          'Invitation not sent. ${result.errorMessage ?? 'Unknown error'}'),
+                      backgroundColor: AppTheme.error,
+                      duration: const Duration(seconds: 8),
+                    ),
+                  );
                 } else {
                   final errorMsg = result.errorMessage ?? 'Unknown error';
                   print('❌ [PermissionManagementScreen] Invite creation failed: $errorMsg');

@@ -55,6 +55,15 @@ class AccountTies {
 /// account.
 enum _Creates { newSignupsOnly, unlessInvitedStaff, always }
 
+/// The route guard's ensure could not accept a new invitee's invites, so
+/// they have no role yet.
+class _InvitesNotAccepted implements Exception {
+  const _InvitesNotAccepted();
+
+  @override
+  String toString() => 'Pending invites could not be accepted; will retry.';
+}
+
 /// Service for managing Facility Creator Accounts
 class FacilityCreatorAccountService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -69,7 +78,7 @@ class FacilityCreatorAccountService {
   static Query<Map<String, dynamic>> Function(String name) _collectionGroup =
       _firestoreCollectionGroup;
   static User? Function() _currentUser = _authCurrentUser;
-  static Future<void> Function(User user, String emailLower) _fulfillInvites =
+  static Future<bool> Function(User user, String emailLower) _fulfillInvites =
       _permissionServiceFulfillInvites;
 
   static CollectionReference<Map<String, dynamic>> _firestoreCollection(String name) =>
@@ -77,7 +86,7 @@ class FacilityCreatorAccountService {
   static Query<Map<String, dynamic>> _firestoreCollectionGroup(String name) =>
       _firestore.collectionGroup(name);
   static User? _authCurrentUser() => _auth.currentUser;
-  static Future<void> _permissionServiceFulfillInvites(User user, String emailLower) =>
+  static Future<bool> _permissionServiceFulfillInvites(User user, String emailLower) =>
       PermissionService.fulfillPendingInvitesForUser(
         userId: user.uid,
         emailLower: emailLower,
@@ -93,7 +102,7 @@ class FacilityCreatorAccountService {
     CollectionReference<Map<String, dynamic>> Function(String name)? collection,
     Query<Map<String, dynamic>> Function(String name)? collectionGroup,
     User? Function()? currentUser,
-    Future<void> Function(User user, String emailLower)? fulfillPendingInvites,
+    Future<bool> Function(User user, String emailLower)? fulfillPendingInvites,
   }) {
     _collection = collection ?? _firestoreCollection;
     _collectionGroup = collectionGroup ?? _firestoreCollectionGroup;
@@ -680,11 +689,14 @@ class FacilityCreatorAccountService {
   ///   account by the first screen that called this, and the route guard
   ///   then held them on /pending-approval.
   /// - [createOnlyForNewSignups] (the route guard): only a genuinely new
-  ///   signup ([AccountTies.newSignup]), after accepting any invites
-  ///   addressed to their email. An invited signup was given an account
-  ///   before their invite was accepted, and an owner who already had
-  ///   facilities but no account one they were then locked out on; such an
-  ///   owner is left to the screens that create one, as before.
+  ///   signup ([AccountTies.newSignup]), after accepting the invites
+  ///   addressed to their email if they have never had a role or a facility
+  ///   (anyone else accepts through the invite's link). An invited signup
+  ///   was given an account before their invite was accepted, and an owner
+  ///   who already had facilities but no account one they were then locked
+  ///   out on; such an owner is left to the screens that create one, as
+  ///   before. Throws when a new invitee's invites could not be accepted, so
+  ///   [ensureAccountOnce] tries again rather than settling.
   /// - [createForInvitedStaff] (creating a facility of their own): always.
   ///
   /// Every read throws on failure, so a failed read never creates anything:
@@ -753,9 +765,19 @@ class FacilityCreatorAccountService {
         if ((await (readTies ?? _readTies)(user)).invitedStaffOnly) return null;
       case _Creates.newSignupsOnly:
         // Invites first, so an invited signup is on their facility's team,
-        // not mistaken for a new owner, before anything is decided.
-        await _fulfillPendingInvites(user);
-        if (!(await (readTies ?? _readTies)(user)).newSignup) return null;
+        // not mistaken for a new owner, before anything is decided. Only a
+        // genuinely new invitee's are accepted this way (see
+        // PermissionService.fulfillPendingInvitesForUser).
+        final accepted = await _fulfillPendingInvites(user);
+        final ties = await (readTies ?? _readTies)(user);
+        // An invitee whose invites could not be accepted and who has no role
+        // is a failure, not an answer: settling here left them on an empty
+        // dashboard for the rest of the session. ensureAccountOnce tries
+        // again after ensureRetryAfter.
+        if (!accepted && ties.pendingInvite && !ties.activeRole) {
+          throw const _InvitesNotAccepted();
+        }
+        if (!ties.newSignup) return null;
     }
     return (create ?? _createAccountFor)(user);
   }
@@ -765,19 +787,21 @@ class FacilityCreatorAccountService {
     return email == null || email.isEmpty ? null : email;
   }
 
-  /// Accepts the pending invites addressed to [user]'s email. Never throws:
-  /// an invite left pending still counts in [_readTies], so a failure here
-  /// cannot turn an invited signup into a new owner.
-  static Future<void> _fulfillPendingInvites(User user) async {
+  /// Accepts the pending invites addressed to [user]'s email when they are a
+  /// genuinely new invitee. Never throws: false when that failed. An invite
+  /// left pending still counts in [_readTies], so a failure here cannot turn
+  /// an invited signup into a new owner.
+  static Future<bool> _fulfillPendingInvites(User user) async {
     final emailLower = _emailLowerOf(user);
-    if (emailLower == null) return;
+    if (emailLower == null) return true;
     try {
       await refreshStaleEmailVerifiedClaim(user);
-      await _fulfillInvites(user, emailLower);
+      return await _fulfillInvites(user, emailLower);
     } catch (e, st) {
       ErrorReporter.reportError(e, st,
           context: 'FacilityCreatorAccountService._fulfillPendingInvites',
           metadata: {'uid': user.uid});
+      return false;
     }
   }
 
