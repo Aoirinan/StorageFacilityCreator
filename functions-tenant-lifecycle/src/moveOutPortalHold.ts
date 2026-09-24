@@ -1,7 +1,12 @@
 ﻿import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
-import { sendFacilityEmailWithCompliance, authenticatePortalTenantForFacility, extractCallableClientIp } from '@sfc/functions-shared';
+import {
+  sendFacilityEmailWithCompliance,
+  authenticatePortalTenantForFacility,
+  extractCallableClientIp,
+  isUnitOfferedOnline,
+} from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
 import { enforceAppCheckOrThrow, enforceRateLimit, writeAuditLog } from './guardrails';
 /**
@@ -293,6 +298,11 @@ export const processMoveOut = functions.runWith({ secrets: SENDGRID_SECRETS }).h
  * Lists units available for online/additional rental for a tenant portal session.
  * Direct Firestore reads are blocked for portal users; this callable validates email + access code
  * then reads inventory with the Admin SDK (same trust boundary as createTenantPortalAdditionalUnitHold).
+ *
+ * Only units the owner offers online (isUnitOfferedOnline): the portal rents
+ * through the same online move-in and checkout as the public rental page, so
+ * a unit left off the public website, archived or kept for internal use is not
+ * offered here either.
  */
 export const tenantPortalListAvailableUnits = functions.https.onCall(async (data: any, context) => {
   const email = (data?.email || '').toString().trim().toLowerCase();
@@ -325,7 +335,7 @@ export const tenantPortalListAvailableUnits = functions.https.onCall(async (data
 
   unitsSnap.forEach((doc) => {
     const d = doc.data() as Record<string, any>;
-    if (d.isActive === false) {
+    if (d.isActive === false || !isUnitOfferedOnline(d)) {
       return;
     }
     const st = String(d.status || '').toLowerCase();
@@ -410,7 +420,9 @@ export const createTenantPortalAdditionalUnitHold = functions.https.onCall(async
     }
     const unitData = unitSnap.data() as Record<string, any>;
     const unitStatus = String(unitData.status || '').toLowerCase();
-    if (unitStatus !== 'available' && unitStatus !== 'reserved') {
+    // The list above leaves these units out, but a unit id can be sent
+    // directly: every unit's id is in the public map doc.
+    if ((unitStatus !== 'available' && unitStatus !== 'reserved') || !isUnitOfferedOnline(unitData)) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
 
