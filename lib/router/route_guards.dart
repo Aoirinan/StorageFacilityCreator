@@ -126,9 +126,9 @@ const Duration _ensureAccountTimeout = Duration(seconds: 8);
 /// Whether the guard makes sure a signed-in new signup has an owner account
 /// before checking their access (see
 /// [FacilityCreatorAccountService.ensureAccountOnce] with
-/// `createOnlyForNewSignups`, which first accepts any invites addressed to
-/// their email and creates nothing for staff, the invited or an owner who
-/// already has facilities). Not on public pages, not for super admins, and
+/// `createOnlyForNewSignups`, which first accepts the invites addressed to a
+/// new invitee's email and creates nothing for staff, the invited or an owner
+/// who already has facilities). Not on public pages, not for super admins, and
 /// not before the email is verified: the account's creation sends the owner
 /// and the platform the onboarding emails.
 bool guardEnsuresOwnerAccount({
@@ -565,8 +565,10 @@ Future<String?> evaluateRouteGuard({
   // screen that creates one (so their onboarding emails went out late, and
   // they saw an unlocked, empty dashboard). An invited signup's invites are
   // accepted here first, so they arrive as staff instead of being given an
-  // account that held them on /pending-approval. Once per session per user
-  // (a failure waits a minute before the next try); it never throws.
+  // account that held them on /pending-approval; anyone who has had a role
+  // or a facility accepts through the invite's link instead. Once per
+  // session per user (a failure, including invites that could not be
+  // accepted, waits a minute before the next try); it never throws.
   if (isAuthenticated &&
       guardEnsuresOwnerAccount(
         isPublicRoute: isPublicRoute,
