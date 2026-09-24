@@ -2,6 +2,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
  * Record a refund against the tenant's ledger.
@@ -43,6 +44,16 @@ export async function handleChargeRefunded(
       functions.logger.warn('Charge refunded but missing facilityId metadata');
       return;
     }
+
+    // A refund posts a charge (+amount) to the tenant: only the facility's own
+    // account may do that, whatever facilityId the PaymentIntent carries.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'charge.refunded',
+      objectId: charge.id,
+    });
+    if (!accountMatches) return;
 
     const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
     const paymentsRef = facilityRef.collection('payments');

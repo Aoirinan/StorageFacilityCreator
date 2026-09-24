@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { isPublicLinkPaymentIntent } from '@sfc/functions-shared';
 import { isAlreadyExistsError } from './firestoreErrors';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
  * Handle successful payment intent (for tenant payments via Stripe Connect / embedded).
@@ -10,8 +11,15 @@ import { isAlreadyExistsError } from './firestoreErrors';
  * This is the one place a public payment-link payment is recorded: the link's
  * Checkout Session puts facilityId/tenantId on the PaymentIntent
  * (`payment_intent_data.metadata`, sfcKind 'tenant_link') for exactly this.
+ *
+ * [connectedAccountId] is the event's `account`. A connected-account payment
+ * is only credited when that account is the facility's own: the metadata that
+ * names the facility is written by whoever created the PaymentIntent.
  */
-export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
+export async function handlePaymentIntentSucceeded(
+  paymentIntent: Stripe.PaymentIntent,
+  connectedAccountId?: string,
+) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
@@ -22,6 +30,16 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
       return;
     }
+
+    // Before any write: a PaymentIntent on another facility's account carrying
+    // this facility's id must not credit this facility's tenant.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'payment_intent.succeeded',
+      objectId: paymentIntent.id,
+    });
+    if (!accountMatches) return;
 
     // Update tenant payments subcollection (embedded one-time payments)
     if (paymentDocId) {

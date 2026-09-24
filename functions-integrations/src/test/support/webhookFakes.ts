@@ -32,8 +32,13 @@ export class FakeStripeObjects {
 
   install(): void {
     const client = getStripeClient() as unknown as Record<string, Record<string, unknown>>;
-    const lookup = (resource: string) => async (id: string, _params?: unknown, options?: Stripe.RequestOptions) => {
-      const account = options?.stripeAccount || null;
+    const lookup = (resource: string) => async (id: string, params?: unknown, options?: Stripe.RequestOptions) => {
+      // Like the SDK, accept request options in the params position too
+      // (`retrieve(id, { stripeAccount })`), as the refund handler calls it.
+      const paramsAsOptions = params && typeof params === 'object' && 'stripeAccount' in params
+        ? (params as Stripe.RequestOptions)
+        : undefined;
+      const account = (options ?? paramsAsOptions)?.stripeAccount || null;
       this.calls.push({ resource, id, stripeAccount: account });
       const found = this.objects.get(`${account || 'platform'}:${id}`);
       if (!found) {

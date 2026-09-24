@@ -70,7 +70,10 @@ export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<v
     }
     case 'payment_intent.succeeded': {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
-      await handlePaymentIntentSucceeded(paymentIntent);
+      // The handler only credits a connected-account payment when the account
+      // is the facility's own, so it needs to know which account sent it.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handlePaymentIntentSucceeded(paymentIntent, connectedAccountId);
       break;
     }
     case 'charge.dispute.created':
