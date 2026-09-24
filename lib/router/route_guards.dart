@@ -10,6 +10,7 @@ import 'package:sfcapp/models/feature_flag_model.dart';
 import '../providers/feature_flag_provider.dart';
 import '../providers/two_factor_provider.dart';
 import '../services/debug_session_logger.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
 import '../services/subscription_guard_service.dart';
 import '../services/superadmin_service.dart';
 import '../services/two_factor_service.dart';
@@ -118,6 +119,23 @@ class VerifiedUserRecheck {
 @visibleForTesting
 final VerifiedUserRecheck verifiedUserRecheck = VerifiedUserRecheck();
 
+/// Upper bound on the guard's first-load account ensure. On timeout the
+/// navigation carries on, and the next one tries again.
+const Duration _ensureAccountTimeout = Duration(seconds: 8);
+
+/// Whether the guard makes sure the signed-in user has an owner account
+/// before checking their access (see
+/// [FacilityCreatorAccountService.ensureAccountOnce], which also leaves
+/// invited staff without one). Not on public pages, not for super admins,
+/// and not before the email is verified: the account's creation sends the
+/// owner and the platform the onboarding emails.
+bool guardEnsuresOwnerAccount({
+  required bool isPublicRoute,
+  required bool isSuperAdmin,
+  required bool emailVerified,
+}) =>
+    !isPublicRoute && !isSuperAdmin && emailVerified;
+
 /// Main redirect guard function for GoRouter
 ///
 /// Handles:
@@ -150,6 +168,7 @@ Future<String?> evaluateRouteGuard({
   Future<bool> Function()? isTwoFactorEnabled,
   Future<SubscriptionAccessResult> Function(String path)? checkAccess,
   DateTime Function()? clock,
+  Future<bool> Function(User user)? ensureOwnerAccount,
 }) async {
   final User? Function() readCurrentUser =
       currentUser ?? () => FirebaseAuth.instance.currentUser;
@@ -537,6 +556,26 @@ Future<String?> evaluateRouteGuard({
         data: {'loc': loc});
     // #endregion
     return target;
+  }
+
+  // First authenticated load: a new signup gets their pendingApproval account
+  // here, before the access check reads it, rather than only once they open a
+  // screen that creates one (so their onboarding emails went out late, and
+  // they saw an unlocked, empty dashboard). Once per session per user; it
+  // never throws.
+  if (isAuthenticated &&
+      guardEnsuresOwnerAccount(
+        isPublicRoute: isPublicRoute,
+        isSuperAdmin: superAdmin(firebaseUser),
+        emailVerified: effectiveUser?.emailVerified ?? false,
+      )) {
+    final ensured = await (ensureOwnerAccount ??
+        (User user) => FacilityCreatorAccountService.ensureAccountOnce(
+              user,
+              timeout: _ensureAccountTimeout,
+            ))(effectiveUser ?? firebaseUser);
+    // An answer cached before the account existed no longer holds.
+    if (ensured) SubscriptionGuardService.routeGuardCache.clear();
   }
 
   // Maintenance mode: keep users without platform access on subscription; allow trial/active

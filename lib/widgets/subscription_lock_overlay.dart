@@ -21,6 +21,9 @@ class SubscriptionLockOverlay extends StatefulWidget {
 
 class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
   FacilityCreatorAccountModel? _account;
+  // Why the lock is on when there is no account to explain it: a team
+  // member whose owner's billing lapsed.
+  String? _lockMessage;
   bool _isLoading = true;
   bool _isLocked = false;
 
@@ -98,6 +101,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
           // rather than locking a paying owner out; the guard fails closed.
           if (locked != null) {
             _account = lock.account;
+            _lockMessage = lock.message;
             _isLocked = locked;
           }
           _isLoading = false;
@@ -120,7 +124,7 @@ class _SubscriptionLockOverlayState extends State<SubscriptionLockOverlay> {
 
 
   String _getLockMessage() {
-    if (_account == null) return 'Please subscribe to continue.';
+    if (_account == null) return _lockMessage ?? 'Please subscribe to continue.';
     
     if (_account!.hasTrial && _account!.isTrialExpired) {
       return 'Your trial has expired. Please subscribe to continue using the app.';

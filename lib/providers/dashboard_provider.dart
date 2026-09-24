@@ -165,14 +165,7 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
     print('🔍 [Dashboard] User ID: $userId, active facility: $activeFacilityId');
   }
 
-  // Get all facilities for user
-  final allFacilities =
-      await FacilityService.getUserFacilities(throwOnError: true);
-
-  // null = "All Facilities" (aggregate across all). Non-null = single facility.
-  final facilities = activeFacilityId == null
-      ? allFacilities
-      : allFacilities.where((f) => f.id == activeFacilityId).toList();
+  final facilities = await dashboardFacilities(activeFacilityId);
 
   if (facilities.isEmpty) {
     if (kDebugMode) {
@@ -183,6 +176,17 @@ final dashboardStatsProvider = FutureProvider.autoDispose<DashboardStats>((ref) 
 
   return loadDashboardStats(facilities, DateTime.now());
 });
+
+/// The facilities [dashboardStatsProvider] counts: [activeFacilityId]'s, or
+/// all of them when it is null ("All Facilities"). A failed read is an
+/// error, not "no facilities", which showed an owner an all-zero dashboard.
+@visibleForTesting
+Future<List<FacilityModel>> dashboardFacilities(String? activeFacilityId) async {
+  final all = await FacilityService.getUserFacilities(throwOnError: true);
+  return activeFacilityId == null
+      ? all
+      : all.where((f) => f.id == activeFacilityId).toList();
+}
 
 /// The dashboard numbers for [facilities]; [dashboardStatsProvider] picks
 /// which (the active facility, or all). Tests call this so the real tenant

@@ -9,7 +9,9 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/feature_flag_model.dart';
 import 'package:sfcapp/providers/feature_flag_provider.dart';
 import 'package:sfcapp/providers/two_factor_provider.dart';
+import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/route_guards.dart';
+import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/subscription_guard_service.dart';
 
@@ -90,6 +92,7 @@ class _Tab {
     Object? accessError,
     Object? accountReadError,
     DateTime? at,
+    Future<bool> Function(User user)? ensureOwnerAccount,
   }) {
     final uri = Uri.parse(location);
     return evaluateRouteGuard(
@@ -100,6 +103,8 @@ class _Tab {
       isSuperAdmin: (_) => superAdmin,
       isTwoFactorEnabled: () async => twoFactorEnabled,
       clock: at == null ? null : () => at,
+      // The account ensure has its own tests below; elsewhere it is a no-op.
+      ensureOwnerAccount: ensureOwnerAccount ?? (_) async => false,
       // The real access rules, with their existing injected seams.
       checkAccess: (path) {
         accessChecks += 1;
@@ -559,5 +564,113 @@ void main() {
     await ownerFacilities();
     expect(facilityReads, 2, reason: 'the cached list was dropped');
     expect(SubscriptionGuardService.routeGuardCache.freshFor('owner'), isNull);
+  });
+
+  group("a new signup's account is made on the first authenticated load", () {
+    // It used to be created only when they opened a screen that created it,
+    // so the onboarding and admin-alert emails went out late (or never), and
+    // the signup sat on an unlocked, empty dashboard.
+    test('guardEnsuresOwnerAccount: signed-in, verified, non-super-admin pages only', () {
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: false, emailVerified: true),
+        isTrue,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: true, isSuperAdmin: false, emailVerified: true),
+        isFalse,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: true, emailVerified: true),
+        isFalse,
+      );
+      expect(
+        guardEnsuresOwnerAccount(isPublicRoute: false, isSuperAdmin: false, emailVerified: false),
+        isFalse,
+      );
+    });
+
+    test('the account is ensured before access is checked, so the check sees it', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'new-owner', email: 'new@example.com', isEmailVerified: true);
+      final order = <String>[];
+      FacilityCreatorAccountModel? account;
+
+      final redirect = await evaluateRouteGuard(
+        matchedLocation: '/dashboard',
+        uri: Uri.parse('/dashboard'),
+        ref: tab.container.read(_refProvider),
+        currentUser: () => user,
+        isSuperAdmin: (_) => false,
+        isTwoFactorEnabled: () async => false,
+        ensureOwnerAccount: (u) async {
+          order.add('ensure:${u.uid}');
+          account = _account(u.uid, status: SubscriptionStatus.pendingApproval);
+          return true;
+        },
+        checkAccess: (path) {
+          order.add('check');
+          return SubscriptionGuardService.checkAccess(
+            currentRoute: path,
+            userOverride: user,
+            authOverride: MockFirebaseAuth(mockUser: user),
+            superAdminResolver: () => false,
+            accountProvider: (_) async => account,
+            facilitiesProvider: () async => const [],
+          );
+        },
+      );
+      expect(order.first, 'ensure:new-owner');
+      expect(order, contains('check'));
+      // The new pendingApproval account, not "no account yet, allowed".
+      expect(redirect, AppRoute.pendingApproval);
+    });
+
+    test('a created account drops an answer cached before it existed', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'new-owner', email: 'new@example.com', isEmailVerified: true);
+      // No account yet: allowed, and cached.
+      expect(await tab.go('/dashboard', user: user, account: null), isNull);
+      expect(SubscriptionGuardService.routeGuardCache.freshFor('new-owner'), isNotNull);
+
+      final pending = _account('new-owner', status: SubscriptionStatus.pendingApproval);
+      expect(
+        await tab.go('/tenants', user: user, account: pending, ensureOwnerAccount: (_) async => true),
+        AppRoute.pendingApproval,
+      );
+    });
+
+    test('not on public pages, and not for super admins', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'someone', email: 'someone@example.com', isEmailVerified: true);
+      final ensured = <String>[];
+      Future<bool> record(User u) async {
+        ensured.add(u.uid);
+        return false;
+      }
+
+      await tab.go('/privacy', user: user, ensureOwnerAccount: record);
+      await tab.go('/dashboard', user: user, superAdmin: true, ensureOwnerAccount: record);
+      expect(ensured, isEmpty);
+      await tab.go('/dashboard', user: user, ensureOwnerAccount: record);
+      expect(ensured, ['someone']);
+    });
+
+    test('a failed ensure does not block the navigation', () async {
+      final tab = _Tab();
+      addTearDown(tab.dispose);
+      final user = MockUser(uid: 'owner', email: 'owner@example.com', isEmailVerified: true);
+      // The production default, which fails here (no Firebase app) and must
+      // report rather than throw.
+      final redirect = await tab.go(
+        '/dashboard',
+        user: user,
+        account: _account('owner', status: SubscriptionStatus.active),
+        ensureOwnerAccount: (u) => FacilityCreatorAccountService.ensureAccountOnce(u),
+      );
+      expect(redirect, isNull);
+    });
   });
 }

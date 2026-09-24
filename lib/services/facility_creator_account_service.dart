@@ -6,7 +6,9 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import '../models/facility_creator_account_model.dart';
 import '../models/facility_model.dart';
+import 'package:sfcapp/services/error_reporter.dart';
 import 'package:sfcapp/services/permission_service.dart';
+import 'package:sfcapp/utils/single_flight.dart';
 import 'referral_program_service.dart';
 
 /// Thrown by [FacilityCreatorAccountService.getOrCreateAccountForCurrentUser]
@@ -26,6 +28,28 @@ class FacilityCreatorAccountService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  // Where this service's top-level collections and signed-in user come from.
+  // Firestore and Auth, unless a test points them at fakes so the service's
+  // own queries and checks run.
+  static CollectionReference<Map<String, dynamic>> Function(String name) _collection =
+      _firestoreCollection;
+  static User? Function() _currentUser = _authCurrentUser;
+
+  static CollectionReference<Map<String, dynamic>> _firestoreCollection(String name) =>
+      _firestore.collection(name);
+  static User? _authCurrentUser() => _auth.currentUser;
+
+  /// Serves [collection] and [currentUser] instead of Firestore and Auth;
+  /// null restores them.
+  @visibleForTesting
+  static void overrideForTesting({
+    CollectionReference<Map<String, dynamic>> Function(String name)? collection,
+    User? Function()? currentUser,
+  }) {
+    _collection = collection ?? _firestoreCollection;
+    _currentUser = currentUser ?? _authCurrentUser;
+  }
+
   /// Create a new Facility Creator Account
   /// This should be called when a user first signs up or subscribes
   static Future<String> createAccount({
@@ -34,7 +58,7 @@ class FacilityCreatorAccountService {
     required String ownerName,
   }) async {
     try {
-      final user = _auth.currentUser;
+      final user = _currentUser();
       if (user == null || user.uid != ownerUid) {
         throw Exception('Not authenticated or UID mismatch');
       }
@@ -54,7 +78,7 @@ class FacilityCreatorAccountService {
       }
 
       final now = DateTime.now();
-      final accountRef = _firestore.collection('facilityCreatorAccounts').doc();
+      final accountRef = _collection('facilityCreatorAccounts').doc();
 
       final accountData = {
         'ownerUid': ownerUid,
@@ -120,12 +144,38 @@ class FacilityCreatorAccountService {
       String ownerUid) async {
     // Not limit(1): which of several docs that returned was up to Firestore.
     // The bound only stops a runaway read; one per owner is the intent.
-    final snapshot = await _firestore
-        .collection('facilityCreatorAccounts')
+    final snapshot = await _collection('facilityCreatorAccounts')
         .where('ownerUid', isEqualTo: ownerUid)
         .limit(20)
         .get();
-    return snapshot.docs.map(FacilityCreatorAccountModel.fromFirestore).toList();
+    return parseOwnerAccounts(snapshot.docs);
+  }
+
+  /// Every doc in [docs] that parses. A malformed duplicate (a date that is
+  /// not a Timestamp, metadata that is not a map) used to throw for the whole
+  /// read, and the guard then sent a paying owner to /subscription on every
+  /// navigation. Throws only when none parse, so a real failure still fails.
+  @visibleForTesting
+  static List<FacilityCreatorAccountModel> parseOwnerAccounts(
+      List<DocumentSnapshot<Map<String, dynamic>>> docs) {
+    final parsed = <FacilityCreatorAccountModel>[];
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final doc in docs) {
+      try {
+        parsed.add(FacilityCreatorAccountModel.fromFirestore(doc));
+      } catch (e, st) {
+        firstError ??= e;
+        firstStack ??= st;
+        ErrorReporter.reportError(e, st,
+            context: 'FacilityCreatorAccountService.parseOwnerAccounts',
+            metadata: {'accountId': doc.id});
+      }
+    }
+    if (parsed.isEmpty && firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStack!);
+    }
+    return parsed;
   }
 
   /// The account to use for an owner with [accounts]: any that is not
@@ -435,26 +485,6 @@ class FacilityCreatorAccountService {
     return linked.any((f) => f.billingExempt || f.hasActivePlatformSubscription);
   }
 
-  /// Check if user has active subscription (account-level OR any per-facility platform sub)
-  /// Pass [facilities] to avoid circular import with FacilityService; if null, only checks account.
-  static Future<bool> hasActiveSubscription(
-    String ownerUid, {
-    List<FacilityModel>? facilities,
-  }) async {
-    try {
-      final account = await getAccountByOwnerUid(ownerUid);
-      if (account == null) {
-        return false;
-      }
-      return accountGrantsPlatformAccess(account, facilities: facilities);
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error checking subscription: $e');
-      }
-      return false;
-    }
-  }
-
   /// Get or create account for current user
   /// This is a convenience method that creates an account if it doesn't exist
   ///
@@ -464,7 +494,7 @@ class FacilityCreatorAccountService {
   static Future<FacilityCreatorAccountModel> getOrCreateAccountForCurrentUser({
     bool createForInvitedStaff = false,
   }) async {
-    final user = _auth.currentUser;
+    final user = _currentUser();
     if (user == null) {
       throw Exception('Not authenticated');
     }
@@ -486,7 +516,7 @@ class FacilityCreatorAccountService {
   /// owner has an account before loading: null for invited staff, who have
   /// none and must not be given one.
   static Future<FacilityCreatorAccountModel?> ensureAccountForCurrentUser() async {
-    final user = _auth.currentUser;
+    final user = _currentUser();
     if (user == null) {
       throw Exception('Not authenticated');
     }
@@ -496,6 +526,62 @@ class FacilityCreatorAccountService {
     }
     return account;
   }
+
+  // Users whose account was ensured this session: an owner's found or
+  // created, or a team member's confirmed as having none.
+  static final Set<String> _ensuredThisSession = <String>{};
+
+  /// Makes sure [user] has an account if they should (an owner, a brand-new
+  /// signup included; never invited staff, see [ensureAccountFor]), once per
+  /// session. Never throws: a failure is reported, and the next call tries
+  /// again.
+  ///
+  /// The route guard runs this on the first authenticated load, so a new
+  /// signup's pendingApproval account is created, and the onboarding and
+  /// admin-alert emails it triggers go out, as soon as they are in the app.
+  /// It used to happen only when they opened a screen that created it.
+  ///
+  /// True the first time it succeeds for [user]: anything decided before the
+  /// account existed (the guard's cached answer) is stale.
+  static Future<bool> ensureAccountOnce(
+    User user, {
+    Future<FacilityCreatorAccountModel?> Function(User user)? ensure,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    if (_ensuredThisSession.contains(user.uid)) return false;
+    try {
+      await (ensure ?? ensureAccountFor)(user).timeout(timeout);
+      return _ensuredThisSession.add(user.uid);
+    } catch (e, st) {
+      ErrorReporter.reportError(e, st,
+          context: 'FacilityCreatorAccountService.ensureAccountOnce',
+          metadata: {'uid': user.uid});
+      return false;
+    }
+  }
+
+  /// For screens that list what the user already has. The account only
+  /// matters to the creation flows, so this never holds up or fails the
+  /// screen's load: it starts [ensureAccountOnce] and returns. Those screens
+  /// used to await the account and, if the read failed, return before
+  /// loading their facilities, which left them blank.
+  static void ensureAccountInBackground({
+    User? Function()? currentUser,
+    Future<bool> Function(User user)? ensureOnce,
+  }) {
+    try {
+      final user = (currentUser ?? _currentUser)();
+      if (user == null) return;
+      unawaited((ensureOnce ?? ensureAccountOnce)(user));
+    } catch (e, st) {
+      ErrorReporter.reportError(e, st,
+          context: 'FacilityCreatorAccountService.ensureAccountInBackground');
+    }
+  }
+
+  /// Forgets which users were ensured, e.g. on sign-out. Exposed for tests.
+  @visibleForTesting
+  static void resetEnsuredForTesting() => _ensuredThisSession.clear();
 
   /// [user]'s account, created when they have none, or null for invited staff
   /// unless [createForInvitedStaff].
@@ -508,12 +594,43 @@ class FacilityCreatorAccountService {
   /// pendingApproval account by the first screen that called this, and the
   /// route guard then held them on /pending-approval.
   ///
+  /// One run per user at a time: the route guard's first-load ensure and a
+  /// screen's could otherwise both read "no account" and both create one.
+  ///
   /// The optional arguments replace the Firestore reads and the create, for
   /// tests only.
   @visibleForTesting
   static Future<FacilityCreatorAccountModel?> ensureAccountFor(
     User user, {
     bool createForInvitedStaff = false,
+    Future<FacilityCreatorAccountModel?> Function(String uid)? readAccount,
+    Future<bool> Function(String uid)? isInvitedStaffOnly,
+    Future<FacilityCreatorAccountModel> Function(User user)? create,
+  }) async {
+    Future<FacilityCreatorAccountModel?> run({required bool forStaff}) =>
+        _ensureFlight.run(
+          user.uid,
+          () => _ensureAccountFor(
+            user,
+            createForInvitedStaff: forStaff,
+            readAccount: readAccount,
+            isInvitedStaffOnly: isInvitedStaffOnly,
+            create: create,
+          ),
+        );
+    final account = await run(forStaff: false);
+    if (account != null || !createForInvitedStaff) return account;
+    // Invited staff creating a facility of their own: only after the shared
+    // run has settled, so it cannot race another create.
+    return run(forStaff: true);
+  }
+
+  static final SingleFlight<String, FacilityCreatorAccountModel?> _ensureFlight =
+      SingleFlight<String, FacilityCreatorAccountModel?>();
+
+  static Future<FacilityCreatorAccountModel?> _ensureAccountFor(
+    User user, {
+    required bool createForInvitedStaff,
     Future<FacilityCreatorAccountModel?> Function(String uid)? readAccount,
     Future<bool> Function(String uid)? isInvitedStaffOnly,
     Future<FacilityCreatorAccountModel> Function(User user)? create,
@@ -532,14 +649,12 @@ class FacilityCreatorAccountService {
   /// have role rows too (an owner row per facility), hence the second read.
   static Future<bool> _isInvitedStaffOnly(String uid) async {
     final results = await Future.wait([
-      _firestore
-          .collection(PermissionService.userRolesCollection)
+      _collection(PermissionService.userRolesCollection)
           .where('userId', isEqualTo: uid)
           .where('isActive', isEqualTo: true)
           .limit(1)
           .get(),
-      _firestore
-          .collection('facilities')
+      _collection('facilities')
           .where('ownerUid', isEqualTo: uid)
           .limit(1)
           .get(),
