@@ -8,6 +8,7 @@ import '../providers/auth_provider.dart';
 import '../providers/active_facility_provider.dart';
 import '../models/facility_model.dart';
 import '../widgets/email_usage_card.dart';
+import 'package:sfcapp/widgets/facility_delete_gate.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/facility_creation_policy.dart';
 import '../services/facility_service.dart';
@@ -665,6 +666,7 @@ class _FacilityManagementScreenState extends ConsumerState<FacilityManagementScr
   }
 
   Future<void> _deleteFacility(FacilityModel facility) async {
+    if (!await facilityDeleteAllowed(context, facility) || !mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => _DeleteConfirmationDialog(facilityName: facility.name),
