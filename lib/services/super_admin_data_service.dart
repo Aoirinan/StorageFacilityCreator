@@ -46,6 +46,12 @@ class WebsiteAdminRow {
 
   String? get accountSubscriptionStatus => account?.subscriptionStatus.name;
 
+  /// Billed for nothing: the operator's own facility or account. Such a row
+  /// needs no $75 plan, and the facility's own flag also gives it the website
+  /// ([FacilityModel.hasActiveWebsiteSubscription]).
+  bool get billingExempt =>
+      facility.billingExempt || account?.billingExempt == true;
+
   bool get hasActiveBaseSubscription {
     if (account?.suspended == true) return false;
     final accountActive =
