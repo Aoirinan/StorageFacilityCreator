@@ -25,11 +25,15 @@ import {
   handleSubscriptionUpdate,
 } from './stripeWebhookSubscriptionHandlers';
 
-async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
+/** Exported for tests; the deployed entry point is `stripeWebhook` below. */
+export async function dispatchStripeWebhookEvent(event: Stripe.Event): Promise<void> {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
-      await handleCheckoutCompleted(session);
+      // Public payment-link sessions live on the facility's connected account;
+      // completing one checks that account against the facility's.
+      const connectedAccountId = (event as any).account as string | undefined;
+      await handleCheckoutCompleted(session, connectedAccountId);
       break;
     }
     case 'customer.subscription.created':
