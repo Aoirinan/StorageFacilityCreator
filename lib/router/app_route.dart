@@ -157,6 +157,76 @@ class AppRoute {
   // Super admin
   static const superAdmin = '/super-admin';
 
+  // Stays (short-term rentals). Every page takes ?facilityId=; the routes
+  // are in stays_routes.dart.
+  static const stays = '/stays';
+  static const stayDetail = '/stays/booking';
+  static const stayCreate = '/stays/booking/new';
+  static const stayEdit = '/stays/booking/edit';
+  static const turnoverDetail = '/stays/turnover';
+  static const stayListingEdit = '/stays/listing/edit';
+  static const staysSetup = '/stays/setup';
+  static const staysChannels = '/stays/channels';
+  static const staysEarningsImport = '/stays/earnings/import';
+  static const staysGuests = '/stays/guests';
+  static const staysTemplates = '/stays/templates';
+  static const staysSettings = '/settings/stays';
+
+  static String _withQuery(String path, Map<String, String?> params) => Uri(
+        path: path,
+        queryParameters: {
+          for (final e in params.entries)
+            if (e.value != null && e.value!.isNotEmpty) e.key: e.value!,
+        },
+      ).toString();
+
+  /// The Stays hub on a tab: today, calendar, bookings, turnovers, earnings, listings.
+  static String staysWithTab({required String facilityId, String tab = 'today'}) =>
+      _withQuery(stays, {'facilityId': facilityId, 'tab': tab});
+
+  static String stayDetailFor({required String facilityId, required String stayId}) =>
+      _withQuery(stayDetail, {'facilityId': facilityId, 'stayId': stayId});
+
+  /// A new booking or block, optionally prefilled (dates are 'YYYY-MM-DD').
+  static String stayCreateFor({
+    required String facilityId,
+    String? listingId,
+    String? checkIn,
+    String? checkOut,
+    String? kind,
+  }) =>
+      _withQuery(stayCreate, {
+        'facilityId': facilityId,
+        'listingId': listingId,
+        'checkIn': checkIn,
+        'checkOut': checkOut,
+        'kind': kind,
+      });
+
+  static String stayEditFor({required String facilityId, required String stayId}) =>
+      _withQuery(stayEdit, {'facilityId': facilityId, 'stayId': stayId});
+
+  static String turnoverDetailFor({required String facilityId, required String taskId}) =>
+      _withQuery(turnoverDetail, {'facilityId': facilityId, 'taskId': taskId});
+
+  /// No listingId: a new listing.
+  static String stayListingEditFor({required String facilityId, String? listingId}) =>
+      _withQuery(stayListingEdit, {'facilityId': facilityId, 'listingId': listingId});
+
+  static String staysSetupFor(String facilityId) => _withQuery(staysSetup, {'facilityId': facilityId});
+
+  static String staysChannelsFor({required String facilityId, String? listingId}) =>
+      _withQuery(staysChannels, {'facilityId': facilityId, 'listingId': listingId});
+
+  static String staysEarningsImportFor(String facilityId) =>
+      _withQuery(staysEarningsImport, {'facilityId': facilityId});
+
+  static String staysGuestsFor(String facilityId) => _withQuery(staysGuests, {'facilityId': facilityId});
+
+  static String staysTemplatesFor(String facilityId) => _withQuery(staysTemplates, {'facilityId': facilityId});
+
+  static String staysSettingsFor(String facilityId) => _withQuery(staysSettings, {'facilityId': facilityId});
+
   // Other routes
   static const coupons = '/coupons';
   static const aiAssistant = '/ai-assistant';

@@ -1,0 +1,40 @@
+      // Stays returning guests: personal data, owners and managers only.
+      // Consent is stamped by the rules (request.time, the signed-in user);
+      // stay counts are server-maintained. Delete removes personal data on
+      // request. Email and phone may be null.
+      match /stayGuestProfiles/{profileId} {
+        function keysOk() {
+          return request.resource.data.keys().hasOnly(['facilityId', 'name', 'nameLower', 'phoneE164', 'email', 'vehicle',
+               'notes', 'doNotRent', 'doNotRentReason', 'consent', 'stayCount', 'lastStayAt', 'createdAt', 'createdBy',
+               'updatedAt', 'updatedBy']);
+        }
+        function valuesOk() {
+          let d = request.resource.data;
+          return d.get('facilityId', null) == facilityId
+            && d.get('name', null) is string && d.name.size() >= 1 && d.name.size() <= 120 && d.get('nameLower', null) == d.name.lower()
+            && (d.get('email', null) == null || (d.email is string && d.email.size() <= 200))
+            && (d.get('phoneE164', null) == null || (d.phoneE164 is string && d.phoneE164.size() <= 20))
+            && d.get('notes', '') is string && d.get('notes', '').size() <= 2000
+            && d.get('doNotRent', false) is bool
+            && (d.get('doNotRentReason', null) == null || (d.doNotRentReason is string && d.doNotRentReason.size() <= 500))
+            && d.get('updatedBy', null) == request.auth.uid && d.get('updatedAt', null) == request.time;
+        }
+        function consentStamped(c) {
+          return c == null || (c.keys().hasOnly(['email', 'sms', 'method', 'recordedAt', 'recordedBy'])
+            && c.get('email', null) is bool && c.get('sms', null) is bool
+            && c.get('method', null) in ['verbal', 'written', 'booking_form']
+            && c.get('recordedAt', null) == request.time && c.get('recordedBy', null) == request.auth.uid);
+        }
+        allow read, delete: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+          && request.resource.data.get('stayCount', 0) == 0
+          && request.resource.data.get('lastStayAt', null) == null
+          && request.resource.data.get('createdBy', null) == request.auth.uid
+          && request.resource.data.get('createdAt', null) == request.time
+          && consentStamped(request.resource.data.get('consent', null));
+        allow update: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['stayCount', 'lastStayAt', 'createdAt',
+               'createdBy', 'facilityId'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['consent'])
+              || consentStamped(request.resource.data.get('consent', null)));
+      }

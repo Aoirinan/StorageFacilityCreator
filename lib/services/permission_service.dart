@@ -110,6 +110,13 @@ class PermissionService {
         // Contracts / payments (manager ops; owner retains full via PermissionType.values)
         PermissionType.deleteContract,
         PermissionType.deletePayment,
+        // Stays (short-term rentals)
+        PermissionType.viewStays,
+        PermissionType.manageStays,
+        PermissionType.manageStayChannels,
+        PermissionType.manageStayMoney,
+        PermissionType.manageStaySettings,
+        PermissionType.workStayTasks,
       ],
     ),
     RoleType.employee: Role(
@@ -139,6 +146,10 @@ class PermissionService {
         // Reminder Management
         PermissionType.createReminder,
         PermissionType.viewReminder,
+        // Stays: views stays, checks guests in and out, works turnovers.
+        // Walk-up booking and cash are owner switches the server enforces.
+        PermissionType.viewStays,
+        PermissionType.workStayTasks,
       ],
     ),
     RoleType.viewer: Role(
@@ -158,6 +169,8 @@ class PermissionService {
         PermissionType.viewUnit,
         PermissionType.viewReminder,
         PermissionType.viewReports,
+        // Stays: read-only calendar, listings and turnovers.
+        PermissionType.viewStays,
       ],
     ),
   };

@@ -1,0 +1,15 @@
+      // Stays money: the income journal, expenses and Airbnb CSV import
+      // records. Owners and managers read; only the callables write (the same
+      // as sales, deposits and invoices). Stay money never touches ledgers.
+      match /stayIncome/{entryId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      match /stayExpenses/{expenseId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      match /stayImportBatches/{batchId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }

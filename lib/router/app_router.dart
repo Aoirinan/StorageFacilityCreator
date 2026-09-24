@@ -15,6 +15,7 @@ import 'route_guards.dart';
 import 'route_helpers.dart';
 import 'facility_edit_route.dart';
 import 'package:sfcapp/router/detail_routes.dart';
+import 'package:sfcapp/router/stays_routes.dart';
 import 'public_auth_entry_routes.dart';
 import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
@@ -1313,6 +1314,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return NotFoundPage(state: state);
             },
           ),
+          // Stays (short-term rentals), behind the shortTermRentals flag.
+          ...staysShellRoutes(),
         ],
       ),
       // Outside ShellRoute so it renders without the facility owner sidebar.

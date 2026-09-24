@@ -5,6 +5,23 @@ enum FacilityNotificationType {
   autopayEnabled,
   autopayRequested,
   stripeActionRequired,
+  // Stays (short-term rentals), in-app only.
+  stayBookingImported,
+  stayBookingChanged,
+  stayBookingRemoved,
+  stayBookingNeedsReview,
+  stayConflict,
+  stayFeedFirstSync,
+  stayFeedFailing,
+  stayFeedSuspicious,
+  stayTurnoverDone,
+  stayTurnoverIssue,
+  stayTurnoverUnassigned,
+  stayDailyBrief,
+
+  /// A type this app does not know (or the doc has none). It used to read as
+  /// autopayRequested; it still looks the same on screen.
+  other,
 }
 
 extension FacilityNotificationTypeX on FacilityNotificationType {
@@ -18,22 +35,43 @@ extension FacilityNotificationTypeX on FacilityNotificationType {
         return 'AUTOPAY_REQUESTED';
       case FacilityNotificationType.stripeActionRequired:
         return 'STRIPE_ACTION_REQUIRED';
+      case FacilityNotificationType.stayBookingImported:
+        return 'STAY_BOOKING_IMPORTED';
+      case FacilityNotificationType.stayBookingChanged:
+        return 'STAY_BOOKING_CHANGED';
+      case FacilityNotificationType.stayBookingRemoved:
+        return 'STAY_BOOKING_REMOVED';
+      case FacilityNotificationType.stayBookingNeedsReview:
+        return 'STAY_BOOKING_NEEDS_REVIEW';
+      case FacilityNotificationType.stayConflict:
+        return 'STAY_CONFLICT';
+      case FacilityNotificationType.stayFeedFirstSync:
+        return 'STAY_FEED_FIRST_SYNC';
+      case FacilityNotificationType.stayFeedFailing:
+        return 'STAY_FEED_FAILING';
+      case FacilityNotificationType.stayFeedSuspicious:
+        return 'STAY_FEED_SUSPICIOUS';
+      case FacilityNotificationType.stayTurnoverDone:
+        return 'STAY_TURNOVER_DONE';
+      case FacilityNotificationType.stayTurnoverIssue:
+        return 'STAY_TURNOVER_ISSUE';
+      case FacilityNotificationType.stayTurnoverUnassigned:
+        return 'STAY_TURNOVER_UNASSIGNED';
+      case FacilityNotificationType.stayDailyBrief:
+        return 'STAY_DAILY_BRIEF';
+      case FacilityNotificationType.other:
+        return 'OTHER';
     }
   }
 
+  /// A Stays notification (its metadata.route opens the stay or task).
+  bool get isStay => value.startsWith('STAY_');
+
   static FacilityNotificationType fromString(String? v) {
-    switch (v) {
-      case 'AUTOPAY_DISABLED':
-        return FacilityNotificationType.autopayDisabled;
-      case 'AUTOPAY_ENABLED':
-        return FacilityNotificationType.autopayEnabled;
-      case 'AUTOPAY_REQUESTED':
-        return FacilityNotificationType.autopayRequested;
-      case 'STRIPE_ACTION_REQUIRED':
-        return FacilityNotificationType.stripeActionRequired;
-      default:
-        return FacilityNotificationType.autopayRequested;
+    for (final type in FacilityNotificationType.values) {
+      if (type != FacilityNotificationType.other && type.value == v) return type;
     }
+    return FacilityNotificationType.other;
   }
 }
 

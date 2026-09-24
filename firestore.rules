@@ -1405,6 +1405,268 @@ service cloud.firestore {
         );
         allow delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
       }
+      // Stays (short-term rentals). Module and automation switches plus the
+      // confirmed zone. Readable by viewers too, so the app can tell whether
+      // Stays is on; only the staysSetControls callable writes it.
+      match /stayControls/{docId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false; // staysSetControls only
+      }
+      // Stays listings. List fields (rates, tax lines, checklists) cannot be
+      // checked element by element in rules, so only the callables write them.
+      match /stayListings/{listingId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false; // staysSaveListing / staysBulkCreateRvSites validate list elements
+      }
+
+      // Wifi, door and gate codes, directions and house rules: staff read,
+      // owners and managers write whitelisted string keys. Never public, never
+      // in the export feed.
+      match /stayListingAccess/{listingId} {
+        function accessStr(k, max) {
+          return request.resource.data.get(k, '') is string && request.resource.data.get(k, '').size() <= max;
+        }
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.keys().hasOnly(['facilityId', 'listingId', 'wifiName', 'wifiPassword', 'staticDoorCode',
+               'lockboxCode', 'gateCode', 'parkingNotes', 'trashNotes', 'checkoutInstructions', 'directionsUrl', 'houseRules',
+               'updatedAt', 'updatedBy'])
+          && request.resource.data.facilityId == facilityId && request.resource.data.listingId == listingId
+          && accessStr('wifiName', 100) && accessStr('wifiPassword', 100) && accessStr('staticDoorCode', 40)
+          && accessStr('lockboxCode', 40) && accessStr('gateCode', 40) && accessStr('parkingNotes', 2000)
+          && accessStr('trashNotes', 2000) && accessStr('checkoutInstructions', 4000) && accessStr('directionsUrl', 500)
+          && accessStr('houseRules', 4000)
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+      // Stays channel feeds and export links. The feed URL and the raw export
+      // token are bearer secrets: they live in secret/ subdocs nobody reads,
+      // owners, managers and super admins included.
+      match /stayChannels/{channelId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+        match /secret/{docId} {
+          allow read, write: if false;
+        }
+      }
+      match /stayChannelBlocks/{channelId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false;
+      }
+      match /stayExportLinks/{linkId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+        match /secret/{docId} {
+          allow read, write: if false;
+        }
+      }
+      match /staySyncLog/{runId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      // Stays bookings and blocks. No personal data or money amounts here.
+      // Creating, deleting, dates, listing, status and version go through the
+      // callables (night locks must be transactional); staff may make quick
+      // edits and check guests in and out.
+      match /stays/{stayId} {
+        function quickKeys() {
+          return ['guestDisplayName', 'adults', 'children', 'pets', 'rvLengthFt', 'staffNotes', 'cleanerNotes', 'tags',
+                  'messageMarks', 'arrivalState', 'checkedInAt', 'checkedOutAt', 'updatedAt', 'updatedBy'];
+        }
+        function quickValuesOk() {
+          let d = request.resource.data;
+          return d.get('guestDisplayName', '') is string && d.get('guestDisplayName', '').size() <= 60
+            && d.get('adults', 0) is int && d.get('adults', 0) >= 0 && d.get('adults', 0) <= 50
+            && d.get('children', 0) is int && d.get('children', 0) >= 0 && d.get('children', 0) <= 50
+            && d.get('pets', 0) is int && d.get('pets', 0) >= 0 && d.get('pets', 0) <= 20
+            && (d.get('rvLengthFt', null) == null || (d.rvLengthFt is int && d.rvLengthFt >= 0 && d.rvLengthFt <= 80))
+            && d.get('staffNotes', '') is string && d.get('staffNotes', '').size() <= 2000
+            && d.get('cleanerNotes', '') is string && d.get('cleanerNotes', '').size() <= 2000
+            && d.get('tags', []) is list && d.get('tags', []).size() <= 10
+            && d.get('messageMarks', {}) is map && d.get('messageMarks', {}).size() <= 30;
+        }
+        // Staff: upcoming → checked_in (a reservation that holds its nights)
+        // and checked_in → checked_out, each stamped with request.time.
+        // Owners and managers may also undo either step.
+        function arrivalOk() {
+          let b = resource.data.get('arrivalState', 'upcoming');
+          let a = request.resource.data.get('arrivalState', 'upcoming');
+          let inSame = request.resource.data.get('checkedInAt', null) == resource.data.get('checkedInAt', null);
+          let outSame = request.resource.data.get('checkedOutAt', null) == resource.data.get('checkedOutAt', null);
+          return (a == b && inSame && outSame)
+            || (b == 'upcoming' && a == 'checked_in' && resource.data.get('kind', '') == 'reservation'
+                && resource.data.get('status', '') in ['confirmed', 'conflict']
+                && request.resource.data.get('checkedInAt', null) == request.time && outSame)
+            || (b == 'checked_in' && a == 'checked_out'
+                && request.resource.data.get('checkedOutAt', null) == request.time && inSame)
+            || (isFacilityOwnerOrManager(facilityId)
+                && ((b == 'checked_in' && a == 'upcoming') || (b == 'checked_out' && a == 'checked_in')));
+        }
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create, delete: if false; // callables only: night locks must be transactional
+        allow update: if isFacilityStaff(facilityId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(quickKeys())
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time
+          && quickValuesOk() && arrivalOk();
+      }
+
+      // Guest name, phone last 4, profile link and private notes: owners and
+      // managers only. fullName may be null (a feed stay with no name yet).
+      match /stayPrivate/{stayId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create, delete: if false;
+        allow update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'privateNotes', 'updatedAt', 'updatedBy'])
+          && (request.resource.data.get('fullName', null) == null
+              || (request.resource.data.fullName is string && request.resource.data.fullName.size() <= 120))
+          && request.resource.data.get('privateNotes', '') is string && request.resource.data.get('privateNotes', '').size() <= 2000
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+      }
+
+      // A per-stay door or gate code: staff read (cleaners need it), owners
+      // and managers write. Codes may be null.
+      match /stayAccess/{stayId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
+               'updatedAt', 'updatedBy'])
+          && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
+          && (request.resource.data.get('doorCode', null) == null
+              || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
+          && (request.resource.data.get('gateCode', null) == null
+              || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
+          && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
+          && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /stayFolios/{stayId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+
+      // Night lock buckets: a cache only the stayWriter transaction writes.
+      match /stayNightLocks/{bucketId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false;
+      }
+      // Stays turnovers and to-dos. Automatic turnovers (turnover_{stayId})
+      // come from the staysOnStayWrite trigger. Owners and managers edit the
+      // task fields; an employee works tasks that are unassigned or theirs,
+      // and only the checklist, supplies, issue note, photos and status.
+      match /stayTasks/{taskId} {
+        function empKeys() {
+          return ['status', 'checklist', 'suppliesLow', 'issueNote', 'photoPaths', 'startedAt', 'completedAt', 'completedBy',
+                  'updatedAt', 'updatedBy'];
+        }
+        function mgrKeys() {
+          return empKeys().concat(['assigneeUid', 'assigneeName', 'dueByAt', 'dueByLocal', 'priority', 'title', 'notes',
+                                   'needsAttention']);
+        }
+        function taskOk() {
+          let d = request.resource.data;
+          return d.get('status', '') in ['todo', 'in_progress', 'done', 'skipped', 'cancelled']
+            && d.get('checklist', []) is list && d.get('checklist', []).size() <= 50
+            && d.get('suppliesLow', []) is list && d.get('suppliesLow', []).size() <= 20
+            && d.get('photoPaths', []) is list && d.get('photoPaths', []).size() <= 10
+            && d.get('issueNote', '') is string && d.get('issueNote', '').size() <= 2000
+            && d.get('updatedBy', null) == request.auth.uid && d.get('updatedAt', null) == request.time;
+        }
+        // Marking a task done is signed by whoever does it.
+        function doneByMe() {
+          return request.resource.data.get('status', '') != 'done' || resource.data.get('status', '') == 'done'
+            || request.resource.data.get('completedBy', null) == request.auth.uid;
+        }
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) && !taskId.matches('^turnover_.*')
+          && request.resource.data.get('facilityId', null) == facilityId
+          && request.resource.data.keys().hasAll(['facilityId', 'category', 'title', 'status', 'dueDate', 'createdBy',
+               'createdAt', 'updatedAt', 'updatedBy'])
+          && request.resource.data.category in ['site_check', 'maintenance', 'restock', 'general']
+          && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
+          && taskOk();
+        allow update: if (isFacilityOwnerOrManager(facilityId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(mgrKeys()) && taskOk() && doneByMe())
+          || (facilityRole(facilityId) == 'employee'
+              && resource.data.get('assigneeUid', null) in [null, request.auth.uid]
+              && resource.data.get('status', '') in ['todo', 'in_progress', 'done']
+              && request.resource.data.get('status', '') in ['todo', 'in_progress', 'done']
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(empKeys()) && taskOk() && doneByMe());
+        allow delete: if false;
+      }
+      // Stays money: the income journal, expenses and Airbnb CSV import
+      // records. Owners and managers read; only the callables write (the same
+      // as sales, deposits and invoices). Stay money never touches ledgers.
+      match /stayIncome/{entryId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      match /stayExpenses/{expenseId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      match /stayImportBatches/{batchId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+      // Stays returning guests: personal data, owners and managers only.
+      // Consent is stamped by the rules (request.time, the signed-in user);
+      // stay counts are server-maintained. Delete removes personal data on
+      // request. Email and phone may be null.
+      match /stayGuestProfiles/{profileId} {
+        function keysOk() {
+          return request.resource.data.keys().hasOnly(['facilityId', 'name', 'nameLower', 'phoneE164', 'email', 'vehicle',
+               'notes', 'doNotRent', 'doNotRentReason', 'consent', 'stayCount', 'lastStayAt', 'createdAt', 'createdBy',
+               'updatedAt', 'updatedBy']);
+        }
+        function valuesOk() {
+          let d = request.resource.data;
+          return d.get('facilityId', null) == facilityId
+            && d.get('name', null) is string && d.name.size() >= 1 && d.name.size() <= 120 && d.get('nameLower', null) == d.name.lower()
+            && (d.get('email', null) == null || (d.email is string && d.email.size() <= 200))
+            && (d.get('phoneE164', null) == null || (d.phoneE164 is string && d.phoneE164.size() <= 20))
+            && d.get('notes', '') is string && d.get('notes', '').size() <= 2000
+            && d.get('doNotRent', false) is bool
+            && (d.get('doNotRentReason', null) == null || (d.doNotRentReason is string && d.doNotRentReason.size() <= 500))
+            && d.get('updatedBy', null) == request.auth.uid && d.get('updatedAt', null) == request.time;
+        }
+        function consentStamped(c) {
+          return c == null || (c.keys().hasOnly(['email', 'sms', 'method', 'recordedAt', 'recordedBy'])
+            && c.get('email', null) is bool && c.get('sms', null) is bool
+            && c.get('method', null) in ['verbal', 'written', 'booking_form']
+            && c.get('recordedAt', null) == request.time && c.get('recordedBy', null) == request.auth.uid);
+        }
+        allow read, delete: if isFacilityOwnerOrManager(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+          && request.resource.data.get('stayCount', 0) == 0
+          && request.resource.data.get('lastStayAt', null) == null
+          && request.resource.data.get('createdBy', null) == request.auth.uid
+          && request.resource.data.get('createdAt', null) == request.time
+          && consentStamped(request.resource.data.get('consent', null));
+        allow update: if isFacilityOwnerOrManager(facilityId) && keysOk() && valuesOk()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['stayCount', 'lastStayAt', 'createdAt',
+               'createdBy', 'facilityId'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['consent'])
+              || consentStamped(request.resource.data.get('consent', null)));
+      }
+      // Stays copy-first message templates. The owner copies, prints or
+      // opens her own mail or text app; nothing sends them. No 'autoSend' key
+      // exists in v1, and kind is always 'copy'.
+      match /stayMessageTemplates/{templateId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.keys().hasOnly(['facilityId', 'key', 'name', 'body', 'channelHint', 'listingIds', 'kind',
+               'seeded', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+          && request.resource.data.get('facilityId', null) == facilityId && request.resource.data.get('kind', null) == 'copy'
+          && request.resource.data.get('name', null) is string && request.resource.data.name.size() <= 80
+          && request.resource.data.get('body', null) is string && request.resource.data.body.size() <= 4000
+          && request.resource.data.get('channelHint', null) in ['airbnb_paste', 'email', 'sms', 'print']
+          && request.resource.data.get('listingIds', []) is list && request.resource.data.get('listingIds', []).size() <= 60
+          && request.resource.data.get('updatedBy', null) == request.auth.uid
+          && request.resource.data.get('updatedAt', null) == request.time;
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
     }
     
     // DNR entries in facility subcollections - facility owner access

@@ -1,0 +1,17 @@
+      // Stays copy-first message templates. The owner copies, prints or
+      // opens her own mail or text app; nothing sends them. No 'autoSend' key
+      // exists in v1, and kind is always 'copy'.
+      match /stayMessageTemplates/{templateId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.keys().hasOnly(['facilityId', 'key', 'name', 'body', 'channelHint', 'listingIds', 'kind',
+               'seeded', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+          && request.resource.data.get('facilityId', null) == facilityId && request.resource.data.get('kind', null) == 'copy'
+          && request.resource.data.get('name', null) is string && request.resource.data.name.size() <= 80
+          && request.resource.data.get('body', null) is string && request.resource.data.body.size() <= 4000
+          && request.resource.data.get('channelHint', null) in ['airbnb_paste', 'email', 'sms', 'print']
+          && request.resource.data.get('listingIds', []) is list && request.resource.data.get('listingIds', []).size() <= 60
+          && request.resource.data.get('updatedBy', null) == request.auth.uid
+          && request.resource.data.get('updatedAt', null) == request.time;
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
