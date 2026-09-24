@@ -84,4 +84,30 @@ void main() {
     // Live again afterwards: resending is a deliberate choice.
     expect(tester.widget<ElevatedButton>(send).onPressed, isNotNull);
   });
+
+  // The real InvoiceOperationsNotifier and InvoiceService: with no Firebase
+  // app in tests the send fails, as it does offline. The notifier swallowed
+  // that, so the page said "Invoice sent successfully".
+  testWidgets('a failed send is not reported as sent', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: Scaffold(
+            body: InvoiceDetailScreen(invoice: _invoice, facilityId: 'f1'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Send to tenant'));
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    expect(find.text('Invoice sent successfully'), findsNothing);
+    expect(find.textContaining('Error sending invoice'), findsOneWidget);
+  });
 }

@@ -544,14 +544,27 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen> {
           FilledButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await ref.read(reminderOperationsProvider.notifier).sendReminder(
-                    facilityId: reminder.facilityId,
-                    reminderId: reminder.id,
-                    tenantEmail: reminder.tenantEmail ?? '',
-                    tenantPhone: reminder.tenantPhone ?? '',
-                    message: reminder.message,
-                    channels: reminder.channels,
+              try {
+                await ref.read(reminderOperationsProvider.notifier).sendReminder(
+                      facilityId: reminder.facilityId,
+                      reminderId: reminder.id,
+                      tenantEmail: reminder.tenantEmail ?? '',
+                      tenantPhone: reminder.tenantPhone ?? '',
+                      message: reminder.message,
+                      channels: reminder.channels,
+                    );
+              } catch (e) {
+                // The send now throws when nothing went out; say so rather
+                // than leave the row looking as if it was dealt with.
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Reminder not sent: $e'),
+                      backgroundColor: AppTheme.error,
+                    ),
                   );
+                }
+              }
               if (mounted) {
                 ref.invalidate(reminderListProvider(facilityId));
                 ref.invalidate(reminderStatsProvider(facilityId));
