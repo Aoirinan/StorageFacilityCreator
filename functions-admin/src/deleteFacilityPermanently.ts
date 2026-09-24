@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import { enforceAppCheckOrThrow } from '@sfc/functions-shared/auth/appCheck';
 import { summarizeCancelOutcomes } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { findOwnerAccountDoc } from '@sfc/functions-shared/platform/ownerAccount';
 import {
   FacilityBillingNotStoppedError,
   FacilityPurgeDeps,
@@ -51,8 +52,10 @@ async function accountIdFor(
   if (linked) return linked;
   const ownerUid = typeof facility.ownerUid === 'string' ? facility.ownerUid : '';
   if (!ownerUid) return null;
-  const owned = await db.collection('facilityCreatorAccounts').where('ownerUid', '==', ownerUid).limit(1).get();
-  return owned.empty ? null : owned.docs[0].id;
+  // The same preferred account (approved/active, then oldest) the app and
+  // every other codebase use: limit(1) picked an arbitrary one when an owner
+  // has duplicates.
+  return (await findOwnerAccountDoc(db, ownerUid))?.id ?? null;
 }
 
 export async function deleteFacilityPermanentlyHandler(
