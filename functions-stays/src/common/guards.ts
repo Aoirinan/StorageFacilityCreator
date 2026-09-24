@@ -5,7 +5,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { enforceAppCheckOrThrow } from '@sfc/functions-shared/auth/appCheck';
 import { RateLimitConfig, enforceRateLimit } from '@sfc/functions-shared/rateLimits/facilityRateLimit';
 import { StayControlsDoc, StayRole, StaysCallableName } from '@sfc/functions-shared/stays/contracts';
-import { isValidYmd } from '@sfc/functions-shared/stays/dates';
+import { canonicalIanaZone, isValidYmd } from '@sfc/functions-shared/stays/dates';
 import { isValidDocId, isValidRequestId } from '@sfc/functions-shared/stays/ids';
 
 import { StaysAuditEntry, StaysAuditWriter, defaultAuditWriter } from './audit';
@@ -19,7 +19,7 @@ import { StaysGate, assertStaysAllowed, loadStaysGate } from './serverConfig';
  *  2. App Check                      → app_check_required
  *  3. ids (facilityId + the callable's own checks) → invalid_argument
  *  4. staysServerConfig gate         → stays_paused / module_not_available
- *  5. the caller's role here         → role_not_allowed (never canAccessFacility)
+ *  5. the caller's role here         → role_not_allowed (the facility doc, as the rules read it)
  *  6. stayControls, module enabled   → module_disabled
  *  7. role allowed for this callable → role_not_allowed
  *  8. rate limits, facility and user → rate_limited
@@ -80,90 +80,54 @@ export function staysCallable<Res>(
 // Role resolution (step 5)
 // ---------------------------------------------------------------------------
 
-const ROLE_RANK: Record<StayRole, number> = { owner: 4, manager: 3, employee: 2, viewer: 1 };
-
-function higher(a: StayRole | null, b: StayRole | null): StayRole | null {
-  if (!a) return b;
-  if (!b) return a;
-  return ROLE_RANK[a] >= ROLE_RANK[b] ? a : b;
-}
-
-/** The `managers` map entry forms assertOwnerOrManager (functions-automation processExportJob.ts) accepts. */
-function isManagerEntry(entry: unknown): boolean {
-  if (entry === true) return true;
-  if (typeof entry !== 'object' || entry === null) return false;
-  const e = entry as Record<string, unknown>;
-  return e.active === true || e.isActive === true || e.role === 'manager' || e.roleType === 'manager';
-}
-
 /**
- * The caller's role from the facility doc: ownerUid, the `managers` map and
- * the `roles` map. Only `ownerUid` makes an owner; a roles entry of 'owner'
- * counts as manager, so owner-only settings stay with the account that owns
- * the facility.
+ * The caller's role from the facility doc, read exactly as the Firestore and
+ * Storage rules read it (01-shared-functions.rules facilityRole,
+ * isFacilityOwnerOrManager, isFacilityStaff, isFacilityViewer), so a
+ * callable never lets through someone the rules would stop:
+ *  - `ownerUid` is the owner;
+ *  - `managers[uid] == true`, or a roles entry of 'owner', 'manager' or
+ *    'admin', is a manager (only ownerUid makes an owner, so owner-only
+ *    settings stay with the account that owns the facility);
+ *  - roles 'employee' and 'viewer' are those roles.
+ * Nothing else counts: not a managers entry that is an object, and not a
+ * user_roles row, which the rules ignore.
  */
 export function roleFromFacilityDoc(data: Record<string, unknown>, uid: string): StayRole | null {
   if (data.ownerUid === uid) return 'owner';
-  const roles = (data.roles as Record<string, unknown> | undefined) ?? {};
-  const managers = (data.managers as Record<string, unknown> | undefined) ?? {};
+  const roles = data.roles && typeof data.roles === 'object' ? (data.roles as Record<string, unknown>) : {};
+  const managers = data.managers && typeof data.managers === 'object' ? (data.managers as Record<string, unknown>) : {};
   const role = roles[uid];
-  if (isManagerEntry(managers[uid]) || role === 'owner' || role === 'manager' || role === 'admin') return 'manager';
+  if (managers[uid] === true || role === 'owner' || role === 'manager' || role === 'admin') return 'manager';
   if (role === 'employee') return 'employee';
   if (role === 'viewer') return 'viewer';
   return null;
 }
 
-/** A user_roles row's roleType. 'owner' rows count as manager for the same reason as above. */
-export function roleFromUserRoleType(roleType: unknown): StayRole | null {
-  switch (String(roleType ?? '').toLowerCase()) {
-    case 'owner':
-    case 'manager':
-    case 'admin':
-      return 'manager';
-    case 'employee':
-    case 'staff':
-      return 'employee';
-    case 'viewer':
-      return 'viewer';
-    default:
-      return null;
-  }
-}
-
 export interface FacilityAccess {
   role: StayRole | null;
   facilityExists: boolean;
-  /** facilities/{id}.timeZone, for the mismatch warning only; never used as a fallback. */
+  /**
+   * facilities/{id}.timeZone in Intl's spelling (as stored when it is not a
+   * valid zone), for the mismatch warning only; never used as a fallback.
+   */
   facilityTimeZone: string | null;
 }
 
 /**
- * Step 5: ownerUid, the roles map, the managers map and active user_roles
- * rows; the highest wins. Deliberately not canAccessFacility, which also
- * lets tenant-portal occupants through.
+ * Step 5: the role from the facility doc alone (see roleFromFacilityDoc).
+ * Deliberately not canAccessFacility, which also lets tenant-portal
+ * occupants through.
  */
-export async function loadFacilityAccess(db: Firestore, facilityId: string, uid: string, nowMs: number): Promise<FacilityAccess> {
+export async function loadFacilityAccess(db: Firestore, facilityId: string, uid: string): Promise<FacilityAccess> {
   const snap = await db.collection('facilities').doc(facilityId).get();
   if (!snap.exists) return { role: null, facilityExists: false, facilityTimeZone: null };
   const data = (snap.data() ?? {}) as Record<string, unknown>;
-  let role = roleFromFacilityDoc(data, uid);
-  if (role !== 'owner' && role !== 'manager') {
-    const rows = await db
-      .collection('user_roles')
-      .where('userId', '==', uid)
-      .where('facilityId', '==', facilityId)
-      .where('isActive', '==', true)
-      .get();
-    for (const row of rows.docs) {
-      const expiresAt = row.get('expiresAt') as { toMillis?: () => number } | null | undefined;
-      if (expiresAt && typeof expiresAt.toMillis === 'function' && expiresAt.toMillis() <= nowMs) continue;
-      role = higher(role, roleFromUserRoleType(row.get('roleType')));
-    }
-  }
+  const rawZone = typeof data.timeZone === 'string' ? data.timeZone : null;
   return {
-    role,
+    role: roleFromFacilityDoc(data, uid),
     facilityExists: true,
-    facilityTimeZone: typeof data.timeZone === 'string' ? data.timeZone : null,
+    facilityTimeZone: canonicalIanaZone(rawZone) ?? rawZone,
   };
 }
 
@@ -279,7 +243,7 @@ export async function runStaysGuards(
   assertStaysAllowed(gate, facilityId);
 
   // 5. Role at this facility.
-  const access = await loadFacilityAccess(db, facilityId, uid, nowMs);
+  const access = await loadFacilityAccess(db, facilityId, uid);
   if (!access.role) {
     throw staysError('permission-denied', 'role_not_allowed', 'You do not have access to this facility.');
   }

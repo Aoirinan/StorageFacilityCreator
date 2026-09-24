@@ -140,6 +140,23 @@ export function isValidIanaZone(value: unknown): value is string {
   }
 }
 
+/**
+ * The zone as Intl names it (resolvedOptions().timeZone), or null when it is
+ * not a valid zone: 'america/denver' and 'US/Mountain' both become
+ * 'America/Denver'. Stays stores and compares this form, so one zone spelled
+ * two ways never reads as a mismatch.
+ */
+export function canonicalIanaZone(value: unknown): string | null {
+  if (!isValidIanaZone(value)) return null;
+  return formatterFor(value).resolvedOptions().timeZone;
+}
+
+/** Whether two zone names are the same zone (both valid, same canonical name). */
+export function sameTimeZone(a: unknown, b: unknown): boolean {
+  const ca = canonicalIanaZone(a);
+  return ca !== null && ca === canonicalIanaZone(b);
+}
+
 function assertZone(tz: string): void {
   if (!isValidIanaZone(tz)) {
     throw new Error(`Not a valid IANA time zone: ${String(tz)}`);

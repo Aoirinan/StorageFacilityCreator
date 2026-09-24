@@ -13,3 +13,6 @@ Map<String, String>? wallClockParts(DateTime instantUtc, String timeZone) {
     'minute': '${u.minute}',
   };
 }
+
+/// Only UTC is known here, under either of its names.
+String? canonicalZone(String timeZone) => timeZone == 'UTC' || timeZone == 'Etc/UTC' ? 'UTC' : null;

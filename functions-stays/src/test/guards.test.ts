@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as functions from 'firebase-functions/v1';
-import { Timestamp } from 'firebase-admin/firestore';
 
 import type { StayRole } from '@sfc/functions-shared/stays/contracts';
 
@@ -165,24 +164,17 @@ test('the role matrix: staff callables and the any-role availability check', asy
   );
 });
 
-test('roles come from ownerUid, the managers map, the roles map and active user_roles rows', async () => {
+test('roles come from the facility doc exactly as the rules read it, never from user_roles', async () => {
   const { fake, handle } = setup({
     facility: {
-      managers: { 'uid-legacy': true, 'uid-object': { active: true }, 'uid-off': { active: false } },
-      roles: { 'uid-coowner': 'owner', 'uid-admin': 'admin', [EMPLOYEE]: 'employee', [VIEWER]: 'viewer' },
+      managers: { 'uid-legacy': true, 'uid-object': { active: true }, 'uid-string': 'true', 'uid-off': false },
+      roles: { 'uid-coowner': 'owner', 'uid-admin': 'admin', 'uid-upper': 'Manager', [EMPLOYEE]: 'employee', [VIEWER]: 'viewer' },
     },
   });
+  // Rows the rules ignore: they must not grant anything here either.
   fake.seed('user_roles/r1', { userId: 'uid-invited', facilityId: FAC, roleType: 'manager', isActive: true });
-  fake.seed('user_roles/r2', { userId: 'uid-inactive', facilityId: FAC, roleType: 'manager', isActive: false });
-  fake.seed('user_roles/r3', { userId: 'uid-other-fac', facilityId: 'another', roleType: 'manager', isActive: true });
-  fake.seed('user_roles/r4', {
-    userId: 'uid-expired',
-    facilityId: FAC,
-    roleType: 'manager',
-    isActive: true,
-    expiresAt: Timestamp.fromMillis(NOW - 1),
-  });
-  fake.seed('user_roles/r5', { userId: VIEWER, facilityId: FAC, roleType: 'employee', isActive: true });
+  fake.seed('user_roles/r2', { userId: VIEWER, facilityId: FAC, roleType: 'manager', isActive: true });
+  fake.seed('user_roles/r3', { userId: EMPLOYEE, facilityId: FAC, roleType: 'owner', isActive: true });
 
   const roleOf = async (uid: string) => {
     try {
@@ -192,18 +184,20 @@ test('roles come from ownerUid, the managers map, the roles map and active user_
     }
   };
   assert.equal(await roleOf(OWNER), 'owner');
+  // managers[uid] == true, as isFacilityOwnerOrManager has it; other entry shapes are nothing.
   assert.equal(await roleOf('uid-legacy'), 'manager');
-  assert.equal(await roleOf('uid-object'), 'manager');
+  assert.equal(await roleOf('uid-object'), 'role_not_allowed');
+  assert.equal(await roleOf('uid-string'), 'role_not_allowed');
   assert.equal(await roleOf('uid-off'), 'role_not_allowed');
   // Only ownerUid makes an owner; a roles entry of 'owner' is a manager.
   assert.equal(await roleOf('uid-coowner'), 'manager');
   assert.equal(await roleOf('uid-admin'), 'manager');
-  assert.equal(await roleOf('uid-invited'), 'manager');
-  assert.equal(await roleOf('uid-inactive'), 'role_not_allowed');
-  assert.equal(await roleOf('uid-other-fac'), 'role_not_allowed');
-  assert.equal(await roleOf('uid-expired'), 'role_not_allowed');
-  // The highest of the facility doc and user_roles wins.
-  assert.equal(await roleOf(VIEWER), 'employee');
+  // The rules compare exact strings.
+  assert.equal(await roleOf('uid-upper'), 'role_not_allowed');
+  // user_roles rows neither grant a role nor raise one.
+  assert.equal(await roleOf('uid-invited'), 'role_not_allowed');
+  assert.equal(await roleOf(VIEWER), 'viewer');
+  assert.equal(await roleOf(EMPLOYEE), 'employee');
 });
 
 test('a facility that does not exist is refused without saying so', async () => {
@@ -245,6 +239,16 @@ test('the guard hands back the controls and the facility zone, never a default z
   assert.equal(ctx.controls.timeZone, 'America/Denver');
   assert.equal(ctx.facilityTimeZone, 'America/Chicago');
   assert.equal(ctx.controls.employeesCanBook, false);
+});
+
+test('zones are compared in Intl spelling: one zone written two ways is not a mismatch', async () => {
+  const { handle } = setup({ facility: { timeZone: 'US/Mountain' }, controls: { timeZone: 'america/denver' } });
+  const ctx = await guard(handle, OWNER);
+  assert.equal(ctx.controls.timeZone, 'America/Denver');
+  assert.equal(ctx.facilityTimeZone, 'America/Denver');
+  // A facility zone that is not a zone at all is passed on as written, so it still reads as different.
+  const bad = setup({ facility: { timeZone: 'Mountain Time' } });
+  assert.equal((await guard(bad.handle, OWNER)).facilityTimeZone, 'Mountain Time');
 });
 
 test('audit records carry the caller, and a failed audit write never throws', async () => {

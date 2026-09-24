@@ -45,3 +45,15 @@ Map<String, String>? wallClockParts(DateTime instantUtc, String timeZone) {
     return null;
   }
 }
+
+/// The browser's own name for [timeZone] (Intl resolvedOptions().timeZone),
+/// e.g. 'America/Denver' for 'america/denver' or 'US/Mountain'; null when
+/// the browser does not know the zone.
+String? canonicalZone(String timeZone) {
+  try {
+    final options = _formatterFor(timeZone).callMethod<JSObject>('resolvedOptions'.toJS);
+    return (options['timeZone'] as JSString?)?.toDart;
+  } catch (_) {
+    return null;
+  }
+}

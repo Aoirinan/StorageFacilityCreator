@@ -33,6 +33,11 @@ abstract class FacilityClock {
   /// Whether [timeZone] can be used on this platform.
   bool isValidZone(String? timeZone);
 
+  /// [timeZone] in the platform's canonical spelling ('america/denver' and
+  /// 'US/Mountain' are 'America/Denver'), or null when it is not a zone the
+  /// platform knows. Compare zones in this form, never as typed.
+  String? canonicalZone(String? timeZone) => timeZone == null || timeZone.isEmpty ? null : timeZone;
+
   /// The current instant (UTC); only for durations like "synced 6 min ago".
   DateTime nowUtc();
 }
@@ -77,6 +82,10 @@ class IntlFacilityClock extends FacilityClock {
   @override
   bool isValidZone(String? timeZone) =>
       timeZone != null && timeZone.isNotEmpty && platform.wallClockParts(DateTime.utc(2026), timeZone) != null;
+
+  @override
+  String? canonicalZone(String? timeZone) =>
+      timeZone == null || timeZone.isEmpty ? null : platform.canonicalZone(timeZone);
 
   @override
   DateTime nowUtc() => _now().toUtc();

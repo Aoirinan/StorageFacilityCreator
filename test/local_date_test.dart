@@ -97,6 +97,18 @@ void main() {
       expect(clock.isValidZone(''), isFalse);
     });
 
+    test('zones compare in the canonical spelling, and an unknown one has none', () {
+      final clock = IntlFacilityClock(now: () => DateTime.utc(2026, 11, 1));
+      expect(clock.canonicalZone('Etc/UTC'), 'UTC');
+      expect(clock.canonicalZone('UTC'), 'UTC');
+      // No zone database in a VM test: the browser build asks Intl instead.
+      expect(clock.canonicalZone('America/Denver'), isNull);
+      expect(clock.canonicalZone(null), isNull);
+      expect(clock.canonicalZone(''), isNull);
+      // A fixed clock takes zones as written.
+      expect(FixedFacilityClock(todayValue: LocalDate(2026, 11, 1)).canonicalZone('America/Denver'), 'America/Denver');
+    });
+
     test('a fixed clock gives the same facility day whatever the machine zone', () {
       final clock = FixedFacilityClock(
         todayValue: LocalDate(2026, 11, 1),

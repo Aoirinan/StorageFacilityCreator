@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   addDays,
+  canonicalIanaZone,
   diffDays,
   enumerateNights,
   facilityLocalHour,
@@ -16,6 +17,7 @@ import {
   monthOf,
   monthStart,
   monthsSpanned,
+  sameTimeZone,
   slotKey,
   utcToLocalString,
   weekdayOfYmd,
@@ -131,4 +133,19 @@ test('slotKey floors to the half hour in UTC', () => {
   assert.equal(slotKey(Date.parse('2026-10-03T14:44:59Z')), '2026-10-03T14:30');
   assert.equal(slotKey(Date.parse('2026-10-03T14:29:59Z')), '2026-10-03T14:00');
   assert.equal(slotKey(new Date('2026-10-03T23:59:00Z')), '2026-10-03T23:30');
+});
+
+test('zones are stored and compared in the spelling Intl gives them', () => {
+  assert.equal(canonicalIanaZone('America/Denver'), 'America/Denver');
+  assert.equal(canonicalIanaZone('america/denver'), 'America/Denver');
+  assert.equal(canonicalIanaZone('AMERICA/DENVER'), 'America/Denver');
+  assert.equal(canonicalIanaZone('US/Mountain'), 'America/Denver');
+  assert.equal(canonicalIanaZone('Etc/UTC'), 'UTC');
+  assert.equal(canonicalIanaZone('MST'), null);
+  assert.equal(canonicalIanaZone('America/Nowhere'), null);
+  assert.equal(canonicalIanaZone(42), null);
+  assert.equal(sameTimeZone('america/denver', 'US/Mountain'), true);
+  assert.equal(sameTimeZone('America/Denver', 'America/Chicago'), false);
+  assert.equal(sameTimeZone('MST', 'MST'), false);
+  assert.equal(sameTimeZone(null, null), false);
 });

@@ -226,8 +226,12 @@ final staysTodayBoardProvider = Provider.autoDispose.family<AsyncValue<TodayBoar
     tasks: tasks,
     channels: channels,
     nowUtc: clock.nowUtc(),
-    controlsTimeZone: tz,
-    facilityTimeZone: ref.watch(staysFacilityTimeZoneProvider(facilityId)),
+    // Both in the platform's spelling, so one zone written two ways
+    // ('US/Mountain', 'America/Denver') is not reported as a mismatch.
+    controlsTimeZone: clock.canonicalZone(tz) ?? tz,
+    facilityTimeZone: _canonicalOrAsIs(clock, ref.watch(staysFacilityTimeZoneProvider(facilityId))),
     showMoney: showMoney,
   ));
 });
+
+String? _canonicalOrAsIs(FacilityClock clock, String? timeZone) => clock.canonicalZone(timeZone) ?? timeZone;

@@ -8,7 +8,7 @@ import {
   StayControlsDoc,
   StayManualPaymentMethod,
 } from '@sfc/functions-shared/stays/contracts';
-import { isValidHourMinute, isValidIanaZone } from '@sfc/functions-shared/stays/dates';
+import { canonicalIanaZone, isValidHourMinute } from '@sfc/functions-shared/stays/dates';
 
 import { staysError } from './errors';
 
@@ -77,7 +77,8 @@ export function normalizeControls(facilityId: string, data: Record<string, unkno
         (MANUAL_PAYMENT_METHODS as readonly unknown[]).includes(m),
       )
     : d.paymentMethods;
-  const timeZone = isValidIanaZone(data.timeZone) ? (data.timeZone as string) : null;
+  // Intl's own name for the zone, so 'america/denver' reads as 'America/Denver'.
+  const timeZone = canonicalIanaZone(data.timeZone);
   return {
     ...d,
     moduleEnabled: data.moduleEnabled === true,
@@ -122,16 +123,17 @@ export function assertModuleEnabled(controls: StayControlsDoc): void {
 }
 
 /**
- * The confirmed facility zone. Nothing falls back to a default zone: an
- * unconfirmed one stops the call.
+ * The confirmed facility zone, in Intl's canonical spelling. Nothing falls
+ * back to a default zone: an unconfirmed one stops the call.
  */
 export function confirmedTimeZone(controls: StayControlsDoc): string {
-  if (!controls.timeZone || !controls.timeZoneConfirmedAt || !isValidIanaZone(controls.timeZone)) {
+  const timeZone = canonicalIanaZone(controls.timeZone);
+  if (!timeZone || !controls.timeZoneConfirmedAt) {
     throw staysError(
       'failed-precondition',
       'timezone_unconfirmed',
       "Confirm the facility's time zone in Stays settings first.",
     );
   }
-  return controls.timeZone;
+  return timeZone;
 }
