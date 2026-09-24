@@ -631,6 +631,13 @@ export interface StayFolioAirbnb {
   expectedOnly?: boolean;
 }
 
+/** The party a folio's lines were priced for. */
+export interface StayFolioParty {
+  adults: number;
+  children: number;
+  pets: number;
+}
+
 /** stayFolios/{stayId}: owner/manager read, callables write. */
 export interface StayFolioDoc {
   facilityId: string;
@@ -647,6 +654,13 @@ export interface StayFolioDoc {
   quotedAt: StayTimestamp;
   adjustment: StayFolioAdjustment | null;
   airbnb: StayFolioAirbnb | null;
+  /**
+   * Staff may change a stay's party on the stay doc directly (the rules'
+   * quick fields), which prices nothing; staysModifyStay compares the stay's
+   * party with this and re-prices a difference. Absent on a folio no quote
+   * made (an Airbnb CSV match).
+   */
+  party?: StayFolioParty | null;
   updatedAt: StayTimestamp;
 }
 

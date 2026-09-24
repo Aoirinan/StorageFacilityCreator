@@ -30,6 +30,7 @@ import {
   staysCallable,
 } from '../common/guards';
 import { evaluateStaysGate, loadStaysGate } from '../common/serverConfig';
+import { ReconcileTurnoversResult, reconcileTurnovers } from '../tasks/onStayWrite';
 import { SEEDED_TEMPLATES, defaultChecklistFor, seededTemplateDoc } from './seedDefaults';
 import { facilityCol, invalid, toWire } from './shared';
 
@@ -172,9 +173,43 @@ function parseChanges(raw: unknown): StayControlsChanges {
   return out;
 }
 
+/**
+ * The reserved switches: only the owner may change one, and v1 refuses to
+ * turn either on. A value sent unchanged is not a change, so a settings
+ * screen that saves every field works for a manager too.
+ */
+function assertReservedKeys(changes: StayControlsChanges, stored: StayControlsDoc, role: StayRole): void {
+  for (const key of RESERVED_KEYS) {
+    if (changes[key] === undefined || changes[key] === (stored[key] === true)) continue;
+    if (role !== 'owner') {
+      throw staysError('permission-denied', 'role_not_allowed', 'Only the owner can change automation and payment settings.', {
+        role,
+        field: key,
+      });
+    }
+    if (changes[key] === true) {
+      throw staysError(
+        'failed-precondition',
+        'not_available_yet',
+        key === 'guestMessagingEnabled'
+          ? 'Automatic guest messages are not available yet. Copy, print or open messages in your own mail or text app.'
+          : 'Card payments for stays are not available yet. Record card payments taken on your own terminal as "Card elsewhere".',
+        { field: key },
+      );
+    }
+  }
+}
+
+/** Turnover tasks are being made: Stays on, turnovers on, and a confirmed zone to time them in. */
+function turnoversRunning(c: Pick<StayControlsDoc, 'moduleEnabled' | 'turnoverTasksEnabled' | 'timeZone' | 'timeZoneConfirmedAt'>): boolean {
+  return c.moduleEnabled === true && c.turnoverTasksEnabled === true && !!canonicalIanaZone(c.timeZone) && !!c.timeZoneConfirmedAt;
+}
+
 export interface SetControlsResult extends StaysSetControlsResponse {
   /** Template keys seeded by this call (the first time the module was turned on). */
   seededTemplateKeys: string[];
+  /** The turnover catch-up this call ran (turnovers just started, or their zone moved), or null. */
+  turnovers: ReconcileTurnoversResult | null;
 }
 
 function mismatchWarning(zone: string | null, facilityZone: string | null): StaysWarning | null {
@@ -214,26 +249,6 @@ export async function handleSetControls(
     throw invalid('expectedVersion', 'expectedVersion must be a whole number.');
   }
 
-  for (const key of RESERVED_KEYS) {
-    if (changes[key] === undefined) continue;
-    if (ctx.role !== 'owner') {
-      throw staysError('permission-denied', 'role_not_allowed', 'Only the owner can change automation and payment settings.', {
-        role: ctx.role,
-        field: key,
-      });
-    }
-    if (changes[key] === true) {
-      throw staysError(
-        'failed-precondition',
-        'not_available_yet',
-        key === 'guestMessagingEnabled'
-          ? 'Automatic guest messages are not available yet. Copy, print or open messages in your own mail or text app.'
-          : 'Card payments for stays are not available yet. Record card payments taken on your own terminal as "Card elsewhere".',
-        { field: key },
-      );
-    }
-  }
-
   const now = Timestamp.fromMillis(ctx.nowMs);
   const ref = controlsRef(ctx.db, ctx.facilityId);
   const templatesCol = facilityCol(ctx.db, ctx.facilityId, STAY_COLLECTIONS.messageTemplates);
@@ -247,6 +262,7 @@ export async function handleSetControls(
         version: stored.version,
       });
     }
+    assertReservedKeys(changes, stored, ctx.role);
 
     const next: StayControlsDoc = { ...stored, ...changes };
     // A zone counts only once someone confirms it; changing it undoes the
@@ -318,8 +334,30 @@ export async function handleSetControls(
         updatedBy: ctx.uid,
       });
     }
-    return { controls: next, seededTemplateKeys, filledChecklists: listingFills.length };
+    return {
+      controls: next,
+      seededTemplateKeys,
+      filledChecklists: listingFills.length,
+      // Turnovers just started, or their zone moved: every task due from today on is (re)planned.
+      catchUpTurnovers: turnoversRunning(next) && (!turnoversRunning(stored) || stored.timeZone !== next.timeZone),
+    };
   });
+
+  // The trigger plans a turnover only when a booking changes, so bookings made
+  // (or imported from a feed) before turnovers were on get theirs here. After
+  // the commit: a failure leaves the settings saved, and the nightly
+  // catch-up (reconcileTurnovers) tries again.
+  let turnovers: ReconcileTurnoversResult | null = null;
+  if (result.catchUpTurnovers) {
+    try {
+      turnovers = await reconcileTurnovers(ctx.db, ctx.facilityId, ctx.nowMs);
+    } catch (error) {
+      functions.logger.error('stays: turnover catch-up after a settings change failed', {
+        facilityId: ctx.facilityId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   const warnings: StaysWarning[] = [];
   const mismatch = mismatchWarning(result.controls.timeZone, ctx.facilityTimeZone);
@@ -335,10 +373,11 @@ export async function handleSetControls(
       version: result.controls.version,
       seededTemplates: result.seededTemplateKeys.length,
       filledChecklists: result.filledChecklists,
+      turnoversPlanned: turnovers ? turnovers.created + turnovers.updated : null,
     },
   });
 
-  return { controls: toWire(result.controls), warnings, seededTemplateKeys: result.seededTemplateKeys };
+  return { controls: toWire(result.controls), warnings, seededTemplateKeys: result.seededTemplateKeys, turnovers };
 }
 
 export const staysSetControls = staysCallable(STAYS_CALLABLES.setControls, async (data, context) => {

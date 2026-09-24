@@ -34,7 +34,7 @@ import {
   staysCallable,
 } from '../common/guards';
 import { applyStayMutations } from '../common/stayWriter';
-import { facilityCol, folioRef, incomeRef, invalid, isOtaSource, stayRef, toWire, validated } from './shared';
+import { facilityCol, folioRef, incomeRef, invalid, isOtaSource, providerForSource, providerName, stayRef, toWire, validated } from './shared';
 
 /**
  * Stay money recorded by hand (spec §8.2): cash, check, a card taken on her
@@ -209,9 +209,20 @@ export async function handleRecordPayment(
     const stay = staySnap.data() as StayDoc;
     const folio = folioSnap.exists ? (folioSnap.data() as StayFolioDoc) : null;
     if (incomeSnap.exists) {
+      // A retry of this same payment is answered with what was recorded; the
+      // same request id on another stay or amount is a different payment,
+      // and saying "recorded" would drop it without a word.
+      const row = incomeSnap.data() as StayIncomeDoc;
+      if (row.stayId !== stayId || row.grossCents !== payment.amountCents || row.method !== payment.method) {
+        throw invalid('requestId', 'That request was already used for a different payment. Reload and record it again.');
+      }
       return { created: false, paymentStatus: stay.paymentStatus, folio };
     }
     if (stay.kind !== 'reservation') throw invalid('stayId', 'Blocks have no payments.');
+    // The channel collected it: a hand-recorded row would count the same money twice once its earnings CSV is imported.
+    if (isOtaSource(stay.source)) {
+      throw invalid('stayId', `${providerName(providerForSource(stay.source))} collects this booking's payment, so it is not recorded here.`);
+    }
     if (payment.amountCents < 0 && (!folio || -payment.amountCents > folio.paidCents)) {
       throw invalid('amountCents', 'A refund cannot be more than has been paid on this booking.');
     }
@@ -230,7 +241,7 @@ export async function handleRecordPayment(
     });
     const nextFolio = folio ? { ...applyPayment(folio, payment.amountCents), updatedAt: now } : null;
     const refunded = payment.amountCents < 0 && !!nextFolio && nextFolio.paidCents <= 0;
-    const paymentStatus = isOtaSource(stay.source) ? stay.paymentStatus : paymentStatusOf(nextFolio, stay, { refunded });
+    const paymentStatus = paymentStatusOf(nextFolio, stay, { refunded });
     const version = Number.isInteger(stay.version) ? stay.version : 0;
     await applyStayMutations({
       db: ctx.db,
@@ -280,10 +291,17 @@ export async function handleRecordPayment(
   };
 }
 
+/** Attempts at a money write before it gives up with `contention`. */
+export const MONEY_WRITE_ATTEMPTS = 6;
+
 /**
  * Runs a money write, starting again from fresh reads when the stay or its
- * folio moved in between (another payment, an edit), up to three times. A
- * row that already exists is not an error: that request was recorded.
+ * folio moved in between (another payment, an edit), up to
+ * MONEY_WRITE_ATTEMPTS times with a short random pause, so payments landing
+ * together go through one after another. A row that already exists is not an
+ * error: that request was recorded. Out of attempts it is `contention`
+ * ("try again"), never `version_mismatch`: the person recording a payment did
+ * not open an old copy of anything.
  */
 async function recordWithRetry<T>(ctx: StaysCallContext, attempt: () => Promise<T>): Promise<T> {
   for (let i = 0; ; i++) {
@@ -291,13 +309,12 @@ async function recordWithRetry<T>(ctx: StaysCallContext, attempt: () => Promise<
       return await attempt();
     } catch (error) {
       const retryable = error instanceof RetryWrite || error instanceof AlreadyRecorded || staysErrorReason(error) === 'version_mismatch';
-      if (!retryable || i >= 2) {
-        if (error instanceof RetryWrite || error instanceof AlreadyRecorded) {
-          throw staysError('aborted', 'contention', 'This booking is being changed right now. Try again.');
-        }
-        throw error;
+      if (!retryable) throw error;
+      if (i >= MONEY_WRITE_ATTEMPTS - 1) {
+        throw staysError('aborted', 'contention', 'This booking is being changed right now. Try again.');
       }
       functions.logger.info('stays: money write re-read after a concurrent change', { facilityId: ctx.facilityId });
+      await new Promise((resolve) => setTimeout(resolve, 10 * (i + 1) + Math.floor(Math.random() * 20)));
     }
   }
 }

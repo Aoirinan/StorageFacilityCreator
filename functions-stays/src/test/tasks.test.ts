@@ -5,10 +5,11 @@ import { Timestamp } from 'firebase-admin/firestore';
 import type { StayDoc, StayTaskDoc } from '@sfc/functions-shared/stays/contracts';
 import { inactiveTurnoverDigest } from '@sfc/functions-shared/stays/turnoverPlan';
 
-import { TriggerDeps, handleStayWrite, turnoverRelevantChange } from '../tasks/onStayWrite';
+import { resetStaysGateCacheForTests } from '../common/serverConfig';
+import { TriggerDeps, handleStayWrite, reconcileTurnovers, turnoverRelevantChange } from '../tasks/onStayWrite';
 import { handleTaskUpdate, taskNotifications } from '../tasks/onTaskWrite';
 import { FakeFirestore } from './support/fakeFirestore';
-import { FAC, NOW, makeStay } from './support/staysFixtures';
+import { FAC, NOW, makeStay, seedGate } from './support/staysFixtures';
 import { Env, P, listingInput, rvInput, seedListing, setupEnv } from './support/bookingFixtures';
 
 // Today at the facility is 2026-10-01.
@@ -172,6 +173,63 @@ test('nothing happens with turnovers off, Stays off, or the kill switch on', asy
     assert.deepEqual(out.replanned, []);
     assert.equal(e.fake.writesTo('stayTasks').length, 0);
   }
+});
+
+test('the turnover catch-up makes the tasks the trigger never saw, once', async () => {
+  const e = env();
+  // Written while turnovers were off (or imported), so the trigger made nothing for them.
+  e.fake.seed(`${P}/stays/airbnb_HMFEED0001`, makeStay('lst_a', '2026-10-02', '2026-10-05', { source: 'airbnb', origin: 'feed' }) as never);
+  e.fake.seed(`${P}/stays/man_b`, makeStay('lst_a', '2026-10-05', '2026-10-07') as never);
+  e.fake.seed(`${P}/stays/man_past`, makeStay('lst_a', '2026-09-20', '2026-09-25', { arrivalState: 'checked_out' }) as never);
+  const first = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([first.ran, first.stays, first.created, first.updated, first.truncated], [true, 2, 2, 0, false]);
+  const feed = task(e, 'airbnb_HMFEED0001')!;
+  assert.deepEqual([feed.status, feed.nextStayId, feed.sameDayTurn, feed.priority], ['todo', 'man_b', true, 'high']);
+  assert.equal(task(e, 'man_past'), undefined);
+  assert.deepEqual(first.notified, ['stay_unassigned_turnover_airbnb_HMFEED0001_2026-10-05']);
+  // Nothing left to catch up: nothing written.
+  const writes = e.fake.writesTo('stayTasks').length;
+  const again = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([again.created, again.updated], [0, 0]);
+  assert.equal(e.fake.writesTo('stayTasks').length, writes);
+});
+
+test('a cancellation made while Stays was paused has its turnover cancelled by the next catch-up', async () => {
+  const e = env();
+  const stay = makeStay('lst_a', '2026-10-02', '2026-10-05');
+  await write(e, 'man_a', stay);
+  resetStaysGateCacheForTests();
+  seedGate(e.fake, { killSwitch: true });
+  await write(e, 'man_a', { ...stay, status: 'cancelled' });
+  assert.equal(task(e, 'man_a')!.status, 'todo');
+  // Still paused: the catch-up changes nothing either.
+  assert.equal((await reconcileTurnovers(e.fake.firestore(), FAC, NOW)).ran, false);
+  assert.equal(task(e, 'man_a')!.status, 'todo');
+
+  resetStaysGateCacheForTests();
+  seedGate(e.fake, { killSwitch: false });
+  const healed = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.equal(healed.updated, 1);
+  assert.equal(task(e, 'man_a')!.status, 'cancelled');
+});
+
+test('the catch-up does nothing while turnovers are off', async () => {
+  const e = env({});
+  e.fake.seed(`${P}/stays/man_a`, makeStay('lst_a', '2026-10-02', '2026-10-05') as never);
+  assert.deepEqual(await reconcileTurnovers(e.fake.firestore(), FAC, NOW), { ran: false, stays: 0, created: 0, updated: 0, failed: 0, truncated: false, notified: [] });
+  assert.equal(e.fake.writesTo('stayTasks').length, 0);
+});
+
+test('one booking the catch-up cannot re-plan does not stop the others', async () => {
+  const e = env();
+  e.fake.seed(`${P}/stays/man_bad`, makeStay('lst_a', '2026-10-02', '2026-10-04') as never);
+  e.fake.seed(`${P}/stays/man_ok`, makeStay('lst_rv1', '2026-10-02', '2026-10-04') as never);
+  e.fake.failReads = (path) => path.endsWith('/stayTasks/turnover_man_bad');
+  const out = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([out.stays, out.created, out.failed], [2, 1, 1]);
+  e.fake.failReads = null;
+  assert.equal(task(e, 'man_ok')!.status, 'todo');
+  assert.equal(task(e, 'man_bad'), undefined);
 });
 
 test('a deleted stay releases its to-do turnover', async () => {

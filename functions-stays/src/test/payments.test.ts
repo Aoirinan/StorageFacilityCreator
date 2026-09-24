@@ -100,6 +100,69 @@ test('two payments at the same moment are both recorded, one after the other', a
   assert.equal(e.fake.read(`${P}/stays/${stayId}`)!.version, 3);
 });
 
+test('six payments landing together are all recorded; one that can never get through says contention', async () => {
+  const e = env();
+  const stayId = await book(e);
+  e.fake.onBeforeCommit = commitBarrier(6);
+  const results = await Promise.all([1, 2, 3, 4, 5, 6].map((i) => pay(e, i % 2 === 0 ? OWNER : MANAGER, stayId, 1_000 * i)));
+  assert.equal(results.every((r) => r.created), true);
+  assert.equal(e.fake.read(`${P}/stayFolios/${stayId}`)!.paidCents, 21_000);
+  assert.equal(e.fake.list(`${P}/stayIncome`).length, 6);
+
+  // A booking that changes under every attempt: "being changed, try again", never "you opened an old copy".
+  const busy = env();
+  const busyStay = await book(busy);
+  busy.fake.onBeforeCommit = async () => {
+    const stay = busy.fake.read(`${P}/stays/${busyStay}`)!;
+    busy.fake.seed(`${P}/stays/${busyStay}`, { ...stay, version: (stay.version as number) + 1 });
+  };
+  assert.equal(await reasonOf(pay(busy, OWNER, busyStay, 1_000)), 'contention');
+  assert.equal(busy.fake.list(`${P}/stayIncome`).length, 0);
+});
+
+test('a channel-collected booking takes no hand-recorded payment (its earnings come from the CSV)', async () => {
+  const e = env();
+  const stayId = await book(e, { source: 'airbnb', confirmationCode: 'HMPAID0001' });
+  assert.equal(await reasonOf(pay(e, OWNER, stayId, 20_000)), 'invalid_argument');
+  assert.equal(await reasonOf(pay(e, MANAGER, stayId, -100)), 'invalid_argument');
+  assert.equal(e.fake.list(`${P}/stayIncome`).length, 0);
+  assert.equal(e.fake.read(`${P}/stays/${stayId}`)!.paymentStatus, 'channel_collected');
+});
+
+test('a request id already used for a different payment is refused, not reported as recorded', async () => {
+  const e = env();
+  const a = await book(e);
+  const b = await book(e, { checkIn: '2026-10-10', checkOut: '2026-10-12' });
+  const requestId = rid();
+  const payWith = (stayId: string, amountCents: number, method = 'cash') =>
+    as(e, handleRecordPayment, OWNER, { requestId, stayId, method, amountCents, receivedDate: '2026-10-01' });
+  await payWith(a, 5_000);
+  assert.equal(await reasonOf(payWith(b, 5_000)), 'invalid_argument');
+  assert.equal(await reasonOf(payWith(a, 7_000)), 'invalid_argument');
+  assert.equal(await reasonOf(payWith(a, 5_000, 'check')), 'invalid_argument');
+  assert.equal(e.fake.read(`${P}/stayFolios/${b}`)!.paidCents, 0);
+  // The same payment sent again is still a quiet retry.
+  const again = await payWith(a, 5_000);
+  assert.deepEqual([again.created, again.folio?.paidCents], [false, 5_000]);
+  assert.equal(e.fake.list(`${P}/stayIncome`).length, 1);
+});
+
+test('a payment voided by someone else while this void was in flight is not reversed twice', async () => {
+  const e = env();
+  const stayId = await book(e);
+  const paid = await pay(e, OWNER, stayId, 10_000);
+  let raced = false;
+  e.fake.onBeforeCommit = async () => {
+    if (raced) return;
+    raced = true;
+    const row = e.fake.read(`${P}/stayIncome/${paid.entryId}`)!;
+    e.fake.seed(`${P}/stayIncome/${paid.entryId}`, { ...row, status: 'voided', voidedBy: MANAGER });
+  };
+  assert.equal(await reasonOf(as(e, handleVoidIncome, OWNER, { entryId: paid.entryId, reason: 'Bounced' })), 'invalid_argument');
+  assert.equal(e.fake.read(`${P}/stayFolios/${stayId}`)!.paidCents, 10_000);
+  assert.equal(e.fake.read(`${P}/stayIncome/${paid.entryId}`)!.voidedBy, MANAGER);
+});
+
 test('refunds: owners and managers only, never more than was paid; a cancelled stay paid back shows refunded', async () => {
   const e = env({ employeesCanRecordCash: true });
   const stayId = await book(e);

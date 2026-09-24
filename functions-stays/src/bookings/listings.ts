@@ -226,7 +226,7 @@ async function refreshStayListingFields(ctx: StaysCallContext, listingId: string
     functions.logger.warn('stays: could not refresh stays after a listing rename', {
       facilityId: ctx.facilityId,
       listingId,
-      message: error instanceof Error ? error.message : String(error),
+      error: error instanceof Error ? error.message : String(error),
     });
   }
   return updated;
@@ -287,6 +287,24 @@ export function siteShortCode(prefix: string, n: number): string {
   const digits = String(n);
   const letters = prefix.replace(/[^A-Za-z0-9]/g, '');
   return `${letters.slice(0, Math.max(0, 8 - digits.length))}${digits}`;
+}
+
+/** No two sites of one bulk request share a name or short code (ignoring case, like assertDistinct). */
+function assertBatchDistinct(inputs: { n: number; input: Pick<StayListingInput, 'name' | 'shortCode'> }[]): void {
+  const names = new Map<string, number>();
+  const codes = new Map<string, number>();
+  for (const { n, input } of inputs) {
+    const name = input.name.trim().toLowerCase();
+    const code = input.shortCode.trim().toLowerCase();
+    if (names.has(name)) {
+      throw invalid('prefix', `Sites ${names.get(name)} and ${n} would both be called "${input.name}". Change the prefix.`);
+    }
+    if (codes.has(code)) {
+      throw invalid('prefix', `Sites ${codes.get(code)} and ${n} would both get the short code "${input.shortCode}". Use a shorter prefix.`);
+    }
+    names.set(name, n);
+    codes.set(code, n);
+  }
 }
 
 /** Per-site keys: `defaults` may not set these for every site at once. */
@@ -380,6 +398,10 @@ export async function handleBulkCreateRvSites(
     });
     inputs.push({ id: listingIdBulk(requestId, n), n, input });
   }
+  // siteShortCode cuts a long prefix to fit 8 characters, so two sites of one
+  // batch can come out the same ('ABCDEF1X': site 1 and site 11 are both
+  // ABCDEF11). assertDistinct only checks other listings, so check the batch too.
+  assertBatchDistinct(inputs);
 
   const now = Timestamp.fromMillis(ctx.nowMs);
   const col = facilityCol(ctx.db, ctx.facilityId, STAY_COLLECTIONS.listings);

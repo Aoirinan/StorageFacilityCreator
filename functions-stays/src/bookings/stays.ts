@@ -15,6 +15,7 @@ import {
   StayAccessDoc,
   StayDoc,
   StayFolioDoc,
+  StayFolioParty,
   StayIncomeDoc,
   StayKind,
   StayListingDoc,
@@ -55,6 +56,7 @@ import {
   runStaysGuards,
   staysCallable,
 } from '../common/guards';
+import { personalDataIn } from '../common/notify';
 import { applyStayMutations } from '../common/stayWriter';
 import { displayNameFrom, doNotRentNameMatch, newProfileDoc, phoneLast4, resolveGuestProfile } from './guests';
 import { assertReceivedDate, manualIncomeDoc, parsePayment, receivedAtFor } from './payments';
@@ -264,6 +266,7 @@ export function folioFromQuote(
   stayId: string,
   quote: StayQuote,
   adjustment: { cents: number; reason: string; by: string } | null,
+  party: StayFolioParty,
   now: Timestamp,
   base?: Pick<StayFolioDoc, 'paidCents' | 'quoteVersion' | 'airbnb'> | null,
 ): StayFolioDoc {
@@ -283,8 +286,16 @@ export function folioFromQuote(
     quotedAt: now,
     adjustment,
     airbnb: base?.airbnb ?? null,
+    party: { adults: party.adults, children: party.children, pets: party.pets },
     updatedAt: now,
   };
+}
+
+/** The party a folio was priced for; a folio from before it was recorded was priced for the stay's own. */
+function pricedPartyOf(folio: StayFolioDoc | null, stay: Partial<StayFolioParty>): StayFolioParty {
+  const p = folio?.party;
+  if (p && Number.isInteger(p.adults) && Number.isInteger(p.children) && Number.isInteger(p.pets)) return p;
+  return { adults: stay.adults ?? 0, children: stay.children ?? 0, pets: stay.pets ?? 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -588,21 +599,41 @@ export async function handleCreateStay(
   }
 
   const warnings: StaysWarning[] = [];
+  const isEmployee = ctx.role === 'employee';
   const profile = isReservation ? await resolveGuestProfile(db, facilityId, requestId, d.guestProfile) : null;
   if (profile?.doNotRent) {
     if (!acknowledgeDoNotRent) {
       throw staysError(
         'failed-precondition',
         'do_not_rent',
-        ctx.role === 'employee'
+        isEmployee
           ? 'This guest is on the do-not-rent list. Ask the owner or a manager.'
           : 'This guest is on your do-not-rent list. Confirm to book them anyway.',
-        { profileId: profile.profileId },
+        isEmployee ? {} : { profileId: profile.profileId },
       );
     }
     warnings.push({ code: 'do_not_rent', message: 'Booked even though this guest is on your do-not-rent list.', details: { profileId: profile.profileId } });
-  } else if (profile && (await doNotRentNameMatch(db, facilityId, profile.name, profile.profileId))) {
-    warnings.push({ code: 'do_not_rent', message: `Someone named ${profile.name} is on your do-not-rent list. Check it is not the same guest.` });
+  } else {
+    // An employee who typed a new guest whose phone or email is already on
+    // file would otherwise book them as that returning guest: their name on
+    // the stay, their phone's last 4 as a door code, their stay count moved.
+    // Employees see no contact details, so they pick the guest by name instead.
+    if (isEmployee && (profile?.matchedBy === 'phone' || profile?.matchedBy === 'email')) {
+      throw staysError(
+        'permission-denied',
+        'role_not_allowed',
+        'That phone number or email is already on file for a returning guest. Pick them from the returning-guest search, or ask the owner or a manager.',
+        { field: 'guestProfile.create' },
+      );
+    }
+    // Employees cannot acknowledge the do-not-rent list, so a name on it stops them; owners and managers get a heads-up.
+    const name = profile?.name ?? (isEmployee ? guest.guestDisplayName : '');
+    if (name.trim() && (await doNotRentNameMatch(db, facilityId, name, profile?.profileId ?? null))) {
+      if (isEmployee) {
+        throw staysError('failed-precondition', 'do_not_rent', 'Someone with this name is on the do-not-rent list. Ask the owner or a manager.', {});
+      }
+      warnings.push({ code: 'do_not_rent', message: `Someone named ${name} is on your do-not-rent list. Check it is not the same guest.` });
+    }
   }
   // Every role reads the stay doc: a full name typed as the display name is shortened to "Jane D.";
   // the full name lives in stayPrivate.
@@ -696,7 +727,7 @@ export async function handleCreateStay(
   };
 
   let folio: StayFolioDoc | null = quote
-    ? folioFromQuote(facilityId, stayId, quote, adjustment ? { ...adjustment, by: uid } : null, now)
+    ? folioFromQuote(facilityId, stayId, quote, adjustment ? { ...adjustment, by: uid } : null, guest, now)
     : null;
   let income: StayIncomeDoc | null = null;
   const entryId = incomeIdManual(requestId);
@@ -719,6 +750,8 @@ export async function handleCreateStay(
   // The turnover trigger makes turnover_{stayId}; the stay names it up front so the app can open it.
   if (controls.turnoverTasksEnabled === true && wantsTurnover(stay, listing)) stay.turnoverTaskId = taskIdTurnover(stayId);
 
+  // The chosen profile's phone, or the one typed now: never a phone lent by a contact match (resolveGuestProfile),
+  // because stayAccess is staff-readable.
   const last4 = phoneLast4(profile?.phoneE164 ?? null);
   const privateDoc: StayPrivateDoc = {
     facilityId,
@@ -874,13 +907,21 @@ export async function handleModifyStay(
     });
   }
 
+  // Every role reads the stay doc: a full name typed as the display name is shortened to "Jane D.", as on create.
+  if (guestPatch.guestDisplayName) {
+    const priv = await facilityCol(db, facilityId, STAY_COLLECTIONS.private).doc(stayId).get();
+    const fullName = priv.exists ? priv.get('fullName') : null;
+    if (typeof fullName === 'string' && fullName.trim() && guestPatch.guestDisplayName.trim().toLowerCase() === fullName.trim().toLowerCase()) {
+      guestPatch.guestDisplayName = displayNameFrom(fullName);
+    }
+  }
+
   const checkIn = (c.checkIn as Ymd | undefined) ?? stored.checkIn;
   const checkOut = (c.checkOut as Ymd | undefined) ?? stored.checkOut;
   const listingId = (c.listingId as string | undefined) ?? stored.listingId;
   const datesChanged = checkIn !== stored.checkIn || checkOut !== stored.checkOut;
   const listingChanged = listingId !== stored.listingId;
   const guestKeys = (Object.keys(guestPatch) as (keyof GuestFields)[]).filter((k) => guestPatch[k] !== (stored as unknown as GuestFields)[k]);
-  const partyChanged = guestKeys.some((k) => k === 'adults' || k === 'children' || k === 'pets');
   const checkInTime = newTimeIn ?? stored.checkInTime;
   const checkOutTime = newTimeOut ?? stored.checkOutTime;
   const timesChanged = checkInTime !== stored.checkInTime || checkOutTime !== stored.checkOutTime;
@@ -928,9 +969,25 @@ export async function handleModifyStay(
     if (checkOut > clampTo && (listingChanged || checkOut > stored.checkOut)) assertBeforeHorizonEnd(checkOut, clampTo);
   }
 
-  const noChange = !datesChanged && !listingChanged && !timesChanged && guestKeys.length === 0 && !payment;
   const folioSnap = await folioRef(db, facilityId, stayId).get();
   const storedFolio = folioSnap.exists ? (folioSnap.data() as StayFolioDoc) : null;
+  // A stored doc may predate a field; Firestore refuses undefined, so each falls back to its empty value.
+  const guestNext: GuestFields = {
+    guestDisplayName: guestPatch.guestDisplayName ?? stored.guestDisplayName ?? '',
+    adults: guestPatch.adults ?? stored.adults ?? 0,
+    children: guestPatch.children ?? stored.children ?? 0,
+    pets: guestPatch.pets ?? stored.pets ?? 0,
+    rvLengthFt: guestPatch.rvLengthFt !== undefined ? guestPatch.rvLengthFt : (stored.rvLengthFt ?? null),
+  };
+  // The price follows the party. Staff may also change the party on the stay
+  // doc directly (the rules' quick fields), which prices nothing, so the
+  // party is compared with the one the folio was priced for: this edit, even
+  // one that changes nothing else, re-prices a party changed that way.
+  const priced = stored.kind === 'reservation' && !ota;
+  const pricedParty = pricedPartyOf(storedFolio, stored);
+  const partyChanged =
+    priced && (guestNext.adults !== pricedParty.adults || guestNext.children !== pricedParty.children || guestNext.pets !== pricedParty.pets);
+  const noChange = !datesChanged && !listingChanged && !timesChanged && guestKeys.length === 0 && !payment && !partyChanged;
   if (noChange) return { stay: toWire(stored), folio: storedFolio ? toWire(storedFolio) : null };
 
   const warnings: StaysWarning[] = [];
@@ -957,17 +1014,8 @@ export async function handleModifyStay(
   }
 
   const now = Timestamp.fromMillis(nowMs);
-  // A stored doc may predate a field; Firestore refuses undefined, so each falls back to its empty value.
-  const guestNext: GuestFields = {
-    guestDisplayName: guestPatch.guestDisplayName ?? stored.guestDisplayName ?? '',
-    adults: guestPatch.adults ?? stored.adults ?? 0,
-    children: guestPatch.children ?? stored.children ?? 0,
-    pets: guestPatch.pets ?? stored.pets ?? 0,
-    rvLengthFt: guestPatch.rvLengthFt !== undefined ? guestPatch.rvLengthFt : (stored.rvLengthFt ?? null),
-  };
 
   // The price moves with the dates and the party; a move alone keeps the price agreed.
-  const priced = stored.kind === 'reservation' && !ota;
   const requote = priced && (datesChanged || partyChanged || (!storedFolio && listingChanged));
   let folio: StayFolioDoc | null = storedFolio;
   if (requote) {
@@ -982,7 +1030,7 @@ export async function handleModifyStay(
         adjustmentCents: adjustment?.cents ?? 0,
       }),
     );
-    folio = folioFromQuote(facilityId, stayId, quote, adjustment, now, storedFolio);
+    folio = folioFromQuote(facilityId, stayId, quote, adjustment, guestNext, now, storedFolio);
   }
   const next: StayDoc = {
     ...stored,
@@ -1206,11 +1254,19 @@ export async function handleReviewStay(
   switch (action) {
     case 'acknowledge_conflict':
       if (stored.status !== 'conflict' || !stored.conflict) throw invalid('action', 'This booking has no double-booking to acknowledge.');
+      // The note is kept on the stay doc, which viewers read too: no contact details, codes or money in it.
+      if (note && personalDataIn(note)) {
+        throw invalid(
+          'note',
+          "This note is visible to everyone on your team, viewers included. Leave out phone numbers, emails, codes and amounts; put those in the booking's private notes.",
+        );
+      }
       next.conflict = { ...stored.conflict, acknowledgedAt: now, acknowledgedBy: uid, note: note || null };
       break;
     case 'restore':
       if (stored.status === 'removed_from_feed') {
-        // She knows it is real. Detach it from the feed, or the next syncs would remove it again.
+        // She knows it is real. Detach it from the feed, or the next syncs would remove it again;
+        // detached, it is SFC's to cancel or re-date (isFeedOwned), since the feed no longer will.
         next.status = 'confirmed';
         next.sync = stored.sync
           ? { ...stored.sync, detached: true, missCount: 0, firstMissAt: null, lastMissAt: null, needsReview: false }

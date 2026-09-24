@@ -94,7 +94,7 @@ export const staysOnTaskWrite = functions
       functions.logger.error('staysOnTaskWrite failed', {
         facilityId: context.params.facilityId,
         taskId: context.params.taskId,
-        message: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   });

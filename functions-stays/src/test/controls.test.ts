@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Timestamp } from 'firebase-admin/firestore';
 
 import { handleGetAvailability, handleSetControls } from '../bookings/controls';
 import { SEEDED_TEMPLATES, SITE_CHECK_CHECKLIST } from '../bookings/seedDefaults';
+import { handleCreateStay } from '../bookings/stays';
 import { FakeFirestore } from './support/fakeFirestore';
-import { EMPLOYEE, FAC, MANAGER, OUTSIDER, OWNER, VIEWER, callableContext } from './support/staysFixtures';
-import { P, as, listingInput, reasonOf, rvInput, seedListing, setupEnv } from './support/bookingFixtures';
+import { EMPLOYEE, FAC, MANAGER, OUTSIDER, OWNER, VIEWER, callableContext, makeStay } from './support/staysFixtures';
+import { P, as, listingInput, reasonOf, rid, rvInput, seedListing, setupEnv } from './support/bookingFixtures';
 
 const all: FakeFirestore[] = [];
 
@@ -101,9 +103,62 @@ test('guest messaging and card payments are owner-only and not available yet', a
   const env = setupEnv(all);
   assert.equal(await reasonOf(as(env, handleSetControls, OWNER, { changes: { guestMessagingEnabled: true } })), 'not_available_yet');
   assert.equal(await reasonOf(as(env, handleSetControls, OWNER, { changes: { directPaymentsEnabled: true } })), 'not_available_yet');
-  assert.equal(await reasonOf(as(env, handleSetControls, MANAGER, { changes: { directPaymentsEnabled: false } })), 'role_not_allowed');
+  assert.equal(await reasonOf(as(env, handleSetControls, MANAGER, { changes: { directPaymentsEnabled: true } })), 'role_not_allowed');
   assert.equal(await reasonOf(as(env, handleSetControls, OWNER, { changes: { guestMessagingEnabled: false } })), null);
   assert.equal(env.fake.read(`${P}/stayControls/current`)!.guestMessagingEnabled, false);
+  // A settings screen that saves every field sends them unchanged: fine for a manager too.
+  const saved = await as(env, handleSetControls, MANAGER, {
+    changes: { guestMessagingEnabled: false, directPaymentsEnabled: false, employeesCanBook: true },
+  });
+  assert.equal(saved.controls.employeesCanBook, true);
+  assert.equal(env.fake.read(`${P}/stayControls/current`)!.directPaymentsEnabled, false);
+});
+
+test('turning turnovers on plans a turnover for every booking already made', async () => {
+  const env = setupEnv(all, { controls: { turnoverTasksEnabled: false } });
+  seedListing(env.fake, 'lst_a', listingInput());
+  const booked = await handleCreateStay(
+    {
+      facilityId: FAC,
+      requestId: rid(),
+      listingId: 'lst_a',
+      checkIn: '2026-10-05',
+      checkOut: '2026-10-08',
+      kind: 'reservation',
+      source: 'direct',
+      guest: { displayName: 'Ann A.', adults: 2, children: 0, pets: 0, rvLengthFt: null },
+    },
+    callableContext(OWNER),
+    env.deps,
+    null,
+  );
+  assert.equal(env.fake.has(`${P}/stayTasks/turnover_${booked.stayId}`), false);
+
+  const on = await as(env, handleSetControls, MANAGER, { changes: { turnoverTasksEnabled: true } });
+  assert.deepEqual([on.turnovers?.ran, on.turnovers?.created], [true, 1]);
+  const task = env.fake.read(`${P}/stayTasks/turnover_${booked.stayId}`)!;
+  assert.deepEqual([task.status, task.dueDate, task.stayId], ['todo', '2026-10-08', booked.stayId]);
+  // Saving another setting later does not run it again.
+  assert.equal((await as(env, handleSetControls, OWNER, { changes: { quietHours: '10pm to 7am' } })).turnovers, null);
+
+  // A new zone re-times every task: checkout at 11:00 is 17:00Z in Denver, 16:00Z in Chicago.
+  assert.equal((task.dueStartAt as Timestamp).toDate().toISOString(), '2026-10-08T17:00:00.000Z');
+  const moved = await as(env, handleSetControls, OWNER, { changes: { timeZone: 'America/Chicago' }, confirmTimeZone: true });
+  assert.equal(moved.turnovers?.updated, 1);
+  const retimed = env.fake.read(`${P}/stayTasks/turnover_${booked.stayId}`)!;
+  assert.equal((retimed.dueStartAt as Timestamp).toDate().toISOString(), '2026-10-08T16:00:00.000Z');
+});
+
+test('turnovers switched on before Stays itself are planned when Stays is turned on', async () => {
+  const env = setupEnv(all, { controls: { moduleEnabled: false } });
+  seedListing(env.fake, 'lst_a', listingInput());
+  // Brought in before the module was on (the CSV import, say).
+  env.fake.seed(`${P}/stays/airbnb_HMEARLY001`, makeStay('lst_a', '2026-10-05', '2026-10-08', { source: 'airbnb', origin: 'csv' }) as never);
+  assert.equal((await as(env, handleSetControls, OWNER, { changes: { turnoverTasksEnabled: true } })).turnovers, null);
+  assert.equal(env.fake.has(`${P}/stayTasks/turnover_airbnb_HMEARLY001`), false);
+  const on = await as(env, handleSetControls, OWNER, { changes: { moduleEnabled: true } });
+  assert.equal(on.turnovers?.created, 1);
+  assert.equal(env.fake.read(`${P}/stayTasks/turnover_airbnb_HMEARLY001`)!.status, 'todo');
 });
 
 test('settings are checked: unknown keys, bad values, stale versions, and who may change them', async () => {

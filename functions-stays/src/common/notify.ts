@@ -103,7 +103,7 @@ export async function writeStayNotifications(
         result.failed.push(n.id);
         functions.logger.error('stays: notification write failed', {
           id: n.id,
-          message: error instanceof Error ? error.message : String(error),
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }

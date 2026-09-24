@@ -88,6 +88,21 @@ test('a phone number or a plate finds the guest too; very short queries find not
   assert.equal(await reasonOf(as(e, handleSearchGuests, OWNER, { query: 42 })), 'invalid_argument');
 });
 
+test('an employee finds a guest only by the whole phone number, so it cannot be guessed a digit at a time', async () => {
+  const e = env({ employeesCanBook: true });
+  const found = async (uid: string, query: string) => (await as(e, handleSearchGuests, uid, { query })).map((g) => g.profileId).sort();
+  // Every partial number finds nothing, however many digits it has.
+  for (const partial of ['406555', '(406) 555-01', '406555012', '+1406555012']) {
+    assert.deepEqual(await found(EMPLOYEE, partial), [], partial);
+  }
+  assert.deepEqual(await found(EMPLOYEE, '406-555-0123'), ['gp_jane']);
+  assert.deepEqual(await found(EMPLOYEE, '+1 406 555 0123'), ['gp_jane']);
+  const [jane] = await as(e, handleSearchGuests, EMPLOYEE, { query: '4065550123' });
+  assert.equal('phoneE164' in jane, false);
+  // Owners and managers, who see numbers anyway, still match on the first digits.
+  assert.deepEqual(await found(MANAGER, '406555'), ['gp_jane', 'gp_janet']);
+});
+
 test('phones become E.164, emails lower case; anything else is refused, not guessed', () => {
   assert.equal(normalizePhone('(406) 555-0123'), '+14065550123');
   assert.equal(normalizePhone('1 406 555 0123'), '+14065550123');
@@ -106,13 +121,19 @@ test('phones become E.164, emails lower case; anything else is refused, not gues
   assert.equal(phoneLast4(null), null);
 });
 
-test('a new guest whose email is already on file is the same guest', async () => {
+test('a new guest whose email is already on file is the same guest, but does not borrow their phone', async () => {
   const e = env();
   const resolved = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J. Doe', email: 'JANE@example.com' } });
   assert.equal(resolved?.profileId, 'gp_jane');
   assert.equal(resolved?.existing?.name, 'Jane Doe');
+  // Found by the email typed: the booking's phone is only what was typed (none), never the profile's.
+  assert.deepEqual([resolved?.matchedBy, resolved?.phoneE164], ['email', null]);
+  const byPhone = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J', phone: '406 555 0123' } });
+  assert.deepEqual([byPhone?.profileId, byPhone?.matchedBy, byPhone?.phoneE164], ['gp_jane', 'phone', '+14065550123']);
+  const picked = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { profileId: 'gp_jane' });
+  assert.deepEqual([picked?.matchedBy, picked?.phoneE164], ['profile_id', '+14065550123']);
   const fresh = await resolveGuestProfile(e.fake.firestore(), FAC, 'a'.repeat(32), { create: { name: 'New Person', phone: '406-555-7777' } });
-  assert.deepEqual([fresh?.profileId, fresh?.existing, fresh?.phoneE164], [`gp_${'a'.repeat(32)}`, null, '+14065557777']);
+  assert.deepEqual([fresh?.profileId, fresh?.existing, fresh?.phoneE164, fresh?.matchedBy], [`gp_${'a'.repeat(32)}`, null, '+14065557777', null]);
   assert.equal(await resolveGuestProfile(e.fake.firestore(), FAC, rid(), undefined), null);
 });
 

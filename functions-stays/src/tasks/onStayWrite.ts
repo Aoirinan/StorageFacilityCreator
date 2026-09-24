@@ -36,6 +36,9 @@ import { shortDate, turnoverRoute } from '../bookings/shared';
  * written only when its plan digest changed. Done tasks are never reopened;
  * a cancelled, removed or no-show stay cancels its to-do task, or flags one
  * already in progress or done. It never writes to stays.
+ *
+ * What the trigger cannot see (bookings from before turnovers were on,
+ * changes made while Stays was paused) is caught up by reconcileTurnovers.
  */
 
 export const SYSTEM_ACTOR = 'system:stays-trigger';
@@ -309,6 +312,84 @@ export async function handleStayWrite(
   return outcome;
 }
 
+/** The most bookings one catch-up re-plans: the soonest checkouts first. */
+export const RECONCILE_MAX_STAYS = 500;
+/** Re-plans run this many at a time; each writes only its own task, so they never contend. */
+const RECONCILE_CONCURRENCY = 8;
+
+export interface ReconcileTurnoversResult {
+  /** False when turnovers are not running (off, Stays off or paused, zone unconfirmed): nothing was read or written. */
+  ran: boolean;
+  /** Bookings looked at (checking out today or later). */
+  stays: number;
+  created: number;
+  updated: number;
+  /** Bookings whose re-plan threw; each is logged and retried on the next run. */
+  failed: number;
+  /** More bookings were due than one run covers; the rest wait for the next run. */
+  truncated: boolean;
+  notified: string[];
+}
+
+/**
+ * The turnover catch-up. The trigger re-plans a task only when its booking
+ * changes, and does nothing while turnovers or Stays are off or paused, so on
+ * its own it misses: bookings made or imported before turnovers were turned
+ * on, a cancellation made while the kill switch was on, and a trigger run
+ * that failed. This re-plans the task of every booking checking out today or
+ * later (up to RECONCILE_MAX_STAYS), each exactly as the trigger would, and
+ * writes only the tasks whose plan changed, so a run with nothing to catch up
+ * writes nothing.
+ *
+ * staysSetControls runs it when turnovers start; the nightly job (WP2's 03:00
+ * drift pass) runs it to heal what a pause or a failed trigger left behind.
+ */
+export async function reconcileTurnovers(db: Firestore, facilityId: string, nowMs: number): Promise<ReconcileTurnoversResult> {
+  const result: ReconcileTurnoversResult = { ran: false, stays: 0, created: 0, updated: 0, failed: 0, truncated: false, notified: [] };
+  const zone = await automationZone(db, facilityId, nowMs, 'turnovers');
+  if (!zone) return result;
+  result.ran = true;
+  const today = facilityToday(zone.tz, nowMs);
+  // Every status: a cancelled or removed booking's leftover to-do is cancelled too.
+  const snap = await staysCol(db, facilityId).where('checkOut', '>=', today).orderBy('checkOut').limit(RECONCILE_MAX_STAYS).get();
+  result.stays = snap.size;
+  result.truncated = snap.size >= RECONCILE_MAX_STAYS;
+  if (result.truncated) {
+    functions.logger.warn('stays: turnover catch-up covered only the soonest bookings', { facilityId, limit: RECONCILE_MAX_STAYS });
+  }
+
+  const listings = new Map<string, StayListingDoc | null>();
+  const ids = snap.docs.map((d) => d.id);
+  const replanned: ReplanResult[] = [];
+  // One booking that cannot be re-planned (a trigger racing it to create the
+  // same task, say) is logged and left for the next run, not allowed to stop the rest.
+  const replanOne = async (stayId: string): Promise<ReplanResult | null> => {
+    try {
+      return await replanTurnover(db, facilityId, stayId, zone, listings, nowMs);
+    } catch (error) {
+      result.failed++;
+      functions.logger.warn('stays: turnover catch-up skipped a booking', {
+        facilityId,
+        stayId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+  for (let i = 0; i < ids.length; i += RECONCILE_CONCURRENCY) {
+    const chunk = await Promise.all(ids.slice(i, i + RECONCILE_CONCURRENCY).map(replanOne));
+    replanned.push(...chunk.filter((r): r is ReplanResult => r !== null));
+  }
+  result.created = replanned.filter((r) => r.write === 'create').length;
+  result.updated = replanned.filter((r) => r.write === 'update').length;
+
+  const notices = replanned.map((r) => unassignedNotification(facilityId, r, today)).filter((n): n is StayNotificationInput => !!n);
+  if (notices.length > 0) {
+    result.notified = (await writeStayNotifications(db, facilityId, notices, Timestamp.fromMillis(nowMs))).created;
+  }
+  return result;
+}
+
 export const staysOnStayWrite = functions
   .runWith(STAYS_RUNTIME.trigger)
   .firestore.document('facilities/{facilityId}/stays/{stayId}')
@@ -322,7 +403,7 @@ export const staysOnStayWrite = functions
       functions.logger.error('staysOnStayWrite failed', {
         facilityId: context.params.facilityId,
         stayId: context.params.stayId,
-        message: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   });

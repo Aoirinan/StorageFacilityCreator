@@ -5,6 +5,7 @@
  */
 import * as functions from 'firebase-functions/v1';
 
+import type { RateLimitConfig } from '@sfc/functions-shared/rateLimits/facilityRateLimit';
 import type { StayListingDoc, StayListingInput } from '@sfc/functions-shared/stays/contracts';
 import { Timestamp } from 'firebase-admin/firestore';
 
@@ -138,6 +139,24 @@ export async function errorOf(p: Promise<unknown>): Promise<functions.https.Http
     return error as functions.https.HttpsError;
   }
   throw new Error('expected the call to fail');
+}
+
+/**
+ * The rate limits one call asked for, in order, as [key, limit, window
+ * seconds]; a per-user key (`{key}_u_{uid}`) is shown as `{key}_u`. The call
+ * itself may fail afterwards: the limits are taken before a handler's own checks.
+ */
+export async function rateLimitsOf(env: Env, handler: Handler<unknown>, uid: string, data: Record<string, unknown>): Promise<[string, number, number][]> {
+  const seen: RateLimitConfig[] = [];
+  const deps: StaysDeps = {
+    ...env.deps,
+    enforceRateLimit: async (config) => {
+      seen.push(config);
+      await env.deps.enforceRateLimit(config);
+    },
+  };
+  await handler({ facilityId: FAC, ...data }, callableContext(uid), deps).catch(() => undefined);
+  return seen.map((c) => [c.key.replace(/_u_.+$/, '_u'), c.limit, c.windowSeconds]);
 }
 
 export function nightsOf(fake: FakeFirestore, listingId: string, month: string): Record<string, { s: string; h: boolean }> {

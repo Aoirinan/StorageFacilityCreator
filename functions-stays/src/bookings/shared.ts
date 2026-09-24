@@ -93,9 +93,16 @@ export function isOtaSource(source: string): boolean {
   return (OTA_SOURCES as readonly string[]).includes(source);
 }
 
-/** Another channel's calendar decides this stay's dates: it came from a feed, or a feed adopted it. */
+/**
+ * Another channel's calendar decides this stay's dates: it came from a feed,
+ * or a feed adopted it. A detached stay (restored after "Removed from
+ * Airbnb", or its channel removed) is SFC's whatever its origin: the feed no
+ * longer updates it, so SFC must be able to cancel or re-date it, or its
+ * nights would be held for good.
+ */
 export function isFeedOwned(stay: Pick<StayDoc, 'origin' | 'sync'>): boolean {
-  return stay.origin === 'feed' || (!!stay.sync && stay.sync.detached !== true);
+  if (stay.sync?.detached === true) return false;
+  return stay.origin === 'feed' || !!stay.sync;
 }
 
 /** The channel a stay's source names, for `external.provider`. */
@@ -257,15 +264,45 @@ export function shortLeadCheck(opts: {
  */
 export type FreshSync = (facilityId: string, channelId: string, trigger: 'save') => Promise<unknown>;
 
-/** WP2's syncChannel(facilityId, channelId, trigger), or null while it does not exist. */
-export function defaultFreshSync(): FreshSync | null {
+const SYNC_MODULE = '../sync/syncChannel';
+
+function loadSyncModule(): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require(SYNC_MODULE);
+}
+
+/** Node's "Cannot find module '../sync/syncChannel'", and not a module that one needs. */
+function isSyncModuleMissing(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  if (!e || e.code !== 'MODULE_NOT_FOUND' || typeof e.message !== 'string') return false;
+  // The first line names the missing module; the require stack under it may name syncChannel too.
+  return e.message.split('\n')[0].includes(`'${SYNC_MODULE}'`);
+}
+
+/**
+ * WP2's syncChannel(facilityId, channelId, trigger), or null while it does
+ * not exist. Only its absence is quiet: a sync module that fails to load is
+ * logged as an error, so a broken build cannot silently turn the fresh sync
+ * off (bookings still go ahead, with the "not refreshed" warning).
+ */
+export function defaultFreshSync(
+  load: () => unknown = loadSyncModule,
+  logError: (message: string, meta: Record<string, unknown>) => void = (message, meta) => functions.logger.error(message, meta),
+): FreshSync | null {
+  let mod: { syncChannel?: unknown } | null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('../sync/syncChannel') as { syncChannel?: unknown };
-    return typeof mod?.syncChannel === 'function' ? (mod.syncChannel as FreshSync) : null;
-  } catch {
+    mod = load() as { syncChannel?: unknown } | null;
+  } catch (error) {
+    if (!isSyncModuleMissing(error)) {
+      logError('stays: the channel sync module failed to load; bookings skip the fresh sync', {
+        error: error instanceof Error ? error.message.split('\n')[0] : String(error),
+      });
+    }
     return null;
   }
+  if (typeof mod?.syncChannel === 'function') return mod.syncChannel as FreshSync;
+  logError('stays: the channel sync module has no syncChannel export; bookings skip the fresh sync', {});
+  return null;
 }
 
 export const FRESH_SYNC_MAX_AGE_MS = 5 * 60_000;
@@ -299,7 +336,7 @@ export async function refreshChannelsFirst(opts: {
   } catch (error) {
     functions.logger.warn('stays: fresh sync before booking failed', {
       facilityId: opts.facilityId,
-      message: error instanceof Error ? error.message : String(error),
+      error: error instanceof Error ? error.message : String(error),
     });
     return {
       code: 'fresh_sync_failed',

@@ -19,6 +19,7 @@ import {
   StaysDeps,
   assertEmployeeSetting,
   defaultStaysDeps,
+  enforceUserRateLimit,
   isOwnerOrManager,
   runStaysGuards,
   staysCallable,
@@ -28,8 +29,8 @@ import { facilityCol, toWire, validated } from './shared';
 /**
  * Returning guests (spec §1.1 P): owner/manager-only profiles with contact
  * details, a vehicle and a do-not-rent flag. Staff booking walk-ups find a
- * returning guest by name, phone or plate, and see the do-not-rent flag but
- * never the contact details or the reason.
+ * returning guest by name, whole phone number or plate, and see the
+ * do-not-rent flag but never the contact details or the reason.
  */
 
 const STAFF: readonly StayRole[] = ['owner', 'manager', 'employee'];
@@ -142,15 +143,26 @@ export interface ResolvedProfile {
   /** What a new profile is made from. */
   create: GuestProfileCreate | null;
   name: string;
+  /**
+   * The guest's phone for this booking: the chosen profile's, or the one
+   * typed in. A contact match never lends the matched profile's phone (see
+   * matchedBy): the booker did not supply it and may not be allowed to see it.
+   */
   phoneE164: string | null;
   doNotRent: boolean;
+  /**
+   * How an existing profile was found: picked by id, or matched on the phone
+   * or email typed for a new guest. null for a profile this booking creates.
+   */
+  matchedBy: 'profile_id' | 'phone' | 'email' | null;
 }
 
 /**
  * The profile a booking names: an existing one, or one to create. A new
  * guest whose phone or email is already on file is the same guest, so the
  * existing profile (and its do-not-rent flag) is used rather than a
- * duplicate that would slip past the flag.
+ * duplicate that would slip past the flag. The caller decides whether the
+ * booker may use a profile found that way (employees may not).
  */
 export async function resolveGuestProfile(
   db: Firestore,
@@ -185,10 +197,11 @@ export async function resolveGuestProfile(
       name: doc.name,
       phoneE164: doc.phoneE164 ?? null,
       doNotRent: doc.doNotRent === true,
+      matchedBy: 'profile_id',
     };
   }
   const create = validated(() => validateProfileCreate(r.create));
-  const lookups: [string, string | null][] = [
+  const lookups: ['phoneE164' | 'email', string | null][] = [
     ['phoneE164', create.phoneE164],
     ['email', create.email],
   ];
@@ -203,8 +216,9 @@ export async function resolveGuestProfile(
         existing: doc,
         create: null,
         name: doc.name,
-        phoneE164: doc.phoneE164 ?? create.phoneE164,
+        phoneE164: create.phoneE164,
         doNotRent: doc.doNotRent === true,
+        matchedBy: field === 'phoneE164' ? 'phone' : 'email',
       };
     }
   }
@@ -217,6 +231,7 @@ export async function resolveGuestProfile(
     name: create.name,
     phoneE164: create.phoneE164,
     doNotRent: false,
+    matchedBy: null,
   };
 }
 
@@ -280,6 +295,19 @@ export function searchResult(profileId: string, doc: StayGuestProfileDoc, includ
 
 const MAX_RESULTS = 10;
 
+/** An employee's whole-phone-number searches: plenty for a front desk, too few to guess a number with. */
+export const EMPLOYEE_PHONE_LOOKUPS = { key: 'stays_guest_phone', perHour: 20 } as const;
+
+/** A complete phone number in E.164, or null for anything shorter or malformed. */
+function wholePhoneOrNull(query: string): string | null {
+  try {
+    return normalizePhone(query, 'query');
+  } catch (error) {
+    if (error instanceof StayValidationError) return null;
+    throw error;
+  }
+}
+
 export async function handleSearchGuests(
   rawData: unknown,
   context: functions.https.CallableContext,
@@ -311,11 +339,26 @@ export async function handleSearchGuests(
   const lower = query.toLowerCase();
   add((await col.where('nameLower', '>=', lower).where('nameLower', '<', `${lower}`).orderBy('nameLower').limit(MAX_RESULTS).get()).docs);
 
-  // A phone number (4+ digits and nothing else): prefix-match the E.164 form.
+  const includeContact = isOwnerOrManager(ctx.role);
+  // A phone number (4+ digits and nothing else). Owners and managers, who see
+  // numbers anyway, prefix-match the E.164 form. Employees match only the
+  // whole number: a prefix match would answer "does her number start with
+  // 4065550?" and so give her number away a digit at a time. Whole-number
+  // lookups are capped per hour too: an employee who knows a guest's last 4
+  // (her door code on a phone_last4 listing) and area code could otherwise
+  // try all 1,000 exchanges in under 20 minutes.
   const digits = query.replace(/\D/g, '');
   if (/^[+\d\s().-]+$/.test(query) && digits.length >= 4) {
-    const prefix = query.startsWith('+') ? `+${digits}` : digits.length === 11 && digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
-    add((await col.where('phoneE164', '>=', prefix).where('phoneE164', '<', `${prefix}`).orderBy('phoneE164').limit(MAX_RESULTS).get()).docs);
+    if (includeContact) {
+      const prefix = query.startsWith('+') ? `+${digits}` : digits.length === 11 && digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+      add((await col.where('phoneE164', '>=', prefix).where('phoneE164', '<', `${prefix}`).orderBy('phoneE164').limit(MAX_RESULTS).get()).docs);
+    } else {
+      const whole = wholePhoneOrNull(query);
+      if (whole) {
+        await enforceUserRateLimit(ctx, EMPLOYEE_PHONE_LOOKUPS.key, EMPLOYEE_PHONE_LOOKUPS.perHour, 3600);
+        add((await col.where('phoneE164', '==', whole).limit(MAX_RESULTS).get()).docs);
+      }
+    }
   }
   // A plate: letters and digits with at least one digit.
   const plate = query.toUpperCase().replace(/[\s-]/g, '');
@@ -323,7 +366,6 @@ export async function handleSearchGuests(
     add((await col.where('vehicle.plate', '==', plate).limit(MAX_RESULTS).get()).docs);
   }
 
-  const includeContact = isOwnerOrManager(ctx.role);
   return [...found.entries()]
     .sort(([, a], [, b]) => (a.nameLower ?? '').localeCompare(b.nameLower ?? ''))
     .slice(0, MAX_RESULTS)

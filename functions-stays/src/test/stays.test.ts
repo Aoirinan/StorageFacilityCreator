@@ -4,7 +4,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 
 import type { StayDoc } from '@sfc/functions-shared/stays/contracts';
 
-import { refreshChannelsFirst } from '../bookings/shared';
+import { defaultFreshSync, isFeedOwned, refreshChannelsFirst } from '../bookings/shared';
 import { handleCancelStay, handleCreateStay, handleModifyStay, handleQuote, handleReviewStay } from '../bookings/stays';
 import { staysErrorReason } from '../common/errors';
 import { applyStayMutations } from '../common/stayWriter';
@@ -198,6 +198,11 @@ test('an Airbnb reservation entered by hand is airbnb_{CODE}, channel-collected,
   assert.equal((dup.details as { stayId: string }).stayId, 'airbnb_HMABC12345');
   assert.equal(await reasonOf(create(e, OWNER, booking({ source: 'airbnb' }))), 'invalid_argument');
   assert.equal(await reasonOf(create(e, OWNER, booking({ source: 'vrbo', confirmationCode: 'HA-123456', payment: { method: 'cash', amountCents: 100, receivedDate: '2026-10-01' } }))), 'invalid_argument');
+  // The channel sets the price: there is nothing of Stays' to adjust, on a channel booking or a block.
+  const adjustment = { cents: -1_000, reason: 'Friend' };
+  assert.equal(await reasonOf(create(e, OWNER, booking({ source: 'airbnb', confirmationCode: 'HMADJUST01', checkIn: '2026-11-10', checkOut: '2026-11-12', adjustment }))), 'invalid_argument');
+  assert.equal(await reasonOf(create(e, OWNER, booking({ kind: 'owner_block', source: 'owner', guest: null, checkIn: '2026-11-10', checkOut: '2026-11-12', adjustment }))), 'invalid_argument');
+  assert.equal(e.fake.has(`${P}/stays/airbnb_HMADJUST01`), false);
   const vrbo = await create(e, OWNER, booking({ source: 'vrbo', confirmationCode: 'HA-123456', checkIn: '2026-10-20', checkOut: '2026-10-22' }));
   assert.equal((e.fake.read(`${P}/stays/${vrbo.stayId}`)!.external as { provider: string }).provider, 'vrbo');
 });
@@ -508,6 +513,79 @@ test('an employee may only add nights to a walk-up', async () => {
   }
   const direct = await create(e, OWNER, booking());
   assert.equal(await reasonOf(modify(e, EMPLOYEE, { stayId: direct.stayId, expectedVersion: 1, changes: { checkOut: '2026-10-09' } })), 'role_not_allowed');
+  // Even adding nights, an employee cannot book over a channel block or take cash the owner has not allowed.
+  assert.equal(await reasonOf(modify(e, EMPLOYEE, { stayId: r.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-04' }, overrideSoftBlocks: true })), 'role_not_allowed');
+  const cash = { requestId: rid(), payment: { method: 'cash', amountCents: 4_500, receivedDate: '2026-10-01' } };
+  assert.equal(await reasonOf(modify(e, EMPLOYEE, { stayId: r.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-04' }, ...cash })), 'employee_setting_off');
+  assert.equal(e.fake.read(`${P}/stays/${r.stayId}`)!.checkOut, '2026-10-03');
+  assert.equal(e.fake.list(`${P}/stayIncome`).length, 0);
+});
+
+test("a change is held to the listing's longest stay, and a new party is re-priced", async () => {
+  const e = env();
+  seedListing(e.fake, 'lst_x', listingInput({ name: 'X', shortCode: 'X', ratesCents: { nightly: 10_000, weekendNightly: null, weeklyNightly: null, cleaningFee: 0, petFee: 2_500, extraGuestFee: 2_000, extraGuestAfter: 2 } }));
+  const r = await create(e, OWNER, booking({ listingId: 'lst_x' }));
+  assert.equal(r.folio?.totalCents, 30_000);
+  // X takes stays of up to 28 nights.
+  assert.equal(await reasonOf(modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { checkOut: '2026-11-05' } })), 'max_nights');
+  // Two more guests for 3 nights at $20, and a pet: $120 + $25 more.
+  const bigger = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { guest: { adults: 4, pets: 1 } } });
+  assert.deepEqual([bigger.folio?.totalCents, bigger.folio?.quoteVersion, bigger.stay.adults, bigger.stay.pets], [44_500, 2, 4, 1]);
+  assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 44_500);
+});
+
+test('a party changed straight on the stay doc is priced by the next edit, even one that changes nothing else', async () => {
+  const e = env();
+  seedListing(e.fake, 'lst_x', listingInput({ name: 'X', shortCode: 'X', ratesCents: { nightly: 10_000, weekendNightly: null, weeklyNightly: null, cleaningFee: 0, petFee: 2_500, extraGuestFee: 2_000, extraGuestAfter: 2 } }));
+  const r = await create(e, OWNER, booking({ listingId: 'lst_x' }));
+  assert.deepEqual(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.party, { adults: 2, children: 0, pets: 0 });
+  // Staff add two guests and a dog through the rules' quick fields: no version bump, no price.
+  const stay = e.fake.read(`${P}/stays/${r.stayId}`)!;
+  seedStay(e, r.stayId, { ...(stay as unknown as StayDoc), adults: 3, children: 1, pets: 1 });
+  assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 30_000);
+
+  // A later time change re-prices them: 2 extra guests x 3 nights x $20, and the pet fee.
+  const timed = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { checkInTime: '16:00' } });
+  assert.deepEqual([timed.folio?.totalCents, timed.folio?.quoteVersion, timed.folio?.party], [44_500, 2, { adults: 3, children: 1, pets: 1 }]);
+  assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 44_500);
+
+  // Another direct change, then an edit that sends nothing new: priced all the same.
+  const again = e.fake.read(`${P}/stays/${r.stayId}`)!;
+  seedStay(e, r.stayId, { ...(again as unknown as StayDoc), children: 0 });
+  const empty = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: timed.stay.version, changes: {} });
+  assert.deepEqual([empty.folio?.totalCents, empty.stay.version], [38_500, timed.stay.version + 1]);
+  // Nothing left to price: an empty edit is a no-op.
+  const noop = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: empty.stay.version, changes: {} });
+  assert.deepEqual([noop.stay.version, noop.folio?.quoteVersion], [empty.stay.version, 3]);
+});
+
+test('a payment that lands while dates are being changed is never priced over', async () => {
+  const e = env();
+  const r = await create(e, OWNER, booking({ payment: { method: 'cash', amountCents: 10_000, receivedDate: '2026-10-01' } }));
+  // Money moves on the folio between this edit's read and its commit (without the stay's version moving).
+  let raced = false;
+  e.fake.onBeforeCommit = async () => {
+    if (raced) return;
+    raced = true;
+    const folio = e.fake.read(`${P}/stayFolios/${r.stayId}`)!;
+    e.fake.seed(`${P}/stayFolios/${r.stayId}`, { ...folio, paidCents: 15_000, balanceCents: 20_000 });
+  };
+  assert.equal(await reasonOf(modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { checkOut: '2026-10-09' } })), 'version_mismatch');
+  const folio = e.fake.read(`${P}/stayFolios/${r.stayId}`)!;
+  assert.deepEqual([folio.paidCents, folio.totalCents], [15_000, 35_000]);
+  assert.equal(e.fake.read(`${P}/stays/${r.stayId}`)!.checkOut, '2026-10-08');
+});
+
+test('a full name typed as the display name on an edit is shortened too', async () => {
+  const e = env();
+  const r = await create(e, OWNER, booking({ guest: { displayName: '', adults: 1, children: 0, pets: 0, rvLengthFt: null }, guestProfile: { create: { name: 'Jane Doe' } } }));
+  assert.equal(e.fake.read(`${P}/stays/${r.stayId}`)!.guestDisplayName, 'Jane D.');
+  const same = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { guest: { displayName: ' JANE doe ' } } });
+  assert.equal(same.stay.guestDisplayName, 'Jane D.');
+  assert.equal(e.fake.read(`${P}/stays/${r.stayId}`)!.guestDisplayName, 'Jane D.');
+  // A name of her choosing is kept.
+  const chosen = await modify(e, MANAGER, { stayId: r.stayId, expectedVersion: same.stay.version, changes: { guest: { displayName: 'The Does' } } });
+  assert.equal(chosen.stay.guestDisplayName, 'The Does');
 });
 
 // ---------------------------------------------------------------------------
@@ -559,6 +637,11 @@ test('acknowledging a double booking is kept, even through later rebuilds', asyn
   seedStay(e, 'ical_second', makeStay('lst_a', '2026-10-11', '2026-10-13', { createdAtMs: 200, source: 'vrbo', origin: 'feed' }));
   await rebuild(e, 'lst_a', ['2026-10']);
   assert.equal(e.fake.read(`${P}/stays/ical_second`)!.status, 'conflict');
+  // Viewers read the note on the stay doc: contact details and codes are refused.
+  for (const note of ['Guest is on 406-555-0123', 'Email jane@example.com', 'Door code 4471']) {
+    assert.equal(await reasonOf(as(e, handleReviewStay, OWNER, { stayId: 'ical_second', action: 'acknowledge_conflict', note })), 'invalid_argument', note);
+  }
+  assert.equal((e.fake.read(`${P}/stays/ical_second`)!.conflict as { acknowledgedBy: unknown }).acknowledgedBy, null);
   const acked = await as(e, handleReviewStay, OWNER, { stayId: 'ical_second', action: 'acknowledge_conflict', note: 'Moving them to Airbnb B' });
   const conflict = acked.stay.conflict!;
   assert.equal(conflict.acknowledgedBy, OWNER);
@@ -587,6 +670,154 @@ test('restoring: a removed feed booking comes back detached from the feed; a can
   const back = await as(e, handleReviewStay, OWNER, { stayId: d.stayId, action: 'restore', note: '' });
   assert.deepEqual([back.stay.status, back.stay.cancelledAt, back.stay.paymentStatus], ['confirmed', null, 'due']);
   assert.equal(await reasonOf(as(e, handleReviewStay, OWNER, { stayId: d.stayId, action: 'restore', note: '' })), 'invalid_argument');
+});
+
+test('a restored "Removed from Airbnb" booking is SFC\'s own: it can be re-dated and cancelled, freeing its nights', async () => {
+  const e = env();
+  const stayId = 'airbnb_HMGONE0002';
+  const sync = { channelId: 'ch1', firstSeenAt: Timestamp.fromMillis(NOW), lastSeenAt: Timestamp.fromMillis(NOW), missCount: 3, firstMissAt: Timestamp.fromMillis(NOW), lastMissAt: Timestamp.fromMillis(NOW), needsReview: false, agedOutAt: null, detached: false };
+  const external = { provider: 'airbnb' as const, uid: 'u1', uidHistory: [], confirmationCode: 'HMGONE0002', reservationUrl: null, summary: null };
+  seedStay(e, stayId, makeStay('lst_a', '2026-10-10', '2026-10-13', { source: 'airbnb', origin: 'feed', status: 'removed_from_feed', paymentStatus: 'channel_collected', external, sync, version: 4 }));
+  const restored = await as(e, handleReviewStay, OWNER, { stayId, action: 'restore', note: '' });
+  assert.equal(restored.stay.sync?.detached, true);
+  assert.equal(nightsOf(e.fake, 'lst_a', '2026-10')['2026-10-12'].s, stayId);
+
+  // The feed no longer updates it, so Stays must: shorter by a night...
+  const shorter = await modify(e, OWNER, { stayId, expectedVersion: restored.stay.version, changes: { checkOut: '2026-10-12' } });
+  assert.equal(shorter.stay.checkOut, '2026-10-12');
+  assert.equal(nightsOf(e.fake, 'lst_a', '2026-10')['2026-10-12'], undefined);
+  // ...then cancelled, which hands every night back.
+  const cancelled = await as(e, handleCancelStay, OWNER, { stayId, expectedVersion: shorter.stay.version, reason: 'Guest cancelled in Airbnb after all' });
+  assert.deepEqual([cancelled.stay.status, cancelled.stay.paymentStatus], ['cancelled', 'channel_collected']);
+  assert.equal(e.fake.has(`${P}/stayNightLocks/lst_a_2026-10`), false);
+});
+
+test('who owns a stay\'s dates: the feed while it is attached, SFC once detached', () => {
+  const attached = { channelId: 'ch1', detached: false } as unknown as StayDoc['sync'];
+  const detached = { channelId: 'ch1', detached: true } as unknown as StayDoc['sync'];
+  assert.equal(isFeedOwned({ origin: 'feed', sync: attached }), true);
+  assert.equal(isFeedOwned({ origin: 'feed', sync: null }), true);
+  assert.equal(isFeedOwned({ origin: 'sfc', sync: attached }), true); // a hand-entered Airbnb booking the feed adopted
+  assert.equal(isFeedOwned({ origin: 'feed', sync: detached }), false);
+  assert.equal(isFeedOwned({ origin: 'csv', sync: detached }), false);
+  assert.equal(isFeedOwned({ origin: 'sfc', sync: null }), false);
+});
+
+test('an employee cannot book a new guest as one already on file by typing their phone or email', async () => {
+  const e = env({ employeesCanBook: true });
+  seedListing(e.fake, 'lst_rv3', rvInput(3, { accessCodeMode: 'phone_last4' }));
+  e.fake.seed(`${P}/stayGuestProfiles/gp_jane`, {
+    facilityId: FAC,
+    name: 'Jane Doe',
+    nameLower: 'jane doe',
+    phoneE164: '+14065550123',
+    email: 'jane@example.com',
+    vehicle: null,
+    notes: '',
+    doNotRent: false,
+    doNotRentReason: null,
+    consent: null,
+    stayCount: 1,
+    lastStayAt: null,
+  });
+  const walkUp = (guestProfile: Record<string, unknown>, patch: Record<string, unknown> = {}) =>
+    booking({ listingId: 'lst_rv3', source: 'walk_up', checkIn: '2026-10-01', checkOut: '2026-10-02', guest: { displayName: '', adults: 1, children: 0, pets: 0, rvLengthFt: null }, guestProfile, ...patch });
+
+  const byEmail = await errorOf(create(e, EMPLOYEE, walkUp({ create: { name: 'Anyone', email: 'JANE@example.com' } })));
+  assert.equal(staysErrorReason(byEmail), 'role_not_allowed');
+  assert.match(byEmail.message, /returning-guest search/);
+  assert.equal(await reasonOf(create(e, EMPLOYEE, walkUp({ create: { name: 'Anyone', phone: '406 555 0123' } }))), 'role_not_allowed');
+  assert.equal(e.fake.list(`${P}/stays`).length, 0);
+  assert.equal(e.fake.read(`${P}/stayGuestProfiles/gp_jane`)!.stayCount, 1);
+
+  // Picked from the search, she is booked, and her phone's last 4 is the site's door code, as the listing asks.
+  const picked = await create(e, EMPLOYEE, walkUp({ profileId: 'gp_jane' }));
+  assert.equal(e.fake.read(`${P}/stays/${picked.stayId}`)!.guestDisplayName, 'Jane D.');
+  const access = e.fake.read(`${P}/stayAccess/${picked.stayId}`)!;
+  assert.deepEqual([access.doorCode, access.source, access.stayId], ['0123', 'phone_last4', picked.stayId]);
+
+  // An owner typing her email gets the returning guest; the door code comes only from a phone typed now.
+  const owner = await create(e, OWNER, walkUp({ create: { name: 'J. Doe', email: 'jane@example.com' } }, { checkIn: '2026-10-05', checkOut: '2026-10-06' }));
+  assert.equal(e.fake.read(`${P}/stays/${owner.stayId}`)!.guestDisplayName, 'Jane D.');
+  assert.equal(e.fake.has(`${P}/stayAccess/${owner.stayId}`), false);
+  assert.equal(e.fake.read(`${P}/stayPrivate/${owner.stayId}`)!.phoneLast4, null);
+  assert.equal(e.fake.read(`${P}/stayGuestProfiles/gp_jane`)!.stayCount, 3);
+});
+
+test('an employee cannot book a name on the do-not-rent list; an owner or manager is warned', async () => {
+  const e = env({ employeesCanBook: true });
+  e.fake.seed(`${P}/stayGuestProfiles/gp_rex`, { facilityId: FAC, name: 'Rex Ruin', nameLower: 'rex ruin', phoneE164: null, email: null, vehicle: null, notes: '', doNotRent: true, doNotRentReason: 'Damage', consent: null, stayCount: 1, lastStayAt: null });
+  const walkUp = (patch: Record<string, unknown>) => booking({ listingId: 'lst_rv1', source: 'walk_up', checkIn: '2026-10-01', checkOut: '2026-10-02', ...patch });
+  const typed = await errorOf(create(e, EMPLOYEE, walkUp({ guestProfile: { create: { name: 'rex ruin' } } })));
+  assert.equal(staysErrorReason(typed), 'do_not_rent');
+  assert.match(typed.message, /Ask the owner/);
+  assert.deepEqual(Object.keys(typed.details as object), ['reason']);
+  // Typed as the display name, with no profile at all.
+  assert.equal(await reasonOf(create(e, EMPLOYEE, walkUp({ guest: { displayName: 'Rex Ruin', adults: 1, children: 0, pets: 0, rvLengthFt: null } }))), 'do_not_rent');
+  assert.equal(e.fake.list(`${P}/stays`).length, 0);
+  const warned = await create(e, MANAGER, walkUp({ guestProfile: { create: { name: 'Rex Ruin' } } }));
+  assert.ok(warned.warnings.some((w) => w.code === 'do_not_rent'));
+});
+
+test("an Airbnb reservation the feed brings in while it is being typed is not taken over", async () => {
+  const e = env();
+  let raced = false;
+  e.fake.onBeforeCommit = async () => {
+    if (raced) return;
+    raced = true;
+    seedStay(e, 'airbnb_HMRACE0001', makeStay('lst_a', '2026-10-05', '2026-10-08', { source: 'airbnb', origin: 'feed', guestDisplayName: '' }));
+  };
+  const dup = await errorOf(create(e, OWNER, booking({ source: 'airbnb', confirmationCode: 'HMRACE0001', guest: { displayName: 'Typed T.', adults: 2, children: 0, pets: 0, rvLengthFt: null } })));
+  assert.equal(staysErrorReason(dup), 'duplicate_reservation');
+  const stay = e.fake.read(`${P}/stays/airbnb_HMRACE0001`)!;
+  assert.deepEqual([stay.origin, stay.guestDisplayName], ['feed', '']);
+  assert.equal(e.fake.has(`${P}/stayPrivate/airbnb_HMRACE0001`), false);
+});
+
+test('a check-in that lands while a cancel is in flight stops the cancel', async () => {
+  const e = env();
+  const r = await create(e, OWNER, booking({ listingId: 'lst_rv1', source: 'phone', checkIn: '2026-10-01', checkOut: '2026-10-03' }));
+  let raced = false;
+  e.fake.onBeforeCommit = async () => {
+    if (raced) return;
+    raced = true;
+    // Staff check-ins are direct writes that leave the version alone.
+    const stay = e.fake.read(`${P}/stays/${r.stayId}`)!;
+    seedStay(e, r.stayId, { ...(stay as unknown as StayDoc), arrivalState: 'checked_in', checkedInAt: Timestamp.fromMillis(NOW) });
+  };
+  const refused = await errorOf(as(e, handleCancelStay, OWNER, { stayId: r.stayId, expectedVersion: 1, reason: 'Called to cancel' }));
+  assert.equal(staysErrorReason(refused), 'invalid_argument');
+  assert.match(refused.message, /just checked in/);
+  const stay = e.fake.read(`${P}/stays/${r.stayId}`)!;
+  assert.deepEqual([stay.status, stay.arrivalState], ['confirmed', 'checked_in']);
+  assert.equal(nightsOf(e.fake, 'lst_rv1', '2026-10')['2026-10-01'].s, r.stayId);
+});
+
+test('a cancelled booking comes back over a channel block that appeared meanwhile', async () => {
+  const e = env();
+  const r = await create(e, OWNER, booking({ checkIn: '2026-10-20', checkOut: '2026-10-22' }));
+  await as(e, handleCancelStay, OWNER, { stayId: r.stayId, expectedVersion: 1, reason: 'Changed plans' });
+  await softBlock(e, 'lst_a', '2026-10-20', '2026-10-21');
+  assert.equal(nightsOf(e.fake, 'lst_a', '2026-10')['2026-10-20'].h, false);
+  const back = await as(e, handleReviewStay, OWNER, { stayId: r.stayId, action: 'restore', note: '' });
+  assert.equal(back.stay.status, 'confirmed');
+  assert.deepEqual([nightsOf(e.fake, 'lst_a', '2026-10')['2026-10-20'].s, nightsOf(e.fake, 'lst_a', '2026-10')['2026-10-20'].h], [r.stayId, true]);
+});
+
+test('the fresh sync is quietly off only while the sync module is missing; a broken one is logged', () => {
+  const logged: string[] = [];
+  const log = (message: string) => void logged.push(message);
+  const missing = Object.assign(new Error("Cannot find module '../sync/syncChannel'\nRequire stack:\n- /app/lib/bookings/shared.js"), { code: 'MODULE_NOT_FOUND' });
+  assert.equal(defaultFreshSync(() => { throw missing; }, log), null);
+  assert.deepEqual(logged, []);
+  // The module is there but cannot load: something it needs is missing, it throws, or it lacks the export.
+  const nested = Object.assign(new Error("Cannot find module 'left-pad'\nRequire stack:\n- /app/lib/sync/syncChannel.js\n- /app/lib/bookings/shared.js"), { code: 'MODULE_NOT_FOUND' });
+  assert.equal(defaultFreshSync(() => { throw nested; }, log), null);
+  assert.equal(defaultFreshSync(() => { throw new SyntaxError('Unexpected token'); }, log), null);
+  assert.equal(defaultFreshSync(() => ({}), log), null);
+  assert.equal(logged.length, 3);
+  const syncChannel = async () => undefined;
+  assert.equal(defaultFreshSync(() => ({ syncChannel }), log), syncChannel);
 });
 
 test('clearing a review flag, and who may review', async () => {

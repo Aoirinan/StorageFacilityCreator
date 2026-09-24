@@ -164,6 +164,21 @@ test('bulk RV sites are checked: every site needs a hookup, numbers in range, th
   assert.equal(siteShortCode('Pull-through ', 104), 'Pullt104');
 });
 
+test('bulk sites whose shortened codes would clash within the batch are refused before any is made', async () => {
+  const env = setupEnv(all);
+  // Cut to fit 8 characters, site 1 and site 11 of this prefix come out the same.
+  assert.equal(siteShortCode('ABCDEF1X', 1), 'ABCDEF11');
+  assert.equal(siteShortCode('ABCDEF1X', 11), 'ABCDEF11');
+  const rv = { rv: { hookup: 'electric', amps: [30], maxLengthFt: null, pullThrough: false } };
+  const clash = await errorOf(as(env, handleBulkCreateRvSites, OWNER, { requestId: rid(), prefix: 'ABCDEF1X', from: 1, to: 11, group: 'RV park', defaults: rv }));
+  assert.equal(staysErrorReason(clash), 'invalid_argument');
+  assert.equal((clash.details as { field: string }).field, 'prefix');
+  assert.match(clash.message, /Sites 1 and 11 .*ABCDEF11/);
+  assert.equal(env.fake.list(`${P}/stayListings`).length, 0);
+  // A prefix that fits makes all eleven.
+  assert.equal((await as(env, handleBulkCreateRvSites, OWNER, { requestId: rid(), prefix: 'RV ', from: 1, to: 11, group: 'RV park', defaults: rv })).created, 11);
+});
+
 test('listings never touched a storage-side collection', () => {
   assert.ok(all.length > 0);
   for (const fake of all) fake.assertIsolation();
