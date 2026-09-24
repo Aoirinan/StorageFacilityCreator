@@ -28,8 +28,11 @@ import 'package:sfcapp/widgets/stays/stays_module_gate.dart';
 // Every Stays page (spec §7.2), spread into app_router's ShellRoute with
 // `...staysShellRoutes()`. Each page takes ?facilityId= and is "Page not
 // found" without one. While the shortTermRentals flag is off every Stays
-// URL is "Page not found", exactly as before these routes existed; with it
-// on, StaysModuleGate decides whether the module is on for the facility.
+// URL is "Page not found" too. That page shows inside the app shell (with
+// the sidebar), where an unknown URL before these routes existed got the
+// full-page one from the router's errorBuilder; nothing of Stays shows
+// either way. With the flag on, StaysModuleGate decides whether the module
+// is on for the facility.
 
 Future<Stay?> _loadStay(String facilityId, String stayId) => FirestoreStaysRepository().getStay(facilityId, stayId);
 
@@ -187,7 +190,7 @@ class StaysRoutePage extends ConsumerWidget {
       case StaysUiState.loading:
         return const Center(child: CircularProgressIndicator());
       case StaysUiState.off:
-        // As if the route did not exist: the flag hides Stays completely.
+        // The flag hides Stays completely: "Page not found" (in the shell).
         return NotFoundPage(state: state);
       case StaysUiState.on:
         break;
