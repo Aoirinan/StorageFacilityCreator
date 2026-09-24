@@ -48,11 +48,34 @@ export class FakeStripeObjects {
     };
     client.paymentIntents.retrieve = lookup('payment_intent');
     client.charges.retrieve = lookup('charge');
+    client.paymentMethods.retrieve = lookup('payment_method');
+    client.subscriptions.retrieve = lookup('subscription');
+    // Saving a card sets it as the customer's default: record, and fail like
+    // Stripe when the customer is not on that account.
+    client.customers.update = async (id: string, _params?: unknown, options?: Stripe.RequestOptions) => {
+      const account = options?.stripeAccount || null;
+      this.calls.push({ resource: 'customer.update', id, stripeAccount: account });
+      if (!this.objects.has(`${account || 'platform'}:${id}`)) {
+        throw Object.assign(new Error(`No such customer: '${id}'`), { type: 'StripeInvalidRequestError', statusCode: 404 });
+      }
+      return this.objects.get(`${account || 'platform'}:${id}`);
+    };
   }
 }
 
-export function event<T>(type: string, object: T, account?: string, id = `evt_${Math.random().toString(36).slice(2)}`): Stripe.Event {
-  return { id, type, account, data: { object } } as unknown as Stripe.Event;
+export function event<T>(
+  type: string,
+  object: T,
+  account?: string,
+  id = `evt_${Math.random().toString(36).slice(2)}`,
+  livemode = true,
+): Stripe.Event {
+  return { id, type, account, livemode, data: { object } } as unknown as Stripe.Event;
+}
+
+/** Every write the fake applied outside the refusal records. */
+export function writesOutsideRefusals(fake: FakeFirestore) {
+  return fake.writes.filter((w) => !w.path.startsWith('stripeWebhookRefusals/'));
 }
 
 export function linkSession(id: string, paymentIntent: string): Stripe.Checkout.Session {

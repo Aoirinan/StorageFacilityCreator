@@ -1,7 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { getStripeClient } from '@sfc/functions-shared';
+import {
+  DISPUTE_LEDGER_TYPE,
+  DISPUTE_REVERSAL_LEDGER_TYPE,
+  getStripeClient,
+} from '@sfc/functions-shared';
 import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 export type DisputeEventType =
@@ -19,13 +23,62 @@ export function isDisputeInquiry(dispute: Pick<Stripe.Dispute, 'status'>): boole
 export type DisputeMoneyMovement = { withdrawn: boolean; reinstated: boolean };
 
 /**
+ * How far along a dispute status is. Two events can carry the same
+ * `created` second (closed as lost, then an `updated` still reading
+ * under_review); the later stage wins the tie, so the payment does not go
+ * back to showing an open dispute that has ended.
+ */
+export function disputeStatusRank(status: unknown): number {
+  switch (status) {
+    case 'warning_needs_response':
+    case 'needs_response':
+      return 1;
+    case 'warning_under_review':
+    case 'under_review':
+      return 2;
+    case 'won':
+    case 'lost':
+    case 'warning_closed':
+    case 'prevented':
+    case 'charge_refunded':
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Dispute statuses that end with the payment standing: won, an inquiry
+ * closed, or a dispute prevented before any chargeback.
+ */
+const DISPUTE_ENDED_FOR_FACILITY = new Set(['won', 'warning_closed', 'prevented']);
+
+/**
+ * Whether an event is older than the dispute status already on the payment:
+ * strictly older by `created`, or from the same second and an earlier stage.
+ */
+export function isStaleDisputeStatus(params: {
+  eventCreated: number | undefined;
+  eventStatus: unknown;
+  seenAt: unknown;
+  seenStatus: unknown;
+}): boolean {
+  const { eventCreated, eventStatus, seenAt, seenStatus } = params;
+  if (typeof eventCreated !== 'number' || typeof seenAt !== 'number') return false;
+  if (eventCreated !== seenAt) return eventCreated < seenAt;
+  return disputeStatusRank(eventStatus) < disputeStatusRank(seenStatus);
+}
+
+/**
  * What one dispute event shows has happened to the disputed money.
  *
  * withdrawn: the event is `charge.dispute.funds_withdrawn`, or the dispute is
  * not an inquiry and its `balance_transactions` hold a withdrawal (a negative
- * amount). The status alone is not enough: an inquiry never withdraws, and a
- * dispute can be open before its money moves, so only a withdrawal Stripe has
- * booked counts.
+ * amount), or it is `lost`. An open status alone is not enough: an inquiry
+ * never withdraws, and a dispute can be open before its money moves, so only
+ * a withdrawal Stripe has booked counts. `lost` is the exception: the money
+ * is gone for good whatever the object lists, and without it a lost dispute
+ * whose withdrawal event never arrived charged the tenant nothing.
  *
  * reinstated: the event is `charge.dispute.funds_reinstated`, the dispute is
  * `won`, or its `balance_transactions` hold a reinstatement (positive).
@@ -53,6 +106,7 @@ export function disputeMoneyMovement(
   const withdrawn =
     eventType === 'charge.dispute.funds_withdrawn' ||
     (!isDisputeInquiry(dispute) && withdrawalBooked) ||
+    dispute.status === 'lost' ||
     reinstated;
   return { withdrawn, reinstated };
 }
@@ -74,7 +128,17 @@ export function disputeMoneyMovement(
  * - Both are created in one transaction with the payment's dispute status, so
  *   redelivered and concurrent events converge on one of each.
  * - The payment records `disputeStatus` on every event, from the newest event
- *   by Stripe's `created` time; `created` also marks it `disputed`.
+ *   by Stripe's `created` time (a same-second tie goes to the later stage);
+ *   `created` also marks it `disputed`, keeping the status it had in
+ *   `statusBeforeDispute`, and a win (or the money coming back) restores it.
+ * - Once reversed, the original counts as settled (`metadata.allocatedAmount`)
+ *   so the app never offers it for an invoice again, and any unpaid invoice
+ *   staff made from it is voided: a won dispute leaves nothing to bill.
+ * - Autopay, the delinquency job and the payment reminders leave both rows
+ *   out of what they collect or ask for (functions-shared
+ *   ledger/disputeEntries.ts), and the tenant portal leaves the `disputed`
+ *   payment out of its balance: a disputed amount is collected by staff, by
+ *   hand.
  *
  * Tenant charges live on the facility's connected account, so lookups use
  * `stripeAccount`, and the account must be the facility's own before anything
@@ -85,6 +149,7 @@ export async function handleDisputeCreated(
   connectedAccountId?: string,
   eventType: DisputeEventType = 'charge.dispute.created',
   eventCreated?: number,
+  eventId?: string,
 ) {
   const stripe = getStripeClient();
   const requestOptions: Stripe.RequestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
@@ -121,6 +186,9 @@ export async function handleDisputeCreated(
     connectedAccountId,
     eventType,
     objectId: dispute.id,
+    eventId,
+    tenantId: tenantId ?? null,
+    amount: dispute.amount / 100,
   });
   if (!accountMatches) return;
 
@@ -155,33 +223,58 @@ export async function handleDisputeCreated(
     const paymentSnap = paymentRef ? await tx.get(paymentRef) : null;
     const now = admin.firestore.FieldValue.serverTimestamp();
 
+    const existingAmount = originalSnap.exists ? originalSnap.get('amount') : null;
+    const postedOriginal = !originalSnap.exists && movement.withdrawn;
+    const originalAmount: number | null = postedOriginal
+      ? dispute.amount / 100
+      : typeof existingAmount === 'number'
+        ? existingAmount
+        : null;
+    const postedReversal = movement.reinstated && !reversalSnap.exists && originalAmount !== null;
+    const reversed = reversalSnap.exists || postedReversal;
+
     if (paymentSnap?.exists) {
       const update: Record<string, unknown> = { disputeId: dispute.id, updatedAt: now };
       // Redelivery can bring an older event after a newer one; the status
       // shown is the one from the newest event.
-      const seenAt = paymentSnap.get('disputeStatusEventAt');
-      const stale = typeof eventCreated === 'number' && typeof seenAt === 'number' && eventCreated < seenAt;
+      const stale = isStaleDisputeStatus({
+        eventCreated,
+        eventStatus: dispute.status,
+        seenAt: paymentSnap.get('disputeStatusEventAt'),
+        seenStatus: paymentSnap.get('disputeStatus'),
+      });
       if (!stale) {
         update.disputeStatus = dispute.status || null;
         update.disputeStatusEventAt = typeof eventCreated === 'number' ? eventCreated : null;
         update.disputeUpdatedAt = now;
       }
-      if (eventType === 'charge.dispute.created') {
+      const newestStatus = stale ? paymentSnap.get('disputeStatus') : dispute.status;
+      const currentStatus = paymentSnap.get('status');
+      if (reversed || DISPUTE_ENDED_FOR_FACILITY.has(String(newestStatus))) {
+        // A won dispute left the payment `disputed` for good: the app and the
+        // portal kept treating a payment that stands as taken back.
+        if (currentStatus === 'disputed') {
+          update.status = paymentSnap.get('statusBeforeDispute') || 'completed';
+          update.notes = `Dispute closed in the facility's favour (${newestStatus || 'funds returned'})`;
+        }
+      } else if (eventType === 'charge.dispute.created') {
+        if (currentStatus !== 'disputed') update.statusBeforeDispute = currentStatus ?? null;
         update.status = 'disputed';
         update.notes = `Dispute created: ${reason}`;
       }
       tx.update(paymentSnap.ref, update);
     }
 
-    const existingAmount = originalSnap.exists ? originalSnap.get('amount') : null;
-    let originalAmount: number | null = typeof existingAmount === 'number' ? existingAmount : null;
-    let postedOriginal = false;
-    if (!originalSnap.exists && movement.withdrawn) {
-      originalAmount = dispute.amount / 100;
+    // A reversed dispute is settled: the app's invoice selection and payment
+    // allocation skip a charge whose allocatedAmount covers it, so a won
+    // dispute is never billed again.
+    const settledBy = { allocatedAmount: originalAmount, settledByEntryId: reversalRef.id };
+
+    if (postedOriginal) {
       tx.create(originalRef, {
         tenantId: tenantId || null,
         facilityId,
-        type: 'dispute',
+        type: DISPUTE_LEDGER_TYPE,
         // Positive: the disputed money has left the facility's account, so
         // the tenant owes it again. Payments are stored negative, charges positive.
         amount: originalAmount,
@@ -191,17 +284,21 @@ export async function handleDisputeCreated(
         status: 'posted',
         createdAt: now,
         createdBy: 'system@stripe-webhook',
-        metadata: ledgerMetadata,
+        metadata: postedReversal ? { ...ledgerMetadata, ...settledBy } : ledgerMetadata,
       });
-      postedOriginal = true;
     }
 
-    let postedReversal = false;
-    if (movement.reinstated && !reversalSnap.exists && originalAmount !== null) {
+    if (postedReversal && originalAmount !== null) {
+      if (!postedOriginal) {
+        tx.update(originalRef, {
+          'metadata.allocatedAmount': settledBy.allocatedAmount,
+          'metadata.settledByEntryId': settledBy.settledByEntryId,
+        });
+      }
       tx.create(reversalRef, {
         tenantId: tenantId || null,
         facilityId,
-        type: 'dispute_reversal',
+        type: DISPUTE_REVERSAL_LEDGER_TYPE,
         // Exactly undoes the original, whatever the event says the amount is.
         amount: -originalAmount,
         description:
@@ -215,10 +312,20 @@ export async function handleDisputeCreated(
         createdBy: 'system@stripe-webhook',
         metadata: { ...ledgerMetadata, reversesEntryId: originalRef.id },
       });
-      postedReversal = true;
     }
-    return { postedOriginal, postedReversal };
+    return { postedOriginal, postedReversal, reversed };
   });
+
+  // Every time, not only when the reversal was just posted: a delivery that
+  // died after the transaction is retried by Stripe, and this must still run.
+  const voidedInvoices = posted.reversed
+    ? await voidInvoicesForReversedDispute({
+        facilityRef,
+        ledgerEntryId: originalRef.id,
+        disputeId: dispute.id,
+        tenantId: tenantId || null,
+      })
+    : [];
 
   functions.logger.info(`Dispute ${eventType}: ${dispute.id} is ${dispute.status}`, {
     paymentIntentId,
@@ -226,5 +333,67 @@ export async function handleDisputeCreated(
     inquiry: isDisputeInquiry(dispute),
     ...movement,
     ...posted,
+    voidedInvoices,
   });
+}
+
+/** Invoice statuses that still ask the tenant for money. */
+const UNPAID_INVOICE_STATUSES = new Set(['draft', 'sent', 'overdue']);
+
+/**
+ * Voids every unpaid invoice that bills a dispute the facility has won.
+ *
+ * Staff can put a dispute row on an invoice to collect it by hand. After a
+ * win the money is back and the reversal cancels the row, but the invoice
+ * stayed open asking the tenant to pay it. Voiding (not editing) is what the
+ * app already does to correct an invoice, and it frees the invoice's other
+ * charges to go on a new one. A paid invoice is left alone: that tenant has a
+ * credit for staff to refund.
+ */
+async function voidInvoicesForReversedDispute(params: {
+  facilityRef: admin.firestore.DocumentReference;
+  ledgerEntryId: string;
+  disputeId: string;
+  tenantId: string | null;
+}): Promise<string[]> {
+  const { facilityRef, ledgerEntryId, disputeId } = params;
+  const invoices = await facilityRef
+    .collection('invoices')
+    .where('ledgerEntryIds', 'array-contains', ledgerEntryId)
+    .get();
+  const voided: string[] = [];
+  for (const invoice of invoices.docs) {
+    const status = invoice.get('status') ?? 'draft';
+    if (!UNPAID_INVOICE_STATUSES.has(status)) continue;
+    const otherCharges = ((invoice.get('ledgerEntryIds') as unknown[]) || []).filter((id) => id !== ledgerEntryId);
+    const voidReason =
+      'The card dispute on this invoice was won and the money returned, so it is no longer owed.' +
+      (otherCharges.length > 0 ? ' Its other charges can go on a new invoice.' : '');
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    await invoice.ref.update({
+      status: 'voided',
+      isActive: false,
+      voidReason,
+      updatedAt: now,
+      updatedBy: 'system@stripe-webhook',
+    });
+    await facilityRef.collection('auditLogs').add({
+      action: 'invoice.voided',
+      actorUid: 'system',
+      actorEmail: 'system@stripe-webhook',
+      targetId: invoice.id,
+      entityType: 'invoice',
+      entityId: invoice.id,
+      tenantId: (invoice.get('tenantId') as string | undefined) ?? params.tenantId,
+      details: {
+        invoiceNumber: invoice.get('invoiceNumber') ?? null,
+        reason: voidReason,
+        disputeId,
+        ledgerEntryId,
+      },
+      at: now,
+    });
+    voided.push(invoice.id);
+  }
+  return voided;
 }

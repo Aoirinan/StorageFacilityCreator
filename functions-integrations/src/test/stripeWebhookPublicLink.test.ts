@@ -35,7 +35,9 @@ test('a link session event without the connected account does not mark the link 
   await dispatchStripeWebhookEvent(event('checkout.session.completed', linkSession('cs_1', 'pi_1'), 'acct_other'));
 
   assert.equal(fake.read(LINK_PATH)!.status, 'pending');
-  assert.equal(fake.writes.length, 0);
+  // Only the refusal record for the other account's session.
+  assert.deepEqual(fake.writes.map((w) => w.path), ['stripeWebhookRefusals/acct_other__cs_1']);
+  assert.equal(fake.read('stripeWebhookRefusals/acct_other__cs_1')!.reason, 'unknown_account');
 });
 
 test('a Firestore failure on the link branch fails the webhook so Stripe retries', async () => {

@@ -25,6 +25,7 @@ import { eventAccountMatchesFacility } from './connectedAccountGuard';
 export async function handleChargeRefunded(
   charge: Stripe.Charge,
   connectedAccountId?: string,
+  eventId?: string,
 ) {
   try {
     const paymentIntentId = charge.payment_intent as string;
@@ -52,6 +53,9 @@ export async function handleChargeRefunded(
       connectedAccountId,
       eventType: 'charge.refunded',
       objectId: charge.id,
+      eventId,
+      tenantId,
+      amount: charge.amount_refunded / 100,
     });
     if (!accountMatches) return;
 

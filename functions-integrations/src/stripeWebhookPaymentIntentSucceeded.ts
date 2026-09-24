@@ -19,6 +19,7 @@ import { eventAccountMatchesFacility } from './connectedAccountGuard';
 export async function handlePaymentIntentSucceeded(
   paymentIntent: Stripe.PaymentIntent,
   connectedAccountId?: string,
+  eventId?: string,
 ) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
@@ -38,6 +39,9 @@ export async function handlePaymentIntentSucceeded(
       connectedAccountId,
       eventType: 'payment_intent.succeeded',
       objectId: paymentIntent.id,
+      eventId,
+      tenantId,
+      amount: paymentIntent.amount / 100,
     });
     if (!accountMatches) return;
 

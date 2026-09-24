@@ -159,6 +159,7 @@ export type {
   PublicLinkCompletionSource,
   PublicLinkExceptionReason,
 } from './stripe/completePublicLinkPayment';
+export { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from './stripe/webhookRefusals';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,

@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import type Stripe from 'stripe';
 import type { FakeFirestore } from '@sfc/functions-shared/testing/fakeFirestore';
 import { dispatchStripeWebhookEvent } from '../stripeWebhook';
-import { ACCOUNT, event, LEDGERS, linkPaymentIntent, PAYMENTS, setup } from './support/webhookFakes';
+import {
+  ACCOUNT,
+  event,
+  LEDGERS,
+  linkPaymentIntent,
+  PAYMENTS,
+  setup,
+  writesOutsideRefusals,
+} from './support/webhookFakes';
 
 /** The balance transactions Stripe books on a dispute: money out, then back. */
 const WITHDRAWAL = { id: 'txn_out', object: 'balance_transaction', amount: -4200, reporting_category: 'dispute' };
@@ -117,7 +125,8 @@ test('a won dispute is reversed once, leaving the tenant owing nothing', async (
   await send('charge.dispute.closed', won()); // redelivery
 
   assert.deepEqual(disputeRows(fake), ['dispute_du_1', 'dispute_du_1_reinstated']);
-  assert.equal(fake.writesTo(`${LEDGERS}/dispute_du_1`).length, 1);
+  // Created once; the one later write only marks it settled by the reversal.
+  assert.deepEqual(fake.writesTo(`${LEDGERS}/dispute_du_1`).map((w) => w.op), ['create', 'update']);
   assert.equal(fake.writesTo(`${LEDGERS}/dispute_du_1_reinstated`).length, 1);
   const reversal = fake.read(`${LEDGERS}/dispute_du_1_reinstated`)!;
   assert.equal(reversal.amount, -42);
@@ -209,7 +218,7 @@ test('concurrent deliveries post each entry once', async () => {
   ]);
 
   assert.deepEqual(disputeRows(fake), ['dispute_du_1', 'dispute_du_1_reinstated']);
-  assert.equal(fake.writesTo(`${LEDGERS}/dispute_du_1`).length, 1);
+  assert.deepEqual(fake.writesTo(`${LEDGERS}/dispute_du_1`).map((w) => w.op), ['create', 'update']);
   assert.equal(fake.writesTo(`${LEDGERS}/dispute_du_1_reinstated`).length, 1);
   assert.equal(owed(fake), -42);
 });
@@ -242,12 +251,16 @@ test('a dispute from an account that is not the facility\'s posts nothing', asyn
   const { fake, stripe } = await paidTenant();
   // Another facility's owner makes a PaymentIntent naming this facility and tenant.
   stripe.put('acct_other', 'pi_forged', linkPaymentIntent('pi_forged'));
-  const writesBefore = fake.writes.length;
+  const writesBefore = writesOutsideRefusals(fake).length;
 
   await send('charge.dispute.funds_withdrawn', dispute({ id: 'du_forged', payment_intent: 'pi_forged' }), undefined, 'acct_other');
 
-  assert.equal(fake.writes.length, writesBefore);
+  assert.equal(writesOutsideRefusals(fake).length, writesBefore);
   assert.deepEqual(disputeRows(fake), []);
+  // Recorded, since a genuine one would need posting by hand.
+  const row = fake.read('stripeWebhookRefusals/acct_other__du_forged')!;
+  assert.equal(row.reason, 'unknown_account');
+  assert.equal(row.amount, 42);
 });
 
 test('a dispute without payment_intent falls back to the charge, on the connected account', async () => {
@@ -268,4 +281,111 @@ test('a dispute lookup failure fails the webhook instead of being marked process
   setup();
   // PaymentIntent not on the account: Stripe says "No such payment_intent".
   await assert.rejects(send('charge.dispute.created', dispute()), /No such payment_intent/);
+});
+
+test('two events from the same second: the later stage wins, whichever arrives last', async () => {
+  const { fake } = await paidTenant();
+
+  await send('charge.dispute.closed', dispute({ status: 'lost' }), 300);
+  await send('charge.dispute.updated', dispute({ status: 'under_review' }), 300);
+  // Before: under_review, an open dispute on a payment whose dispute had ended.
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.disputeStatus, 'lost');
+
+  await send('charge.dispute.updated', dispute({ status: 'needs_response' }), 400);
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.disputeStatus, 'needs_response');
+});
+
+test('a lost dispute charges the tenant even when no withdrawal was ever reported', async () => {
+  const { fake } = await paidTenant();
+
+  // No funds_withdrawn event and no balance transactions on the object.
+  await send('charge.dispute.created', dispute({ balance_transactions: [] }));
+  await send('charge.dispute.closed', dispute({ status: 'lost', balance_transactions: [] }));
+
+  // Before: nothing posted, and the tenant owed nothing for money that was gone.
+  assert.deepEqual(disputeRows(fake), ['dispute_du_1']);
+  assert.equal(owed(fake), 0);
+});
+
+test('a won dispute puts the payment back as it was and marks the charge settled', async () => {
+  const { fake } = await paidTenant();
+
+  await send('charge.dispute.created', dispute());
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'disputed');
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.statusBeforeDispute, 'completed');
+  await send('charge.dispute.funds_withdrawn', dispute());
+  await send('charge.dispute.closed', won());
+
+  // Before: it stayed 'disputed' for good, and the portal counted it as owed.
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed');
+  const original = fake.read(`${LEDGERS}/dispute_du_1`)!;
+  assert.equal((original.metadata as Record<string, unknown>).allocatedAmount, 42);
+  assert.equal((original.metadata as Record<string, unknown>).settledByEntryId, 'dispute_du_1_reinstated');
+
+  // A late redelivery of `created` does not mark it disputed again.
+  await send('charge.dispute.created', dispute());
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed');
+});
+
+test('an inquiry that closes puts the payment back as it was', async () => {
+  const { fake } = await paidTenant();
+
+  await send('charge.dispute.created', inquiry('warning_needs_response'));
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'disputed');
+  await send('charge.dispute.closed', inquiry('warning_closed'));
+
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'completed');
+});
+
+test('a lost dispute leaves the payment disputed', async () => {
+  const { fake } = await paidTenant();
+
+  await send('charge.dispute.created', dispute());
+  await send('charge.dispute.closed', dispute({ status: 'lost' }));
+
+  assert.equal(fake.read(`${PAYMENTS}/stripe_pi_1`)!.status, 'disputed');
+});
+
+test('an unpaid invoice staff made from the dispute is voided when the facility wins; a paid one is left', async () => {
+  const { fake } = await paidTenant();
+  await send('charge.dispute.funds_withdrawn', dispute());
+  // Staff billed the disputed amount by hand, once alone and once with rent.
+  fake.seed('facilities/f1/invoices/inv_open', {
+    tenantId: 't1',
+    invoiceNumber: 'INV-1',
+    status: 'sent',
+    isActive: true,
+    ledgerEntryIds: ['dispute_du_1', 'rent_oct'],
+  });
+  fake.seed('facilities/f1/invoices/inv_paid', {
+    tenantId: 't1',
+    invoiceNumber: 'INV-2',
+    status: 'paid',
+    isActive: true,
+    ledgerEntryIds: ['dispute_du_1'],
+  });
+  fake.seed('facilities/f1/invoices/inv_other', {
+    tenantId: 't1',
+    invoiceNumber: 'INV-3',
+    status: 'sent',
+    isActive: true,
+    ledgerEntryIds: ['rent_nov'],
+  });
+
+  await send('charge.dispute.closed', won());
+  await send('charge.dispute.funds_reinstated', won()); // redelivery-safe
+
+  // Before: INV-1 stayed open, asking the tenant for money the facility had back.
+  const open = fake.read('facilities/f1/invoices/inv_open')!;
+  assert.equal(open.status, 'voided');
+  assert.equal(open.isActive, false);
+  assert.match(String(open.voidReason), /dispute on this invoice was won/);
+  assert.match(String(open.voidReason), /other charges can go on a new invoice/);
+  assert.equal(fake.read('facilities/f1/invoices/inv_paid')!.status, 'paid');
+  assert.equal(fake.read('facilities/f1/invoices/inv_other')!.status, 'sent');
+  const audit = fake
+    .list('facilities/f1/auditLogs')
+    .map((id) => fake.read(`facilities/f1/auditLogs/${id}`)!)
+    .filter((row) => row.action === 'invoice.voided');
+  assert.deepEqual(audit.map((row) => row.targetId), ['inv_open']);
 });

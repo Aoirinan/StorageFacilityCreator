@@ -12,6 +12,7 @@ import {
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
+import { recordStripeEventRefusal, refusalReasonFor } from './connectedAccountGuard';
 
 /**
  * [connectedAccountId] is the event's `account`: set when the session lives
@@ -21,6 +22,7 @@ import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
 export async function handleCheckoutCompleted(
   session: Stripe.Checkout.Session,
   connectedAccountId?: string,
+  eventId?: string,
 ) {
   // Public payment links are tenant payments on the facility's connected
   // account and carry no accountId, so the subscription path below dropped
@@ -38,9 +40,43 @@ export async function handleCheckoutCompleted(
     const details = { sessionId: session.id, connectedAccountId: connectedAccountId || null, ...result };
     if (result.outcome === 'rejected') {
       functions.logger.error('Public payment link checkout rejected', details);
+      // Refused for good, like the other connected-account checks: record it
+      // where a super admin will see it.
+      if (result.rejectReason === 'account_mismatch' && connectedAccountId) {
+        const facilityId = session.metadata?.facilityId || '';
+        const facilitySnap = facilityId
+          ? await admin.firestore().collection('facilities').doc(facilityId).get()
+          : null;
+        const facilityData = (facilitySnap?.exists ? facilitySnap.data() : {}) as Record<string, unknown>;
+        const facilityAccount =
+          typeof facilityData.stripeConnectAccountId === 'string' ? facilityData.stripeConnectAccountId : null;
+        await recordStripeEventRefusal({
+          reason: refusalReasonFor(facilityData, connectedAccountId),
+          facilityId,
+          facilityExists: !!facilitySnap?.exists,
+          facilityAccount,
+          connectedAccountId,
+          eventType: 'checkout.session.completed',
+          objectId: session.id,
+          eventId,
+          tenantId: session.metadata?.tenantId ?? null,
+          amount: typeof session.amount_total === 'number' ? session.amount_total / 100 : null,
+        });
+      }
     } else {
       functions.logger.info('Public payment link checkout completed', details);
     }
+    return;
+  }
+
+  // Owner subscription checkouts live on the platform account. One from a
+  // connected account carries whatever metadata its owner wrote (accountId,
+  // facilityId), and this path adds that facility to that owner account.
+  if (connectedAccountId) {
+    functions.logger.error('Subscription checkout from a connected account ignored', {
+      sessionId: session.id,
+      connectedAccountId,
+    });
     return;
   }
 

@@ -1,11 +1,21 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
  * Handle failed payment intent (for tenant payments via Stripe Connect / embedded)
+ *
+ * [connectedAccountId] is the event's `account`. As with a success, the
+ * facility named in metadata is whatever the PaymentIntent's creator wrote:
+ * another account could mark a tenant's payment failed or add failed payment
+ * rows to any facility. Only the facility's own account may.
  */
-export async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
+export async function handlePaymentIntentFailed(
+  paymentIntent: Stripe.PaymentIntent,
+  connectedAccountId?: string,
+  eventId?: string,
+) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
@@ -18,6 +28,20 @@ export async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentInt
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
       return;
     }
+
+    // Before any write.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'payment_intent.payment_failed',
+      objectId: paymentIntent.id,
+      eventId,
+      tenantId,
+      amount: paymentIntent.amount / 100,
+      // A failed payment moved no money: logged and sent to Sentry, not recorded.
+      record: false,
+    });
+    if (!accountMatches) return;
 
     // Update tenant payments subcollection (embedded one-time payments)
     if (paymentDocId) {
