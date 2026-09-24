@@ -15,6 +15,7 @@ import '../services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/utils/bulk_action.dart';
 
 /// "72 / 78 units occupied (2 internal-use not counted)".
 ///
@@ -726,35 +727,41 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
-    try {
-      final notifier = ref.read(unitOperationsProvider.notifier);
-      for (final id in unitIds) {
-        await notifier.archiveUnit(_selectedFacilityId!, id);
-      }
-      if (mounted) {
-        setState(() {
-          for (final id in unitIds) {
-            _selectedUnitIds.remove(id);
-          }
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${unitIds.length} unit(s) archived'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error archiving units: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
+    if (confirmed != true || !mounted || _selectedFacilityId == null) return;
+    final facilityId = _selectedFacilityId!;
+    final notifier = ref.read(unitOperationsProvider.notifier);
+    final result = await runBulkAction(
+      unitIds,
+      (id) => notifier.archiveUnit(facilityId, id),
+    );
+    _showBulkResult(
+      result,
+      verb: 'Archived',
+      allDone: '${unitIds.length} unit(s) archived',
+    );
+  }
+
+  /// Deselects the units [result] was done to, leaving the failed ones
+  /// selected to try again, and says how many of how many.
+  void _showBulkResult(
+    BulkActionResult result, {
+    required String verb,
+    required String allDone,
+  }) {
+    if (!mounted) return;
+    setState(() => _selectedUnitIds.removeAll(result.done));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(bulkActionMessage(
+          result,
+          verb: verb,
+          noun: 'units',
+          allDone: allDone,
+        )),
+        backgroundColor:
+            result.failed.isEmpty ? AppTheme.success : AppTheme.error,
+      ),
+    );
   }
 
   Future<void> _handleBulkPermanentDelete(
@@ -858,34 +865,17 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       ),
     );
     if (confirmed != true || !mounted || _selectedFacilityId == null) return;
-    try {
-      final notifier = ref.read(unitOperationsProvider.notifier);
-      for (final id in unitIds) {
-        await notifier.deleteUnit(_selectedFacilityId!, id);
-      }
-      if (mounted) {
-        setState(() {
-          for (final id in unitIds) {
-            _selectedUnitIds.remove(id);
-          }
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${unitIds.length} unit(s) deleted permanently'),
-            backgroundColor: AppTheme.success,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error deleting units: $e'),
-            backgroundColor: AppTheme.error,
-          ),
-        );
-      }
-    }
+    final facilityId = _selectedFacilityId!;
+    final notifier = ref.read(unitOperationsProvider.notifier);
+    final result = await runBulkAction(
+      unitIds,
+      (id) => notifier.deleteUnit(facilityId, id),
+    );
+    _showBulkResult(
+      result,
+      verb: 'Deleted',
+      allDone: '${unitIds.length} unit(s) deleted permanently',
+    );
   }
 
   Future<void> _handleArchiveUnit(

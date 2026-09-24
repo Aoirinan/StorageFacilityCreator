@@ -282,6 +282,11 @@ void main() {
       await _expectFails(make(), (n) => n.restoreFacility('f1'));
     });
 
+    // Facilities said "archived successfully".
+    test('Archive', () async {
+      await _expectFails(make(), (n) => n.softDeleteFacility('f1'));
+    });
+
     test('Create and update', () async {
       await _expectFails(make(), (n) => n.createFacility(name: 'Oak Storage'));
       await _expectFails(

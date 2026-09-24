@@ -62,10 +62,85 @@ FacilityModel? findJustCreatedFacility(
   return newest;
 }
 
+/// Added to the error when the create timed out and is still running:
+/// Create stays off until it finishes.
+const facilityCreateStillRunningHint =
+    'It is still trying: Create comes back once it finishes.';
+
+/// A facility create the wizard started, kept after it stops waiting.
+///
+/// A timeout does not cancel the create: offline, Firestore queues the
+/// write and sends it on reconnect, and the account and subscription steps
+/// before it may still be running. The wizard stopped waiting and turned
+/// Create back on, and a second Create started a second create, so both
+/// facilities were made, the late one without the wizard's account link,
+/// owner role or subscription step. Now the wizard keeps Create off while
+/// this runs, and the next Create takes the id it finished with instead of
+/// creating again.
+class FacilityCreateInFlight {
+  FacilityCreateInFlight({this.onSettled});
+
+  /// Called when a create started here finishes, whether or not anyone is
+  /// still waiting for it: with its id, or with its error.
+  final void Function(String? id, Object? error)? onSettled;
+
+  Future<String>? _create;
+  String? _name;
+  bool _running = false;
+  String? _createdId;
+
+  /// Whether a create started here has not finished.
+  bool get isRunning => _running;
+
+  /// The id a create started here finished with; null while it runs, or
+  /// when it failed.
+  String? get createdId => _createdId;
+
+  /// The name the kept create was started with.
+  String? get name => _name;
+
+  /// The create already started here that has not failed, running or
+  /// finished; otherwise a new one from [start] for [name]. A failed create
+  /// is dropped, so the next Create starts afresh.
+  Future<String> join({
+    required String name,
+    required Future<String> Function() start,
+  }) {
+    final kept = _create;
+    if (kept != null) return kept;
+    _name = name;
+    _running = true;
+    // Future.sync: a create that throws before its first await still
+    // settles here, rather than leaving Create off for good.
+    final created = Future.sync(start);
+    _create = created;
+    created.then(
+      (id) {
+        _running = false;
+        _createdId = id;
+        onSettled?.call(id, null);
+      },
+      onError: (Object error) {
+        _running = false;
+        if (identical(_create, created)) {
+          _create = null;
+          _name = null;
+        }
+        onSettled?.call(null, error);
+      },
+    );
+    return created;
+  }
+}
+
 /// Runs [create], stopping after [timeout], and returns the new facility's
 /// id.
 ///
-/// When [create] times out or loses the network
+/// With [inFlight], a create it already holds (still running, or finished
+/// after an earlier attempt stopped waiting) is waited for or taken instead
+/// of calling [create] again.
+///
+/// When the create times out or loses the network
 /// ([facilityCreateMayHaveLanded]) the write may still have gone through.
 /// [reloadFacilities] then reads the user's facilities again (from the
 /// server, not the cache) and a facility found by [findJustCreatedFacility]
@@ -75,11 +150,16 @@ Future<String> createFacilityOrRecover({
   required String name,
   required Future<String> Function() create,
   required Future<List<FacilityModel>> Function() reloadFacilities,
+  FacilityCreateInFlight? inFlight,
   DateTime Function() now = DateTime.now,
   Duration timeout = facilityCreateTimeout,
 }) async {
+  final attempt =
+      inFlight == null ? create() : inFlight.join(name: name, start: create);
+  // A kept create looks for the name it was started with.
+  final createdAs = inFlight?.name ?? name;
   try {
-    return await create().timeout(timeout);
+    return await attempt.timeout(timeout);
   } catch (e) {
     // A refusal wrote nothing. Looking anyway took a same-name facility
     // made minutes earlier as this one: a "subscription required" was
@@ -92,7 +172,8 @@ Future<String> createFacilityOrRecover({
     } catch (_) {
       // Could not check; report the create's own error below.
     }
-    final made = findJustCreatedFacility(facilities, name: name, now: now());
+    final made =
+        findJustCreatedFacility(facilities, name: createdAs, now: now());
     if (made != null) return made.id;
     rethrow;
   }

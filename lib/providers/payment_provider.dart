@@ -143,11 +143,26 @@ final paymentStatisticsProvider = FutureProvider.family<Map<String, dynamic>, St
 
 // Payment operations provider
 final paymentOperationsProvider = StateNotifierProvider<PaymentOperationsNotifier, AsyncValue<void>>((ref) {
-  return PaymentOperationsNotifier();
+  return PaymentOperationsNotifier(
+    onRefused: (facilityId) {
+      ref.invalidate(paymentListProvider(facilityId));
+      ref.invalidate(paymentStatsProvider(facilityId));
+    },
+  );
 });
 
 class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
-  PaymentOperationsNotifier() : super(const AsyncValue.data(null));
+  PaymentOperationsNotifier({this.onRefused}) : super(const AsyncValue.data(null));
+
+  /// Called with the facility when marking a payment paid is refused
+  /// because, as stored, it is no longer due. The page that offered Process
+  /// was showing a stale row, and kept showing it with its Process button,
+  /// so the operator could only retry; the provider refetches the lists.
+  final void Function(String facilityId)? onRefused;
+
+  void _noteRefusal(Object error, String facilityId) {
+    if (error is PaymentNotProcessableException) onRefused?.call(facilityId);
+  }
 
   Future<void> createPayment({
     required String tenantId,
@@ -196,6 +211,7 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      _noteRefusal(e, facilityId);
       rethrow;
     }
   }
@@ -240,6 +256,7 @@ class PaymentOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      _noteRefusal(e, facilityId);
       rethrow;
     }
   }

@@ -87,6 +87,8 @@ class FacilityOperationsNotifier extends StateNotifier<AsyncValue<void>> {
       state = const AsyncValue.data(null);
     } catch (e, stackTrace) {
       state = AsyncValue.error(e, stackTrace);
+      // Swallowed, Facilities said "archived successfully" when it was not.
+      rethrow;
     }
   }
 

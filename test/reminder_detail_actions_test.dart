@@ -9,14 +9,14 @@ import 'package:sfcapp/models/reminder_model.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/reminder_detail_screen.dart';
 
-final _reminder = ReminderModel(
+ReminderModel _reminderOn(List<ReminderChannel> channels) => ReminderModel(
   id: 'r1',
   tenantId: 't1',
   facilityId: 'f1',
   tenantEmail: 'pat@example.com',
   type: ReminderType.rentOverdue,
   status: ReminderStatus.pending,
-  channels: const [ReminderChannel.email],
+  channels: channels,
   title: 'Rent overdue',
   message: 'Your rent is overdue.',
   scheduledFor: DateTime(2026, 9, 1),
@@ -25,6 +25,8 @@ final _reminder = ReminderModel(
   // Empty, so the page does not look up who made it.
   createdBy: '',
 );
+
+final _reminder = _reminderOn(const [ReminderChannel.email]);
 
 Future<PermissionCheck> _allowed({
   required PermissionType permission,
@@ -36,7 +38,10 @@ Future<PermissionCheck> _allowed({
 // ReminderService. With no Firebase app in tests the send reaches no channel
 // and the other actions' writes fail, as they do offline or when refused.
 void main() {
-  Future<void> pumpDetail(WidgetTester tester) async {
+  Future<void> pumpDetail(
+    WidgetTester tester, {
+    ReminderModel? reminder,
+  }) async {
     tester.view.physicalSize = const Size(1200, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -50,7 +55,7 @@ void main() {
         GoRoute(
           path: AppRoute.reminderDetail,
           builder: (_, __) => ReminderDetailScreen(
-            reminder: _reminder,
+            reminder: reminder ?? _reminder,
             checkPermission: _allowed,
           ),
         ),
@@ -96,6 +101,25 @@ void main() {
     // Still on the reminder, so it can be sent again.
     expect(find.text('REMINDERS'), findsNothing);
     expect(find.text('Rent overdue'), findsOneWidget);
+  });
+
+  // In-app was a mock that counted as delivered: "Reminder sent
+  // successfully", and the reminder was marked sent via in-app.
+  testWidgets('an in-app reminder is not sent, and it says why',
+      (tester) async {
+    await pumpDetail(
+      tester,
+      reminder: _reminderOn(const [ReminderChannel.inApp]),
+    );
+    await confirm(tester, 'Send now', 'Send');
+
+    expect(find.textContaining('Reminder sent'), findsNothing);
+    expect(
+      find.text('In-App reminders are not available yet, so nothing was '
+          'sent. Send it by email or SMS instead.'),
+      findsOneWidget,
+    );
+    expect(find.text('REMINDERS'), findsNothing);
   });
 
   testWidgets('a failed Cancel is not reported as cancelled', (tester) async {

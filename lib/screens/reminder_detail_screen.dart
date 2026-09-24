@@ -8,6 +8,7 @@ import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 
 class ReminderDetailScreen extends ConsumerStatefulWidget {
   final ReminderModel reminder;
@@ -525,17 +526,20 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
   /// stayed on the reminder as it was, and Send could be tapped again, which
   /// messaged the tenant twice. The page's context, and popOrGo rather than
   /// a bare pop, which throws when nothing is underneath.
-  Future<void> _runConfirmed(
-    Future<void> Function() action,
-    String doneMessage,
+  ///
+  /// [doneMessage] is given what [action] returned: a send says how it
+  /// went out.
+  Future<void> _runConfirmed<T>(
+    Future<T> Function() action,
+    String Function(T result) doneMessage,
   ) async {
     if (_acting) return;
     setState(() => _acting = true);
     try {
-      await action();
+      final result = await action();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(doneMessage)),
+        SnackBar(content: Text(doneMessage(result))),
       );
       popOrGo(context, AppRoute.reminders);
     } catch (e) {
@@ -548,7 +552,14 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Something went wrong: $e'),
+        // A refused send explains itself, without "Something went wrong"
+        // before it; other errors are no longer shown raw.
+        content: Text(
+          e is UserFacingException
+              ? e.message
+              : 'Something went wrong: '
+                  '${ErrorMessageHelper.getUserFriendlyMessage(e)}',
+        ),
         backgroundColor: AppTheme.error,
       ),
     );
@@ -577,7 +588,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                     message: widget.reminder.message,
                     channels: widget.reminder.channels,
                 ),
-                'Reminder sent successfully',
+                reminderSentMessage,
               );
             },
             child: const Text('Send'),
@@ -606,7 +617,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                     widget.reminder.facilityId,
                     widget.reminder.id,
                 ),
-                'Reminder marked as sent',
+                (_) => 'Reminder marked as sent',
               );
             },
             child: const Text('Mark as Sent'),
@@ -635,7 +646,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                     widget.reminder.facilityId,
                     widget.reminder.id,
                 ),
-                'Reminder marked as read',
+                (_) => 'Reminder marked as read',
               );
             },
             child: const Text('Mark as Read'),
@@ -664,7 +675,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                     widget.reminder.facilityId,
                     widget.reminder.id,
                 ),
-                'Reminder cancelled',
+                (_) => 'Reminder cancelled',
               );
             },
             child: const Text('Yes'),
@@ -693,7 +704,7 @@ class _ReminderDetailScreenState extends ConsumerState<ReminderDetailScreen> {
                     widget.reminder.facilityId,
                     widget.reminder.id,
                 ),
-                'Reminder deleted',
+                (_) => 'Reminder deleted',
               );
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
