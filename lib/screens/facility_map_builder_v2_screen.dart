@@ -33,7 +33,22 @@ class _FacilityMapBuilderV2ScreenState extends ConsumerState<FacilityMapBuilderV
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-    Future.microtask(() => FacilityMapV2Service.migrateLegacyMapToInitialVersion(widget.facilityId));
+    Future.microtask(() => FacilityMapV2Service.migrateLegacyMapReportingFailure(
+          widget.facilityId,
+          _reportMigrationFailure,
+        ));
+  }
+
+  void _reportMigrationFailure(Object error) {
+    debugPrint('⚠️ [FacilityMapBuilderV2] Legacy map migration failed: $error');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            'Could not publish this map\'s first version: $error. Use Publish to try again.'),
+        backgroundColor: AppTheme.error,
+      ),
+    );
   }
 
   @override

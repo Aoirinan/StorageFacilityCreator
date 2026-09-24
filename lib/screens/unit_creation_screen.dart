@@ -41,6 +41,11 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   List<String> _selectedFeatures = [];
   bool _publicListingEnabled = true;
   bool _internalUse = false;
+
+  /// The listing switch as it was when Internal use was turned on in this
+  /// edit, so turning Internal use back off puts it back. Null when Internal
+  /// use was not turned on here (it was already on, or is off).
+  bool? _listingBeforeInternalUse;
   bool _isLoading = false;
   String? _errorMessage;
   bool _isBulkCreateMode = false;
@@ -730,18 +735,28 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                             SwitchListTile.adaptive(
                               contentPadding: EdgeInsets.zero,
                               title: const Text('List on public website'),
-                              subtitle: const Text(
-                                'Turn off to keep this unit off your public website and '
-                                'online rentals. It still counts in your occupancy.',
+                              subtitle: Text(
+                                _internalUse
+                                    ? 'Internal-use space is never offered online. '
+                                        'Turn off Internal use to list this unit.'
+                                    : 'Turn off to keep this unit off your public website and '
+                                        'online rentals. It still counts in your occupancy.',
                               ),
-                              value: _publicListingEnabled,
-                              onChanged: (enabled) {
-                                if (mounted) {
-                                  setState(() {
-                                    _publicListingEnabled = enabled;
-                                  });
-                                }
-                              },
+                              // Shown off and locked while Internal use is on:
+                              // the website shows internal-use units as
+                              // unavailable and online rentals refuse them
+                              // whatever this says, so it could be turned on
+                              // here with no effect.
+                              value: _publicListingEnabled && !_internalUse,
+                              onChanged: _internalUse
+                                  ? null
+                                  : (enabled) {
+                                      if (mounted) {
+                                        setState(() {
+                                          _publicListingEnabled = enabled;
+                                        });
+                                      }
+                                    },
                             ),
                             const SizedBox(height: 8),
                             SwitchListTile.adaptive(
@@ -759,12 +774,24 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                 if (mounted) {
                                   setState(() {
                                     _internalUse = enabled;
-                                    // Space that is not rented is not
-                                    // offered online either: the public map
-                                    // and the online rental callables refuse
-                                    // internal-use units whatever the
-                                    // listing switch says.
-                                    if (enabled) _publicListingEnabled = false;
+                                    if (enabled) {
+                                      // Space that is not rented is not
+                                      // offered online either: the public map
+                                      // and the online rental callables refuse
+                                      // internal-use units whatever the
+                                      // listing switch says.
+                                      _listingBeforeInternalUse =
+                                          _publicListingEnabled;
+                                      _publicListingEnabled = false;
+                                    } else if (_listingBeforeInternalUse !=
+                                        null) {
+                                      // Turned on and off again in this edit:
+                                      // it used to leave a listed unit
+                                      // quietly off the website.
+                                      _publicListingEnabled =
+                                          _listingBeforeInternalUse!;
+                                      _listingBeforeInternalUse = null;
+                                    }
                                   });
                                 }
                               },

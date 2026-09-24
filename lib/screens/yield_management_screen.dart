@@ -9,6 +9,55 @@ import 'package:sfcapp/services/facility_stats_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 
+/// The yield screen's per-type occupancy and rates for a facility's
+/// non-archived [allUnits].
+///
+/// Internal-use space (office, residence) is left out, by the same test as
+/// the dashboard ([FacilityStatsService.countsTowardOccupancy]). The overall
+/// figures already left it out (they come from computeUnitCounts), but the
+/// per-type rows counted it, so a type with an office read as less occupied
+/// than it is and could be flagged for a price cut.
+@visibleForTesting
+Map<String, dynamic> analyzeYieldUnits(List<UnitModel> allUnits) {
+  final units =
+      allUnits.where(FacilityStatsService.countsTowardOccupancy).toList();
+  final byType = <String, List<UnitModel>>{};
+  for (final unit in units) {
+    byType.putIfAbsent(unit.unitType, () => []).add(unit);
+  }
+
+  final typeAnalysis = <String, Map<String, dynamic>>{};
+  for (final entry in byType.entries) {
+    final typeUnits = entry.value;
+    final occupied = typeUnits.where((u) => u.status == UnitStatus.occupied).length;
+    final available = typeUnits.where((u) => u.status == UnitStatus.available).length;
+    final occupancyRate = typeUnits.isEmpty ? 0.0 : occupied / typeUnits.length;
+    final avgRate = typeUnits.isEmpty
+        ? 0.0
+        : typeUnits.map((u) => u.monthlyRate).reduce((a, b) => a + b) / typeUnits.length;
+
+    typeAnalysis[entry.key] = {
+      'total': typeUnits.length,
+      'occupied': occupied,
+      'available': available,
+      'occupancyRate': occupancyRate,
+      'avgRate': avgRate,
+    };
+  }
+
+  final totalUnits = units.length;
+  final totalOccupied = units.where((u) => u.status == UnitStatus.occupied).length;
+  final overallOccupancy = totalUnits > 0 ? totalOccupied / totalUnits : 0.0;
+
+  return {
+    'overallOccupancy': overallOccupancy,
+    'totalUnits': totalUnits,
+    'totalOccupied': totalOccupied,
+    'totalAvailable': totalUnits - totalOccupied,
+    'byType': typeAnalysis,
+  };
+}
+
 class YieldManagementScreen extends ConsumerStatefulWidget {
   const YieldManagementScreen({super.key});
 
@@ -223,7 +272,7 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
         }
 
         // Analyze by unit type (by-type uses units; overall uses canonical FacilityStatsService counts)
-        final analysis = _analyzeUnits(units);
+        final analysis = analyzeYieldUnits(units);
         final totalUnits = data!.totalUnits;
         final totalOccupied = data.occupiedUnits;
         final totalAvailable = (totalUnits - totalOccupied).clamp(0, totalUnits);
@@ -247,44 +296,6 @@ class _YieldManagementScreenState extends ConsumerState<YieldManagementScreen> {
         );
       },
     );
-  }
-
-  Map<String, dynamic> _analyzeUnits(List<UnitModel> units) {
-    final byType = <String, List<UnitModel>>{};
-    for (final unit in units) {
-      byType.putIfAbsent(unit.unitType, () => []).add(unit);
-    }
-
-    final typeAnalysis = <String, Map<String, dynamic>>{};
-    for (final entry in byType.entries) {
-      final typeUnits = entry.value;
-      final occupied = typeUnits.where((u) => u.status == UnitStatus.occupied).length;
-      final available = typeUnits.where((u) => u.status == UnitStatus.available).length;
-      final occupancyRate = typeUnits.isEmpty ? 0.0 : occupied / typeUnits.length;
-      final avgRate = typeUnits.isEmpty
-          ? 0.0
-          : typeUnits.map((u) => u.monthlyRate).reduce((a, b) => a + b) / typeUnits.length;
-
-      typeAnalysis[entry.key] = {
-        'total': typeUnits.length,
-        'occupied': occupied,
-        'available': available,
-        'occupancyRate': occupancyRate,
-        'avgRate': avgRate,
-      };
-    }
-
-    final totalUnits = units.length;
-    final totalOccupied = units.where((u) => u.status == UnitStatus.occupied).length;
-    final overallOccupancy = totalUnits > 0 ? totalOccupied / totalUnits : 0.0;
-
-    return {
-      'overallOccupancy': overallOccupancy,
-      'totalUnits': totalUnits,
-      'totalOccupied': totalOccupied,
-      'totalAvailable': totalUnits - totalOccupied,
-      'byType': typeAnalysis,
-    };
   }
 
   Widget _buildOverallStats(Map<String, dynamic> analysis) {

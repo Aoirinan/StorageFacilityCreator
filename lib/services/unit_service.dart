@@ -331,6 +331,8 @@ class UnitService {
       final beforeDoc = await unitRef.get();
       final beforeData = beforeDoc.exists ? beforeDoc.data() : null;
       final beforeStatus = beforeData?['status'] as String?;
+      // Read as UnitModel does: only an exact true.
+      final beforeInternalUse = beforeData?['internalUse'] == true;
 
       await unitRef.update(updateData);
 
@@ -354,6 +356,22 @@ class UnitService {
             'oldStatus': beforeStatus,
             'newStatus': afterStatus,
           },
+        );
+      }
+
+      // Internal use takes a unit out of Total, Occupied and Vacant and off
+      // the website, so a change to it moves reported occupancy; it was not
+      // logged.
+      final afterInternalUse = afterData?['internalUse'] == true;
+      if (internalUse != null && beforeInternalUse != afterInternalUse) {
+        await AuditService.logEvent(
+          facilityId: facilityId,
+          eventType: 'unit.internalUseChanged',
+          targetType: 'unit',
+          targetId: unitId,
+          before: {'internalUse': beforeInternalUse},
+          after: {'internalUse': afterInternalUse},
+          metadata: {'unitNumber': afterData?['unitNumber']},
         );
       }
 
