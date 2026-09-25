@@ -26,8 +26,9 @@ import { exportLinksCol, listingsCol, staysCol, tsMillis } from './common';
  * the prod Hosting target rewrites to this function.
  *
  *  - 404 for anything that is not a known, active token (generic body);
- *  - 429 past 30 fetches a minute per token or 300 per client IP, counted
- *    only for known tokens (the lookup comes first);
+ *  - 429 past 30 fetches a minute per token or 300 per client IP within
+ *    the link's facility, counted only for known tokens (the lookup comes
+ *    first);
  *  - 503 with Retry-After: 900 when Stays is paused or not allowed here,
  *    the module or export is off, the link is not active, or any read
  *    fails. Never an empty 200: a channel that got an empty calendar would
@@ -97,12 +98,24 @@ export function clientIp(req: ExportRequest): string {
   return req.ip || 'unknown';
 }
 
+/**
+ * The per-IP bucket is per facility. The address may be one a caller chose
+ * (see clientIp), and the channels' fetchers share addresses across every
+ * SFC customer: a global bucket would let a caller holding a few links, or
+ * one busy facility, use up the budget of a channel's fetcher for everyone
+ * else and leave their calendars stale there (their nights sellable twice).
+ */
+export function ipRateKey(facilityId: string, ip: string): string {
+  return `staysIcalIp_${sha256Hex(`${facilityId}|${ip}`).slice(0, 24)}`;
+}
+
 /** Which channel is fetching, from its User-Agent. */
 export function fetcherFamily(userAgent: string): ExportTargetProvider {
   const ua = userAgent.toLowerCase();
   if (ua.includes('airbnb')) return 'airbnb';
   if (ua.includes('vrbo') || ua.includes('homeaway') || ua.includes('expedia')) return 'vrbo';
   if (ua.includes('booking')) return 'booking';
+  if (ua.includes('hipcamp')) return 'hipcamp';
   if (ua.includes('google')) return 'google';
   return 'other';
 }
@@ -186,16 +199,15 @@ export function createIcalExportHandler(deps: IcalExportDeps = defaultDeps()) {
         reply(429, 'Too many requests\n', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
         return;
       }
-      const ipKey = sha256Hex(clientIp(req)).slice(0, 24);
-      if (!(await allowFetch(db, `staysIcalIp_${ipKey}`, STAYS_LIMITS.exportFetchesPerMinutePerIp, nowMs))) {
-        reply(429, 'Too many requests\n', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
-        return;
-      }
       const facilityId = tokenSnap.get('facilityId');
       const listingId = tokenSnap.get('listingId');
       const linkId = tokenSnap.get('linkId');
       if (typeof facilityId !== 'string' || typeof listingId !== 'string' || typeof linkId !== 'string') {
         unavailable();
+        return;
+      }
+      if (!(await allowFetch(db, ipRateKey(facilityId, clientIp(req)), STAYS_LIMITS.exportFetchesPerMinutePerIp, nowMs))) {
+        reply(429, 'Too many requests\n', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
         return;
       }
 

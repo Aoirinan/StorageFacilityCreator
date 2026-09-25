@@ -83,6 +83,16 @@ test('a create sent twice with one requestId (a double tap or a retry) makes one
   assert.equal(await reasonOf(create(w, OWNER, { requestId: 'NOT-HEX' })), 'invalid_argument');
 });
 
+test('Hipcamp is a target of its own, and a null requestId is the same as none', async () => {
+  const w = world();
+  const hip = await create(w, OWNER, { targetProvider: 'hipcamp', label: '', scope: 'all', requestId: null });
+  const link = w.fake.read(`${P.links}/${hip.linkId}`)!;
+  assert.deepEqual([link.targetProvider, link.scope, link.label], ['hipcamp', 'all', 'SFC to Hipcamp']);
+  assert.match(hip.linkId, /^xl_[a-f0-9]{20}$/);
+  assert.equal(await reasonOf(create(w, OWNER, { targetProvider: 'expedia' })), 'invalid_argument');
+  assert.equal(await reasonOf(create(w, OWNER, { requestId: 'not-hex' })), 'invalid_argument');
+});
+
 test('four links per listing at most; archived or unknown listings take none; staff cannot create them', async () => {
   const w = world();
   for (let i = 0; i < 4; i++) await create(w, OWNER, { targetProvider: i % 2 ? 'vrbo' : 'airbnb' });

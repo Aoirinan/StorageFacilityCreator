@@ -5,7 +5,7 @@
  * the stay id, so it is stable across fetches without revealing the id.
  *
  * What goes in is decided by staysForExport: never imported channel blocks
- * (the endpoint does not even read them), never the target channel's own
+ * (the endpoint does not even read them), never a named target channel's own
  * bookings, and only as much as the link's scope allows. That is what keeps
  * two channels from bouncing each other's blocks back and forth.
  */
@@ -114,13 +114,13 @@ export interface ExportableStay {
   checkIn: Ymd;
   checkOut: Ymd;
   version: number;
-  /** The feed a stay came from (stay.external.provider); a Hipcamp or Google feed's bookings are not source-named after it. */
+  /** The feed a stay came from (stay.external.provider); a Google feed's bookings are not source-named after it. */
   external?: { provider?: string | null } | null;
 }
 
 /**
- * The export target a channel of this provider imports from. There is no
- * Hipcamp target, so a Hipcamp calendar imports an 'other' link.
+ * The export target a channel of this provider imports from. Only a generic
+ * 'other' channel maps to the 'other' target.
  */
 export function exportTargetForProvider(provider: ChannelProvider): ExportTargetProvider {
   switch (provider) {
@@ -128,6 +128,7 @@ export function exportTargetForProvider(provider: ChannelProvider): ExportTarget
     case 'vrbo':
     case 'booking':
     case 'google':
+    case 'hipcamp':
       return provider;
     default:
       return 'other';
@@ -166,10 +167,17 @@ export interface ExportFilter {
  * Whether a stay's kind and source are in a link's scope (ignoring dates):
  * blocks_only → owner and maintenance blocks; sfc → plus direct, phone and
  * walk-up bookings; all → plus other channels' bookings. The target
- * channel's own bookings are always left out: by source, and by the channel
- * they came from, since a Hipcamp feed's bookings go to an 'other' link and a
- * Google feed's are recorded as 'other_channel'. Sending a channel its own
- * booking back would keep a cancelled one blocked there until we re-export.
+ * channel's own bookings are left out: by source, and by the channel they
+ * came from (a Google feed's are recorded as 'other_channel'). Sending a
+ * channel its own booking back would keep a cancelled one blocked there
+ * until we re-export.
+ *
+ * An 'other' link is the exception: 'other' is not one channel but any site
+ * without a target of its own, and its bookings (typed in as "other
+ * channel", or from any 'other' feed) may belong to a different site than
+ * the one importing the link. Leaving them out could let that site sell
+ * nights another channel has booked, which is far worse than an echo, so an
+ * 'other' link sends every channel's bookings.
  */
 export function inExportScope(
   stay: Pick<ExportableStay, 'kind' | 'source' | 'external'>,
@@ -177,7 +185,7 @@ export function inExportScope(
   targetProvider: ExportTargetProvider,
 ): boolean {
   if ((stay.source as string) === (targetProvider as string)) return false;
-  const channel = channelOf(stay);
+  const channel = targetProvider === 'other' ? null : channelOf(stay);
   if (channel !== null && exportTargetForProvider(channel) === targetProvider) return false;
   if (stay.kind === 'owner_block' || stay.kind === 'maintenance_block') return true;
   if (stay.kind !== 'reservation') return false;

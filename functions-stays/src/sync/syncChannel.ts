@@ -39,6 +39,8 @@ import {
   FeedReservation,
   FeedSyncPlan,
   MissUpdate,
+  REMOVAL_MIN_AGE_MS,
+  REQUIRED_MISSES,
   ReviewReason,
   SuspiciousReason,
   UID_HISTORY_MAX,
@@ -97,9 +99,10 @@ import {
  *
  * An Airbnb code this feed lists that SFC has on another listing (Airbnb
  * moved the reservation) moves here once that listing's feed has let go of
- * it; until then, or when it is checked in, paid or typed in by hand there,
- * the owner is asked instead, and this feed diffs in full every run so the
- * move is picked up as soon as it can happen. Nothing is dropped silently.
+ * it for certain (as a removal would); until then, or when it is checked in,
+ * paid or typed in by hand there, the owner is asked instead, and this feed
+ * diffs in full every run so the move is picked up as soon as it can happen.
+ * Nothing is dropped silently.
  */
 
 export const SYNC_LEASE_MS = 4 * 60_000;
@@ -430,16 +433,25 @@ function ownedBy(ctx: SyncContext, stored: StayDoc | null): stored is StayDoc {
 /**
  * Whether a stay SFC has on another listing may follow its Airbnb booking to
  * this one (Airbnb moved the reservation): its own feed must have let go of
- * it (missed it, removed it, been removed or switched off), and it must not be
- * checked in or paid, or typed in there by hand. Anything else is for a
- * person to sort out.
+ * it for certain (removed it, been removed or switched off, or missed it as
+ * many times and for as long as a removal needs), and it must not be checked
+ * in or paid, or typed in there by hand. One miss is not enough: a single
+ * empty fetch of the old feed would hand this listing its nights and free
+ * them there. Anything else is for a person to sort out.
  */
 function lettingGo(ctx: SyncContext, doc: StayDoc, fromChannelLive: boolean): boolean {
   if (doc.status === 'cancelled' || isProtectedState(doc.arrivalState, doc.paymentStatus)) return false;
   const sync = doc.sync;
   if (!sync) return false;
   if (sync.channelId === ctx.channel.id) return true;
-  return doc.status === 'removed_from_feed' || sync.detached === true || !fromChannelLive || (Number.isInteger(sync.missCount) && sync.missCount > 0);
+  if (doc.status === 'removed_from_feed' || sync.detached === true || !fromChannelLive) return true;
+  const firstMissMs = tsMillis(sync.firstMissAt);
+  return (
+    Number.isInteger(sync.missCount) &&
+    sync.missCount >= REQUIRED_MISSES &&
+    firstMissMs !== null &&
+    ctx.missClock.toMillis() - firstMissMs >= REMOVAL_MIN_AGE_MS
+  );
 }
 
 function bumped(ctx: SyncContext, doc: StayDoc): StayDoc {
@@ -544,7 +556,10 @@ function missTransform(ctx: SyncContext, ops: MissOps): Transform {
       }
     }
     if (review && isActiveStatus(stored.status) && sync.needsReview !== true) {
-      next = { ...next, sync: { ...sync, needsReview: true } };
+      // A person decides now, so the count starts over: clearing the flag means
+      // "watch it again" (the usual spaced misses and 90 minutes), not a removal,
+      // or another flag, at the very next run.
+      next = { ...next, sync: { ...sync, needsReview: true, missCount: 0, firstMissAt: null, lastMissAt: null } };
       return bumped(ctx, next);
     }
     return sameJson(prev, sync) ? null : next;

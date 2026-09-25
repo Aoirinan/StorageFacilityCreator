@@ -6,7 +6,7 @@ import { parseIcs } from '@sfc/functions-shared/stays/ical';
 import type { StayDoc } from '@sfc/functions-shared/stays/contracts';
 
 import { resetStaysGateCacheForTests } from '../common/serverConfig';
-import { ExportRequest, clientIp, createIcalExportHandler, fetcherFamily } from '../sync/icalExport';
+import { ExportRequest, clientIp, createIcalExportHandler, fetcherFamily, ipRateKey } from '../sync/icalExport';
 import { createExportLinkHandler, revokeExportLinkHandler } from '../sync/exportLinks';
 import { FakeFirestore } from './support/fakeFirestore';
 import { OWNER, callableContext, makeStay, seedControls, seedGate } from './support/staysFixtures';
@@ -38,6 +38,31 @@ function world(controls: Record<string, unknown> = {}, gate: Record<string, unkn
   // Imported channel blocks on this listing: never exported.
   w.fake.seed(`${P.blocks}/ch_x`, { facilityId: FAC, listingId: LISTING, provider: 'airbnb', ranges: [{ checkIn: '2026-11-01', checkOut: '2026-11-10', echo: false }] });
   return w;
+}
+
+/** A second facility with Stays and export on, one listing and one live link; returns its token. */
+function otherFacilityLink(w: SyncWorld): string {
+  const fac = 'fac-two';
+  seedGate(w.fake, { allowlistFacilityIds: [FAC, fac] });
+  resetStaysGateCacheForTests();
+  w.fake.seed(`facilities/${fac}`, { name: 'Other Storage', ownerUid: 'uid-two', timeZone: TZ, roles: { 'uid-two': 'owner' } });
+  w.fake.seed(`facilities/${fac}/stayControls/current`, {
+    ...w.fake.read(`facilities/${FAC}/stayControls/current`),
+    facilityId: fac,
+  });
+  w.fake.seed(`facilities/${fac}/stayListings/lst_two`, { facilityId: fac, name: 'Site 1', active: true, archived: false });
+  const token = sha256Hex('token:fac-two').slice(0, 48);
+  w.fake.seed(`facilities/${fac}/stayExportLinks/xl_two`, {
+    facilityId: fac,
+    listingId: 'lst_two',
+    targetProvider: 'airbnb',
+    label: 'SFC',
+    scope: 'blocks_only',
+    active: true,
+    stats: { lastFetchedAt: null, lastFetcher: null, lastStatus: null, statsWrittenAt: null },
+  });
+  w.fake.seed(`stayCalendarExportTokens/${exportTokenHash(token)}`, { facilityId: fac, listingId: 'lst_two', linkId: 'xl_two', active: true });
+  return token;
 }
 
 /** Seeds a link and its token lookup directly (so a paused platform can still be tested). */
@@ -141,18 +166,26 @@ test('scope decides what goes out, and the target channel never gets its own boo
   ]);
 });
 
-test('a Hipcamp or Google feed never gets its own bookings back, though they are not source-named after it', async () => {
+test("a named channel never gets its own bookings back; an 'other' link gets every channel's", async () => {
   const w = world();
   const ext = (provider: string) => ({ provider, uid: `${provider}-uid`, uidHistory: [], confirmationCode: null, reservationUrl: null, summary: null });
-  w.fake.seed(`${P.stays}/ical_hip`, makeStay(LISTING, '2026-11-03', '2026-11-05', { source: 'hipcamp', origin: 'feed', external: ext('hipcamp') as StayDoc['external'] }) as unknown as Record<string, unknown>);
-  w.fake.seed(`${P.stays}/ical_goog`, makeStay(LISTING, '2026-11-07', '2026-11-09', { source: 'other_channel', origin: 'feed', external: ext('google') as StayDoc['external'] }) as unknown as Record<string, unknown>);
-  // Hipcamp imports an 'other' link: Google's booking goes to it, Hipcamp's does not.
-  const toHipcamp = nightsIn((await fetchFeed(w, path(seedLink(w, { id: 'xl_hip', scope: 'all', target: 'other' })))).body!).map((n) => n[0]);
-  assert.equal(toHipcamp.includes('2026-11-03'), false);
-  assert.equal(toHipcamp.includes('2026-11-07'), true);
-  const toGoogle = nightsIn((await fetchFeed(w, path(seedLink(w, { id: 'xl_goog', scope: 'all', target: 'google' })))).body!).map((n) => n[0]);
-  assert.equal(toGoogle.includes('2026-11-07'), false);
-  assert.equal(toGoogle.includes('2026-11-03'), true);
+  const seed = (id: string, checkIn: string, checkOut: string, patch: Partial<StayDoc>) =>
+    w.fake.seed(`${P.stays}/${id}`, makeStay(LISTING, checkIn, checkOut, patch) as unknown as Record<string, unknown>);
+  // From a Hipcamp feed, typed in as Hipcamp, from a Google feed, typed in as "other channel", from an 'other' feed.
+  seed('ical_hip', '2026-11-03', '2026-11-05', { source: 'hipcamp', origin: 'feed', external: ext('hipcamp') as StayDoc['external'] });
+  seed('man_hip', '2026-11-05', '2026-11-07', { source: 'hipcamp', origin: 'sfc', external: null });
+  seed('ical_goog', '2026-11-07', '2026-11-09', { source: 'other_channel', origin: 'feed', external: ext('google') as StayDoc['external'] });
+  seed('man_other', '2026-11-11', '2026-11-13', { source: 'other_channel', origin: 'sfc', external: ext('other') as StayDoc['external'] });
+  seed('ical_other', '2026-11-13', '2026-11-15', { source: 'other_channel', origin: 'feed', external: ext('other') as StayDoc['external'] });
+  const november = async (target: string) =>
+    nightsIn((await fetchFeed(w, path(seedLink(w, { id: `xl_${target}`, scope: 'all', target })))).body!)
+      .map((n) => n[0])
+      .filter((d) => d >= '2026-11-01');
+  // Hipcamp imports a 'hipcamp' link: its own bookings (feed or typed in) stay out, every other channel's go.
+  assert.deepEqual(await november('hipcamp'), ['2026-11-07', '2026-11-11', '2026-11-13']);
+  assert.deepEqual(await november('google'), ['2026-11-03', '2026-11-05', '2026-11-11', '2026-11-13']);
+  // 'other' is any site without a target of its own: it must see every channel's bookings, or it could sell their nights.
+  assert.deepEqual(await november('other'), ['2026-11-03', '2026-11-05', '2026-11-07', '2026-11-11', '2026-11-13']);
 });
 
 test('a token whose lookup names another listing than its link is refused with 503', async () => {
@@ -174,7 +207,7 @@ test('guessed tokens write nothing: only known tokens are rate-limited', async (
   assert.ok(w.fake.writesTo('rateLimits').length > before);
 });
 
-test('300 fetches a minute per client address across tokens, keyed on the address Hosting saw', async () => {
+test('300 fetches a minute per client address across one facility\'s tokens, keyed on the address Hosting saw', async () => {
   const w = world();
   const tokens = Array.from({ length: 11 }, (_, i) => seedLink(w, { id: `xl_ip${i}` }));
   const USER = '198.51.100.7';
@@ -198,6 +231,11 @@ test('300 fetches a minute per client address across tokens, keyed on the addres
   assert.equal(over.headers['Retry-After'], '60');
   // Another user behind the same Google hops is not held up by it.
   assert.equal((await fetchFeed(w, path(tokens[10]), { headers: viaHosting('203.0.113.50', '1.2.3.4'), ip: '1.2.3.4' })).statusCode, 200);
+  // Nor is another facility's link fetched from the same address (a channel's fetcher serves every
+  // SFC customer, and the address may be one the caller chose).
+  const other = otherFacilityLink(w);
+  assert.equal((await fetchFeed(w, path(other), { headers: viaHosting(USER, '1.2.3.4'), ip: '1.2.3.4' })).statusCode, 200);
+  assert.notEqual(ipRateKey(FAC, USER), ipRateKey('fac-two', USER));
   // A direct call to the function URL (no CDN header) is keyed on the platform's view of the peer.
   assert.equal(clientIp({ headers: { 'x-appengine-user-ip': '198.51.100.8', 'x-forwarded-for': '6.6.6.6' }, ip: '6.6.6.6' }), '198.51.100.8');
   assert.equal(clientIp({ headers: {}, ip: '192.0.2.1' }), '192.0.2.1');
@@ -304,6 +342,7 @@ test('fetch telemetry names the fetcher and is written at most every 10 minutes'
   assert.equal((w.fake.read(`${P.links}/xl_test`)?.stats as Record<string, unknown>).lastFetcher, 'google');
   assert.equal(fetcherFamily('Mozilla/5.0 (compatible; HomeAway-iCal)'), 'vrbo');
   assert.equal(fetcherFamily('Booking.com calendar'), 'booking');
+  assert.equal(fetcherFamily('Hipcamp-Calendar-Sync/2.1'), 'hipcamp');
   assert.equal(fetcherFamily('curl/8.0'), 'other');
 });
 

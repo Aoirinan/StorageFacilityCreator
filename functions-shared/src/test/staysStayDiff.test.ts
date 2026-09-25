@@ -312,3 +312,40 @@ test('an empty body that never changes asks at the 12th miss instead of freeing 
   // Unknown (never recorded) is not taken as empty.
   assert.deepEqual(advanceMissesOnUnchanged(two, T0, { channelId: CH, todayYmd: TODAY, suspicious: true }).removals.sort(), ['ical_1', 'ical_2']);
 });
+
+test('a feed that empties in steps is still an emptied feed: what we hold counts, not only the last run', () => {
+  // 4 bookings, then 2 (their misses already counting), then none while its blocks are still listed.
+  const counting = { missCount: 1, firstMissAtMs: T0 - MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const four = [
+    stay('ical_1', '2026-10-05', '2026-10-08', counting),
+    stay('ical_2', '2026-10-10', '2026-10-12', counting),
+    stay('ical_3', '2026-10-15', '2026-10-18'),
+    stay('ical_4', '2026-10-20', '2026-10-22'),
+  ];
+  const stepped = planFeedSync(four, [], opts({ prevFutureCount: 2, feedEventCount: 3 }));
+  assert.equal(stepped.suspiciousReason, 'future_dropped');
+  // So at the 12th miss a person is asked; nothing is freed.
+  const late = { missCount: 11, firstMissAtMs: T0 - 12 * MISS_SPACING_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const at12 = planFeedSync(four.map((s) => ({ ...s, ...late })), [], opts({ prevFutureCount: 2, feedEventCount: 3 }));
+  assert.deepEqual(at12.removals, []);
+  assert.deepEqual(at12.reviews.sort(), ['ical_1', 'ical_2', 'ical_3', 'ical_4']);
+  // Below 3 it is an ordinary (if large) removal, as spec §3.4.7 has it.
+  const two = planFeedSync(four.slice(2).map((s) => ({ ...s, ...late })), [], opts({ prevFutureCount: 2, feedEventCount: 3 }));
+  assert.equal(two.suspiciousReason, 'mass_removal');
+  assert.deepEqual(two.removals.sort(), ['ical_3', 'ical_4']);
+});
+
+test('on an unchanged feed, "half of its bookings" counts every future booking of ours, not only the missing ones', () => {
+  // 2 of 5 is an ordinary pair of cancellations; 2 of 2 would be a mass removal.
+  const due = { missCount: 2, firstMissAtMs: T0 - REMOVAL_MIN_AGE_MS, lastMissAtMs: T0 - MISS_SPACING_MS };
+  const five = [
+    stay('ical_1', '2026-10-05', '2026-10-08', due),
+    stay('ical_2', '2026-10-10', '2026-10-12', due),
+    stay('ical_3', '2026-10-15', '2026-10-18'),
+    stay('ical_4', '2026-10-20', '2026-10-22'),
+    stay('ical_5', '2026-10-25', '2026-10-27'),
+  ];
+  const plan = advanceMissesOnUnchanged(five, T0, { channelId: CH, todayYmd: TODAY, suspicious: false });
+  assert.equal(plan.suspicious, false);
+  assert.deepEqual(plan.removals.sort(), ['ical_1', 'ical_2']);
+});

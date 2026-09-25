@@ -21,13 +21,15 @@
  *    paid is flagged for review instead, never removed;
  *  - a stay already flagged for review stops collecting misses: it waits for
  *    a person (or for the feed to list it again), and is not rewritten every
- *    run;
+ *    run. The writer resets its count when it flags it, so a person clearing
+ *    the flag starts the watch over rather than removing it at the next run;
  *  - a past stay that drops out ages out quietly;
  *  - a removed stay that comes back is restored.
  * A feed is suspicious when it is suddenly empty, when it had 3 or more
- * future bookings and now has none, or when this run would remove half or
- * more of this channel's future bookings (two or more of them). Both
- * planners (a full diff and an unchanged feed) run the same check.
+ * future bookings (or we still hold 3 or more of them) and now has none, or
+ * when this run would remove half or more of this channel's future bookings
+ * (two or more of them). Both planners (a full diff and an unchanged feed)
+ * run the same check.
  * While suspicious 12 misses are needed. An empty or emptied feed never frees
  * nights on its own: at 12 misses its bookings are flagged for review
  * instead of removed (§12: an empty feed removes nothing), so an outage that
@@ -40,7 +42,7 @@ export const MISS_SPACING_MS = 30 * 60_000;
 export const REMOVAL_MIN_AGE_MS = 90 * 60_000;
 export const REQUIRED_MISSES = 3;
 export const SUSPICIOUS_REQUIRED_MISSES = 12;
-/** A previous future-booking count at or above this, dropping to zero, is suspicious. */
+/** A previous future-booking count (or the future bookings we still hold) at or above this, dropping to zero, is suspicious. */
 export const SUSPICIOUS_PREVIOUS_FUTURE = 3;
 /** uidHistory keeps this many earlier UIDs. */
 export const UID_HISTORY_MAX = 10;
@@ -412,9 +414,13 @@ export function planFeedSync(existing: readonly ExistingFeedStay[], parsed: read
   const activeFutureOwn = usable.filter((e) => own(e) && isActiveStatus(e.status) && e.checkOut > today).length;
   const eventCount = opts.feedEventCount ?? feed.length;
   let feedReason: SuspiciousReason | null = null;
+  // "Had 3 or more" is also what we still hold for it: the stored count is only the
+  // previous run's, so a feed that empties in steps (4, then 2, then 0) would
+  // otherwise look like it went from 2 to 0 and free all 4 at the 12th miss.
+  const hadFuture = Math.max(opts.prevFutureCount, activeFutureOwn);
   if (missingActive.length > 0 && eventCount === 0) {
     feedReason = 'empty_feed';
-  } else if (missingActive.length > 0 && opts.prevFutureCount >= SUSPICIOUS_PREVIOUS_FUTURE && plan.futureReservationCount === 0) {
+  } else if (missingActive.length > 0 && hadFuture >= SUSPICIOUS_PREVIOUS_FUTURE && plan.futureReservationCount === 0) {
     feedReason = 'future_dropped';
   }
   applyDecision(plan, decideMisses(missing, activeFutureOwn, opts.now, withIncome, feedReason));

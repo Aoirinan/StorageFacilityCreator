@@ -13,6 +13,7 @@ import {
   staysForExport,
 } from '../stays/icsWriter';
 import { parseIcs } from '../stays/ical';
+import { EXPORT_TARGET_PROVIDERS } from '../stays/contracts';
 
 const NOW = Date.parse('2026-10-01T18:00:00Z');
 
@@ -114,23 +115,43 @@ test('scope: blocks only, then SFC bookings, then other channels; never the targ
   assert.equal(inExportScope({ kind: 'reservation', source: 'airbnb' }, 'all', 'airbnb'), false);
 });
 
-test('a feed whose bookings are not source-named after it never gets them back', () => {
-  // A Hipcamp feed's bookings are source 'hipcamp' and Hipcamp imports an 'other' link;
-  // a Google feed's are 'other_channel' and Google imports a 'google' link.
-  const hipcamp = stay('hipcamp', { source: 'hipcamp', external: { provider: 'hipcamp' } });
+test('a named channel never gets its own bookings back, whether its feed or a person recorded them', () => {
+  // A Google feed's bookings are recorded as 'other_channel'; Hipcamp's as 'hipcamp'.
+  const hipcampFeed = stay('hipcampFeed', { source: 'hipcamp', external: { provider: 'hipcamp' } });
+  const hipcampHand = stay('hipcampHand', { source: 'hipcamp', external: null });
   const google = stay('google', { source: 'other_channel', external: { provider: 'google' } });
-  const otherFeed = stay('otherFeed', { source: 'other_channel', external: { provider: 'other' } });
-  const handTyped = stay('handHipcamp', { source: 'hipcamp', external: null });
-  const all = [hipcamp, google, otherFeed, handTyped, stay('owner', { kind: 'owner_block', source: 'owner' })];
-  const ids = (target: 'airbnb' | 'google' | 'other') =>
+  const otherHand = stay('otherHand', { source: 'other_channel', external: { provider: 'other' } });
+  const all = [hipcampFeed, hipcampHand, google, otherHand, stay('owner', { kind: 'owner_block', source: 'owner' })];
+  const ids = (target: 'airbnb' | 'google' | 'hipcamp') =>
     staysForExport(all, { scope: 'all', targetProvider: target, todayYmd: '2026-10-01', lastCheckInYmd: '2028-03-24' }).map((s) => s.stayId);
-  assert.deepEqual(ids('other'), ['google', 'owner']);
-  assert.deepEqual(ids('google'), ['hipcamp', 'otherFeed', 'handHipcamp', 'owner']);
-  // Other targets still get them all.
-  assert.deepEqual(ids('airbnb'), ['hipcamp', 'google', 'otherFeed', 'handHipcamp', 'owner']);
-  assert.equal(exportTargetForProvider('hipcamp'), 'other');
+  assert.deepEqual(ids('hipcamp'), ['google', 'otherHand', 'owner']);
+  assert.deepEqual(ids('google'), ['hipcampFeed', 'hipcampHand', 'otherHand', 'owner']);
+  assert.deepEqual(ids('airbnb'), ['hipcampFeed', 'hipcampHand', 'google', 'otherHand', 'owner']);
+  assert.equal(exportTargetForProvider('hipcamp'), 'hipcamp');
   assert.equal(exportTargetForProvider('google'), 'google');
   assert.equal(exportTargetForProvider('other'), 'other');
+  assert.ok((EXPORT_TARGET_PROVIDERS as readonly string[]).includes('hipcamp'));
+});
+
+test("an 'other' link sends every channel's bookings, so the site importing it never misses one", () => {
+  // 'other' is any site without a target of its own: a booking typed in as "other channel", or
+  // from an 'other' feed, may be another site's. Leaving it out would let this site sell its nights.
+  const all = [
+    stay('otherHand', { source: 'other_channel', external: { provider: 'other' } }),
+    stay('otherHandNoCode', { source: 'other_channel', external: null }),
+    stay('otherFeed', { source: 'other_channel', external: { provider: 'other' } }),
+    stay('hipcampFeed', { source: 'hipcamp', external: { provider: 'hipcamp' } }),
+    stay('google', { source: 'other_channel', external: { provider: 'google' } }),
+    stay('airbnb', { source: 'airbnb', external: { provider: 'airbnb' } }),
+    stay('direct', { source: 'direct' }),
+  ];
+  const ids = staysForExport(all, { scope: 'all', targetProvider: 'other', todayYmd: '2026-10-01', lastCheckInYmd: '2028-03-24' }).map((s) => s.stayId);
+  assert.deepEqual(ids, all.map((s) => s.stayId));
+  // Scope still applies.
+  assert.deepEqual(
+    staysForExport(all, { scope: 'sfc', targetProvider: 'other', todayYmd: '2026-10-01', lastCheckInYmd: '2028-03-24' }).map((s) => s.stayId),
+    ['direct'],
+  );
 });
 
 test('only active stays from today to today+540 are sent', () => {

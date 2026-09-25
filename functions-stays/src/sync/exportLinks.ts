@@ -142,7 +142,8 @@ export async function createExportLinkHandler(
         requireDocId(d, 'listingId');
         asTarget(d.targetProvider);
         asScope(d.scope, 'blocks_only');
-        if (d.requestId !== undefined) requireRequestId(d);
+        // Null means "none", as it does for the other optional fields a client may send as null.
+        if (d.requestId !== undefined && d.requestId !== null) requireRequestId(d);
       },
       rateLimit: { key: 'stays_export_create', windowSeconds: 3600, perFacility: 30 },
     },
@@ -153,7 +154,7 @@ export async function createExportLinkHandler(
   const targetProvider = asTarget(d.targetProvider);
   const scope = asScope(d.scope, 'blocks_only');
   const label = asLabel(d.label, `SFC to ${providerLabel(targetProvider)}`);
-  const requestId = d.requestId !== undefined ? requireRequestId(d) : null;
+  const requestId = d.requestId !== undefined && d.requestId !== null ? requireRequestId(d) : null;
   const listing = await listingsCol(ctx.db, ctx.facilityId).doc(listingId).get();
   if (!listing.exists) throw staysError('not-found', 'not_found', 'That listing was not found.', { listingId });
   if (listing.get('archived') === true) throw staysError('failed-precondition', 'listing_inactive', 'That listing is archived.', { listingId });

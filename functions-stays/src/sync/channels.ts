@@ -282,11 +282,20 @@ export async function upsertChannelHandler(
       throw staysError('invalid-argument', 'invalid_argument', 'A calendar connection cannot move to another listing. Remove it and add it there.');
     }
     const others = active.docs.filter((doc) => doc.id !== channelId);
-    const duplicate = others.find((doc) => doc.get('listingId') === listingId && doc.get('urlFingerprint') === fingerprint);
+    // One calendar feeds one listing, across the whole facility: the same link on two
+    // listings would put its bookings on both, and an Airbnb booking (one id per
+    // facility) would hop between them whenever either feed missed a fetch.
+    const duplicate = others.find((doc) => doc.get('urlFingerprint') === fingerprint);
     if (duplicate) {
-      throw staysError('already-exists', 'invalid_argument', 'That calendar link is already connected to this listing.', {
-        channelId: duplicate.id,
-      });
+      const here = duplicate.get('listingId') === listingId;
+      throw staysError(
+        'already-exists',
+        'invalid_argument',
+        here
+          ? 'That calendar link is already connected to this listing.'
+          : 'That calendar link is already connected to another listing. Each calendar belongs to one listing: copy the export link of the right one.',
+        { channelId: duplicate.id, listingId: duplicate.get('listingId') },
+      );
     }
     if (!existing) {
       if (others.filter((doc) => doc.get('listingId') === listingId).length >= STAYS_LIMITS.channelsPerListing) {

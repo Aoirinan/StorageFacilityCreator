@@ -128,6 +128,31 @@ test('saving connects the feed, keeps the URL secret, and runs the first sync', 
   assert.equal(w.fake.read(`${P.channels}/${saved.channelId}`)?.label, 'Main Airbnb');
 });
 
+test('one calendar link feeds one listing: pasting it on a second listing is refused until it is removed from the first', async () => {
+  const w = world();
+  w.feed.set(EVENTS);
+  seedListing(w.fake, 'lst_rv2', { name: 'RV 2', shortCode: 'R2' });
+  const saved = (await upsert(w, OWNER, { dryRun: false })) as StaysUpsertChannelCommitted;
+  let refused: unknown = null;
+  try {
+    await upsert(w, OWNER, { dryRun: false, listingId: 'lst_rv2', label: 'Wrong link' });
+  } catch (error) {
+    refused = error;
+  }
+  assert.equal(staysErrorReason(refused), 'invalid_argument');
+  assert.match((refused as Error).message, /already connected to another listing/);
+  assert.deepEqual(
+    (({ channelId, listingId }) => ({ channelId, listingId }))((refused as { details: { channelId: string; listingId: string } }).details),
+    { channelId: saved.channelId, listingId: LISTING },
+  );
+  assert.equal(w.fake.list(P.channels).filter((c) => c.data.listingId === 'lst_rv2').length, 0);
+  // Moved on purpose (removed from the first listing, then added to the second): accepted.
+  await removeChannelHandler({ facilityId: FAC, channelId: saved.channelId }, callableContext(OWNER), w.callableDeps);
+  w.now.ms += 5 * MIN;
+  const again = (await upsert(w, OWNER, { dryRun: false, listingId: 'lst_rv2' })) as StaysUpsertChannelCommitted;
+  assert.equal(w.fake.read(`${P.channels}/${again.channelId}`)?.listingId, 'lst_rv2');
+});
+
 test('at most 4 feeds per listing', async () => {
   const w = world();
   w.feed.set(EVENTS);
