@@ -7,154 +7,56 @@ import 'dart:html' as html;
 // ignore: uri_does_not_exist, avoid_web_libraries_in_flutter
 import 'dart:js_util' as js_util;
 
+import 'package:sfcapp/utils/print_documents.dart';
+
 /// Triggers the browser print dialog (web only).
 void printWindow() {
   html.window.print();
 }
 
-String _escapeHtml(String s) {
-  return s
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-}
-
 /// Opens a print-friendly HTML document so the receipt fills the page instead
-/// of the full Flutter UI (sidebar, modal chrome, etc.).
+/// of the full Flutter UI (sidebar, modal chrome, etc.). The facility's
+/// letterhead (logo, name, addresses) heads it when it is passed in.
 void printPaymentReceipt({
   required String tenantName,
   required String amountFormatted,
   required String dateFormatted,
   String? transactionId,
   String? businessName,
+  String? businessAddress,
+  String? businessMailingAddress,
+  String? businessPhone,
+  String? businessEmail,
+  String? logoUrl,
 }) {
-  final org = businessName != null && businessName.isNotEmpty
-      ? _escapeHtml(businessName)
-      : 'Storage Facility Creator';
-  final tenant = _escapeHtml(tenantName);
-  final amount = _escapeHtml(amountFormatted);
-  final when = _escapeHtml(dateFormatted);
-  final txn = transactionId != null && transactionId.isNotEmpty
-      ? _escapeHtml(transactionId)
-      : null;
-
-  final txnBlock = txn == null
-      ? ''
-      : '''
-      <div class="row">
-        <span class="label">Transaction ID</span>
-        <span class="value mono">$txn</span>
-      </div>''';
-
-  final doc = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Payment receipt</title>
-  <style>
-    @page { margin: 16mm; size: portrait; }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      font-size: 14px;
-      line-height: 1.45;
-      color: #111827;
-      background: #fff;
-    }
-    .wrap {
-      max-width: 420px;
-      margin: 0 auto;
-    }
-    .brand {
-      font-size: 11px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: #6b7280;
-      margin-bottom: 6px;
-    }
-    h1 {
-      font-size: 22px;
-      font-weight: 700;
-      margin: 0 0 4px 0;
-    }
-    .status {
-      color: #059669;
-      font-weight: 600;
-      margin: 0 0 20px 0;
-      font-size: 15px;
-    }
-    .card {
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 16px 18px;
-      margin-bottom: 16px;
-    }
-    .row {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 12px;
-      padding: 8px 0;
-      border-bottom: 1px solid #f3f4f6;
-    }
-    .row:last-child { border-bottom: none; }
-    .label { color: #6b7280; flex-shrink: 0; min-width: 110px; }
-    .value { font-weight: 600; text-align: right; word-break: break-word; }
-    .amount { font-size: 20px; font-weight: 700; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; font-weight: 500; }
-    .note {
-      font-size: 12px;
-      color: #6b7280;
-      margin-top: 8px;
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="brand">$org</div>
-    <h1>Payment receipt</h1>
-    <p class="status">Payment received</p>
-    <div class="card">
-      <div class="row">
-        <span class="label">Tenant</span>
-        <span class="value">$tenant</span>
-      </div>
-      <div class="row">
-        <span class="label">Amount</span>
-        <span class="value amount">$amount</span>
-      </div>
-      <div class="row">
-        <span class="label">Date</span>
-        <span class="value">$when</span>
-      </div>
-      $txnBlock
-    </div>
-    <p class="note">This receipt is for your records. The payment is saved in your account.</p>
-  </div>
-</body>
-</html>
-''';
-
-  _printDocument(doc);
+  _printDocument(buildPaymentReceiptHtml(
+    tenantName: tenantName,
+    amountFormatted: amountFormatted,
+    dateFormatted: dateFormatted,
+    transactionId: transactionId,
+    businessName: businessName,
+    businessAddress: businessAddress,
+    businessMailingAddress: businessMailingAddress,
+    businessPhone: businessPhone,
+    businessEmail: businessEmail,
+    logoUrl: logoUrl,
+  ));
 }
 
 /// Opens a print-friendly invoice so it can be printed or saved as a PDF.
 ///
-/// The facility's details sit at the top and the tenant's underneath, which is
-/// what makes it a document you can hand or post to a customer. The browser's
-/// own print dialog offers "Save as PDF", so this covers printing and emailing
-/// without waiting on a generated file.
+/// The facility's letterhead (logo, details, and the mailing address payments
+/// go to) sits at the top and the tenant's details underneath, which is what
+/// makes it a document you can hand or post to a customer. The browser's own
+/// print dialog offers "Save as PDF", so this covers printing and emailing
+/// without waiting on a generated file. See print_documents.dart for the HTML.
 void printInvoice({
   required String facilityName,
   String? facilityAddress,
+  String? facilityMailingAddress,
   String? facilityPhone,
   String? facilityEmail,
+  String? facilityLogoUrl,
   required String tenantName,
   String? tenantAddress,
   String? tenantPhone,
@@ -171,120 +73,29 @@ void printInvoice({
   String? notes,
   String? statusLabel,
 }) {
-  String line(String? label, String? value) {
-    if (value == null || value.trim().isEmpty) return '';
-    final text = _escapeHtml(value.trim());
-    return label == null
-        ? '<div>$text</div>'
-        : '<div><span class="muted">${_escapeHtml(label)}</span> $text</div>';
-  }
-
-  final rows = lineItems
-      .map((item) => '''
-      <tr>
-        <td>${_escapeHtml(item.description)}</td>
-        <td class="num">${_escapeHtml(item.amount)}</td>
-      </tr>''')
-      .join();
-
-  final taxRow = (taxFormatted == null || taxFormatted.isEmpty)
-      ? ''
-      : '''
-      <tr>
-        <td class="label">Tax</td>
-        <td class="num">${_escapeHtml(taxFormatted)}</td>
-      </tr>''';
-
-  final notesBlock = (notes == null || notes.trim().isEmpty)
-      ? ''
-      : '<div class="notes"><span class="muted">Notes</span><br>${_escapeHtml(notes.trim())}</div>';
-
-  final doc = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Invoice ${_escapeHtml(invoiceNumber)}</title>
-  <style>
-    @page { margin: 16mm; size: portrait; }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      font-size: 13px;
-      line-height: 1.45;
-      color: #111827;
-      background: #fff;
-    }
-    .wrap { max-width: 640px; margin: 0 auto; }
-    .top { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
-    .facility-name { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
-    h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px 0; text-align: right; }
-    .meta { text-align: right; }
-    .muted { color: #6b7280; }
-    .parties { margin: 24px 0 8px 0; }
-    .bill-to { font-weight: 600; margin-bottom: 4px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
-    th { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
-    td.num, th.num { text-align: right; }
-    td.label { color: #6b7280; }
-    tfoot td { border-bottom: none; padding-top: 10px; }
-    tfoot tr.total td { font-size: 16px; font-weight: 700; border-top: 2px solid #111827; }
-    .notes { margin-top: 20px; font-size: 12px; }
-    .status { font-size: 12px; color: #6b7280; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="top">
-      <div>
-        <div class="facility-name">${_escapeHtml(facilityName)}</div>
-        ${line(null, facilityAddress)}
-        ${line(null, facilityPhone)}
-        ${line(null, facilityEmail)}
-      </div>
-      <div class="meta">
-        <h1>Invoice</h1>
-        <div>${_escapeHtml(invoiceNumber)}</div>
-        <div><span class="muted">Issued</span> ${_escapeHtml(issueDateFormatted)}</div>
-        <div><span class="muted">Due</span> ${_escapeHtml(dueDateFormatted)}</div>
-        ${statusLabel == null || statusLabel.isEmpty ? '' : '<div class="status">${_escapeHtml(statusLabel)}</div>'}
-      </div>
-    </div>
-
-    <div class="parties">
-      <div class="bill-to">Bill to</div>
-      ${line(null, tenantName)}
-      ${line('Unit', unitNumber)}
-      ${line(null, tenantAddress)}
-      ${line(null, tenantPhone)}
-      ${line(null, tenantEmail)}
-    </div>
-
-    <table>
-      <thead>
-        <tr><th>Description</th><th class="num">Amount</th></tr>
-      </thead>
-      <tbody>
-        $rows
-      </tbody>
-      <tfoot>
-        <tr><td class="label">Subtotal</td><td class="num">${_escapeHtml(subtotalFormatted)}</td></tr>
-        $taxRow
-        <tr class="total"><td>Total</td><td class="num">${_escapeHtml(totalFormatted)}</td></tr>
-        <tr><td class="label">Balance due</td><td class="num">${_escapeHtml(balanceFormatted)}</td></tr>
-      </tfoot>
-    </table>
-
-    $notesBlock
-  </div>
-</body>
-</html>
-''';
-
-  _printDocument(doc);
+  _printDocument(buildInvoiceHtml(
+    facilityName: facilityName,
+    facilityAddress: facilityAddress,
+    facilityMailingAddress: facilityMailingAddress,
+    facilityPhone: facilityPhone,
+    facilityEmail: facilityEmail,
+    facilityLogoUrl: facilityLogoUrl,
+    tenantName: tenantName,
+    tenantAddress: tenantAddress,
+    tenantPhone: tenantPhone,
+    tenantEmail: tenantEmail,
+    unitNumber: unitNumber,
+    invoiceNumber: invoiceNumber,
+    issueDateFormatted: issueDateFormatted,
+    dueDateFormatted: dueDateFormatted,
+    lineItems: lineItems,
+    subtotalFormatted: subtotalFormatted,
+    taxFormatted: taxFormatted,
+    totalFormatted: totalFormatted,
+    balanceFormatted: balanceFormatted,
+    notes: notes,
+    statusLabel: statusLabel,
+  ));
 }
 
 /// Renders [doc] in a hidden frame and opens the print dialog on it, so the
@@ -321,7 +132,12 @@ void _printDocument(String doc) {
     iframe.remove();
   }
 
-  iframe.onLoad.listen((_) {
+  iframe.onLoad.listen((_) async {
+    // The frame's load event already waits for the images in a srcdoc
+    // document (the facility logo), loaded or failed. This is the belt to that
+    // braces: a logo still decoding gets a few seconds, and a slow or broken
+    // one never holds the print back beyond that.
+    await _waitForImages(iframe);
     final cw = iframe.contentWindow;
     if (cw == null) {
       html.window.console.error('Print failed: the frame has no window');
@@ -356,4 +172,33 @@ void _printDocument(String doc) {
     // so it can wait for the dialog to be done with it.
     Future<void>.delayed(const Duration(minutes: 5), cleanup);
   });
+}
+
+/// Resolves once every <img> in [iframe]'s document is complete (or failed),
+/// or after [timeout], whichever comes first. Never throws.
+Future<void> _waitForImages(
+  html.IFrameElement iframe, {
+  Duration timeout = const Duration(seconds: 3),
+}) async {
+  try {
+    final doc = js_util.getProperty<Object?>(iframe, 'contentDocument');
+    if (doc == null) return;
+    final images =
+        js_util.callMethod<Object>(doc, 'querySelectorAll', const ['img']);
+    final count = js_util.getProperty<int>(images, 'length');
+    final pending = <Future<void>>[];
+    for (var i = 0; i < count; i++) {
+      final img = js_util.callMethod<Object>(images, 'item', [i]);
+      if (js_util.getProperty<bool>(img, 'complete') == true) continue;
+      pending.add(
+        js_util
+            .promiseToFuture<void>(js_util.callMethod<Object>(img, 'decode', const []))
+            .catchError((Object _) {}),
+      );
+    }
+    if (pending.isEmpty) return;
+    await Future.wait(pending).timeout(timeout, onTimeout: () => const []);
+  } catch (_) {
+    // Print without the logo rather than not at all.
+  }
 }

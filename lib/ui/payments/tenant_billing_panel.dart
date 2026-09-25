@@ -12,6 +12,8 @@ import '../../models/tenant_billing_model.dart';
 import '../../models/tenant_stripe_payment_model.dart';
 import '../../models/saved_payment_method_model.dart';
 import '../../models/payment_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import '../../services/stripe_connect_service.dart';
 import '../../services/stripe_payments_service.dart';
 import '../../services/stripe_service.dart';
@@ -214,6 +216,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
         await showDialog<void>(
           context: context,
           builder: (ctx) => _PaymentReceiptDialog(
+            facilityId: widget.facilityId,
             tenantName: widget.tenantName,
             amount: amount,
             transactionId: paymentIntentId,
@@ -255,6 +258,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
         await showDialog<void>(
           context: context,
           builder: (ctx) => _PaymentReceiptDialog(
+            facilityId: widget.facilityId,
             tenantName: widget.tenantName,
             amount: result.amount,
             transactionId: null,
@@ -544,11 +548,13 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
 
 /// Receipt dialog shown after a successful one-time payment (card on file).
 class _PaymentReceiptDialog extends StatelessWidget {
+  final String facilityId;
   final String tenantName;
   final double amount;
   final String? transactionId;
 
   const _PaymentReceiptDialog({
+    required this.facilityId,
     required this.tenantName,
     required this.amount,
     this.transactionId,
@@ -586,12 +592,28 @@ class _PaymentReceiptDialog extends StatelessWidget {
       actions: [
         if (kIsWeb)
           OutlinedButton.icon(
-            onPressed: () {
+            onPressed: () async {
+              // The receipt goes to the tenant, so it carries the facility's
+              // letterhead (logo, name, addresses) like its statements and
+              // invoices do. Without the facility it still prints, under the
+              // platform name as before.
+              FacilityModel? facility;
+              try {
+                facility = await FacilityService.getFacility(facilityId);
+              } catch (_) {
+                facility = null;
+              }
               printPaymentReceipt(
                 tenantName: tenantName,
                 amountFormatted: '\$${amount.toStringAsFixed(2)}',
                 dateFormatted: _formatDate(DateTime.now()),
                 transactionId: transactionId,
+                businessName: facility?.name,
+                businessAddress: facility?.address,
+                businessMailingAddress: facility?.mailingAddress,
+                businessPhone: facility?.phone,
+                businessEmail: facility?.email,
+                logoUrl: facility?.logoUrl,
               );
             },
             icon: const Icon(Icons.print, size: 18),

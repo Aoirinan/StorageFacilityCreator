@@ -18,6 +18,7 @@ import 'audit_service.dart';
 import 'package:sfcapp/utils/invoice_charge_selection.dart';
 import 'email_service.dart';
 import 'package:sfcapp/services/pdf_letterhead.dart';
+import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/utils/error_message_helper.dart';
 
 /// Why "Send to tenant" sent nothing and left the invoice as it was.
@@ -340,9 +341,10 @@ class InvoiceService {
                         pw.Text(tenant.name, style: const pw.TextStyle(fontSize: 11)),
                         pw.Text(tenant.email, style: const pw.TextStyle(fontSize: 10)),
                         pw.Text(tenant.phone, style: const pw.TextStyle(fontSize: 10)),
-                        if (tenant.addresses.isNotEmpty)
+                        if (tenantPrintAddress(tenant.addresses)
+                            case final address?)
                           pw.Text(
-                            tenant.addresses.first.toString(),
+                            address,
                             style: const pw.TextStyle(fontSize: 10),
                           ),
                       ],
