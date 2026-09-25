@@ -1145,6 +1145,7 @@ test("a slug change's one batch passes, and the old slug's pointer stays the own
   // new slug, a pointer over the old one and the earlier pointers repointed,
   // in a single batch: if the rules refused any of them, no slug could change.
   const RIVAL_FACILITY = 'fac-rival-1';
+  const OLDER_SLUGS = Array.from({ length: 15 }, (_, i) => `older-${i + 1}`);
   await seedFacility();
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -1158,8 +1159,10 @@ test("a slug change's one batch passes, and the old slug's pointer stays the own
       publicSettings: { enabled: true },
       units: [{ unitId: 'u1', isRentable: true }],
     });
-    // Pointers from earlier changes, repointed in the same batch.
-    for (const slug of ['older-1', 'older-2', 'older-3']) {
+    // Pointers from earlier changes, repointed in the same batch. Fifteen:
+    // each write's rule reads facilities/{id}, and a batch may make only 20
+    // such reads unless repeats of one doc are cached.
+    for (const slug of OLDER_SLUGS) {
       await db.collection('publicFacilityMaps').doc(slug).set({
         facilityId: FACILITY_ID,
         movedToSlug: 'old-slug',
@@ -1181,7 +1184,7 @@ test("a slug change's one batch passes, and the old slug's pointer stays the own
     publicSettings: { enabled: true },
     units: [{ unitId: 'u1', isRentable: true }],
   });
-  for (const slug of ['old-slug', 'older-1', 'older-2', 'older-3']) {
+  for (const slug of ['old-slug', ...OLDER_SLUGS]) {
     batch.set(ownerDb.collection('publicFacilityMaps').doc(slug), {
       facilityId: FACILITY_ID,
       movedToSlug: 'new-slug',
