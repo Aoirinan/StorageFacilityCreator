@@ -25,18 +25,17 @@ export async function countActiveTenants(
 }
 
 /**
- * Refuses an online move-in at a facility that has reached its active-tenant
- * cap. The online move-in used to create tenants with no check at all, while
- * the app refused the operator at the cap.
+ * Whether the facility has room for another active tenant. The public website
+ * reads this as well as the online move-in, so it stops offering a rental
+ * that the hold would refuse.
  *
- * A failed count lets the move-in through, as the app's check does: the cap
- * controls cost and abuse, and a renter should not be turned away by a
- * transient read error.
+ * A failed count reads as room, as the app's check does: the cap controls cost
+ * and abuse, and a renter should not be turned away by a transient read error.
  */
-export async function assertFacilityHasTenantCapacity(
+export async function facilityHasTenantCapacity(
   db: admin.firestore.Firestore,
   facilityId: string,
-): Promise<void> {
+): Promise<boolean> {
   let active: number;
   try {
     active = await countActiveTenants(db, facilityId);
@@ -45,12 +44,23 @@ export async function assertFacilityHasTenantCapacity(
       facilityId,
       error: (error as { message?: string } | null)?.message ?? String(error),
     });
-    return;
+    return true;
   }
-  if (active >= MAX_ACTIVE_TENANTS_PER_FACILITY) {
+  return active < MAX_ACTIVE_TENANTS_PER_FACILITY;
+}
+
+/**
+ * Refuses an online move-in at a facility that has reached its active-tenant
+ * cap. The online move-in used to create tenants with no check at all, while
+ * the app refused the operator at the cap.
+ */
+export async function assertFacilityHasTenantCapacity(
+  db: admin.firestore.Firestore,
+  facilityId: string,
+): Promise<void> {
+  if (!(await facilityHasTenantCapacity(db, facilityId))) {
     functions.logger.warn('Online move-in refused: facility is at its active tenant limit', {
       facilityId,
-      active,
       limit: MAX_ACTIVE_TENANTS_PER_FACILITY,
     });
     // Nothing about the operator's account in the message: the caller is an

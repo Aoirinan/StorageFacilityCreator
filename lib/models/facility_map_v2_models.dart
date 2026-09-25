@@ -233,6 +233,17 @@ class PublicFacilityMapSnapshot {
     required this.moveInRouteTemplate,
   });
 
+  /// The owner's online rentals switch as the app's last publish copied it.
+  /// Anonymous pages cannot read settings/public, so this copy is what they
+  /// have; saving the switch republishes it.
+  bool get takesOnlineRentals => facilityTakesOnlineRentals(publicSettings);
+
+  /// Whether a public page may offer [unit], one of [units], for online
+  /// rental: the facility takes online rentals and the unit is rentable as
+  /// published (`isRentable` folds in the hold's per-unit rules).
+  bool offersUnitOnline(Map<String, dynamic> unit) =>
+      takesOnlineRentals && unit['isRentable'] == true;
+
   factory PublicFacilityMapSnapshot.fromMap(Map<String, dynamic> map) {
     final rawElements = (map['elements'] as List<dynamic>? ?? const <dynamic>[])
         .whereType<Map<String, dynamic>>()
@@ -276,6 +287,21 @@ class PublicFacilityMapSnapshot {
     };
   }
 }
+
+/// Whether the facility takes online rentals, from its public settings
+/// (settings/public, or the copy a publicFacilityMaps doc carries): only an
+/// exact true `publicRentalsEnabled`, as facilityTakesOnlineRentals in
+/// functions-shared reads it. createPublicReservationHold refuses every unit
+/// while it is off, so a public page that offers "Rent Now" or "Reserve"
+/// past it sends the renter straight into that refusal.
+bool facilityTakesOnlineRentals(Map<String, dynamic>? publicSettings) =>
+    publicSettings?['publicRentalsEnabled'] == true;
+
+/// What the hold says while a facility's online rentals are off
+/// (ONLINE_RENTALS_OFF_MESSAGE in functions-public-website publicMoveIn.ts),
+/// shown where a public page would otherwise offer a rental.
+const onlineRentalsOffMessage =
+    'This facility is not taking online rentals right now. Please contact the facility.';
 
 /// The public list's status for a unit whose lower-cased stored status is
 /// [status] (see FacilityMapV2Service.buildPublicUnitInventoryMaps). Same as

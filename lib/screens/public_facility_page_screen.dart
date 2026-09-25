@@ -5,6 +5,8 @@ import '../services/facility_public_service.dart';
 import '../services/public_rental_service.dart';
 import '../models/facility_model.dart';
 import '../models/facility_public_settings_model.dart';
+import 'package:sfcapp/models/facility_map_v2_models.dart'
+    show onlineRentalsOffMessage;
 import '../widgets/unit_availability_widget.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_map_v2_service.dart';
@@ -15,9 +17,15 @@ import '../widgets/keyboard_scrollable.dart';
 class PublicFacilityPageScreen extends StatefulWidget {
   final String? facilityId;
 
+  /// Replaces the facility, public settings and map slug reads, for tests.
+  @visibleForTesting
+  final Future<(FacilityModel?, FacilityPublicSettings?, String?)> Function(
+      String facilityId)? loadForTesting;
+
   const PublicFacilityPageScreen({
     super.key,
     this.facilityId,
+    this.loadForTesting,
   });
 
   @override
@@ -49,11 +57,13 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
     }
 
     try {
-      final facility = await PublicRentalService.getFacility(facilityId);
-      final settings =
-          await FacilityPublicService.getPublicSettings(facilityId);
-      final mapSlug =
-          await FacilityMapV2Service.getPublicSlugForFacility(facilityId);
+      final (facility, settings, mapSlug) = widget.loadForTesting != null
+          ? await widget.loadForTesting!(facilityId)
+          : (
+              await PublicRentalService.getFacility(facilityId),
+              await FacilityPublicService.getPublicSettings(facilityId),
+              await FacilityMapV2Service.getPublicSlugForFacility(facilityId),
+            );
 
       if (facility == null) {
         setState(() {
@@ -220,6 +230,12 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
     );
   }
 
+  /// The switch the reservation hold reads (settings/public
+  /// publicRentalsEnabled). This read allowOnlineReservations, which nothing
+  /// sets and which defaults to true, so the page offered "Reserve" at a
+  /// facility whose online rentals were off, and the hold refused it.
+  bool get _takesOnlineRentals => _settings?.publicRentalsEnabled ?? false;
+
   Widget _buildUnitsSection() {
     if (_facility == null) return const SizedBox.shrink();
 
@@ -241,11 +257,11 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
               padding: const EdgeInsets.all(16),
               child: UnitAvailabilityWidget(
                 facilityId: _facility!.id,
-                allowReservation: _settings?.allowOnlineReservations ?? true,
+                allowReservation: _takesOnlineRentals,
               ),
             ),
           ),
-          if (_settings?.allowOnlineReservations ?? true) ...[
+          if (_takesOnlineRentals) ...[
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -266,18 +282,22 @@ class _PublicFacilityPageScreenState extends State<PublicFacilityPageScreen> {
                 child: const Text('View All Units & Reserve'),
               ),
             ),
-            if (_publicMapSlug != null) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () =>
-                      context.push('/public/${_publicMapSlug!}/map'),
-                  icon: const Icon(Icons.map_outlined),
-                  label: const Text('View Facility Map'),
-                ),
+          ] else ...[
+            const SizedBox(height: 16),
+            const Text(onlineRentalsOffMessage),
+          ],
+          // The map is not a rental, so it stays when rentals are off.
+          if (_publicMapSlug != null) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    context.push('/public/${_publicMapSlug!}/map'),
+                icon: const Icon(Icons.map_outlined),
+                label: const Text('View Facility Map'),
               ),
-            ],
+            ),
           ],
         ],
       ),
