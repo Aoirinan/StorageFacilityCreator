@@ -48,12 +48,33 @@ void openTenantInPlace(
   TenantModel tenant,
   TenantPage page,
 ) {
-  unawaited(
-    GoRouter.of(context).replace<Object?>(
-      tenantPageLocation(tenant, page),
-      extra: tenant,
-    ),
+  _replaceWithoutHistory(
+    GoRouter.of(context),
+    tenantPageLocation(tenant, page),
+    tenant,
   );
+}
+
+/// [GoRouter.replace], and the browser's current history entry replaced
+/// too rather than a new one pushed.
+///
+/// go_router's replace still reports the new page to the browser as a new
+/// entry (pushState), so the browser's Back button walked back through
+/// every tenant stepped through. [Router.neglect] makes the report a
+/// replaceState, but only for the report after the frame it is called in,
+/// and the app's route guard is async: the navigation lands frames later
+/// and is reported as a push again. So neglect when the router's
+/// configuration actually changes, which is this replace landing.
+void _replaceWithoutHistory(GoRouter router, String location, Object? extra) {
+  final delegate = router.routerDelegate;
+  void neglectThisChange() {
+    delegate.removeListener(neglectThisChange);
+    final routerContext = delegate.navigatorKey.currentContext;
+    if (routerContext != null) Router.neglect(routerContext, () {});
+  }
+
+  delegate.addListener(neglectThisChange);
+  unawaited(router.replace<Object?>(location, extra: extra));
 }
 
 /// Whether the keyboard is in a text field, where the arrow keys move the
@@ -233,8 +254,9 @@ void showTenantPageUnderLedger(GoRouter router, TenantModel tenant) {
   final shownId =
       extra is TenantModel ? extra.id : state.uri.queryParameters['tenantId'];
   if (shownId == tenant.id) return;
-  unawaited(router.replace<Object?>(
+  _replaceWithoutHistory(
+    router,
     tenantPageLocation(tenant, TenantPage.detail),
-    extra: tenant,
-  ));
+    tenant,
+  );
 }

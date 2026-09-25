@@ -130,9 +130,20 @@ class _LedgerPageState extends State<_LedgerPage> {
   }
 }
 
-GoRouter _router({String initialLocation = AppRoute.tenants}) {
+GoRouter _router({
+  String initialLocation = AppRoute.tenants,
+  bool slowGuard = false,
+}) {
   return GoRouter(
     initialLocation: initialLocation,
+    // The app's route guard is async (feature flags, 2FA, subscription), so
+    // a navigation lands frames after it was asked for.
+    redirect: slowGuard
+        ? (context, state) async {
+            await Future<void>.delayed(const Duration(milliseconds: 40));
+            return null;
+          }
+        : null,
     routes: [
       ShellRoute(
         builder: (context, state, child) => Scaffold(
@@ -191,8 +202,10 @@ void main() {
   Future<GoRouter> pumpApp(
     WidgetTester tester, {
     String initialLocation = AppRoute.tenants,
+    bool slowGuard = false,
   }) async {
-    final router = _router(initialLocation: initialLocation);
+    final router =
+        _router(initialLocation: initialLocation, slowGuard: slowGuard);
     addTearDown(router.dispose);
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
@@ -449,5 +462,85 @@ void main() {
       expect(find.text('DETAIL b'), findsOneWidget);
       expect(router.canPop(), isFalse);
     });
+  });
+
+  // What the router tells the browser. replace: false is a pushState, a new
+  // entry the browser's Back button then walks back through.
+  group('browser history', () {
+    late List<Map<Object?, Object?>> reports;
+
+    setUp(() => reports = []);
+
+    void recordHistory(WidgetTester tester) {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.navigation,
+        (call) async {
+          if (call.method == 'routeInformationUpdated') {
+            reports.add(call.arguments as Map<Object?, Object?>);
+          }
+          return null;
+        },
+      );
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.navigation, null));
+    }
+
+    List<Object?> replaceFlags() => [for (final r in reports) r['replace']];
+
+    for (final slowGuard in [false, true]) {
+      final guard = slowGuard ? ' (async route guard)' : '';
+
+      // With the slow guard, frames go by (as the browser draws one every
+      // 16ms) before the navigation lands.
+      Future<void> key(WidgetTester tester, LogicalKeyboardKey key) async {
+        await tester.sendKeyEvent(key);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 16));
+        await tester.pumpAndSettle();
+      }
+
+      Future<void> tapAndSettle(WidgetTester tester, Finder finder) async {
+        await tester.tap(finder);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 16));
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('stepping on the tenant page adds no history entries$guard',
+          (tester) async {
+        recordHistory(tester);
+        final router = await pumpApp(tester, slowGuard: slowGuard);
+        await openFromList(router, tester, _a, [_a, _b, _c]);
+        // Opening the tenant from the list is a real step: pushed.
+        expect(replaceFlags().last, isFalse);
+        reports.clear();
+
+        await tapAndSettle(tester, button(nextTenantTooltip));
+        await key(tester, LogicalKeyboardKey.arrowRight);
+        expect(find.text('DETAIL c'), findsOneWidget);
+        expect(reports, isNotEmpty);
+        expect(replaceFlags(), everyElement(isTrue));
+      });
+
+      testWidgets('stepping on the ledger adds no history entries$guard',
+          (tester) async {
+        recordHistory(tester);
+        final router = await pumpApp(tester, slowGuard: slowGuard);
+        await openFromList(router, tester, _a, [_a, _b, _c]);
+        await tapAndSettle(tester, find.text('View Ledger'));
+        reports.clear();
+
+        await key(tester, LogicalKeyboardKey.arrowRight);
+        await key(tester, LogicalKeyboardKey.arrowRight);
+        expect(find.text('LEDGER c'), findsOneWidget);
+        expect(reports, isNotEmpty);
+        expect(replaceFlags(), everyElement(isTrue));
+
+        // Leaving swaps the tenant page underneath in place too.
+        await tapAndSettle(tester, find.byKey(const Key('ledger-back')));
+        expect(find.text('DETAIL c'), findsOneWidget);
+        expect(replaceFlags().last, isTrue);
+      });
+    }
   });
 }
