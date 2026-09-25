@@ -10,12 +10,20 @@ import 'package:flutter_test/flutter_test.dart';
 /// An in-memory Firestore keyed by document path ('facilities/f1/invites/i1')
 /// that answers what the app's permission code asks of it: equality `where`,
 /// `limit`, `get` on collections and collection groups, and `doc`, `add`,
-/// `get`, `set` (with merge), `update` and `delete` on documents, the same
-/// three in a `batch`, plus `parent` and `collection` for walking paths.
-/// Anything else fails the test.
+/// `get`, `set` (with merge), `update` and `delete` on documents, plus
+/// `parent` and `collection` for walking paths, and write batches
+/// ([batch]). Anything else fails the test.
 class FakeStore {
   final Map<String, Map<String, dynamic>> _docs = {};
   int _nextId = 0;
+
+  /// A batch whose writes land together on commit, or none of them do: a
+  /// write [refuseWrite] refuses, or an update of a missing doc, fails the
+  /// whole commit, as Firestore does.
+  WriteBatch batch() => _StoreBatch(this);
+
+  /// The writes of every committed batch, one list per commit.
+  final List<List<String>> commits = [];
 
   /// Writes to a path this matches are refused the way the rules refuse
   /// them (permission-denied).
@@ -30,8 +38,8 @@ class FakeStore {
   /// Every write, in order: 'set PATH', 'update PATH' or 'delete PATH'.
   final List<String> writes = [];
 
-  /// Every query run, as 'COLLECTION field=value ...' (COLLECTION is the
-  /// collection's path, or the group's id).
+  /// Every query run, as 'COLLECTION field=value ... [limit=N]' (COLLECTION
+  /// is the collection's path, or the group's id).
   final List<String> queries = [];
 
   void put(String path, Map<String, dynamic> data) => _docs[path] = _copy(data);
@@ -47,10 +55,6 @@ class FakeStore {
 
   CollectionReference<Map<String, dynamic>> collection(String path) =>
       _StoreCollection(this, path);
-
-  /// A batch: its writes land together on commit, or none do when [refuseWrite]
-  /// refuses any of them, as Firestore commits a batch.
-  WriteBatch batch() => _StoreBatch(this);
 
   Query<Map<String, dynamic>> collectionGroup(String collectionId) => _StoreQuery(
         this,
@@ -79,7 +83,10 @@ class FakeStore {
       } else if (value is Map) {
         final nested = <String, dynamic>{};
         _merge(nested, Map<String, dynamic>.from(value));
-        into[e.key] = nested;
+        // Deleting a key of a map that is not there leaves no map behind.
+        if (nested.isNotEmpty || value.values.every((v) => v != FieldValue.delete())) {
+          into[e.key] = nested;
+        }
       } else {
         into[e.key] = value;
       }
@@ -134,7 +141,11 @@ class _StoreQuery extends Fake implements Query<Map<String, dynamic>> {
 
   @override
   Future<QuerySnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
-    _store.queries.add([_label, for (final (f, v) in _filters) '$f=$v'].join(' '));
+    _store.queries.add([
+      _label,
+      for (final (f, v) in _filters) '$f=$v',
+      if (_limit != null) 'limit=$_limit',
+    ].join(' '));
     final paths = [
       for (final e in _store._docs.entries)
         if (_inScope(e.key) &&
@@ -231,41 +242,6 @@ class _StoreDocRef extends Fake implements DocumentReference<Map<String, dynamic
   }
 }
 
-class _StoreBatch extends Fake implements WriteBatch {
-  _StoreBatch(this._store);
-
-  final FakeStore _store;
-  final List<(String, Future<void> Function())> _ops = [];
-
-  @override
-  void set<T>(DocumentReference<T> document, T data, [SetOptions? options]) {
-    final ref = document as DocumentReference<Map<String, dynamic>>;
-    _ops.add((ref.path, () => ref.set(data as Map<String, dynamic>, options)));
-  }
-
-  @override
-  void update(DocumentReference document, Map<String, dynamic> data) {
-    final ref = document as DocumentReference<Map<String, dynamic>>;
-    _ops.add((ref.path, () => ref.update(data)));
-  }
-
-  @override
-  void delete(DocumentReference document) {
-    final ref = document as DocumentReference<Map<String, dynamic>>;
-    _ops.add((ref.path, ref.delete));
-  }
-
-  @override
-  Future<void> commit() async {
-    for (final (path, _) in _ops) {
-      _store._checkWrite(path);
-    }
-    for (final (_, write) in _ops) {
-      await write();
-    }
-  }
-}
-
 class _StoreDoc extends Fake implements QueryDocumentSnapshot<Map<String, dynamic>> {
   _StoreDoc(this.reference, Map<String, dynamic> data) : _data = FakeStore._copy(data);
 
@@ -304,4 +280,47 @@ class _StoreSnapshot extends Fake implements QuerySnapshot<Map<String, dynamic>>
 
   @override
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
+}
+
+class _StoreBatch extends Fake implements WriteBatch {
+  _StoreBatch(this._store);
+
+  final FakeStore _store;
+  final List<Future<void> Function()> _writes = [];
+  bool _committed = false;
+
+  DocumentReference<Map<String, dynamic>> _ref(DocumentReference<Object?> document) =>
+      _StoreDocRef(_store, document.path);
+
+  @override
+  void set<T>(DocumentReference<T> document, T data, [SetOptions? options]) =>
+      _writes.add(() => _ref(document).set(data as Map<String, dynamic>, options));
+
+  @override
+  void update(DocumentReference<Object?> document, Map<String, dynamic> data) =>
+      _writes.add(() => _ref(document).update(data));
+
+  @override
+  void delete(DocumentReference<Object?> document) =>
+      _writes.add(() => _ref(document).delete());
+
+  @override
+  Future<void> commit() async {
+    if (_committed) throw StateError('a batch commits once');
+    _committed = true;
+    final before = {for (final e in _store._docs.entries) e.key: FakeStore._copy(e.value)};
+    final written = _store.writes.length;
+    try {
+      for (final write in _writes) {
+        await write();
+      }
+    } catch (_) {
+      _store._docs
+        ..clear()
+        ..addAll(before);
+      _store.writes.removeRange(written, _store.writes.length);
+      rethrow;
+    }
+    _store.commits.add(_store.writes.sublist(written));
+  }
 }
