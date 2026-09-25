@@ -104,12 +104,14 @@ class AutopayService {
   static const int unreadNotificationsOfTypeLimit = 10;
 
   /// Unread facility notifications of one [type] (a FacilityNotificationType
-  /// value), at most [unreadNotificationsOfTypeLimit] of them, in no order.
+  /// value): the newest [unreadNotificationsOfTypeLimit] of them.
   ///
   /// This streamed every alert of the type, read ones included, with no
   /// limit, on every screen of every staff session, for as long as the
-  /// facility had them. Two equality filters with no ordering are served by
-  /// Firestore's single-field indexes, so no composite index is needed.
+  /// facility had them. Newest first, not in Firestore's document-id order:
+  /// with more unread than the limit, that order showed the oldest, and a new
+  /// "refund by hand" alert stayed hidden behind them. Served by the
+  /// (type, readAt, createdAt desc) index in firestore.indexes.json.
   static Stream<QuerySnapshot<Map<String, dynamic>>>
       watchUnreadFacilityNotificationsOfType(
     String facilityId,
@@ -118,6 +120,7 @@ class AutopayService {
     return FacilitySubcollections.notifications(facilityId)
         .where('type', isEqualTo: type)
         .where('readAt', isNull: true)
+        .orderBy('createdAt', descending: true)
         .limit(unreadNotificationsOfTypeLimit)
         .snapshots();
   }

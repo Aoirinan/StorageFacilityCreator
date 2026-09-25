@@ -177,6 +177,14 @@ void main() {
       expect(log.limits, [AutopayService.unreadNotificationsOfTypeLimit]);
       expect(find.text('Mark reviewed'),
           findsNWidgets(AutopayService.unreadNotificationsOfTypeLimit));
+      // The newest ten of the twelve unread, not the first ten by document
+      // id: before, with no ordering, a new alert past the limit was hidden
+      // until older ones were marked reviewed.
+      expect(log.orderedBy, ['createdAt']);
+      expect(find.text('unread review 11'), findsOneWidget);
+      expect(find.text('unread review 2'), findsOneWidget);
+      expect(find.text('unread review 1'), findsNothing);
+      expect(find.text('unread review 0'), findsNothing);
       expect(find.textContaining('reviewed '), findsNothing);
       expect(find.text('autopay requested'), findsNothing);
 
