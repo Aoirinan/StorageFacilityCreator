@@ -9,6 +9,9 @@ import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/unit_provider.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -52,6 +55,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     super.initState();
     // Ensure account exists on init
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // The Area filter starts at All areas each time the list opens, as the
+      // search box starts empty.
+      if (mounted) ref.read(tenantAreaFilterProvider.notifier).state = null;
       _ensureAccountExists();
     });
   }
@@ -123,6 +129,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
           _selectedFacilityId = newLocal;
           _hasInitializedFacility = true;
         });
+        ref.read(tenantAreaFilterProvider.notifier).state = null;
       }
     });
 
@@ -285,6 +292,17 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     final canDeleteTenant = ref
         .watch(canDeleteTenantAtFacilityProvider(permFacilityId))
         .maybeWhen(data: (v) => v, orElse: () => false);
+    // Areas are per facility, so the Area filter and the area beside each
+    // unit number are for one facility's list, not All Facilities.
+    final facilityUnits = permFacilityId.isEmpty
+        ? const <UnitModel>[]
+        : (ref.watch(facilityUnitsProvider(permFacilityId)).value ??
+            const <UnitModel>[]);
+    final areaOptions = unitAreaFilterOptions(facilityUnits);
+    final areaIndex =
+        areaOptions.isEmpty ? null : TenantUnitAreaIndex(facilityUnits);
+    final areaFilter = effectiveUnitAreaFilter(
+        ref.watch(tenantAreaFilterProvider), areaOptions);
 
     return Column(
             children: [
@@ -387,6 +405,49 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                       ],
                     ),
                     const SizedBox(height: AppConstants.spacingM),
+
+                    // Area filter: only for one facility whose units have
+                    // areas.
+                    if (areaOptions.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Icon(Icons.place_outlined, size: 20, color: cs.onSurfaceVariant),
+                          const SizedBox(width: AppConstants.spacingS),
+                          Text('Area: ', style: TextStyle(color: cs.onSurface)),
+                          const SizedBox(width: AppConstants.spacingS),
+                          Expanded(
+                            child: DropdownButtonFormField<String?>(
+                              key: const ValueKey('tenant-area-filter'),
+                              value: areaFilter,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(horizontal: AppConstants.spacingM - 4, vertical: AppConstants.spacingS),
+                                isDense: true,
+                              ),
+                              items: [
+                                const DropdownMenuItem<String?>(
+                                  value: null,
+                                  child: Text('All areas'),
+                                ),
+                                for (final option in areaOptions)
+                                  DropdownMenuItem<String?>(
+                                    value: option,
+                                    child: Text(unitAreaFilterLabel(option), overflow: TextOverflow.ellipsis),
+                                  ),
+                              ],
+                              onChanged: (value) {
+                                // Bulk actions act on the selected tenants
+                                // in the list shown, so start over.
+                                setState(() => _selectedTenantIds.clear());
+                                ref.read(tenantAreaFilterProvider.notifier).state = value;
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: AppConstants.spacingM),
+                    ],
                     
                     // Selection Mode Controls
                     if (_isSelectionMode && _selectedFacilityId.isNotEmpty)
@@ -552,6 +613,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                             _selectedFacilityId = newId;
                                             _searchController.clear();
                                             ref.read(tenantSearchProvider.notifier).state = '';
+                                            ref.read(tenantAreaFilterProvider.notifier).state = null;
                                             _selectedTenantIds.clear();
                                           });
                                           await ref.read(activeFacilityIdProvider.notifier).setActiveFacilityId(
@@ -680,6 +742,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                   Text(
                                     _searchController.text.isNotEmpty
                                         ? 'No tenants found matching "${_searchController.text}"'
+                                        : areaFilter != null
+                                            ? 'No tenants in ${unitAreaFilterLabel(areaFilter)}'
                                         : _selectedFacilityId.isEmpty
                                             ? 'No facility selected'
                                             : 'No tenants found',
@@ -689,7 +753,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                     ),
                                   ),
                                   const SizedBox(height: AppConstants.spacingS),
-                                  if (_searchController.text.isEmpty && _selectedFacilityId.isNotEmpty)
+                                  if (_searchController.text.isEmpty && areaFilter == null && _selectedFacilityId.isNotEmpty)
                                     Text(
                                       'Add your first tenant to get started',
                                       style: TextStyle(
@@ -707,6 +771,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               final tenant = tenants[index];
                               return _buildTenantCard(
                                 tenant,
+                                areas: areaIndex?.areasFor(tenant) ?? const [],
                                 gracePeriodDays: gracePeriodDays,
                                 canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
                               );
@@ -815,6 +880,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
 
   Widget _buildTenantCard(
     TenantModel tenant, {
+    List<String> areas = const [],
     int? gracePeriodDays,
     bool canDeleteTenant = false,
   }) {
@@ -859,7 +925,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Unit: ${tenant.unitNumber}'),
+            Text(areas.isEmpty
+                ? 'Unit: ${tenant.unitNumber}'
+                : 'Unit: ${tenant.unitNumber} · ${areas.join(', ')}'),
             Text('Email: ${tenant.email}'),
             Text('Phone: ${tenant.phone}'),
             Text(

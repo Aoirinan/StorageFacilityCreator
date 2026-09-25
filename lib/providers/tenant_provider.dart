@@ -10,6 +10,9 @@ import '../services/contract_service.dart';
 import '../services/payment_service.dart';
 import '../services/facility_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/unit_provider.dart';
+import '../models/unit_model.dart';
+import '../utils/unit_areas.dart';
 
 // Provider for all tenants across all facilities
 final allTenantsProvider = FutureProvider<List<TenantModel>>((ref) async {
@@ -58,6 +61,11 @@ enum TenantSortOption {
 // Provider for tenant sort option
 final tenantSortProvider = StateProvider<TenantSortOption>((ref) => TenantSortOption.nameAsc);
 
+/// The Tenants list's Area filter: null for All areas, [noUnitAreaFilter],
+/// or an area name. Applies to one facility's list only (not All
+/// Facilities); the screen resets it when the facility changes.
+final tenantAreaFilterProvider = StateProvider<String?>((ref) => null);
+
 // Provider for tenants of a specific facility (real-time stream)
 final facilityTenantsProvider = StreamProvider.family<List<TenantModel>, String>((ref, facilityId) {
   if (facilityId.isEmpty) return Stream.value([]);
@@ -75,14 +83,34 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
   final searchQuery = ref.watch(tenantSearchProvider);
   final sortOption = ref.watch(tenantSortProvider);
   final tenantsAsync = ref.watch(facilityTenantsProvider(facilityId));
+  final areaFilter = ref.watch(tenantAreaFilterProvider);
+  // Units only when filtering by area: a tenant is in an area through its
+  // units (see TenantUnitAreaIndex).
+  final AsyncValue<List<UnitModel>>? unitsAsync =
+      areaFilter == null || facilityId.isEmpty || facilityId == 'all'
+      ? null
+      : ref.watch(facilityUnitsProvider(facilityId));
 
   return tenantsAsync.when(
     data: (tenants) {
-      // Apply search filter
       List<TenantModel> filtered = tenants;
+      if (unitsAsync != null) {
+        final units = unitsAsync.value;
+        // Stay loading until the units are in, rather than show every
+        // tenant under an area filter.
+        if (units == null && unitsAsync.isLoading) {
+          return const Stream<List<TenantModel>>.empty();
+        }
+        if (units != null) {
+          final effective = effectiveUnitAreaFilter(
+              areaFilter, unitAreaFilterOptions(units));
+          filtered = filterTenantsByUnitArea(filtered, units, effective);
+        }
+      }
+      // Apply search filter
       if (searchQuery.isNotEmpty) {
         final normalizedQuery = searchQuery.toLowerCase().trim();
-        filtered = tenants.where((tenant) {
+        filtered = filtered.where((tenant) {
           return tenant.name.toLowerCase().contains(normalizedQuery) ||
                  tenant.email.toLowerCase().contains(normalizedQuery) ||
                  tenant.phone.contains(normalizedQuery) ||

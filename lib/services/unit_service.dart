@@ -7,6 +7,7 @@ import 'facility_limits_service.dart';
 import 'facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -32,12 +33,14 @@ class UnitService {
     Map<String, dynamic>? customFields,
     bool publicListingEnabled = true,
     bool internalUse = false,
+    String? area,
   }) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
         throw Exception('Not signed in');
       }
+      final areaValue = _areaValue(area);
 
       // Check facility unit limit (hard cap)
       final canAdd = await FacilityLimitsService.canAddUnit(facilityId);
@@ -84,6 +87,7 @@ class UnitService {
         'archived': false, // Default to not archived
         'publicListingEnabled': publicListingEnabled,
         'internalUse': internalUse,
+        if (areaValue != null) 'area': areaValue,
       };
 
       await ref.set(unitData);
@@ -255,6 +259,7 @@ class UnitService {
     double? mapHeight,
     bool? publicListingEnabled,
     bool? internalUse,
+    String? area,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -311,6 +316,10 @@ class UnitService {
         updateData['publicListingEnabled'] = publicListingEnabled;
       }
       if (internalUse != null) updateData['internalUse'] = internalUse;
+      // A blank area removes it; null leaves it as it is.
+      if (area != null) {
+        updateData['area'] = _areaValue(area) ?? FieldValue.delete();
+      }
       // Handle map layout updates - merge with existing layout if only partial update
       if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
         // Get existing layout data if available (we'll merge it)
@@ -398,6 +407,37 @@ class UnitService {
       }
       rethrow;
     }
+  }
+
+  /// [area] trimmed, or null when blank. Throws when longer than
+  /// [unitAreaMaxLength], which the editor and "Set area" already stop.
+  static String? _areaValue(String? area) {
+    final trimmed = area?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    if (trimmed.length > unitAreaMaxLength) {
+      throw Exception(
+          'Area names can be at most $unitAreaMaxLength characters.');
+    }
+    return trimmed;
+  }
+
+  /// Sets one unit's area (Units > select units > Set area), or removes it
+  /// when [area] is blank. Writes only `area` and the update stamp: the area
+  /// is not on the public website, so no inventory sync.
+  static Future<void> setUnitArea({
+    required String facilityId,
+    required String unitId,
+    required String? area,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('Not signed in');
+    }
+    await FacilitySubcollections.units(facilityId).doc(unitId).update({
+      'area': _areaValue(area) ?? FieldValue.delete(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'updatedBy': user.uid,
+    });
   }
 
   // Assign tenant to unit (Units > unit > Assign Tenant, and a tenant picked

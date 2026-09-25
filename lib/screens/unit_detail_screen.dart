@@ -349,7 +349,9 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _unit!.unitTypeDisplayName,
+                      _unit!.area == null
+                          ? _unit!.unitTypeDisplayName
+                          : '${_unit!.unitTypeDisplayName} · ${_unit!.area}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: AppTheme.textSecondary,
                       ),
