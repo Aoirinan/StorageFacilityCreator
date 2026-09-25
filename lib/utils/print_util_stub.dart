@@ -8,14 +8,21 @@ void printPaymentReceipt({
   required String dateFormatted,
   String? transactionId,
   String? businessName,
+  String? businessAddress,
+  String? businessMailingAddress,
+  String? businessPhone,
+  String? businessEmail,
+  String? logoUrl,
 }) {}
 
 /// Stub: invoice printing is web-only.
 void printInvoice({
   required String facilityName,
   String? facilityAddress,
+  String? facilityMailingAddress,
   String? facilityPhone,
   String? facilityEmail,
+  String? facilityLogoUrl,
   required String tenantName,
   String? tenantAddress,
   String? tenantPhone,

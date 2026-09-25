@@ -7,7 +7,9 @@ import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+import 'package:sfcapp/widgets/unit_area_field.dart';
 
 /// The amount typed into a unit's rate, deposit or size field, or null when
 /// it is not a finite number of at least zero.
@@ -50,6 +52,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   final _securityDepositController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _notesController = TextEditingController();
+  final _areaController = TextEditingController();
   final _widthController = TextEditingController();
   final _heightController = TextEditingController();
   final _depthController = TextEditingController();
@@ -97,6 +100,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
     _securityDepositController.dispose();
     _descriptionController.dispose();
     _notesController.dispose();
+    _areaController.dispose();
     _widthController.dispose();
     _heightController.dispose();
     _depthController.dispose();
@@ -223,6 +227,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
     _securityDepositController.text = unit.securityDeposit?.toString() ?? '';
     _descriptionController.text = unit.description ?? '';
     _notesController.text = unit.notes ?? '';
+    _areaController.text = unit.area ?? '';
     _selectedUnitType = unit.unitType;
     _selectedStatus = unit.status;
     // Guard: Only populate tenant data if status is NOT "Available"
@@ -475,6 +480,17 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                                 },
                               ),
                             ],
+                            const SizedBox(height: 20),
+
+                            // Area (Complex 2, Outdoor Storage...): groups
+                            // units for the Area filter on Units and Tenants.
+                            UnitAreaField(
+                              controller: _areaController,
+                              existingAreas: _existingAreas(watch: true),
+                              helperText: _isBulkCreateMode
+                                  ? 'Optional. Every unit created here gets this area.'
+                                  : 'Optional. Groups units so you can filter Units and Tenants by area.',
+                            ),
                             const SizedBox(height: 20),
 
                             // Unit Type
@@ -1187,6 +1203,23 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
     );
   }
 
+  /// The facility's areas, from the units list already loaded for it.
+  /// [excludeThisUnit] leaves out the unit being edited, so that its own
+  /// area does not hold its spelling: "complex 2" on the only unit in it can
+  /// be saved as "Complex 2".
+  List<String> _existingAreas({
+    required bool watch,
+    bool excludeThisUnit = false,
+  }) {
+    final provider = facilityUnitsProvider(widget.facilityId);
+    final units = (watch ? ref.watch(provider) : ref.read(provider)).value ??
+        const <UnitModel>[];
+    final editingId = widget.unit?.id;
+    return distinctUnitAreas(excludeThisUnit && editingId != null
+        ? units.where((u) => u.id != editingId)
+        : units);
+  }
+
   Widget _buildPresetSizeChip(
       String label, double width, double depth, double height) {
     final cs = Theme.of(context).colorScheme;
@@ -1244,6 +1277,10 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
         dimensions['depth'] = double.tryParse(_depthController.text);
       }
 
+      // Spelled as an existing area when it matches one ignoring case.
+      final area = canonicalUnitArea(_areaController.text,
+          _existingAreas(watch: false, excludeThisUnit: true));
+
       if (widget.unit == null) {
         final unitNumbers = _isBulkCreateMode
             ? _expandUnitNumbers(_unitNumberController.text)
@@ -1271,6 +1308,7 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
                   : double.tryParse(_securityDepositController.text),
               publicListingEnabled: _publicListingEnabled,
               internalUse: _internalUse,
+              area: area,
             );
             createdCount++;
           } catch (error) {
@@ -1409,6 +1447,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
               : _notesController.text.trim(),
           publicListingEnabled: _publicListingEnabled,
           internalUse: _internalUse,
+          // Sent only when changed; blank removes the area.
+          area: area == previous.area ? null : (area ?? ''),
         );
         final notice = assigning
             ? await UnitService.assignTenantToUnit(
