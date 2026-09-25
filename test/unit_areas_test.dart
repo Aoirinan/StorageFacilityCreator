@@ -3,12 +3,16 @@ import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/active_facility_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
+import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/screens/unit_creation_screen.dart';
+import 'package:sfcapp/screens/unit_list_screen.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
@@ -392,6 +396,227 @@ void main() {
 
       expect(log.writes.single.$1, 'update');
       expect(log.writes.single.$3['area'], FieldValue.delete());
+    });
+
+    testWidgets('Enter saves the area as typed, not the first suggestion',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {'unitNumber': 'C2-12', 'status': 'available'}),
+        FakeDoc('u2', {
+          'unitNumber': 'C20-1',
+          'status': 'available',
+          'area': 'Complex 20',
+        }),
+      ]);
+      await openScreen(tester, unit: _unit('u1', 'C2-12'));
+
+      final field = find.byKey(const ValueKey('unit-area-field'));
+      await tester.enterText(field, 'Complex 2');
+      await tester.pumpAndSettle();
+      // "Complex 20" is offered...
+      expect(find.widgetWithText(ListTile, 'Complex 20'), findsOneWidget);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      // ...but Enter does not take it.
+      expect(tester.widget<TextFormField>(field).controller?.text, 'Complex 2');
+      await tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+
+      expect(log.writes.single.$3['area'], 'Complex 2');
+    });
+
+    testWidgets('the only unit in an area can change its capitals',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'C2-12',
+          'status': 'available',
+          'area': 'complex 2',
+        }),
+      ]);
+      await openScreen(tester, unit: _unit('u1', 'C2-12', area: 'complex 2'));
+
+      await tester.enterText(
+          find.byKey(const ValueKey('unit-area-field')), 'Complex 2');
+      await tester.pumpAndSettle();
+      await tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+
+      // Before: its own "complex 2" held the spelling and nothing changed.
+      expect(log.writes.single.$3['area'], 'Complex 2');
+    });
+
+    testWidgets('an edit that leaves the area alone does not send it',
+        (tester) async {
+      final log = _serveUnits([
+        FakeDoc('u1', {
+          'unitNumber': 'C2-12',
+          'status': 'available',
+          'area': 'Complex 2',
+        }),
+      ]);
+      await openScreen(tester, unit: _unit('u1', 'C2-12', area: 'Complex 2'));
+      await tapVisible(
+          tester, find.widgetWithText(ElevatedButton, 'Update Unit'));
+
+      expect(log.writes.single.$1, 'update');
+      expect(log.writes.single.$3.containsKey('area'), isFalse);
+    });
+  });
+
+  group('Units list Area filter and Set area', () {
+    Future<FakeQueryLog> pumpList(
+      WidgetTester tester,
+      List<UnitModel> units, {
+      double width = 1600,
+    }) async {
+      tester.view.physicalSize = Size(width, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final log = _serveUnits([
+        for (final u in units)
+          FakeDoc(u.id, {'unitNumber': u.unitNumber, 'area': u.area}),
+      ]);
+      final facility = FacilityModel(
+        id: 'fac1',
+        name: 'Caprock Storage',
+        ownerUid: 'owner-1',
+        createdAt: DateTime(2026, 1, 1),
+      );
+      final container = ProviderContainer(
+        overrides: [
+          authStateProvider.overrideWith(
+            (ref) => Stream.value(MockUser(uid: 'owner-1')),
+          ),
+          userFacilitiesProvider('owner-1').overrideWith(
+            (ref) => Stream.value([facility]),
+          ),
+          activeFacilityIdProvider.overrideWith(
+            (ref) => ActiveFacilityNotifier.idle(const AsyncValue.data('fac1')),
+          ),
+          facilityUnitsProvider('fac1')
+              .overrideWith((ref) => Stream.value(units)),
+          facilityTenantsProvider('fac1').overrideWith(
+            (ref) => Stream.value(const <TenantModel>[]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.listen(authStateProvider, (_, __) {});
+      container.listen(userFacilitiesProvider('owner-1'), (_, __) {});
+      await tester.runAsync(() async {
+        await container.read(authStateProvider.future);
+        await container.read(userFacilitiesProvider('owner-1').future);
+      });
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: Scaffold(body: UnitListScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return log;
+    }
+
+    /// Row checkboxes follow the header's, in unit number order.
+    Future<void> tick(WidgetTester tester, int index) async {
+      await tester.tap(find.byType(Checkbox).at(index));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> setAreaWithEnter(WidgetTester tester, String text) async {
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Set area'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('unit-area-field')), text);
+      await tester.pumpAndSettle();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('blank + Enter in Set area removes the area', (tester) async {
+      final log = await pumpList(tester, [
+        _unit('u1', 'A1', area: 'Complex 2'),
+        _unit('u2', 'A2', area: 'Complex 20'),
+      ]);
+      await tick(tester, 0); // header: both
+      await setAreaWithEnter(tester, '');
+
+      // Before: Enter picked the first suggestion and both became
+      // "Complex 2".
+      expect(log.writes.map((w) => (w.$2, w.$3['area'])), [
+        ('u1', FieldValue.delete()),
+        ('u2', FieldValue.delete()),
+      ]);
+    });
+
+    testWidgets('"Complex 2" + Enter saves Complex 2 with Complex 20 there',
+        (tester) async {
+      final log = await pumpList(tester, [
+        _unit('u1', 'A1', area: 'Complex 20'),
+        _unit('u2', 'A2'),
+      ]);
+      await tick(tester, 2); // A2
+      await setAreaWithEnter(tester, 'Complex 2');
+
+      expect(log.writes.map((w) => (w.$2, w.$3['area'])),
+          [('u2', 'Complex 2')]);
+    });
+
+    testWidgets('capitals change when every unit in the area is set',
+        (tester) async {
+      final log = await pumpList(tester, [
+        _unit('u1', 'A1', area: 'complex 2'),
+        _unit('u2', 'A2', area: 'complex 2'),
+      ]);
+      await tick(tester, 0);
+      await setAreaWithEnter(tester, 'Complex 2');
+
+      expect(log.writes.map((w) => w.$3['area']), ['Complex 2', 'Complex 2']);
+    });
+
+    testWidgets(
+        'changing the Area filter clears the selection, and Set area '
+        'only touches units shown', (tester) async {
+      final log = await pumpList(tester, [
+        _unit('u1', 'A1', area: 'Complex 2'),
+        _unit('u2', 'A2', area: 'Complex 3'),
+        _unit('u3', 'A3', area: 'Complex 2'),
+      ]);
+      await tick(tester, 0);
+      expect(find.text('3 selected'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('unit-area-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Complex 2').last);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('selected'), findsNothing);
+      expect(find.text('A2'), findsNothing);
+
+      await tick(tester, 0);
+      expect(find.text('2 selected'), findsOneWidget);
+      await setAreaWithEnter(tester, 'Building A');
+
+      expect(log.writes.map((w) => w.$2), ['u1', 'u3']);
+    });
+
+    testWidgets('the Area filter fits a narrow window', (tester) async {
+      await pumpList(
+        tester,
+        [
+          _unit('u1', 'A1', area: 'Complex 2'),
+          _unit('u2', 'A2', area: 'Outdoor Storage'),
+        ],
+        width: 640,
+      );
+      // An overflow is reported as an exception.
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const ValueKey('unit-area-filter')), findsOneWidget);
+    });
+
+    testWidgets('no Area filter when no unit has an area', (tester) async {
+      await pumpList(tester, [_unit('u1', 'A1'), _unit('u2', 'A2')]);
+      expect(find.byKey(const ValueKey('unit-area-filter')), findsNothing);
     });
   });
 }

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
 
 /// The Area text field: free text, suggesting the facility's existing areas
-/// as the owner types (or all of them on an empty field).
+/// that contain what the owner has typed.
 class UnitAreaField extends StatefulWidget {
   const UnitAreaField({
     super.key,
@@ -39,11 +39,17 @@ class _UnitAreaFieldState extends State<UnitAreaField> {
       focusNode: _focusNode,
       optionsBuilder: (value) {
         final query = value.text.trim().toLowerCase();
+        // Nothing for a blank field: blank is how an area is removed.
+        if (query.isEmpty) return const Iterable<String>.empty();
         return widget.existingAreas.where((area) =>
             area.toLowerCase().contains(query) &&
             area.toLowerCase() != query);
       },
-      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+      // The autocomplete's own submit is not used: it picks the highlighted
+      // (first) suggestion, so Enter on "Complex 2" saved "Complex 20" and
+      // Enter on a blank field saved the first area. Enter submits the text
+      // as typed; a suggestion is picked by clicking it.
+      fieldViewBuilder: (context, controller, focusNode, _) {
         return TextFormField(
           key: const ValueKey('unit-area-field'),
           controller: controller,
@@ -59,10 +65,7 @@ class _UnitAreaFieldState extends State<UnitAreaField> {
             helperMaxLines: 2,
             counterText: '',
           ),
-          onFieldSubmitted: (_) {
-            onFieldSubmitted();
-            widget.onSubmitted?.call();
-          },
+          onFieldSubmitted: (_) => widget.onSubmitted?.call(),
         );
       },
       optionsViewBuilder: (context, onSelected, options) {

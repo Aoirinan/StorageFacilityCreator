@@ -1204,11 +1204,20 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
   }
 
   /// The facility's areas, from the units list already loaded for it.
-  List<String> _existingAreas({required bool watch}) {
+  /// [excludeThisUnit] leaves out the unit being edited, so that its own
+  /// area does not hold its spelling: "complex 2" on the only unit in it can
+  /// be saved as "Complex 2".
+  List<String> _existingAreas({
+    required bool watch,
+    bool excludeThisUnit = false,
+  }) {
     final provider = facilityUnitsProvider(widget.facilityId);
     final units = (watch ? ref.watch(provider) : ref.read(provider)).value ??
         const <UnitModel>[];
-    return distinctUnitAreas(units);
+    final editingId = widget.unit?.id;
+    return distinctUnitAreas(excludeThisUnit && editingId != null
+        ? units.where((u) => u.id != editingId)
+        : units);
   }
 
   Widget _buildPresetSizeChip(
@@ -1269,8 +1278,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
       }
 
       // Spelled as an existing area when it matches one ignoring case.
-      final area =
-          canonicalUnitArea(_areaController.text, _existingAreas(watch: false));
+      final area = canonicalUnitArea(_areaController.text,
+          _existingAreas(watch: false, excludeThisUnit: true));
 
       if (widget.unit == null) {
         final unitNumbers = _isBulkCreateMode
@@ -1438,8 +1447,8 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
               : _notesController.text.trim(),
           publicListingEnabled: _publicListingEnabled,
           internalUse: _internalUse,
-          // Blank removes the area.
-          area: area ?? '',
+          // Sent only when changed; blank removes the area.
+          area: area == previous.area ? null : (area ?? ''),
         );
         final notice = assigning
             ? await UnitService.assignTenantToUnit(

@@ -242,7 +242,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         border:
             Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+      Row(
         children: [
           Expanded(
             child: TextField(
@@ -264,7 +268,6 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
               },
             ),
           ),
-          ..._buildAreaFilter(),
           const SizedBox(width: 16),
           PopupMenuButton<UnitStatus>(
             icon: const Icon(Icons.filter_list),
@@ -330,6 +333,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
         ],
       ),
+          // On its own row under the search box: beside it, the toolbar
+          // overflowed on a narrow window.
+          ..._buildAreaFilter(),
+        ],
+      ),
     );
   }
 
@@ -343,9 +351,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     if (options.isEmpty) return const [];
     final selected = effectiveUnitAreaFilter(_areaFilter, options);
     return [
-      const SizedBox(width: 16),
-      SizedBox(
-        width: 200,
+      const SizedBox(height: 12),
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 320),
         child: DropdownButtonFormField<String?>(
           key: const ValueKey('unit-area-filter'),
           value: selected,
@@ -370,7 +378,12 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                     overflow: TextOverflow.ellipsis),
               ),
           ],
-          onChanged: (value) => setState(() => _areaFilter = value),
+          // Bulk actions act on the selected units shown, so start over, as
+          // the Tenants list does.
+          onChanged: (value) => setState(() {
+            _areaFilter = value;
+            _selectedUnitIds.clear();
+          }),
         ),
       ),
     ];
@@ -388,6 +401,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         .map((u) => u.id)
         .toList();
     final skipCount = selectedCount - canDeleteIds.length;
+    // Like Archive: only selected units the filters still show.
+    final setAreaIds = filteredUnits
+        .where((u) => _selectedUnitIds.contains(u.id))
+        .map((u) => u.id)
+        .toList();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
@@ -415,7 +433,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
           const SizedBox(width: 8),
           OutlinedButton.icon(
-            onPressed: () => _handleBulkSetArea(_selectedUnitIds.toList()),
+            onPressed: setAreaIds.isEmpty
+                ? null
+                : () => _handleBulkSetArea(setAreaIds),
             icon: const Icon(Icons.place_outlined, size: 18),
             label: const Text('Set area'),
           ),
@@ -762,9 +782,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   Future<void> _handleBulkSetArea(List<String> unitIds) async {
     final facilityId = _selectedFacilityId;
     if (facilityId == null || unitIds.isEmpty) return;
-    final existingAreas = distinctUnitAreas(
-        ref.read(facilityUnitsProvider(facilityId)).value ??
-            const <UnitModel>[]);
+    final units = ref.read(facilityUnitsProvider(facilityId)).value ??
+        const <UnitModel>[];
+    final existingAreas = distinctUnitAreas(units);
     final typed = await showDialog<String>(
       context: context,
       builder: (context) => _SetAreaDialog(
@@ -773,7 +793,13 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
       ),
     );
     if (typed == null || !mounted) return;
-    final area = canonicalUnitArea(typed, existingAreas);
+    // Spelled as an area other units keep; the units being set do not hold
+    // a spelling, so "complex 2" on all of them can become "Complex 2".
+    final selected = unitIds.toSet();
+    final area = canonicalUnitArea(
+      typed,
+      distinctUnitAreas(units.where((u) => !selected.contains(u.id))),
+    );
     final result = await runBulkAction(
       unitIds,
       (id) => UnitService.setUnitArea(
