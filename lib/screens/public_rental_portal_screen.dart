@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/public_rental_service.dart';
+import 'package:sfcapp/services/public_website_status.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
@@ -18,12 +19,23 @@ class PublicRentalPortalScreen extends StatefulWidget {
   final bool availableOnly;
   final String? initialCategorySlug;
 
+  /// Whether the facility's website (`/w/{slug}`) is live, when the caller
+  /// already asked (PublicRentEntryPage). Null: this screen asks once the
+  /// facility loads. The Home/About/Units/Map/Contact bar links into the
+  /// website, so it shows only when the website is live.
+  final bool? websiteLive;
+
+  /// Test seam. Production asks [PublicWebsiteStatus.isLive].
+  final Future<bool> Function(String slug)? websiteIsLive;
+
   const PublicRentalPortalScreen({
     super.key,
     this.facilityId,
     this.facilitySlug,
     this.availableOnly = false,
     this.initialCategorySlug,
+    this.websiteLive,
+    this.websiteIsLive,
   });
 
   @override
@@ -54,6 +66,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String? _error;
   String? _facilitySlug;
   String? _facilityId;
+  bool _websiteLive = false;
   String _facilityName = 'Rent Online';
   String? _facilityDescription;
   String? _facilityPhone;
@@ -212,9 +225,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _unitTypeImageUrls = unitTypeImageUrls;
         _units = publicUnits;
         _selectedCategorySlug = widget.initialCategorySlug;
+        _websiteLive = widget.websiteLive ?? false;
         _isLoading = false;
       });
 
+      if (widget.websiteLive == null) {
+        unawaited(_askWhetherWebsiteIsLive(resolvedSlug, settings));
+      }
       _maybeAutoStartRental();
     } catch (e) {
       if (kDebugMode) {
@@ -225,6 +242,26 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  /// The website is live only when the server says so (publicSettings.enabled
+  /// and the facility entitled to it). Off in this snapshot means off there
+  /// too, since the server reads the same publicFacilityMaps doc, so only a
+  /// website switched on costs a request.
+  Future<void> _askWhetherWebsiteIsLive(
+    String slug,
+    Map<String, dynamic> settings,
+  ) async {
+    if (settings['enabled'] != true) return;
+    final ask = widget.websiteIsLive ?? PublicWebsiteStatus.isLive;
+    bool live;
+    try {
+      live = await ask(slug);
+    } catch (_) {
+      live = false;
+    }
+    if (!mounted || !live || _facilitySlug != slug) return;
+    setState(() => _websiteLive = true);
   }
 
   String? _getSlugFromPath() {
@@ -255,11 +292,9 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     }
   }
 
-  String _originBase() {
-    final origin = Uri.base.origin;
-    if (origin.isNotEmpty) return origin;
-    return 'https://app.storagefacilitycreator.com';
-  }
+  // Not Uri.base.origin directly: that throws when the page has no http(s)
+  // origin (off the web, and in tests).
+  String _originBase() => PublicWebsiteStatus.appOrigin().toString();
 
   String _publicWebsiteBaseUrl() {
     final slug = _facilitySlug?.trim();
@@ -621,7 +656,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
           padding: EdgeInsets.zero,
           children: [
             if (!_isEmbeddedMode) _buildFacilityHeader(),
-            if (!_isEmbeddedMode)
+            if (!_isEmbeddedMode && _websiteLive)
               Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: _contentMaxWidth),
