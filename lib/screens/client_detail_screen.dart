@@ -37,6 +37,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
+import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
@@ -1050,6 +1051,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                             },
                             icon: const Icon(Icons.point_of_sale_outlined, size: 20),
                             label: const Text('Store sale'),
+                          ),
+                          TenantMoveOutButton(
+                            facilityId: tenant.facilityId,
+                            tenantId: tenant.id,
+                            onMovedOut: () {
+                              ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+                              _loadGateAccess();
+                            },
                           ),
                         ],
                       ),

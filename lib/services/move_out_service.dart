@@ -6,11 +6,34 @@ import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/invoice_line_item_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart'
     show LedgerEntry, LedgerEntryStatus, LedgerEntryType;
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+
+/// The unit a move-out vacates when the link names none: the one unit the
+/// tenant holds, or among several the one their record names. Null when
+/// that leaves it open, for the owner to choose; never another tenant's
+/// unit. The screen fell back to the facility's first unit when the
+/// tenant's unit number matched none.
+UnitModel? unitToVacate({
+  required List<UnitModel> units,
+  required TenantModel tenant,
+}) {
+  final held = units.where((u) => u.tenantId == tenant.id).toList();
+  if (held.length == 1) return held.single;
+  final number = tenant.unitNumber.trim();
+  // Their own units, or with none linked by id (an older record) a unit by
+  // number that no other tenant holds.
+  final candidates = held.isNotEmpty
+      ? held
+      : units.where((u) => (u.tenantId ?? '').trim().isEmpty).toList();
+  final byNumber =
+      candidates.where((u) => number.isNotEmpty && u.unitNumber.trim() == number);
+  return byNumber.length == 1 ? byNumber.single : null;
+}
 
 /// Service for managing move-out workflow
 class MoveOutService {

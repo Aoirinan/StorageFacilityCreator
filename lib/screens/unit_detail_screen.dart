@@ -5,19 +5,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/providers/permission_provider.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/services/contract_service.dart';
 import 'package:sfcapp/services/dnr_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/widgets/move_out_action.dart';
 
 /// Whether the unit menu offers Remove Lockout. Not only on occupied units:
 /// Set Lockout moves the unit to lockout status, and the tenant-archive and
@@ -43,8 +47,15 @@ UnitStatus statusAfterRemovingLockout(UnitModel unit) =>
 class UnitDetailActions {
   const UnitDetailActions();
 
+  Future<UnitModel?> unit(String facilityId, String unitId) =>
+      UnitService.getUnit(facilityId, unitId);
+
   Future<TenantModel?> tenant(String facilityId, String tenantId) =>
       TenantService.getTenantById(facilityId, tenantId);
+
+  /// The tenant's active contracts, for Move out.
+  Future<List<ContractModel>> contracts(String facilityId, String tenantId) =>
+      ContractService.getContractsForTenant(facilityId, tenantId);
 
   Future<double> balance(String facilityId, String tenantId) =>
       LedgerService.getLedgerBalance(tenantId: tenantId, facilityId: facilityId);
@@ -101,11 +112,15 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
     });
 
     try {
-      // Use pre-loaded unit if available, otherwise fetch
-      if (widget.unit != null) {
+      // The unit passed in serves the first load only. Every later load is
+      // a refresh after an action on this page, and kept showing the unit as
+      // it was before it (a moved-out unit still occupied).
+      if (_unit == null && widget.unit != null) {
         _unit = widget.unit;
       } else {
-        final unit = await UnitService.getUnit(widget.facilityId, widget.unitId);
+        final unit = await ref
+            .read(unitDetailActionsProvider)
+            .unit(widget.facilityId, widget.unitId);
         if (unit == null) {
           setState(() {
             _errorMessage = 'Unit not found';
@@ -206,6 +221,9 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       );
     }
 
+    final canMoveOut =
+        ref.watch(canProcessMoveOutAtFacilityProvider(widget.facilityId)).value ?? false;
+
     return Scaffold(
       appBar: _buildAppBar(
         context,
@@ -228,6 +246,15 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                 ),
               ),
               if (_unit!.isOccupied) ...[
+                if (canMoveOut && (_unit!.tenantId ?? '').trim().isNotEmpty)
+                  const PopupMenuItem(
+                    value: 'move_out',
+                    child: ListTile(
+                      leading: Icon(Icons.logout),
+                      title: Text('Move out'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                 const PopupMenuItem(
                   value: 'unassign_tenant',
                   child: ListTile(
@@ -584,6 +611,9 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
       case 'assign_tenant':
         _showAssignTenantDialog();
         break;
+      case 'move_out':
+        _moveOut();
+        break;
       case 'unassign_tenant':
         _showUnassignTenantDialog();
         break;
@@ -797,6 +827,54 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  /// Move out: the move-out screen for the tenant's contract, vacating this
+  /// unit. A tenant given the unit by Assign Tenant has no contract to move
+  /// out from; Unassign Tenant frees it.
+  Future<void> _moveOut() async {
+    final tenantId = (_unit!.tenantId ?? '').trim();
+    if (tenantId.isEmpty) return;
+    final tenantName = _tenant?.name ?? _unit!.tenantName ?? 'This tenant';
+    List<ContractModel> contracts;
+    try {
+      contracts = await ref
+          .read(unitDetailActionsProvider)
+          .contracts(widget.facilityId, tenantId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Couldn't load $tenantName's contracts: "
+                '${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
+            backgroundColor: AppTheme.error,
+          ),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (contractsOpenForMoveOut(contracts).isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$tenantName has no active contract to move out from. '
+              'To free the unit without one, use Unassign Tenant.'),
+          backgroundColor: AppTheme.warning,
+          duration: const Duration(seconds: 8),
+        ),
+      );
+      return;
+    }
+    final finished = await startMoveOut(
+      context,
+      facilityId: widget.facilityId,
+      contracts: contracts,
+      unitId: widget.unitId,
+    );
+    if (!finished || !mounted) return;
+    ref.invalidate(facilityUnitsProvider(widget.facilityId));
+    ref.invalidate(facilityTenantsProvider(widget.facilityId));
+    unawaited(_loadUnit());
   }
 
   void _showUnassignTenantDialog() async {

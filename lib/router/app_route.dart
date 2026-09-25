@@ -119,6 +119,20 @@ class AppRoute {
   static const facilityNotifications = '/notifications';
   static const moveInWizard = '/move-in';
   static const moveOut = '/move-out';
+
+  /// The move-out screen for [contractId]. [unitId] names the unit being
+  /// vacated when the caller knows it (the unit's own menu); without it the
+  /// screen works it out from the units the tenant holds.
+  static String moveOutFor({
+    required String contractId,
+    required String facilityId,
+    String? unitId,
+  }) =>
+      Uri(path: moveOut, queryParameters: {
+        'contractId': contractId,
+        'facilityId': facilityId,
+        if (unitId != null && unitId.isNotEmpty) 'unitId': unitId,
+      }).toString();
   static const contactLogs = '/contact-logs';
   static const auditLogs = '/audit-logs';
   static const exports = '/exports';
