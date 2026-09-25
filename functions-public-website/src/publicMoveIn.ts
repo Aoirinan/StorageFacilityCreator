@@ -22,8 +22,9 @@ import {
 import { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, STRIPE_SECRETS } from './secrets';
 import { optionalStripeCheckoutCustomerEmail } from './stripeHelpers';
 import {
-  CHECKOUT_SESSION_ID_FIELD,
+  expireRecordedSessionOnRefusal,
   recordCheckoutSession,
+  recordedCheckoutSession,
   reusableCheckoutSession,
 } from './checkoutSessionReuse';
 import { generateAccessCode } from './accessCode';
@@ -542,7 +543,7 @@ export const transitionPublicReservationStatus = functions.https.onCall(async (d
 
 export const createPublicMoveInCheckout = functions
   .runWith({ secrets: STRIPE_SECRETS })
-  .https.onCall(async (data: any, context) => {
+  .https.onCall(expireRecordedSessionOnRefusal(async (data: any, context) => {
   // Every sibling public callable enforces App Check; this one took no `context`
   // at all, so it could not. It creates Stripe Checkout Sessions on the
   // operator's connected account, making it an unauthenticated, unmetered way to
@@ -759,7 +760,7 @@ export const createPublicMoveInCheckout = functions
     };
     const reusable = await reusableCheckoutSession(
       stripe.checkout.sessions,
-      reservation[CHECKOUT_SESSION_ID_FIELD],
+      recordedCheckoutSession(reservation),
       sessionLookup,
     );
     if (reusable) {
@@ -825,7 +826,7 @@ export const createPublicMoveInCheckout = functions
     const payable = await recordCheckoutSession(
       stripe.checkout.sessions,
       reservationRef,
-      reservation[CHECKOUT_SESSION_ID_FIELD],
+      recordedCheckoutSession(reservation),
       { id: session.id, url: session.url },
       sessionLookup,
     );
@@ -856,7 +857,7 @@ export const createPublicMoveInCheckout = functions
       'Payment could not be started. Please contact the facility directly.',
     );
   }
-});
+}));
 
 /**
  * Confirm Stripe Checkout payment result for public move-in.

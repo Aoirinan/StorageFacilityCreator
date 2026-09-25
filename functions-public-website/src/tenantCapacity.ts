@@ -54,7 +54,8 @@ export async function assertFacilityHasTenantCapacity(
       limit: MAX_ACTIVE_TENANTS_PER_FACILITY,
     });
     // Nothing about the operator's account in the message: the caller is an
-    // anonymous member of the public.
+    // anonymous member of the public. The wording is listed in
+    // checkoutSessionReuse.ts (REFUSALS_THAT_END_CHECKOUT); change both.
     throw new functions.https.HttpsError(
       'failed-precondition',
       'This facility is not taking online move-ins right now. Please contact the facility.',
