@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
  * READ-ONLY pre-deploy counts for the online move-in changes in
- * functions-public-website (paid renters moved in or refunded, one Checkout
- * Session per reservation, the stalled-refund sweep). It only reads: no
- * set, update, delete or batch is made anywhere below.
+ * functions-public-website (paid renters moved in or refunded, short
+ * Checkout Sessions, the stalled-refund sweep; one Checkout Session per
+ * reservation comes with fix/public-move-in-checkout-once). It only reads:
+ * no set, update, delete or batch is made anywhere below.
  *
  * What it reports:
  *   1. Units whose status is available or reserved but which still carry a
@@ -13,9 +14,11 @@
  *      'pending', with their age. The new resumeStalledMoveInRefunds sweep
  *      will finish any older than 15 minutes on its first run.
  *   3. Open reservations whose checkout started within the last 24 hours
- *      and that have no checkoutSessionId: their Checkout Sessions were made
- *      before this deploy, stay payable for 24 hours and carry untagged
- *      payments. Consider expiring them in the Stripe dashboard.
+ *      and that have no checkoutSessionId (recorded only once
+ *      fix/public-move-in-checkout-once is deployed, so before it, every
+ *      one): their Checkout Sessions were made before this deploy, stay
+ *      payable for 24 hours and carry untagged payments. Consider expiring
+ *      them in the Stripe dashboard.
  *
  * Usage (Application Default Credentials with read access to the project):
  *   gcloud auth application-default login

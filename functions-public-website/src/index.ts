@@ -38,6 +38,7 @@ export {
   confirmPublicMoveInCheckout,
   completePublicMoveIn,
 } from './publicMoveIn';
+export { resumeStalledMoveInRefunds } from './pendingMoveInRefundSweep';
 export {
   createPublicPaymentLink,
   getPublicPaymentLink,

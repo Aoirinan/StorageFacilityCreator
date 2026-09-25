@@ -2,6 +2,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { getStripeClient } from '@sfc/functions-shared';
 import { ONLINE_MOVE_IN_REVIEW_TYPE } from './onlineMoveInReview';
+import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 
 /**
  * One document per PaymentIntent that has completed an online move-in, or
@@ -87,6 +88,9 @@ interface RefundRecord {
   error?: string | null;
 }
 
+/** The owner pays for an automatic refund: Stripe keeps its fee on the original payment. */
+const STRIPE_FEE_NOTE = 'Stripe does not return its processing fee on a refund.';
+
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
@@ -119,12 +123,16 @@ function ownerMessage(
   const head =
     `${ctx.renterName} paid ${dollars(amountCents)} online for unit ${ctx.unitNumber}, ` +
     `but was not moved in because ${OWNER_TEXT[refusal]}.`;
-  if (state === 'refunded') return `${head} The payment was refunded to them automatically.`;
+  if (state === 'refunded') return `${head} The payment was refunded to them automatically. ${STRIPE_FEE_NOTE}`;
   if (state === 'failed') {
     return `${head} The automatic refund failed (${error || 'unknown error'}). ` +
       `Refund payment ${paymentIntentId} in your Stripe dashboard.`;
   }
-  return `${head} The payment is being refunded to them automatically.`;
+  // Written before Stripe is asked, so it cannot promise the refund: an
+  // instance that dies in between leaves it here until the sweep
+  // (pendingMoveInRefundSweep.ts) finishes the refund and rewrites it.
+  return `${head} An automatic refund has been started, and this alert will say when Stripe has made it. ` +
+    `If it still says this in an hour, check payment ${paymentIntentId} in your Stripe dashboard. ${STRIPE_FEE_NOTE}`;
 }
 
 function renterError(
@@ -140,6 +148,22 @@ function renterError(
     refunded: state === 'refunded',
     paymentIntentId,
   });
+}
+
+/**
+ * For a renter who paid when Stripe could not say whose the payment is, so
+ * nothing was refunded and the owner was asked to check it. The unpaid
+ * error ('Unit is no longer available') read, on the move-in page, as
+ * 'choose another unit': nothing about the money they had paid.
+ */
+function paymentUnderReviewError(refusal: PaidMoveInRefusal, payment: OfferedPayment): functions.https.HttpsError {
+  return new functions.https.HttpsError(
+    'failed-precondition',
+    `${RENTER_TEXT[refusal]} Your payment of ${dollars(payment.amountReceivedCents)} could not be checked ` +
+      'automatically just now, so it has not been refunded yet. The facility has been told and will look at ' +
+      'your payment.',
+    { refunded: false, paymentIntentId: payment.paymentIntentId },
+  );
 }
 
 /**
@@ -355,6 +379,9 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
       contractId: null,
       amountReceivedCents: payment.amountReceivedCents,
       refund,
+      // The account holding the payment, for the sweep that finishes a refund
+      // nobody retries (sweepStalledMoveInRefunds).
+      connectAccountId: params.connectAccountId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: 'publicMoveIn',
     });
@@ -407,7 +434,7 @@ export async function refusePaidMoveIn(params: PaidMoveInContext & {
     outcome: decided.kind,
   });
 
-  if (decided.kind === 'review') throw params.unpaidError;
+  if (decided.kind === 'review') throw paymentUnderReviewError(refusal, payment);
   if (decided.kind === 'resume') {
     return resumePaidMoveInRefund(params, payment.paymentIntentId, decided.record);
   }
@@ -435,4 +462,73 @@ export async function resumePaidMoveInRefund(
     Number(record.amountReceivedCents) || 0,
     refund,
   );
+}
+
+/**
+ * A refund decided this long ago and still 'pending' was left by a
+ * completion that died, or timed out, between deciding it and hearing from
+ * Stripe. Longer than a completion runs, so the sweep does not race a live
+ * one; the idempotency key would make that harmless anyway.
+ */
+export const STALLED_REFUND_MINUTES = 15;
+
+/** Most stalled refunds one sweep finishes; any more wait for the next run. */
+const STALLED_REFUND_BATCH = 50;
+
+/**
+ * Finishes refunds decided but never made. Before, only the renter trying
+ * again finished one: a renter who gave up was never refunded, and the
+ * owner's alert still said the refund was under way. Same idempotency key as
+ * the first attempt, so a refund Stripe did make is not made again.
+ */
+export async function sweepStalledMoveInRefunds(now: Date): Promise<{ finished: number; skipped: number }> {
+  const snap = await admin.firestore()
+    .collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION)
+    .where('refund.status', '==', 'pending')
+    .limit(STALLED_REFUND_BATCH)
+    .get();
+  let finished = 0;
+  let skipped = 0;
+  for (const doc of snap.docs) {
+    const record = (doc.data() || {}) as Record<string, any>;
+    const decidedAt = typeof record.createdAt?.toMillis === 'function' ? Number(record.createdAt.toMillis()) : null;
+    if (decidedAt == null || now.getTime() - decidedAt < STALLED_REFUND_MINUTES * 60 * 1000) {
+      skipped += 1;
+      continue;
+    }
+    const facilityId = String(record.facilityId || '').trim();
+    let connectAccountId = String(record.connectAccountId || '').trim();
+    if (!connectAccountId && facilityId) {
+      // Records written before the account was kept on them.
+      const facility = await admin.firestore().collection('facilities').doc(facilityId).get();
+      connectAccountId = resolveMoveInPaymentStripeAccountId(facility.data() || {}) || '';
+    }
+    if (!facilityId || !connectAccountId) {
+      functions.logger.error('Public move-in: a stalled refund has no facility or Stripe account', {
+        paymentIntentId: doc.id,
+        facilityId,
+      });
+      skipped += 1;
+      continue;
+    }
+    try {
+      await resumePaidMoveInRefund({ facilityId, connectAccountId }, doc.id, record);
+    } catch (err: unknown) {
+      // It ends by throwing the renter's error, once the outcome is recorded.
+      if (!(err instanceof functions.https.HttpsError)) {
+        functions.logger.error('Public move-in: could not finish a stalled refund', {
+          paymentIntentId: doc.id,
+          facilityId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        skipped += 1;
+        continue;
+      }
+    }
+    finished += 1;
+  }
+  if (finished > 0) {
+    functions.logger.warn('Public move-in: finished stalled refunds', { finished, skipped });
+  }
+  return { finished, skipped };
 }

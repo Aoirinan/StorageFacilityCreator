@@ -10,6 +10,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Timestamp } from 'firebase-admin/firestore';
 import firebaseFunctionsTest from 'firebase-functions-test';
 import { computePublicMoveInCharges } from '../moveInCharges';
@@ -139,6 +141,8 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, paidCents: number, stub: 
   });
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const moveIn = require('../publicMoveIn') as typeof import('../publicMoveIn');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const refundSweep = require('../pendingMoveInRefundSweep') as typeof import('../pendingMoveInRefundSweep');
   const request = {
     reservationId: RESERVATION,
     token: TOKEN,
@@ -160,6 +164,9 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, paidCents: number, stub: 
       testEnv.wrap(moveIn.getPublicReservationByToken)({ token: TOKEN }, callableContext) as Promise<{
         found?: boolean;
       }>,
+    /** One run of the scheduled sweep of stalled refunds, as deployed. */
+    sweep: () => testEnv.wrap(refundSweep.resumeStalledMoveInRefunds)({}),
+    sweepFunction: refundSweep.resumeStalledMoveInRefunds,
   };
 }
 
@@ -235,6 +242,8 @@ function assertRefundRecorded(
   assert.equal(alert.metadata.refundStatus, status);
   if (status === 'refunded') {
     assert.match(String(alert.message), /refunded to them automatically/);
+    // The owner is not left to find out from their Stripe balance.
+    assert.match(String(alert.message), /Stripe does not return its processing fee on a refund\./);
   } else {
     assert.match(String(alert.message), new RegExp(`Refund payment ${PI} in your Stripe dashboard`));
   }
@@ -585,7 +594,20 @@ test('when Stripe cannot say whose an untagged payment is, the owner is told to 
     sessions: new Error('Stripe is down'),
   });
 
-  await assert.rejects(() => complete(), refusedWith('failed-precondition', 'Unit is no longer available'));
+  // Before: 'Unit is no longer available', which the move-in page shows as
+  // 'choose another unit', with nothing said about the money paid.
+  await assert.rejects(() => complete(), (err: unknown) => {
+    const e = err as { code?: string; message?: string; details?: Record<string, unknown> };
+    assert.equal(e.code, 'failed-precondition');
+    assert.match(String(e.message), /^This unit was rented or taken out of service while you were paying/);
+    assert.match(
+      String(e.message),
+      /Your payment of \$\d+\.\d\d could not be checked automatically just now, so it has not been refunded yet\. The facility has been told and will look at your payment\.$/,
+    );
+    assert.doesNotMatch(String(e.message), /no longer available|not currently available/);
+    assert.deepEqual(e.details, { refunded: false, paymentIntentId: PI });
+    return true;
+  });
 
   assert.deepEqual(calls.refunds, []);
   // No use record: a retry once Stripe answers can still refund it.
@@ -678,6 +700,170 @@ test('a reservation whose hold ran out with no checkout started is expired, as b
     assert.equal((await getByToken()).found, false);
     assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'expired');
   }
+});
+
+/** The one-use record refusePaidMoveIn writes when it decides a refund, before Stripe is asked. */
+function pendingRefundRecord(paidCents: number, decidedMinutesAgo: number): Record<string, unknown> {
+  return {
+    paymentIntentId: PI,
+    facilityId: FACILITY,
+    reservationId: RESERVATION,
+    tenantId: null,
+    contractId: null,
+    amountReceivedCents: paidCents,
+    refund: { status: 'pending', refusal: 'unit-taken', unitId: UNIT, unitNumber: 'P1', renterName: 'Rita Renter' },
+    createdAt: Timestamp.fromMillis(Date.now() - decidedMinutesAgo * 60 * 1000),
+    createdBy: 'publicMoveIn',
+  };
+}
+
+test('a refund a racing completion decided before this one moved in is finished, and nobody is moved in', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  const { complete, calls } = loadPublicMoveIn(inMemory, paidCents);
+  // After this completion's first look at the payment's record, as its
+  // move-in transaction starts.
+  inMemory.beforeTransaction = (n) => {
+    if (n === 1) inMemory.seed(USE_PATH, { ...pendingRefundRecord(paidCents, 0), connectAccountId: ACCOUNT });
+  };
+
+  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
+
+  // A move-in here would give the renter the unit and their money back.
+  assertNotMovedIn(inMemory);
+  assert.equal(inMemory.read(UNIT_PATH)?.status, 'available');
+  assertRefundedOnce(calls);
+  assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.status, 'refunded');
+});
+
+test('a refund leaves another reservation\'s hold on the unit alone', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied' });
+  const theirs = { facilityId: FACILITY, unitId: UNIT, reservationId: 'res-someone-else', status: 'pending' };
+  inMemory.seed(HOLD_PATH, theirs);
+  const { complete, calls } = loadPublicMoveIn(inMemory, paidCents);
+
+  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
+
+  assertRefundedOnce(calls);
+  assert.equal(inMemory.read(RESERVATION_PATH)?.status, 'cancelled');
+  assert.deepEqual(inMemory.read(HOLD_PATH), theirs);
+});
+
+test('a reservation another completion finished while this payment was refused stays completed', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  // A second payment: the first completed the move-in while this one was checked.
+  inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied', tenantId: 'tenant-first' });
+  const { complete, calls } = loadPublicMoveIn(inMemory, paidCents);
+  inMemory.beforeTransaction = (n) => {
+    if (n === 1) {
+      inMemory.seed(RESERVATION_PATH, {
+        ...inMemory.read(RESERVATION_PATH),
+        status: 'completed',
+        paymentIntentId: 'pi_first',
+        tenantId: 'tenant-first',
+      });
+    }
+  };
+
+  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
+
+  // This payment is refunded; the tenancy the first one bought is not undone.
+  assertRefundedOnce(calls);
+  const reservation = inMemory.read(RESERVATION_PATH) as Record<string, any>;
+  assert.equal(reservation.status, 'completed');
+  assert.equal(reservation.paymentIntentId, 'pi_first');
+  assert.equal(reservation.cancelReason, undefined);
+});
+
+test('a refund Stripe made but nobody recorded is finished by the sweep, with the same key, once it has stalled', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied' });
+  // The instance fails after Stripe refunds, before the outcome is written.
+  inMemory.writeErrorsOutsideTransactions.set('publicMoveInPayments', new Error('deadline exceeded'));
+  const { complete, calls, sweep } = loadPublicMoveIn(inMemory, paidCents);
+
+  await assert.rejects(() => complete(), refundedWith(/rented or taken out of service/));
+  inMemory.writeErrorsOutsideTransactions.delete('publicMoveInPayments');
+
+  assert.equal((inMemory.read(USE_PATH) as Record<string, any>).refund.status, 'pending');
+  // Before: 'The payment is being refunded to them automatically', for good.
+  const pending = String(inMemory.read(REFUND_ALERT_PATH)?.message);
+  assert.match(pending, /An automatic refund has been started, and this alert will say when Stripe has made it\./);
+  assert.match(pending, new RegExp(`If it still says this in an hour, check payment ${PI} in your Stripe dashboard\\.`));
+  assert.match(pending, /Stripe does not return its processing fee on a refund\./);
+
+  // Decided five minutes ago: a completion may still be finishing it.
+  inMemory.seed(USE_PATH, { ...inMemory.read(USE_PATH), createdAt: Timestamp.fromMillis(Date.now() - 5 * 60 * 1000) });
+  await sweep();
+  assert.equal(calls.refunds.length, 1);
+
+  inMemory.seed(USE_PATH, { ...inMemory.read(USE_PATH), createdAt: Timestamp.fromMillis(Date.now() - 20 * 60 * 1000) });
+  // The facility has moved to another Stripe account since: the refund is
+  // made on the account that holds the payment (assertRefundCall: ACCOUNT).
+  inMemory.seed(`facilities/${FACILITY}`, { ...FACILITY_DATA, stripeConnectAccountId: 'acct_moved_since' });
+  await sweep();
+
+  // Asked again with the first attempt's key, so Stripe does not refund twice.
+  assert.equal(calls.refunds.length, 2);
+  calls.refunds.forEach(assertRefundCall);
+  assertRefundRecorded(inMemory, 'unit-taken', 'refunded', paidCents);
+});
+
+test('the sweep is deployed every 15 minutes, with the Stripe key it refunds with', () => {
+  const inMemory = new InMemoryFirestore();
+  const { sweepFunction } = loadPublicMoveIn(inMemory, 0);
+  const endpoint = (sweepFunction as unknown as { __endpoint: Record<string, any> }).__endpoint;
+
+  assert.equal(endpoint.scheduleTrigger?.schedule, 'every 15 minutes');
+  // Without it, getStripeClient has no key and every refund it retries fails.
+  assert.ok(
+    (endpoint.secretEnvironmentVariables as Array<{ key: string }>).some((s) => s.key === 'STRIPE_SECRET_KEY'),
+  );
+  // Exported from the codebase's entry point, which is what firebase deploys.
+  const entry = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.match(entry, /exports, "resumeStalledMoveInRefunds"/);
+});
+
+test('the sweep refunds a stalled refund nobody retried, and leaves the rest alone', async () => {
+  const inMemory = new InMemoryFirestore();
+  const paidCents = seedPaidRental(inMemory);
+  inMemory.seed(UNIT_PATH, { ...inMemory.read(UNIT_PATH), status: 'occupied' });
+  // Decided 20 minutes ago by a completion that died before Stripe was asked,
+  // and written before records kept the Stripe account: the facility's is used.
+  inMemory.seed(USE_PATH, pendingRefundRecord(paidCents, 20));
+  inMemory.seed(REFUND_ALERT_PATH, {
+    type: 'ONLINE_MOVE_IN_REVIEW',
+    facilityId: FACILITY,
+    tenantId: null,
+    tenantName: 'Rita Renter',
+    readAt: null,
+    message: 'pending',
+    metadata: { reason: 'unit-taken', paymentIntentId: PI, reservationId: RESERVATION, refundStatus: 'pending' },
+  });
+  const others: Record<string, Record<string, unknown>> = {
+    // Too recent to be stalled.
+    'publicMoveInPayments/pi_young': { ...pendingRefundRecord(paidCents, 5), paymentIntentId: 'pi_young' },
+    // Failed: the owner was told to refund it by hand.
+    'publicMoveInPayments/pi_failed': {
+      ...pendingRefundRecord(paidCents, 60),
+      paymentIntentId: 'pi_failed',
+      refund: { status: 'failed', refusal: 'unit-taken', unitId: UNIT, unitNumber: 'P1', renterName: 'Rita Renter' },
+    },
+    // Completed a move-in: never refunded.
+    'publicMoveInPayments/pi_used': { paymentIntentId: 'pi_used', tenantId: 'tenant-1', createdAt: Timestamp.fromMillis(0) },
+  };
+  for (const [path, data] of Object.entries(others)) inMemory.seed(path, data);
+  const { calls, sweep } = loadPublicMoveIn(inMemory, paidCents);
+
+  await sweep();
+
+  assertRefundedOnce(calls);
+  assertRefundRecorded(inMemory, 'unit-taken', 'refunded', paidCents);
+  for (const [path, data] of Object.entries(others)) assert.deepEqual(inMemory.read(path), data);
 });
 
 test.after(() => {

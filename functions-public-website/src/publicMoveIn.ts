@@ -30,11 +30,17 @@ import { assertOnlineRentalNotOnDnrList } from './dnrScreening';
 import { resolveMoveInPaymentStripeAccountId } from './moveInPayment';
 import { assertFacilityHasTenantCapacity } from './tenantCapacity';
 import {
+  CHECKOUT_ATTEMPT_FIELD,
   CHECKOUT_RUN_OUT_MESSAGE,
+  checkoutFieldsOf,
   checkoutHoldWindow,
+  holdForPaidCheckout,
   laterExpiry,
+  restoreHoldAfterFailedCheckout,
   timestampToDate,
+  unitHoldRef,
 } from './checkoutHold';
+import type { ReplacedHold } from './checkoutHold';
 import {
   onlineMoveInReviewAlert,
   onlineMoveInReviewRef,
@@ -711,8 +717,12 @@ export const createPublicMoveInCheckout = functions
     phone: reservation.phone ? String(reservation.phone).trim() : '',
   });
 
-  const moveInDate =
-    (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  // Priced for the renter's move-in date, or today when they gave none. That
+  // day is recorded with the amount (quotedMoveInDate), and completion prices
+  // it rather than its own today: proration changes at midnight, server time
+  // (UTC), so a renter who paid before it and finished after it was refused
+  // as 'charges changed' and refunded.
+  const moveInDate = timestampToDate(reservation.moveInDate) ?? new Date();
   const chargeQuote = await loadPublicMoveInChargeQuote({
     facilityId,
     reservation,
@@ -735,31 +745,26 @@ export const createPublicMoveInCheckout = functions
   }
 
   // The hold is extended to outlast the Checkout Session, which is given a
-  // short expiry below, so a renter who pays still holds the unit while they
-  // come back and finish the form. Written before Stripe is called: if this
-  // fails, there is no payable session that the hold does not cover.
+  // short expiry below, by only the minutes to come back from it; confirming
+  // a paid session gives the time to finish the form (holdForPaidCheckout).
+  // Written before Stripe is called: if this fails, there is no payable
+  // session that the hold does not cover.
   const holdWindow = checkoutHoldWindow(new Date(), timestampToDate(reservation.reservedAt));
   if (!holdWindow) {
     throw new functions.https.HttpsError('failed-precondition', CHECKOUT_RUN_OUT_MESSAGE);
   }
   const holdUntil = holdWindow.holdUntil;
-  await admin.firestore().runTransaction(async (tx) => {
+  const holdRef = reservedUnitId ? unitHoldRef(facilityId, reservedUnitId) : null;
+  const attemptId = crypto.randomUUID();
+  const replaced = await admin.firestore().runTransaction(async (tx): Promise<ReplacedHold> => {
     const currentSnap = await tx.get(reservationRef);
     const current = (currentSnap.data() || {}) as Record<string, any>;
     if (current.status !== 'pending' && current.status !== 'confirmed') {
       throw new functions.https.HttpsError('failed-precondition', 'Reservation is not active');
     }
 
-    let holdRef: admin.firestore.DocumentReference | null = null;
     let hold: Record<string, any> | null = null;
-    if (reservedUnitId) {
-      holdRef = admin.firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('mapEngine')
-        .doc('activeHolds')
-        .collection('items')
-        .doc(reservedUnitId);
+    if (holdRef) {
       const holdSnap = await tx.get(holdRef);
       hold = holdSnap.exists ? (holdSnap.data() as Record<string, any>) : null;
       const heldUntil = timestampToDate(hold?.expiresAt);
@@ -770,13 +775,16 @@ export const createPublicMoveInCheckout = functions
 
     tx.update(reservationRef, {
       expectedCheckoutAmountCents: chargeQuote.totalCents,
+      quotedMoveInDate: admin.firestore.Timestamp.fromDate(moveInDate),
+      [CHECKOUT_ATTEMPT_FIELD]: attemptId,
       checkoutUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(current.expiresAt, holdUntil)),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    if (holdRef && hold && hold.reservationId === String(reservationId)) {
+    const ownHold = Boolean(hold && hold.reservationId === String(reservationId));
+    if (holdRef && ownHold) {
       tx.update(holdRef, {
-        expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold.expiresAt, holdUntil)),
+        expiresAt: admin.firestore.Timestamp.fromDate(laterExpiry(hold?.expiresAt, holdUntil)),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } else if (holdRef) {
@@ -792,6 +800,11 @@ export const createPublicMoveInCheckout = functions
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
+    return {
+      reservationExpiresAt: current.expiresAt ?? null,
+      checkoutFields: checkoutFieldsOf(current),
+      holdExpiresAt: ownHold ? hold?.expiresAt ?? null : null,
+    };
   });
 
   const safeToken = encodeURIComponent(String(token));
@@ -874,6 +887,23 @@ export const createPublicMoveInCheckout = functions
       sessionId: session.id,
     };
   } catch (err: unknown) {
+    // No session the renter can pay: the unit need not stay held for one.
+    try {
+      await restoreHoldAfterFailedCheckout({
+        reservationRef,
+        holdRef,
+        reservationId: String(reservationId),
+        attemptId,
+        holdUntil,
+        replaced,
+      });
+    } catch (restoreErr: any) {
+      functions.logger.error('createPublicMoveInCheckout: could not restore the hold after a failed checkout', {
+        facilityId,
+        reservationId: String(reservationId),
+        error: restoreErr?.message || String(restoreErr),
+      });
+    }
     if (err instanceof functions.https.HttpsError) {
       throw err;
     }
@@ -980,6 +1010,33 @@ export const confirmPublicMoveInCheckout = functions
     : paymentIntentRaw?.id;
   if (!paymentIntentId) {
     throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+
+  // Paid: the renter now re-enters the whole form (Stripe's redirect reloads
+  // the page), so the unit is held for them again, whether or not the
+  // checkout's hold has lapsed. Not claimed over another renter's live hold;
+  // completion refunds this renter if that one still has the unit then. A
+  // failure here does not stop them: completion checks the unit itself.
+  try {
+    const unitHold = await holdForPaidCheckout({
+      reservationRef,
+      facilityId,
+      reservationId: String(reservationId),
+      now: new Date(),
+    });
+    if (unitHold === 'held-by-another') {
+      functions.logger.warn('confirmPublicMoveInCheckout: a paid renter\'s unit is held by another reservation', {
+        facilityId,
+        reservationId: String(reservationId),
+        paymentIntentId,
+      });
+    }
+  } catch (err: any) {
+    functions.logger.error('confirmPublicMoveInCheckout: could not hold the unit for a paid renter', {
+      facilityId,
+      reservationId: String(reservationId),
+      error: err?.message || String(err),
+    });
   }
 
   return {
@@ -1214,7 +1271,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
   const reservationMetadata = (reservation.metadata as Record<string, any> | undefined) || {};
   const reservationSource = String(reservationMetadata.source || '').trim();
   const portalSourceTenantId = String(reservationMetadata.portalTenantId || '').trim();
-  const moveInDate = (reservation.moveInDate as admin.firestore.Timestamp | undefined)?.toDate() || new Date();
+  // The day checkout priced when the renter gave no move-in date: priced
+  // afresh, a completion after midnight (UTC) quoted another day's proration
+  // than the renter paid, and refused and refunded them as 'charges changed'.
+  const moveInDate =
+    timestampToDate(reservation.moveInDate) ?? timestampToDate(reservation.quotedMoveInDate) ?? new Date();
 
   if (!facilityId) {
     throw new functions.https.HttpsError('failed-precondition', 'Reservation missing facilityId');
@@ -1606,9 +1667,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const facilitySnap = await tx.get(facilityDocRef);
     const unitRef = unitId ? facilityDocRef.collection('units').doc(unitId) : null;
     const unitSnap = unitRef ? await tx.get(unitRef) : null;
-    const holdRef = unitId
-      ? facilityDocRef.collection('mapEngine').doc('activeHolds').collection('items').doc(unitId)
-      : null;
+    const holdRef = unitId ? unitHoldRef(facilityId, unitId) : null;
     const holdSnap = holdRef ? await tx.get(holdRef) : null;
 
     const freshData = (freshReservation.data() || {}) as Record<string, any>;
@@ -1658,11 +1717,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       );
     }
     // A hold that lapsed (checkout extends it past payment, checkoutHold.ts)
-    // lets another renter hold the unit; theirs is honoured.
-    const otherHold = (holdSnap?.data() || null) as Record<string, any> | null;
-    const otherHeldUntil = timestampToDate(otherHold?.expiresAt);
+    // lets another renter hold the unit; theirs is honoured. Read here, not
+    // before the transaction, so it cannot be taken between the check and the
+    // move-in.
+    const hold = (holdSnap?.data() || null) as Record<string, any> | null;
+    const heldUntil = timestampToDate(hold?.expiresAt);
+    const heldByAnother = Boolean(
+      hold && hold.reservationId !== String(reservationId) && heldUntil && heldUntil > new Date(),
+    );
     const ownHoldLapsed = (timestampToDate(freshData.expiresAt)?.getTime() ?? Infinity) < Date.now();
-    if (ownHoldLapsed && otherHold && otherHold.reservationId !== String(reservationId) && otherHeldUntil && otherHeldUntil > new Date()) {
+    if (ownHoldLapsed && heldByAnother) {
       return refuse(
         'unit-taken',
         new functions.https.HttpsError('failed-precondition', 'Unit is not currently available'),
@@ -1957,6 +2021,13 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       });
     }
 
+    // The unit is rented, so this reservation's hold (or a lapsed one) goes
+    // with the move-in, in the same commit. Another renter's live hold is
+    // left for them to end; a delete after the commit removed any hold there.
+    if (holdRef && hold && !heldByAnother) {
+      tx.delete(holdRef);
+    }
+
     // Update reservation status
     tx.update(reservationRef, {
       status: 'completed',
@@ -2067,22 +2138,6 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       );
     } catch (apErr: any) {
       functions.logger.warn('Public move-in: autopay notification failed', { message: apErr?.message });
-    }
-  }
-
-  // Best-effort cleanup of active checkout hold.
-  if (unitId) {
-    const holdRef = admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('mapEngine')
-      .doc('activeHolds')
-      .collection('items')
-      .doc(unitId);
-    try {
-      await holdRef.delete();
-    } catch (e) {
-      functions.logger.warn('Failed to clear map hold after move-in', { facilityId, unitId });
     }
   }
 

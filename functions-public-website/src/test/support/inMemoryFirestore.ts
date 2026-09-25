@@ -14,6 +14,16 @@ function isPlainMap(value: unknown): value is DocData {
     Object.getPrototypeOf(value) === Object.prototype && !('__increment' in value);
 }
 
+/** The value at a field path ('a' or 'a.b'), and whether it is there. */
+function fieldAt(data: DocData, path: string): { exists: boolean; value: unknown } {
+  let current: unknown = data;
+  for (const segment of path.split('.')) {
+    if (!isPlainMap(current) || !(segment in current)) return { exists: false, value: undefined };
+    current = current[segment];
+  }
+  return { exists: true, value: current };
+}
+
 function joinPath(...segments: string[]): string {
   return segments.filter(Boolean).join('/');
 }
@@ -37,6 +47,15 @@ export class InMemoryFirestore {
 
   /** The last transaction queued; the next one starts when it settles. */
   private transactionTail: Promise<unknown> = Promise.resolve();
+
+  /** Transactions started so far. */
+  transactionCount = 0;
+
+  /**
+   * Runs as each transaction starts, with its number (1 for the first), as
+   * another request writing between two steps of the code under test would.
+   */
+  beforeTransaction: ((transactionNumber: number) => void) | null = null;
 
   seed(path: string, data: DocData): void {
     this.store.set(path, { ...data });
@@ -222,7 +241,11 @@ export class InMemoryFirestore {
           .filter((key) => this.holds(key))
           .filter((key) => {
             const data = store.get(key) || {};
-            return this.equals.every(([field, value]) => field in data && data[field] === value);
+            return this.equals.every(([field, value]) => {
+              // A dotted path ('refund.status') reads a field of a map, as Firestore does.
+              const found = fieldAt(data, field);
+              return found.exists && found.value === value;
+            });
           })
           .map((key) => new DocSnapshot(new DocRef(key), key));
         return { empty: docs.length === 0, size: docs.length, docs };
@@ -299,7 +322,11 @@ export class InMemoryFirestore {
             return tx;
           },
         };
-        const run = owner.transactionTail.then(() => fn(tx));
+        const run = owner.transactionTail.then(() => {
+          owner.transactionCount += 1;
+          owner.beforeTransaction?.(owner.transactionCount);
+          return fn(tx);
+        });
         owner.transactionTail = run.catch(() => undefined);
         return run;
       },
