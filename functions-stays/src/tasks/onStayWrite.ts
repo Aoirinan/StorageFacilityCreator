@@ -341,25 +341,39 @@ export interface ReconcileTurnoversResult {
  * writes only the tasks whose plan changed, so a run with nothing to catch up
  * writes nothing.
  *
- * staysSetControls runs it when turnovers start; the nightly job (WP2's 03:00
- * drift pass) runs it to heal what a pause or a failed trigger left behind.
+ * staysSetControls runs it when turnovers start; staysSaveListing runs it for
+ * one listing when an edit changes what its turnovers say (the trigger sees
+ * only booking changes); the nightly job (WP2's 03:00 drift pass) runs it to
+ * heal what a pause or a failed trigger left behind.
  */
-export async function reconcileTurnovers(db: Firestore, facilityId: string, nowMs: number): Promise<ReconcileTurnoversResult> {
+export async function reconcileTurnovers(
+  db: Firestore,
+  facilityId: string,
+  nowMs: number,
+  opts: { listingId?: string } = {},
+): Promise<ReconcileTurnoversResult> {
   const result: ReconcileTurnoversResult = { ran: false, stays: 0, created: 0, updated: 0, failed: 0, truncated: false, notified: [] };
   const zone = await automationZone(db, facilityId, nowMs, 'turnovers');
   if (!zone) return result;
   result.ran = true;
   const today = facilityToday(zone.tz, nowMs);
   // Every status: a cancelled or removed booking's leftover to-do is cancelled too.
-  const snap = await staysCol(db, facilityId).where('checkOut', '>=', today).orderBy('checkOut').limit(RECONCILE_MAX_STAYS).get();
-  result.stays = snap.size;
-  result.truncated = snap.size >= RECONCILE_MAX_STAYS;
+  // One past the cap is read, so "truncated" means a booking really was left out.
+  const scope = opts.listingId ? staysCol(db, facilityId).where('listingId', '==', opts.listingId) : staysCol(db, facilityId);
+  const snap = await scope.where('checkOut', '>=', today).orderBy('checkOut').limit(RECONCILE_MAX_STAYS + 1).get();
+  const docs = snap.docs.slice(0, RECONCILE_MAX_STAYS);
+  result.stays = docs.length;
+  result.truncated = snap.size > RECONCILE_MAX_STAYS;
   if (result.truncated) {
-    functions.logger.warn('stays: turnover catch-up covered only the soonest bookings', { facilityId, limit: RECONCILE_MAX_STAYS });
+    functions.logger.warn('stays: turnover catch-up covered only the soonest bookings', {
+      facilityId,
+      listingId: opts.listingId ?? null,
+      limit: RECONCILE_MAX_STAYS,
+    });
   }
 
   const listings = new Map<string, StayListingDoc | null>();
-  const ids = snap.docs.map((d) => d.id);
+  const ids = docs.map((d) => d.id);
   const replanned: ReplanResult[] = [];
   // One booking that cannot be re-planned (a trigger racing it to create the
   // same task, say) is logged and left for the next run, not allowed to stop the rest.

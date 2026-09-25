@@ -216,6 +216,20 @@ test('voiding a hand-recorded payment reverses it on the folio and the chip, onc
   assert.equal(e.fake.list(`${P}/stayIncome`).length, 1);
 });
 
+test('a check refunded in cash and then voided leaves the guest owing the refund, not "refunded"', async () => {
+  const e = env();
+  const stayId = await book(e);
+  const check = await pay(e, OWNER, stayId, 10_000, { method: 'check' });
+  assert.equal((await pay(e, MANAGER, stayId, -10_000)).paymentStatus, 'refunded');
+  // The check bounces after the cash went back: $100 out that never came in, on top of the $350.
+  const voided = await as(e, handleVoidIncome, OWNER, { entryId: check.entryId, reason: 'Check bounced' });
+  assert.deepEqual([voided.folio?.paidCents, voided.folio?.balanceCents], [-10_000, 45_000]);
+  assert.equal(e.fake.read(`${P}/stays/${stayId}`)!.paymentStatus, 'due');
+  // Cancelling the booking does not wash it out either.
+  await as(e, handleCancelStay, OWNER, { stayId, expectedVersion: 4, reason: 'Bounced' });
+  assert.equal(e.fake.read(`${P}/stays/${stayId}`)!.paymentStatus, 'due');
+});
+
 test('voiding an Airbnb CSV row recomputes the Airbnb figures from the rows left', async () => {
   const e = env();
   const ts = Timestamp.fromMillis(NOW);

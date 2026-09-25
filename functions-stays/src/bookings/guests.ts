@@ -16,6 +16,7 @@ import { StayValidationError, validateOptionalText, validateText } from '@sfc/fu
 
 import { staysError } from '../common/errors';
 import {
+  StaysCallContext,
   StaysDeps,
   assertEmployeeSetting,
   defaultStaysDeps,
@@ -145,8 +146,8 @@ export interface ResolvedProfile {
   name: string;
   /**
    * The guest's phone for this booking: the chosen profile's, or the one
-   * typed in. A contact match never lends the matched profile's phone (see
-   * matchedBy): the booker did not supply it and may not be allowed to see it.
+   * typed in. A contact match lends the matched profile's phone only when
+   * nothing was typed and the booker may read it (lendMatchedPhone).
    */
   phoneE164: string | null;
   doNotRent: boolean;
@@ -155,6 +156,21 @@ export interface ResolvedProfile {
    * or email typed for a new guest. null for a profile this booking creates.
    */
   matchedBy: 'profile_id' | 'phone' | 'email' | null;
+}
+
+export interface ResolveGuestProfileOptions {
+  /**
+   * Runs once, just before a phone or email typed for a new guest is looked
+   * up, and may throw to stop it (an employee's hourly lookup budget).
+   */
+  beforeContactLookup?: () => Promise<void>;
+  /**
+   * The booker may read guests' contact details (an owner or manager): a
+   * profile matched on the email typed lends its phone when no phone was
+   * typed, as picking that profile would, so a phone_last4 listing still
+   * gets its door code. Never for an employee, who is refused a match anyway.
+   */
+  lendMatchedPhone?: boolean;
 }
 
 /**
@@ -169,6 +185,7 @@ export async function resolveGuestProfile(
   facilityId: string,
   requestId: string,
   ref: unknown,
+  opts: ResolveGuestProfileOptions = {},
 ): Promise<ResolvedProfile | null> {
   if (ref === undefined || ref === null) return null;
   if (typeof ref !== 'object' || Array.isArray(ref)) {
@@ -205,6 +222,7 @@ export async function resolveGuestProfile(
     ['phoneE164', create.phoneE164],
     ['email', create.email],
   ];
+  if (opts.beforeContactLookup && (create.phoneE164 || create.email)) await opts.beforeContactLookup();
   for (const [field, value] of lookups) {
     if (!value) continue;
     const match = await col.where(field, '==', value).limit(1).get();
@@ -216,7 +234,7 @@ export async function resolveGuestProfile(
         existing: doc,
         create: null,
         name: doc.name,
-        phoneE164: create.phoneE164,
+        phoneE164: create.phoneE164 ?? (opts.lendMatchedPhone === true ? (doc.phoneE164 ?? null) : null),
         doNotRent: doc.doNotRent === true,
         matchedBy: field === 'phoneE164' ? 'phone' : 'email',
       };
@@ -235,14 +253,38 @@ export async function resolveGuestProfile(
   };
 }
 
-/** Another profile with exactly this name is on the do-not-rent list (a warning, not a refusal). */
+/**
+ * A name as the do-not-rent check compares it: case, accents, punctuation,
+ * spacing and word order ignored, so "Rex  Ruin", "rex-ruin" or "Ruin, Rex"
+ * typed at the desk is still Rex Ruin.
+ */
+export function nameMatchKey(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/['\u2019`]/g, '')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+}
+
+/** The most do-not-rent profiles one check reads; a facility's list is a handful. */
+const DO_NOT_RENT_SCAN = 500;
+
+/** Another profile with this name (see nameMatchKey) is on the do-not-rent list. */
 export async function doNotRentNameMatch(db: Firestore, facilityId: string, name: string, exceptId: string | null): Promise<boolean> {
-  const snap = await profilesCol(db, facilityId)
-    .where('doNotRent', '==', true)
-    .where('nameLower', '==', name.trim().toLowerCase())
-    .limit(3)
-    .get();
-  return snap.docs.some((d) => d.id !== exceptId);
+  const key = nameMatchKey(name);
+  if (!key) return false;
+  // The list is read and compared here, not queried on nameLower: the rules
+  // pin nameLower to name.lower(), every space and dot as typed, so an exact
+  // query let "Rex  Ruin" (two spaces) past "Rex Ruin".
+  const snap = await profilesCol(db, facilityId).where('doNotRent', '==', true).limit(DO_NOT_RENT_SCAN).get();
+  if (snap.size >= DO_NOT_RENT_SCAN) {
+    functions.logger.warn('stays: do-not-rent name check read only part of the list', { facilityId, limit: DO_NOT_RENT_SCAN });
+  }
+  return snap.docs.some((d) => d.id !== exceptId && nameMatchKey(String(d.get('name') ?? '')) === key);
 }
 
 /** A new profile doc, as the rules would accept it (stayCount and lastStayAt are server-kept). */
@@ -295,8 +337,20 @@ export function searchResult(profileId: string, doc: StayGuestProfileDoc, includ
 
 const MAX_RESULTS = 10;
 
-/** An employee's whole-phone-number searches: plenty for a front desk, too few to guess a number with. */
-export const EMPLOYEE_PHONE_LOOKUPS = { key: 'stays_guest_phone', perHour: 20 } as const;
+/**
+ * An employee's lookups of a guest's contact details, an hour: whole-number
+ * searches here, and the phone or email typed for a new guest on a booking
+ * (staysCreateStay refuses one on file, which also says "that is her
+ * number"). One budget for both, or the booking path would keep guessing
+ * where search stopped. Plenty for a front desk, too few to guess a number
+ * with.
+ */
+export const EMPLOYEE_CONTACT_LOOKUPS = { key: 'stays_guest_contact', perHour: 20 } as const;
+
+/** Spends one of the caller's contact lookups this hour, or refuses with `rate_limited`. */
+export function spendEmployeeContactLookup(ctx: Pick<StaysCallContext, 'uid' | 'facilityId' | 'deps'>): Promise<void> {
+  return enforceUserRateLimit(ctx, EMPLOYEE_CONTACT_LOOKUPS.key, EMPLOYEE_CONTACT_LOOKUPS.perHour, 3600);
+}
 
 /** A complete phone number in E.164, or null for anything shorter or malformed. */
 function wholePhoneOrNull(query: string): string | null {
@@ -344,9 +398,9 @@ export async function handleSearchGuests(
   // numbers anyway, prefix-match the E.164 form. Employees match only the
   // whole number: a prefix match would answer "does her number start with
   // 4065550?" and so give her number away a digit at a time. Whole-number
-  // lookups are capped per hour too: an employee who knows a guest's last 4
-  // (her door code on a phone_last4 listing) and area code could otherwise
-  // try all 1,000 exchanges in under 20 minutes.
+  // lookups come out of the hourly contact budget too: an employee who knows
+  // a guest's last 4 (her door code on a phone_last4 listing) and area code
+  // could otherwise try all 1,000 exchanges in under 20 minutes.
   const digits = query.replace(/\D/g, '');
   if (/^[+\d\s().-]+$/.test(query) && digits.length >= 4) {
     if (includeContact) {
@@ -355,7 +409,7 @@ export async function handleSearchGuests(
     } else {
       const whole = wholePhoneOrNull(query);
       if (whole) {
-        await enforceUserRateLimit(ctx, EMPLOYEE_PHONE_LOOKUPS.key, EMPLOYEE_PHONE_LOOKUPS.perHour, 3600);
+        await spendEmployeeContactLookup(ctx);
         add((await col.where('phoneE164', '==', whole).limit(MAX_RESULTS).get()).docs);
       }
     }

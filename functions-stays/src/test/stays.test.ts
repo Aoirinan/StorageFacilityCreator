@@ -354,6 +354,8 @@ test('a do-not-rent guest is refused unless an owner or manager confirms; a new 
   const refused = await errorOf(create(e, EMPLOYEE, { ...disguised, source: 'walk_up', listingId: 'lst_rv1', checkIn: '2026-10-01', checkOut: '2026-10-02' }));
   assert.equal(staysErrorReason(refused), 'do_not_rent');
   assert.match(refused.message, /Ask the owner/);
+  // The employee typed a phone number: the refusal does not hand back the profile it matched.
+  assert.deepEqual(refused.details, { reason: 'do_not_rent' });
   assert.equal(await reasonOf(create(e, EMPLOYEE, { ...disguised, acknowledgeDoNotRent: true })), 'role_not_allowed');
   assert.equal(await reasonOf(create(e, OWNER, booking({ guestProfile: { profileId: 'gp_banned' } }))), 'do_not_rent');
   const ok = await create(e, OWNER, booking({ guestProfile: { profileId: 'gp_banned' }, acknowledgeDoNotRent: true }));
@@ -532,31 +534,117 @@ test("a change is held to the listing's longest stay, and a new party is re-pric
   const bigger = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { guest: { adults: 4, pets: 1 } } });
   assert.deepEqual([bigger.folio?.totalCents, bigger.folio?.quoteVersion, bigger.stay.adults, bigger.stay.pets], [44_500, 2, 4, 1]);
   assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 44_500);
+  // The folio records the party it now prices, so the next edit sees nothing left to price.
+  assert.deepEqual(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.party, { adults: 4, children: 0, pets: 1 });
+  const timed = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-09' } });
+  assert.deepEqual([timed.folio?.totalCents, timed.folio?.party], [58_500, { adults: 4, children: 0, pets: 1 }]);
 });
 
-test('a party changed straight on the stay doc is priced by the next edit, even one that changes nothing else', async () => {
+const PARTY_PRICED = { nightly: 10_000, weekendNightly: null, weeklyNightly: null, cleaningFee: 0, petFee: 2_500, extraGuestFee: 2_000, extraGuestAfter: 2 };
+
+test('a party changed straight on the stay doc is never priced by an unrelated edit; new dates ask which party to price', async () => {
   const e = env();
-  seedListing(e.fake, 'lst_x', listingInput({ name: 'X', shortCode: 'X', ratesCents: { nightly: 10_000, weekendNightly: null, weeklyNightly: null, cleaningFee: 0, petFee: 2_500, extraGuestFee: 2_000, extraGuestAfter: 2 } }));
+  seedListing(e.fake, 'lst_x', listingInput({ name: 'X', shortCode: 'X', ratesCents: PARTY_PRICED }));
   const r = await create(e, OWNER, booking({ listingId: 'lst_x' }));
   assert.deepEqual(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.party, { adults: 2, children: 0, pets: 0 });
   // Staff add two guests and a dog through the rules' quick fields: no version bump, no price.
   const stay = e.fake.read(`${P}/stays/${r.stayId}`)!;
   seedStay(e, r.stayId, { ...(stay as unknown as StayDoc), adults: 3, children: 1, pets: 1 });
-  assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 30_000);
 
-  // A later time change re-prices them: 2 extra guests x 3 nights x $20, and the pet fee.
+  // A check-in time change, or an empty edit, leaves the price as agreed.
   const timed = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 1, changes: { checkInTime: '16:00' } });
-  assert.deepEqual([timed.folio?.totalCents, timed.folio?.quoteVersion, timed.folio?.party], [44_500, 2, { adults: 3, children: 1, pets: 1 }]);
-  assert.equal(e.fake.read(`${P}/stayFolios/${r.stayId}`)!.totalCents, 44_500);
+  assert.deepEqual([timed.folio?.totalCents, timed.folio?.quoteVersion, timed.folio?.party], [30_000, 1, { adults: 2, children: 0, pets: 0 }]);
+  assert.deepEqual([timed.stay.adults, timed.stay.children, timed.stay.pets], [3, 1, 1]);
+  const empty = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 2, changes: {} });
+  assert.deepEqual([empty.stay.version, empty.folio?.totalCents], [2, 30_000]);
 
-  // Another direct change, then an edit that sends nothing new: priced all the same.
-  const again = e.fake.read(`${P}/stays/${r.stayId}`)!;
-  seedStay(e, r.stayId, { ...(again as unknown as StayDoc), children: 0 });
-  const empty = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: timed.stay.version, changes: {} });
-  assert.deepEqual([empty.folio?.totalCents, empty.stay.version], [38_500, timed.stay.version + 1]);
-  // Nothing left to price: an empty edit is a no-op.
-  const noop = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: empty.stay.version, changes: {} });
-  assert.deepEqual([noop.stay.version, noop.folio?.quoteVersion], [empty.stay.version, 3]);
+  // New dates must be priced for some party: she is asked which, and nothing is written meanwhile.
+  const asked = await errorOf(modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-09' } }));
+  assert.equal(staysErrorReason(asked), 'party_reprice_required');
+  assert.deepEqual(asked.details, {
+    reason: 'party_reprice_required',
+    stayId: r.stayId,
+    pricedParty: { adults: 2, children: 0, pets: 0 },
+    party: { adults: 3, children: 1, pets: 1 },
+  });
+  assert.equal(e.fake.read(`${P}/stays/${r.stayId}`)!.checkOut, '2026-10-08');
+  // "Keep the price for the party it was booked for": 4 nights for two.
+  const kept = await modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-09' }, repriceParty: false });
+  assert.deepEqual([kept.folio?.totalCents, kept.folio?.party], [40_000, { adults: 2, children: 0, pets: 0 }]);
+  // "Price the new party": two extra guests x 4 nights x $20, and the pet fee; the audit says who, from what, to what.
+  const repriced = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 3, changes: {}, repriceParty: true });
+  assert.deepEqual([repriced.folio?.totalCents, repriced.folio?.party], [58_500, { adults: 3, children: 1, pets: 1 }]);
+  const audit = e.handle.audits.filter((a) => a.entry.eventType === 'stays.stay.modified').map((a) => a.entry.metadata);
+  assert.deepEqual(audit.map((m) => m?.partyRepriced), [null, null, { from: { adults: 2, children: 0, pets: 0 }, to: { adults: 3, children: 1, pets: 1 } }]);
+  // Nothing left to price: asking again changes nothing.
+  const noop = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 4, changes: {}, repriceParty: true });
+  assert.deepEqual([noop.stay.version, noop.folio?.quoteVersion], [4, 3]);
+  // An extra guest let in free: the party is set, the price kept.
+  const comped = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 4, changes: { guest: { adults: 4 } }, repriceParty: false });
+  assert.deepEqual([comped.stay.adults, comped.folio?.totalCents, comped.folio?.party], [4, 58_500, { adults: 3, children: 1, pets: 1 }]);
+});
+
+test('a paid booking keeps its agreed price through quick party edits, however the app sends the next edit', async () => {
+  const e = env();
+  const r = await create(e, OWNER, booking({ payment: { method: 'cash', amountCents: 35_000, receivedDate: '2026-10-01' } }));
+  // Rates go up after the booking, on both listings.
+  seedListing(e.fake, 'lst_a', listingInput({ ratesCents: { ...listingInput().ratesCents, nightly: 15_000 } }), 2);
+  seedListing(e.fake, 'lst_b', listingInput({ name: 'Airbnb B', shortCode: 'B1', ratesCents: { ...listingInput().ratesCents, nightly: 20_000 } }), 2);
+  // Staff set three adults and a child straight on the stay (the rules' quick fields).
+  seedStay(e, r.stayId, { ...(e.fake.read(`${P}/stays/${r.stayId}`) as unknown as StayDoc), adults: 3, children: 1 });
+  // The app sends the whole guest block with an edit, the counts as they stand on the stay.
+  const guestBlock = (displayName: string) => ({ displayName, adults: 3, children: 1, pets: 0, rvLengthFt: null });
+  const timed = await modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 1, changes: { checkOutTime: '10:00', guest: guestBlock('Ann A.') } });
+  const renamed = await modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 2, changes: { guest: guestBlock('Ann B.') } });
+  // "A move alone keeps the price agreed", even onto a dearer listing.
+  const moved = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 3, changes: { listingId: 'lst_b', guest: guestBlock('Ann B.') } });
+  for (const edit of [timed, renamed, moved]) {
+    assert.deepEqual([edit.folio?.totalCents, edit.folio?.balanceCents, edit.folio?.quoteVersion, edit.stay.paymentStatus], [35_000, 0, 1, 'paid']);
+  }
+  assert.deepEqual([moved.stay.listingId, moved.stay.adults, moved.stay.children], ['lst_b', 3, 1]);
+  // New dates with the same whole block: she is asked which party to price, not re-priced silently.
+  const asked = modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 4, changes: { checkOut: '2026-10-09', guest: guestBlock('Ann B.') } });
+  assert.equal(await reasonOf(asked), 'party_reprice_required');
+  const audit = e.handle.audits.filter((a) => a.entry.eventType === 'stays.stay.modified').map((a) => [a.entry.metadata?.requoted, a.entry.metadata?.partyRepriced]);
+  assert.deepEqual(audit, [[false, null], [false, null], [false, null]]);
+  // "Keep the price" for new dates is on record as a choice, with no re-price of the party.
+  const kept = await modify(e, MANAGER, { stayId: r.stayId, expectedVersion: 4, changes: { checkOut: '2026-10-09' }, repriceParty: false });
+  assert.deepEqual([kept.folio?.party, kept.folio?.quoteVersion], [{ adults: 2, children: 0, pets: 0 }, 2]);
+  const last = e.handle.audits.filter((a) => a.entry.eventType === 'stays.stay.modified').pop()!.entry.metadata;
+  assert.deepEqual([last?.requoted, last?.partyRepriced, last?.repriceParty], [true, null, false]);
+});
+
+test('a cancelled booking is never re-priced for its party, even when an owner sends a new headcount', async () => {
+  const e = env();
+  seedListing(e.fake, 'lst_x', listingInput({ name: 'X', shortCode: 'X', ratesCents: PARTY_PRICED }));
+  const r = await create(e, OWNER, booking({ listingId: 'lst_x', payment: { method: 'cash', amountCents: 30_000, receivedDate: '2026-10-01' } }));
+  await as(e, handleCancelStay, OWNER, { stayId: r.stayId, expectedVersion: 1, reason: 'Guest cancelled' });
+  // The desk records that four came after all, and a dog: the paid, cancelled booking owes nothing new.
+  const fixed = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 2, changes: { guest: { adults: 4, pets: 1 } } });
+  assert.deepEqual([fixed.stay.adults, fixed.stay.pets, fixed.stay.paymentStatus], [4, 1, 'paid']);
+  assert.deepEqual([fixed.folio?.totalCents, fixed.folio?.balanceCents, fixed.folio?.quoteVersion], [30_000, 0, 1]);
+  const asked = await modify(e, OWNER, { stayId: r.stayId, expectedVersion: 3, changes: {}, repriceParty: true });
+  assert.deepEqual([asked.stay.version, asked.folio?.totalCents], [3, 30_000]);
+});
+
+test('an employee cannot move the price through the headcount', async () => {
+  const e = env({ employeesCanBook: true });
+  seedListing(e.fake, 'lst_rv9', rvInput(9, { ratesCents: { ...PARTY_PRICED, nightly: 4_500, petFee: 0, extraGuestFee: 1_000 } }));
+  const walkUp = await create(e, EMPLOYEE, booking({ listingId: 'lst_rv9', source: 'walk_up', checkIn: '2026-10-01', checkOut: '2026-10-02', guest: { displayName: 'Big P.', adults: 6, children: 0, pets: 0, rvLengthFt: null } }));
+  // $45, and 4 extra guests at $10.
+  assert.equal(walkUp.folio?.totalCents, 8_500);
+  // The desk lowers the headcount on the stay doc, then adds a night: the new night is priced for the six it was booked for.
+  const stay = e.fake.read(`${P}/stays/${walkUp.stayId}`)!;
+  seedStay(e, walkUp.stayId, { ...(stay as unknown as StayDoc), adults: 2 });
+  const longer = await modify(e, EMPLOYEE, { stayId: walkUp.stayId, expectedVersion: 1, changes: { checkOut: '2026-10-03' } });
+  assert.deepEqual([longer.folio?.totalCents, longer.folio?.party], [17_000, { adults: 6, children: 0, pets: 0 }]);
+  // Sending the lowered headcount again, or asking for a re-price, does not do it either.
+  assert.equal(await reasonOf(modify(e, EMPLOYEE, { stayId: walkUp.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-04' }, repriceParty: true })), 'role_not_allowed');
+  const resent = await modify(e, EMPLOYEE, { stayId: walkUp.stayId, expectedVersion: 2, changes: { checkOut: '2026-10-04', guest: { adults: 2 } } });
+  assert.deepEqual([resent.folio?.totalCents, resent.folio?.party?.adults], [25_500, 6]);
+  // A manager's later time change leaves the price alone too.
+  const timed = await modify(e, MANAGER, { stayId: walkUp.stayId, expectedVersion: 3, changes: { checkOutTime: '12:00' } });
+  assert.equal(timed.folio?.totalCents, 25_500);
 });
 
 test('a payment that lands while dates are being changed is never priced over', async () => {
@@ -736,12 +824,14 @@ test('an employee cannot book a new guest as one already on file by typing their
   const access = e.fake.read(`${P}/stayAccess/${picked.stayId}`)!;
   assert.deepEqual([access.doorCode, access.source, access.stayId], ['0123', 'phone_last4', picked.stayId]);
 
-  // An owner typing her email gets the returning guest; the door code comes only from a phone typed now.
+  // An owner or manager typing her email gets the returning guest, and her door code, as picking her would give.
   const owner = await create(e, OWNER, walkUp({ create: { name: 'J. Doe', email: 'jane@example.com' } }, { checkIn: '2026-10-05', checkOut: '2026-10-06' }));
   assert.equal(e.fake.read(`${P}/stays/${owner.stayId}`)!.guestDisplayName, 'Jane D.');
-  assert.equal(e.fake.has(`${P}/stayAccess/${owner.stayId}`), false);
-  assert.equal(e.fake.read(`${P}/stayPrivate/${owner.stayId}`)!.phoneLast4, null);
-  assert.equal(e.fake.read(`${P}/stayGuestProfiles/gp_jane`)!.stayCount, 3);
+  assert.equal(e.fake.read(`${P}/stayAccess/${owner.stayId}`)!.doorCode, '0123');
+  assert.equal(e.fake.read(`${P}/stayPrivate/${owner.stayId}`)!.phoneLast4, '0123');
+  const manager = await create(e, MANAGER, walkUp({ create: { name: 'Jane', email: 'jane@example.com' } }, { checkIn: '2026-10-06', checkOut: '2026-10-07' }));
+  assert.equal(e.fake.read(`${P}/stayAccess/${manager.stayId}`)!.doorCode, '0123');
+  assert.equal(e.fake.read(`${P}/stayGuestProfiles/gp_jane`)!.stayCount, 4);
 });
 
 test('an employee cannot book a name on the do-not-rent list; an owner or manager is warned', async () => {
@@ -757,6 +847,35 @@ test('an employee cannot book a name on the do-not-rent list; an owner or manage
   assert.equal(e.fake.list(`${P}/stays`).length, 0);
   const warned = await create(e, MANAGER, walkUp({ guestProfile: { create: { name: 'Rex Ruin' } } }));
   assert.ok(warned.warnings.some((w) => w.code === 'do_not_rent'));
+});
+
+test('spacing, case, punctuation or word order do not get a name past the do-not-rent list', async () => {
+  const e = env({ employeesCanBook: true });
+  // Marked by the owner in the app: the rules keep nameLower exactly name.lower(), double space and all.
+  e.fake.seed(`${P}/stayGuestProfiles/gp_rex`, { facilityId: FAC, name: 'Rex  Ruin', nameLower: 'rex  ruin', phoneE164: null, email: null, vehicle: null, notes: '', doNotRent: true, doNotRentReason: 'Damage', consent: null, stayCount: 1, lastStayAt: null });
+  const walkUp = (name: string) => booking({ listingId: 'lst_rv1', source: 'walk_up', checkIn: '2026-10-01', checkOut: '2026-10-02', guestProfile: { create: { name } } });
+  for (const typed of ['Rex Ruin', 'Rex   Ruin', 'REX-RUIN', 'Ruin, Rex', ' rex ruin. ', 'Rëx Ruin']) {
+    assert.equal(await reasonOf(create(e, EMPLOYEE, walkUp(typed))), 'do_not_rent', typed);
+  }
+  assert.equal(e.fake.list(`${P}/stays`).length, 0);
+  // A different name is not caught.
+  assert.equal((await create(e, EMPLOYEE, walkUp('Rex Ruiz'))).created, true);
+});
+
+test('an employee who picks a returning guest is not refused for a namesake on the do-not-rent list', async () => {
+  const e = env({ employeesCanBook: true });
+  const profile = (name: string, doNotRent: boolean) => ({ facilityId: FAC, name, nameLower: name.toLowerCase(), phoneE164: null, email: null, vehicle: null, notes: '', doNotRent, doNotRentReason: doNotRent ? 'Damage' : null, consent: null, stayCount: 1, lastStayAt: null });
+  e.fake.seed(`${P}/stayGuestProfiles/gp_john_good`, profile('John Smith', false));
+  e.fake.seed(`${P}/stayGuestProfiles/gp_john_banned`, profile('John Smith', true));
+  const walkUp = (guestProfile: Record<string, unknown>, checkIn: string, checkOut: string) =>
+    booking({ listingId: 'lst_rv1', source: 'walk_up', checkIn, checkOut, guest: { displayName: '', adults: 1, children: 0, pets: 0, rvLengthFt: null }, guestProfile });
+  // The John Smith who is welcome, picked from the search: booked, with a heads-up.
+  const picked = await create(e, EMPLOYEE, walkUp({ profileId: 'gp_john_good' }, '2026-10-01', '2026-10-02'));
+  assert.equal(picked.created, true);
+  assert.ok(picked.warnings.some((w) => w.code === 'do_not_rent'));
+  // The one on the list, or a John Smith typed in fresh, is still refused.
+  assert.equal(await reasonOf(create(e, EMPLOYEE, walkUp({ profileId: 'gp_john_banned' }, '2026-10-02', '2026-10-03'))), 'do_not_rent');
+  assert.equal(await reasonOf(create(e, EMPLOYEE, walkUp({ create: { name: 'John Smith' } }, '2026-10-02', '2026-10-03'))), 'do_not_rent');
 });
 
 test("an Airbnb reservation the feed brings in while it is being typed is not taken over", async () => {

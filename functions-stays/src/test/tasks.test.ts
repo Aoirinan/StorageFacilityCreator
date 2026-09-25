@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 
 import type { StayDoc, StayTaskDoc } from '@sfc/functions-shared/stays/contracts';
+import { addDays } from '@sfc/functions-shared/stays/dates';
 import { inactiveTurnoverDigest } from '@sfc/functions-shared/stays/turnoverPlan';
 
 import { resetStaysGateCacheForTests } from '../common/serverConfig';
-import { TriggerDeps, handleStayWrite, reconcileTurnovers, turnoverRelevantChange } from '../tasks/onStayWrite';
+import { RECONCILE_MAX_STAYS, TriggerDeps, handleStayWrite, reconcileTurnovers, turnoverRelevantChange } from '../tasks/onStayWrite';
 import { handleTaskUpdate, taskNotifications } from '../tasks/onTaskWrite';
 import { FakeFirestore } from './support/fakeFirestore';
 import { FAC, NOW, makeStay, seedGate } from './support/staysFixtures';
@@ -211,6 +212,43 @@ test('a cancellation made while Stays was paused has its turnover cancelled by t
   const healed = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
   assert.equal(healed.updated, 1);
   assert.equal(task(e, 'man_a')!.status, 'cancelled');
+});
+
+test('the catch-up covers a booking checking out today, whose turnover is still to do', async () => {
+  const e = env();
+  e.fake.seed(`${P}/stays/man_today`, makeStay('lst_a', '2026-09-28', '2026-10-01', { arrivalState: 'checked_in' }) as never);
+  e.fake.seed(`${P}/stays/man_yesterday`, makeStay('lst_a', '2026-09-27', '2026-09-30', { arrivalState: 'checked_out' }) as never);
+  const out = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([out.stays, out.created], [1, 1]);
+  assert.deepEqual([task(e, 'man_today')!.dueDate, task(e, 'man_today')!.status], ['2026-10-01', 'todo']);
+  assert.equal(task(e, 'man_yesterday'), undefined);
+});
+
+test('the catch-up re-plans at most 500 bookings, soonest checkout first, and says when it left some out', async () => {
+  const e = env();
+  // Two days apart, so no two make a same-day turn.
+  const seedStays = (from: number, to: number) => {
+    for (let i = from; i < to; i++) {
+      e.fake.seed(`${P}/stays/man_${String(i).padStart(3, '0')}`, makeStay('lst_rv1', addDays('2026-10-01', 2 * i), addDays('2026-10-01', 2 * i + 1)) as never);
+    }
+  };
+  seedStays(0, RECONCILE_MAX_STAYS);
+  const exact = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([exact.stays, exact.created, exact.truncated], [500, 500, false]);
+  seedStays(RECONCILE_MAX_STAYS, RECONCILE_MAX_STAYS + 1);
+  const over = await reconcileTurnovers(e.fake.firestore(), FAC, NOW);
+  assert.deepEqual([over.stays, over.created, over.truncated], [500, 0, true]);
+  assert.equal(task(e, 'man_500'), undefined);
+});
+
+test('a catch-up for one listing touches only its bookings', async () => {
+  const e = env();
+  e.fake.seed(`${P}/stays/man_a`, makeStay('lst_a', '2026-10-02', '2026-10-05') as never);
+  e.fake.seed(`${P}/stays/man_rv`, makeStay('lst_rv1', '2026-10-02', '2026-10-05') as never);
+  const out = await reconcileTurnovers(e.fake.firestore(), FAC, NOW, { listingId: 'lst_rv1' });
+  assert.deepEqual([out.stays, out.created], [1, 1]);
+  assert.equal(task(e, 'man_a'), undefined);
+  assert.equal(task(e, 'man_rv')!.status, 'todo');
 });
 
 test('the catch-up does nothing while turnovers are off', async () => {

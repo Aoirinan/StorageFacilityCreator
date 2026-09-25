@@ -49,6 +49,7 @@ import {
   assertEmployeeSetting,
   auditStays,
   defaultStaysDeps,
+  isOwnerOrManager,
   optionalDocId,
   requireDocId,
   requireRequestId,
@@ -58,7 +59,7 @@ import {
 } from '../common/guards';
 import { personalDataIn } from '../common/notify';
 import { applyStayMutations } from '../common/stayWriter';
-import { displayNameFrom, doNotRentNameMatch, newProfileDoc, phoneLast4, resolveGuestProfile } from './guests';
+import { displayNameFrom, doNotRentNameMatch, newProfileDoc, phoneLast4, resolveGuestProfile, spendEmployeeContactLookup } from './guests';
 import { assertReceivedDate, manualIncomeDoc, parsePayment, receivedAtFor } from './payments';
 import {
   FreshSync,
@@ -294,8 +295,14 @@ export function folioFromQuote(
 /** The party a folio was priced for; a folio from before it was recorded was priced for the stay's own. */
 function pricedPartyOf(folio: StayFolioDoc | null, stay: Partial<StayFolioParty>): StayFolioParty {
   const p = folio?.party;
-  if (p && Number.isInteger(p.adults) && Number.isInteger(p.children) && Number.isInteger(p.pets)) return p;
+  if (p && Number.isInteger(p.adults) && Number.isInteger(p.children) && Number.isInteger(p.pets)) {
+    return { adults: p.adults, children: p.children, pets: p.pets };
+  }
   return { adults: stay.adults ?? 0, children: stay.children ?? 0, pets: stay.pets ?? 0 };
+}
+
+function sameParty(a: StayFolioParty, b: StayFolioParty): boolean {
+  return a.adults === b.adults && a.children === b.children && a.pets === b.pets;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +607,16 @@ export async function handleCreateStay(
 
   const warnings: StaysWarning[] = [];
   const isEmployee = ctx.role === 'employee';
-  const profile = isReservation ? await resolveGuestProfile(db, facilityId, requestId, d.guestProfile) : null;
+  // An employee is refused a phone or email already on file (below), and that
+  // refusal says "this is her number"; so each such lookup comes out of the
+  // same hourly budget as guest search's, or this path would guess on where
+  // search's cap stopped.
+  const profile = isReservation
+    ? await resolveGuestProfile(db, facilityId, requestId, d.guestProfile, {
+        beforeContactLookup: isEmployee ? () => spendEmployeeContactLookup(ctx) : undefined,
+        lendMatchedPhone: isOwnerOrManager(ctx.role),
+      })
+    : null;
   if (profile?.doNotRent) {
     if (!acknowledgeDoNotRent) {
       throw staysError(
@@ -627,9 +643,10 @@ export async function handleCreateStay(
       );
     }
     // Employees cannot acknowledge the do-not-rent list, so a name on it stops them; owners and managers get a heads-up.
+    // A returning guest picked by id is that guest, not a namesake on the list: a heads-up for employees too.
     const name = profile?.name ?? (isEmployee ? guest.guestDisplayName : '');
     if (name.trim() && (await doNotRentNameMatch(db, facilityId, name, profile?.profileId ?? null))) {
-      if (isEmployee) {
+      if (isEmployee && profile?.matchedBy !== 'profile_id') {
         throw staysError('failed-precondition', 'do_not_rent', 'Someone with this name is on the do-not-rent list. Ask the owner or a manager.', {});
       }
       warnings.push({ code: 'do_not_rent', message: `Someone named ${name} is on your do-not-rent list. Check it is not the same guest.` });
@@ -750,8 +767,8 @@ export async function handleCreateStay(
   // The turnover trigger makes turnover_{stayId}; the stay names it up front so the app can open it.
   if (controls.turnoverTasksEnabled === true && wantsTurnover(stay, listing)) stay.turnoverTaskId = taskIdTurnover(stayId);
 
-  // The chosen profile's phone, or the one typed now: never a phone lent by a contact match (resolveGuestProfile),
-  // because stayAccess is staff-readable.
+  // The chosen profile's phone, or the one typed now; a contact match lends its phone only to an owner or manager
+  // (resolveGuestProfile), who could pick that profile anyway. An employee never gets this far with a match.
   const last4 = phoneLast4(profile?.phoneE164 ?? null);
   const privateDoc: StayPrivateDoc = {
     facilityId,
@@ -891,6 +908,8 @@ export async function handleModifyStay(
   const requestId = payment ? requireRequestId(d) : null;
   const overrideSoftBlocks = optionalFlag(d, 'overrideSoftBlocks');
   const acknowledgeShortLead = optionalFlag(d, 'acknowledgeShortLead');
+  // Absent: no decision. true: price the stay's party as it is now. false: keep the party it was priced for.
+  const repriceParty = d.repriceParty === undefined || d.repriceParty === null ? null : optionalFlag(d, 'repriceParty');
 
   const tz = confirmedTimeZone(controls);
   const today = facilityToday(tz, nowMs);
@@ -940,6 +959,7 @@ export async function handleModifyStay(
       !timesChanged;
     if (!onlyExtendsWalkUp) throw roleNotAllowed(ctx, 'Employees can only add nights to a walk-up stay.');
     if (overrideSoftBlocks) throw roleNotAllowed(ctx, 'Only an owner or manager can book over a channel block.');
+    if (repriceParty === true) throw roleNotAllowed(ctx, 'Only an owner or manager can change the price.');
     if (payment) assertEmployeeSetting(ctx, 'employeesCanRecordCash');
   }
   if ((datesChanged || listingChanged) && isFeedOwned(stored)) {
@@ -979,15 +999,40 @@ export async function handleModifyStay(
     pets: guestPatch.pets ?? stored.pets ?? 0,
     rvLengthFt: guestPatch.rvLengthFt !== undefined ? guestPatch.rvLengthFt : (stored.rvLengthFt ?? null),
   };
-  // The price follows the party. Staff may also change the party on the stay
-  // doc directly (the rules' quick fields), which prices nothing, so the
-  // party is compared with the one the folio was priced for: this edit, even
-  // one that changes nothing else, re-prices a party changed that way.
+  // The party the price is for. Staff may change the party on the stay doc
+  // directly (the rules' quick fields, employees included), which prices
+  // nothing. Such a change never moves the price on its own, not even at the
+  // next unrelated edit: only a party sent with this edit, or repriceParty
+  // from an owner or manager, is priced. Anything else keeps the party the
+  // folio was priced for, so a check-in time change cannot quietly re-price
+  // the stay, and an employee cannot lower it by lowering the headcount (nor
+  // by re-sending the lowered headcount unchanged with an extension).
+  // "Sent" means a count this edit changes: the app sends the whole guest
+  // block with every edit, so a count sent as it already is on the stay is
+  // no decision to price it.
   const priced = stored.kind === 'reservation' && !ota;
   const pricedParty = pricedPartyOf(storedFolio, stored);
-  const partyChanged =
-    priced && (guestNext.adults !== pricedParty.adults || guestNext.children !== pricedParty.children || guestNext.pets !== pricedParty.pets);
-  const noChange = !datesChanged && !listingChanged && !timesChanged && guestKeys.length === 0 && !payment && !partyChanged;
+  const partySent = guestKeys.some((k) => k === 'adults' || k === 'children' || k === 'pets');
+  const stayParty: StayFolioParty = { adults: guestNext.adults, children: guestNext.children, pets: guestNext.pets };
+  const adoptParty = isOwnerOrManager(ctx.role) && (repriceParty === true || (partySent && repriceParty !== false));
+  const pricingParty = adoptParty ? stayParty : pricedParty;
+  // A booking that no longer holds its nights (cancelled, removed) keeps the
+  // price it ended on: a headcount corrected afterwards is a record, not a
+  // new balance to chase or refund.
+  const partyRepriced = priced && active && !sameParty(pricingParty, pricedParty);
+  // New dates are priced for some party; when the stay's differs from the one
+  // priced and nobody said which, an owner or manager is asked. An employee
+  // (adding nights to a walk-up) cannot change the price, so theirs keeps the priced one.
+  const requotesAnyway = priced && (datesChanged || (!storedFolio && listingChanged));
+  if (requotesAnyway && repriceParty === null && !partySent && !sameParty(stayParty, pricedParty) && isOwnerOrManager(ctx.role)) {
+    throw staysError(
+      'failed-precondition',
+      'party_reprice_required',
+      'The number of guests changed since this booking was priced. Choose whether to price the new party or keep the price for the party it was booked for.',
+      { stayId, pricedParty, party: stayParty },
+    );
+  }
+  const noChange = !datesChanged && !listingChanged && !timesChanged && guestKeys.length === 0 && !payment && !partyRepriced;
   if (noChange) return { stay: toWire(stored), folio: storedFolio ? toWire(storedFolio) : null };
 
   const warnings: StaysWarning[] = [];
@@ -1015,8 +1060,8 @@ export async function handleModifyStay(
 
   const now = Timestamp.fromMillis(nowMs);
 
-  // The price moves with the dates and the party; a move alone keeps the price agreed.
-  const requote = priced && (datesChanged || partyChanged || (!storedFolio && listingChanged));
+  // The price moves with the dates and the priced party; a move alone keeps the price agreed.
+  const requote = requotesAnyway || partyRepriced;
   let folio: StayFolioDoc | null = storedFolio;
   if (requote) {
     const adjustment = storedFolio?.adjustment ?? null;
@@ -1024,13 +1069,13 @@ export async function handleModifyStay(
       quoteStay(listing, controls, {
         checkIn,
         checkOut,
-        adults: guestNext.adults,
-        children: guestNext.children,
-        pets: guestNext.pets,
+        adults: pricingParty.adults,
+        children: pricingParty.children,
+        pets: pricingParty.pets,
         adjustmentCents: adjustment?.cents ?? 0,
       }),
     );
-    folio = folioFromQuote(facilityId, stayId, quote, adjustment, guestNext, now, storedFolio);
+    folio = folioFromQuote(facilityId, stayId, quote, adjustment, pricingParty, now, storedFolio);
   }
   const next: StayDoc = {
     ...stored,
@@ -1105,6 +1150,10 @@ export async function handleModifyStay(
       timesChanged,
       guestFields: guestKeys,
       requoted: requote,
+      // Who changed the price for a different party, and from what to what (counts only),
+      // and the choice sent, so a price kept on purpose for a party that changed is on record too.
+      partyRepriced: partyRepriced ? { from: pricedParty, to: pricingParty } : null,
+      repriceParty,
       incomeEntryId: income ? entryId : null,
       status: written.status,
     },

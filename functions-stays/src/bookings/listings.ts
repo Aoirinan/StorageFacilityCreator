@@ -28,6 +28,7 @@ import {
   staysCallable,
 } from '../common/guards';
 import { applyStayMutations } from '../common/stayWriter';
+import { ReconcileTurnoversResult, reconcileTurnovers } from '../tasks/onStayWrite';
 import { defaultChecklistFor } from './seedDefaults';
 import { facilityCol, invalid, validated } from './shared';
 
@@ -82,6 +83,8 @@ export interface SaveListingResult extends StaysSaveListingResponse {
   created: boolean;
   /** Stays whose denormalized listing name, group or kind were brought up to date. */
   staysUpdated: number;
+  /** The turnover re-plan this edit ran for the listing (see turnoverInputsChanged), or null. */
+  turnovers: ReconcileTurnoversResult | null;
 }
 
 export async function handleSaveListing(
@@ -161,13 +164,49 @@ export async function handleSaveListing(
     staysUpdated = await refreshStayListingFields(ctx, id, input);
   }
 
+  // The turnover trigger re-plans only when a booking changes, so a listing
+  // edit that changes what its turnovers say (the title, whether it does
+  // them, the fallback times) re-plans this listing's here: otherwise a
+  // listing set to "no turnovers" kept its open cleaning tasks. After the
+  // commit, best effort: the listing is saved either way.
+  let turnovers: ReconcileTurnoversResult | null = null;
+  if (before && saved.after !== before && turnoverInputsChanged(before, input)) {
+    try {
+      turnovers = await reconcileTurnovers(ctx.db, ctx.facilityId, ctx.nowMs, { listingId: id });
+    } catch (error) {
+      functions.logger.error('stays: turnover re-plan after a listing edit failed', {
+        facilityId: ctx.facilityId,
+        listingId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   await auditStays(ctx, {
     eventType: 'stays.listing.saved',
     targetType: 'stayListing',
     targetId: id,
-    metadata: { created: saved.created, version: saved.version, active: input.active, archived: input.archived, staysUpdated },
+    metadata: {
+      created: saved.created,
+      version: saved.version,
+      active: input.active,
+      archived: input.archived,
+      staysUpdated,
+      turnoversReplanned: turnovers ? turnovers.created + turnovers.updated : null,
+    },
   });
-  return { listingId: id, version: saved.version, created: saved.created, staysUpdated };
+  return { listingId: id, version: saved.version, created: saved.created, staysUpdated, turnovers };
+}
+
+/** The listing fields a turnover plan reads (planTurnover): its title, whether and after what it cleans, and the fallback times. */
+function turnoverInputsChanged(before: StayListingDoc, after: StayListingInput): boolean {
+  return (
+    before.name !== after.name ||
+    before.turnover?.mode !== after.turnover.mode ||
+    (before.turnover?.afterOwnerBlocks === true) !== (after.turnover.afterOwnerBlocks === true) ||
+    (before.times?.checkIn ?? null) !== (after.times.checkIn ?? null) ||
+    (before.times?.checkOut ?? null) !== (after.times.checkOut ?? null)
+  );
 }
 
 /**

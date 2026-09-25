@@ -65,6 +65,9 @@ test('the payment chip follows the folio, the source and the kind', () => {
   assert.equal(paymentStatusOf(f(0, 0), direct), 'none');
   assert.equal(paymentStatusOf(f(500, 0), direct), 'paid');
   assert.equal(paymentStatusOf(f(0), direct, { refunded: true }), 'refunded');
+  // More given back than is held (the refunded check was voided): owed back, cancelled or not, whatever the old chip said.
+  assert.equal(paymentStatusOf(f(-10_000), direct, { refunded: true }), 'due');
+  assert.equal(paymentStatusOf(f(-1), { ...direct, status: 'cancelled' }, { refunded: true }), 'due');
   // A cancelled booking owes nothing more.
   assert.equal(paymentStatusOf(f(0), { ...direct, status: 'cancelled' }), 'none');
   assert.equal(paymentStatusOf(null, direct), 'none');

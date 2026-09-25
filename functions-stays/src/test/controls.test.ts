@@ -5,8 +5,9 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { handleGetAvailability, handleSetControls } from '../bookings/controls';
 import { SEEDED_TEMPLATES, SITE_CHECK_CHECKLIST } from '../bookings/seedDefaults';
 import { handleCreateStay } from '../bookings/stays';
+import { reconcileTurnovers } from '../tasks/onStayWrite';
 import { FakeFirestore } from './support/fakeFirestore';
-import { EMPLOYEE, FAC, MANAGER, OUTSIDER, OWNER, VIEWER, callableContext, makeStay } from './support/staysFixtures';
+import { EMPLOYEE, FAC, MANAGER, NOW, OUTSIDER, OWNER, VIEWER, callableContext, makeStay } from './support/staysFixtures';
 import { P, as, listingInput, reasonOf, rid, rvInput, seedListing, setupEnv } from './support/bookingFixtures';
 
 const all: FakeFirestore[] = [];
@@ -159,6 +160,23 @@ test('turnovers switched on before Stays itself are planned when Stays is turned
   const on = await as(env, handleSetControls, OWNER, { changes: { moduleEnabled: true } });
   assert.equal(on.turnovers?.created, 1);
   assert.equal(env.fake.read(`${P}/stayTasks/turnover_airbnb_HMEARLY001`)!.status, 'todo');
+});
+
+test('a turnover catch-up that fails after the settings commit does not fail the save; the next catch-up plans them', async () => {
+  const env = setupEnv(all, { controls: { turnoverTasksEnabled: false } });
+  seedListing(env.fake, 'lst_a', listingInput());
+  env.fake.seed(`${P}/stays/man_early`, makeStay('lst_a', '2026-10-05', '2026-10-08') as never);
+  // The settings commit; from then on the controls cannot be read, so the catch-up throws.
+  env.fake.onBeforeCommit = async () => {
+    env.fake.failReads = (path) => path.endsWith('/stayControls/current');
+  };
+  const on = await as(env, handleSetControls, MANAGER, { changes: { turnoverTasksEnabled: true } });
+  assert.deepEqual([on.turnovers, on.controls.turnoverTasksEnabled], [null, true]);
+  assert.equal(env.fake.read(`${P}/stayControls/current`)!.turnoverTasksEnabled, true);
+  assert.equal(env.fake.has(`${P}/stayTasks/turnover_man_early`), false);
+  env.fake.onBeforeCommit = null;
+  env.fake.failReads = null;
+  assert.equal((await reconcileTurnovers(env.fake.firestore(), FAC, NOW)).created, 1);
 });
 
 test('settings are checked: unknown keys, bad values, stale versions, and who may change them', async () => {

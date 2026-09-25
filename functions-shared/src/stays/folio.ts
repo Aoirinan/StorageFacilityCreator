@@ -78,9 +78,10 @@ export interface PaymentStatusOptions {
  * - blocks: 'none';
  * - another channel's booking: 'channel_collected' (Airbnb and the rest take the money);
  * - otherwise from the folio: 'paid' when the total is covered, 'partial'
- *   when some is paid, 'refunded' when money was given back and none is
- *   held, 'due' when a booking that still holds its nights owes money, else
- *   'none' (nothing owed, or a cancelled booking that was never paid).
+ *   when some is paid, 'refunded' when money was given back and exactly
+ *   none is held, 'due' when more was given back than is held (a payment
+ *   voided after its refund) or a booking that still holds its nights owes
+ *   money, else 'none' (nothing owed, or a cancelled booking never paid).
  */
 export function paymentStatusOf(
   folio: Pick<FolioMoney, 'totalCents' | 'paidCents'> | null | undefined,
@@ -92,6 +93,10 @@ export function paymentStatusOf(
   if (!folio) return 'none';
   const { totalCents, paidCents } = folio;
   if (paidCents > 0) return paidCents >= totalCents ? 'paid' : 'partial';
+  // Negative paid: the guest was refunded money the folio no longer holds
+  // (the check it refunded was voided), so they owe it back. Callers pass
+  // `refunded` from the stored chip, which would otherwise keep "refunded".
+  if (paidCents < 0) return 'due';
   if (opts.refunded === true) return 'refunded';
   const holdsNights = (ACTIVE_STAY_STATUSES as readonly string[]).includes(stay.status);
   return holdsNights && totalCents > 0 ? 'due' : 'none';

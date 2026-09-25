@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { handleBulkCreateRvSites, handleSaveListing, siteShortCode } from '../bookings/listings';
 import { SITE_CHECK_CHECKLIST } from '../bookings/seedDefaults';
 import { staysErrorReason } from '../common/errors';
+import { reconcileTurnovers } from '../tasks/onStayWrite';
 import { FakeFirestore } from './support/fakeFirestore';
-import { EMPLOYEE, MANAGER, OWNER, makeStay } from './support/staysFixtures';
+import { EMPLOYEE, FAC, MANAGER, NOW, OWNER, makeStay } from './support/staysFixtures';
 import { P, as, errorOf, listingInput, reasonOf, rid, rvInput, seedListing, setupEnv } from './support/bookingFixtures';
 
 const all: FakeFirestore[] = [];
@@ -108,6 +109,29 @@ test("a rename carries to the listing's current and future stays, with a version
   assert.deepEqual([now.listingName, now.listingGroup, now.version], ['Sunset Cottage', 'Cottages', 3]);
   // Long past stays keep the name they had.
   assert.equal(env.fake.read(`${P}/stays/man_old`)!.listingName, 'Airbnb A');
+});
+
+test("a listing edit that changes what its turnovers say re-plans them: the title, or no turnovers at all", async () => {
+  const env = setupEnv(all, { controls: { turnoverTasksEnabled: true } });
+  seedListing(env.fake, 'lst_a', listingInput());
+  env.fake.seed(`${P}/stays/man_a`, makeStay('lst_a', '2026-10-02', '2026-10-05', { listingName: 'Airbnb A' }) as never);
+  env.fake.seed(`${P}/stays/man_b`, makeStay('lst_a', '2026-10-09', '2026-10-12', { listingName: 'Airbnb A' }) as never);
+  await reconcileTurnovers(env.fake.firestore(), FAC, NOW);
+  const task = (id: string) => env.fake.read(`${P}/stayTasks/turnover_${id}`)!;
+  assert.equal(task('man_a').title, 'Turnover · Airbnb A');
+  const save = (version: number, patch: Parameters<typeof listingInput>[0]) =>
+    as(env, handleSaveListing, OWNER, { requestId: rid(), listingId: 'lst_a', expectedVersion: version, listing: listingInput(patch) });
+
+  // Renamed: the tasks the cleaners read carry the new name (no booking changed, so the trigger never ran).
+  const renamed = await save(1, { name: 'Sunset Cottage' });
+  assert.deepEqual([renamed.turnovers?.updated, task('man_a').title, task('man_b').title], [2, 'Turnover · Sunset Cottage', 'Turnover · Sunset Cottage']);
+  // Turnovers turned off for the listing: the open ones are cancelled, not left on the cleaners' list.
+  const off = await save(2, { name: 'Sunset Cottage', turnover: { ...listingInput().turnover, mode: 'none' } });
+  assert.equal(off.turnovers?.updated, 2);
+  assert.deepEqual([task('man_a').status, task('man_b').status], ['cancelled', 'cancelled']);
+  // An edit that changes nothing a turnover reads re-plans nothing.
+  const notes = await save(3, { name: 'Sunset Cottage', turnover: { ...listingInput().turnover, mode: 'none' }, notes: 'New mattress' });
+  assert.equal(notes.turnovers, null);
 });
 
 test('bulk RV sites: RV 1–5 with their own hookups, a site check each, created together', async () => {

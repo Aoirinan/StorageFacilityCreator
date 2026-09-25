@@ -7,6 +7,7 @@ import { StayValidationError } from '@sfc/functions-shared/stays/validation';
 import {
   displayNameFrom,
   handleSearchGuests,
+  nameMatchKey,
   normalizeEmail,
   normalizePhone,
   normalizeVehicle,
@@ -121,13 +122,27 @@ test('phones become E.164, emails lower case; anything else is refused, not gues
   assert.equal(phoneLast4(null), null);
 });
 
-test('a new guest whose email is already on file is the same guest, but does not borrow their phone', async () => {
+test('the do-not-rent name check ignores spacing, case, accents, punctuation and word order, and nothing else', () => {
+  const key = nameMatchKey('Rex Ruin');
+  for (const same of ['rex  ruin', ' REX RUIN ', 'Rex-Ruin', 'Ruin, Rex', 'Rëx Ruin', 'Rex\tRuin.']) assert.equal(nameMatchKey(same), key, same);
+  assert.equal(nameMatchKey("O'Brien Pat"), nameMatchKey('Pat OBrien'));
+  for (const other of ['Rex Ruiz', 'Rex', 'R. Ruin', 'Rex J Ruin']) assert.notEqual(nameMatchKey(other), key, other);
+  assert.equal(nameMatchKey(' .- '), '');
+});
+
+test('a new guest whose email is already on file is the same guest; their phone is lent only to a booker who may read it', async () => {
   const e = env();
   const resolved = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J. Doe', email: 'JANE@example.com' } });
   assert.equal(resolved?.profileId, 'gp_jane');
   assert.equal(resolved?.existing?.name, 'Jane Doe');
   // Found by the email typed: the booking's phone is only what was typed (none), never the profile's.
   assert.deepEqual([resolved?.matchedBy, resolved?.phoneE164], ['email', null]);
+  // An owner or manager, who could pick her profile and read it anyway, gets her phone (and so her door code).
+  const lent = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J. Doe', email: 'jane@example.com' } }, { lendMatchedPhone: true });
+  assert.deepEqual([lent?.matchedBy, lent?.phoneE164], ['email', '+14065550123']);
+  // A phone typed now is this booking's, even for them.
+  const typed = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J', email: 'jane@example.com', phone: '406 555 4242' } }, { lendMatchedPhone: true });
+  assert.deepEqual([typed?.profileId, typed?.phoneE164], ['gp_jane', '+14065554242']);
   const byPhone = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { create: { name: 'J', phone: '406 555 0123' } });
   assert.deepEqual([byPhone?.profileId, byPhone?.matchedBy, byPhone?.phoneE164], ['gp_jane', 'phone', '+14065550123']);
   const picked = await resolveGuestProfile(e.fake.firestore(), FAC, rid(), { profileId: 'gp_jane' });
