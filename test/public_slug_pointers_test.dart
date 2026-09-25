@@ -1,3 +1,5 @@
+// ignore_for_file: subtype_of_sealed_class
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +12,25 @@ import 'support/fake_firestore_store.dart';
 // A public map slug change used to leave the old publicFacilityMaps doc with
 // its full unit list, never synced again, so old links served a frozen list;
 // and getPublicSlugForFacility answered with whichever doc sorted first.
+
+/// facilities/*: every read refused, as the rules refuse mapEngine/meta to
+/// staff and signed-out visitors.
+class _DeniedCollection extends Fake
+    implements CollectionReference<Map<String, dynamic>> {
+  @override
+  DocumentReference<Map<String, dynamic>> doc([String? path]) => _DeniedDoc();
+}
+
+class _DeniedDoc extends Fake implements DocumentReference<Map<String, dynamic>> {
+  @override
+  CollectionReference<Map<String, dynamic>> collection(String path) =>
+      _DeniedCollection();
+
+  @override
+  Future<DocumentSnapshot<Map<String, dynamic>>> get([GetOptions? options]) =>
+      Future.error(
+          FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied'));
+}
 
 const _facility = 'eXnWPuwuqzBVFcZWv1ZL';
 const _live = 'keepsakeonlinerentals';
@@ -261,7 +282,11 @@ void main() {
         () async {
       keepsakeDocs();
       meta('storage');
-      store.refuseRead = (path) => path.contains('/mapEngine/');
+      FacilityMapV2Service.overrideForTesting(
+        collection: (path) =>
+            path == 'facilities' ? _DeniedCollection() : store.collection(path),
+        batch: store.batch,
+      );
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), _live);
     });
 
