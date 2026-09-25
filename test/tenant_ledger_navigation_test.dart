@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/dnr_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
 import 'package:sfcapp/router/detail_routes.dart';
@@ -183,7 +185,14 @@ void main() {
   }) async {
     final router = _router(shellKey, initialLocation: initialLocation);
     addTearDown(router.dispose);
-    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    // The routes' previous / next tenant read the facility's tenants.
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        facilityTenantsProvider('f1')
+            .overrideWith((ref) => Stream.value([_tenant])),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ));
     await tester.pumpAndSettle();
     return router;
   }

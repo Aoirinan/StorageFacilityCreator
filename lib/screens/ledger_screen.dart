@@ -17,6 +17,7 @@ import 'package:sfcapp/router/back_navigation.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
 
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
@@ -201,6 +202,12 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                             ),
                         ],
                       ),
+                    ),
+                    // Previous / next tenant's ledger, to post payments
+                    // down the list without going back to it.
+                    TenantPrevNextControls(
+                      tenant: widget.tenant,
+                      page: TenantPage.ledger,
                     ),
                     IconButton(
                       icon: const Icon(Icons.filter_alt),

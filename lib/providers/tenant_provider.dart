@@ -10,6 +10,7 @@ import '../services/contract_service.dart';
 import '../services/payment_service.dart';
 import '../services/facility_service.dart';
 import '../providers/auth_provider.dart';
+import 'package:sfcapp/utils/unit_number_sort.dart';
 
 // Provider for all tenants across all facilities
 final allTenantsProvider = FutureProvider<List<TenantModel>>((ref) async {
@@ -100,21 +101,10 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
           sorted.sort((a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()));
           break;
         case TenantSortOption.unitNumberAsc:
-          sorted.sort((a, b) {
-            // Extract numeric part for natural sorting (e.g., "A101" -> 101)
-            final aNum = _extractUnitNumber(a.unitNumber);
-            final bNum = _extractUnitNumber(b.unitNumber);
-            if (aNum != bNum) return aNum.compareTo(bNum);
-            return a.unitNumber.toLowerCase().compareTo(b.unitNumber.toLowerCase());
-          });
+          sorted.sort(compareTenantsByUnit);
           break;
         case TenantSortOption.unitNumberDesc:
-          sorted.sort((a, b) {
-            final aNum = _extractUnitNumber(a.unitNumber);
-            final bNum = _extractUnitNumber(b.unitNumber);
-            if (aNum != bNum) return bNum.compareTo(aNum);
-            return b.unitNumber.toLowerCase().compareTo(a.unitNumber.toLowerCase());
-          });
+          sorted.sort((a, b) => compareTenantsByUnit(b, a));
           break;
         case TenantSortOption.dateCreatedAsc:
           sorted.sort((a, b) {
@@ -164,11 +154,16 @@ final filteredTenantsProvider = StreamProvider.family<List<TenantModel>, String>
   );
 });
 
-// Helper function to extract numeric part from unit number for natural sorting
-int _extractUnitNumber(String unitNumber) {
-  // Extract all digits from the unit number
-  final digits = unitNumber.replaceAll(RegExp(r'[^\d]'), '');
-  return int.tryParse(digits) ?? 0;
+/// The Unit sort: natural order (C2-2, C2-10, C10-1; A5 before B3), then by
+/// name for tenants sharing a unit. It used to join every digit into one
+/// number, so "B3" (3) came before "A5" (5) and "C10-1" (101) before
+/// "C2-10" (210). The tenant pages' previous/next order falls back to this.
+int compareTenantsByUnit(TenantModel a, TenantModel b) {
+  final byUnit = compareUnitNumbersNatural(a.unitNumber, b.unitNumber);
+  if (byUnit != 0) return byUnit;
+  final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  if (byName != 0) return byName;
+  return a.id.compareTo(b.id);
 }
 
 /// Apply search and sort to a tenant list (e.g. for "All Facilities" view).
@@ -196,20 +191,10 @@ List<TenantModel> filterAndSortTenantsForDisplay(
       sorted.sort((a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()));
       break;
     case TenantSortOption.unitNumberAsc:
-      sorted.sort((a, b) {
-        final aNum = _extractUnitNumber(a.unitNumber);
-        final bNum = _extractUnitNumber(b.unitNumber);
-        if (aNum != bNum) return aNum.compareTo(bNum);
-        return a.unitNumber.toLowerCase().compareTo(b.unitNumber.toLowerCase());
-      });
+      sorted.sort(compareTenantsByUnit);
       break;
     case TenantSortOption.unitNumberDesc:
-      sorted.sort((a, b) {
-        final aNum = _extractUnitNumber(a.unitNumber);
-        final bNum = _extractUnitNumber(b.unitNumber);
-        if (aNum != bNum) return bNum.compareTo(aNum);
-        return b.unitNumber.toLowerCase().compareTo(a.unitNumber.toLowerCase());
-      });
+      sorted.sort((a, b) => compareTenantsByUnit(b, a));
       break;
     case TenantSortOption.dateCreatedAsc:
       sorted.sort((a, b) {
