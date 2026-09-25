@@ -33,27 +33,12 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
   bool _loadingFacilities = true;
   Object? _facilitiesError;
 
-  // Per-facility insurance settings stored in Firestore
-  bool _savingSettings = false;
-  final _referralUrlController = TextEditingController();
-  final _referralNameController = TextEditingController();
-  final _referralNotesController = TextEditingController();
-  bool _settingsLoaded = false;
-
   bool get _isAllFacilities => _selectedFacilityId == _kAllFacilitiesIns;
 
   @override
   void initState() {
     super.initState();
     _loadFacilities();
-  }
-
-  @override
-  void dispose() {
-    _referralUrlController.dispose();
-    _referralNameController.dispose();
-    _referralNotesController.dispose();
-    super.dispose();
   }
 
   Future<void> _loadFacilities({bool retry = false}) async {
@@ -81,9 +66,6 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
           _loadingFacilities = false;
           _facilitiesError = null;
         });
-        if (!_isAllFacilities && _selectedFacilityId != null) {
-          await _loadInsuranceSettings(_selectedFacilityId!);
-        }
       }
     } catch (e, st) {
       // Shown with a Retry: it used to fall through to "No Facilities Found".
@@ -105,66 +87,6 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
     _loadFacilities(retry: true);
   }
 
-  Future<void> _loadInsuranceSettings(String facilityId) async {
-    setState(() => _settingsLoaded = false);
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('settings')
-          .doc('insurance')
-          .get();
-      if (mounted) {
-        final data = doc.data();
-        _referralUrlController.text = data?['referralUrl'] as String? ?? '';
-        _referralNameController.text = data?['referralName'] as String? ?? '';
-        _referralNotesController.text = data?['referralNotes'] as String? ?? '';
-        setState(() => _settingsLoaded = true);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _settingsLoaded = true);
-    }
-  }
-
-  Future<void> _saveSettings() async {
-    if (_selectedFacilityId == null || _isAllFacilities) return;
-    setState(() => _savingSettings = true);
-    try {
-      await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(_selectedFacilityId!)
-          .collection('settings')
-          .doc('insurance')
-          .set({
-        'referralUrl': _referralUrlController.text.trim(),
-        'referralName': _referralNameController.text.trim(),
-        'referralNotes': _referralNotesController.text.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Insurance settings saved.'), behavior: SnackBarBehavior.floating),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving: $e'), behavior: SnackBarBehavior.floating, backgroundColor: AppTheme.error),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _savingSettings = false);
-    }
-  }
-
-  Future<void> _launchUrl(String url) async {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     // Sync with global facility picker
@@ -174,7 +96,6 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
       final globalId = globalFacility?.id;
       if (globalId != null && _selectedFacilityId != globalId) {
         setState(() => _selectedFacilityId = globalId);
-        _loadInsuranceSettings(globalId);
       }
     });
 
@@ -213,8 +134,8 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
               children: [
                 _buildInfoBanner(),
                 const SizedBox(height: 16),
-                if (!_isAllFacilities) ...[
-                  _buildReferralCard(),
+                if (!_isAllFacilities && _selectedFacilityId != null) ...[
+                  InsuranceReferralCard(facilityId: _selectedFacilityId!),
                   const SizedBox(height: 16),
                 ],
                 _buildTenantTrackingCard(),
@@ -257,7 +178,7 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
                 child: Text(f.name),
               )),
             ],
-            onChanged: (id) async {
+            onChanged: (id) {
               if (id == null) return;
               setState(() => _selectedFacilityId = id);
               // Sync global picker
@@ -266,7 +187,6 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
               } else {
                 final picked = _facilities.firstWhere((f) => f.id == id);
                 ref.read(selectedFacilityProvider.notifier).state = picked;
-                await _loadInsuranceSettings(id);
               }
             },
           ),
@@ -307,88 +227,6 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildReferralCard() {
-    final theme = Theme.of(context);
-    final url = _referralUrlController.text.trim();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Insurance Referral Link', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 4),
-            Text(
-              'Add a link to the insurance provider you recommend. This will be visible to your tenants.',
-              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _referralNameController,
-              decoration: const InputDecoration(
-                labelText: 'Provider Name (e.g. "Example Insurance")',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _referralUrlController,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: 'Website URL (e.g. https://example.com)',
-                border: OutlineInputBorder(),
-                isDense: true,
-                prefixIcon: Icon(Icons.link),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _referralNotesController,
-              maxLines: 2,
-              decoration: const InputDecoration(
-                labelText: 'Notes for tenants (optional)',
-                border: OutlineInputBorder(),
-                isDense: true,
-                hintText: 'e.g. "Mention our facility name for a discount."',
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                FilledButton(
-                  onPressed: _savingSettings ? null : _saveSettings,
-                  child: _savingSettings
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('Save'),
-                ),
-                if (url.isNotEmpty) ...[
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: () => _launchUrl(url),
-                    icon: const Icon(Icons.open_in_new, size: 16),
-                    label: const Text('Preview Link'),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.copy, size: 18),
-                    tooltip: 'Copy URL',
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: url));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('URL copied.'), behavior: SnackBarBehavior.floating),
-                      );
-                    },
-                  ),
-                ],
-              ],
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -654,5 +492,241 @@ class _InsuranceScreenState extends ConsumerState<InsuranceScreen> {
 
   Widget _tenantInsuranceRowTagged(DocumentSnapshot doc, String facilityName, ThemeData theme) {
     return _tenantInsuranceRow(doc, theme, facilityName: facilityName);
+  }
+}
+
+/// A facility's insurance referral form. The save writes all three fields, so
+/// the form and its Save show only once [facilityId]'s saved referral is in
+/// them: before a load, or after a failed one, they are blank or hold another
+/// facility's values, and saving would write those over its link.
+class InsuranceReferralCard extends StatefulWidget {
+  const InsuranceReferralCard({super.key, required this.facilityId});
+
+  final String facilityId;
+
+  @override
+  State<InsuranceReferralCard> createState() => _InsuranceReferralCardState();
+}
+
+class _InsuranceReferralCardState extends State<InsuranceReferralCard> {
+  final _urlController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _notesController = TextEditingController();
+
+  /// The facility whose saved referral is in the fields; null while a load
+  /// runs or after one fails.
+  String? _loadedFacilityId;
+  Object? _loadError;
+  bool _saving = false;
+
+  /// Bumped by every load, so a slower load for a facility the owner has
+  /// switched away from cannot land in the next one's fields.
+  int _loadSeq = 0;
+
+  bool get _loaded => _loadedFacilityId == widget.facilityId;
+
+  @override
+  void initState() {
+    super.initState();
+    _startLoad();
+  }
+
+  @override
+  void didUpdateWidget(InsuranceReferralCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.facilityId != widget.facilityId) _startLoad();
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _nameController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  /// Callers rebuild after this (initState, didUpdateWidget, or setState).
+  void _startLoad() {
+    final seq = ++_loadSeq;
+    _loadedFacilityId = null;
+    _loadError = null;
+    _load(widget.facilityId, seq);
+  }
+
+  Future<void> _load(String facilityId, int seq) async {
+    try {
+      final referral = await InsuranceService.getReferral(facilityId);
+      if (!mounted || seq != _loadSeq) return;
+      setState(() {
+        _nameController.text = referral.name;
+        _urlController.text = referral.url;
+        _notesController.text = referral.notes;
+        _loadedFacilityId = facilityId;
+      });
+    } catch (e, st) {
+      ErrorReporter.reportError(e, st, context: 'InsuranceReferralCard._load');
+      if (!mounted || seq != _loadSeq) return;
+      setState(() => _loadError = e);
+    }
+  }
+
+  Future<void> _save() async {
+    if (!_loaded) return;
+    final facilityId = _loadedFacilityId!;
+    setState(() => _saving = true);
+    try {
+      await InsuranceService.saveReferral(facilityId, (
+        name: _nameController.text.trim(),
+        url: _urlController.text.trim(),
+        notes: _notesController.text.trim(),
+      ));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Insurance settings saved.'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error saving: $e'), behavior: SnackBarBehavior.floating, backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _launchUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Insurance Referral Link', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Add a link to the insurance provider you recommend. This will be visible to your tenants.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            if (_loadError != null)
+              _buildLoadError(theme)
+            else if (!_loaded)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: LinearProgressIndicator(),
+              )
+            else
+              _buildForm(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadError(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.error_outline, size: 20, color: AppTheme.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                "Couldn't load this facility's insurance referral. Check your connection and try again.",
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: () => setState(_startLoad),
+          icon: const Icon(Icons.refresh),
+          label: const Text('Retry'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildForm() {
+    final url = _urlController.text.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _nameController,
+          decoration: const InputDecoration(
+            labelText: 'Provider Name (e.g. "Example Insurance")',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _urlController,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            labelText: 'Website URL (e.g. https://example.com)',
+            border: OutlineInputBorder(),
+            isDense: true,
+            prefixIcon: Icon(Icons.link),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _notesController,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Notes for tenants (optional)',
+            border: OutlineInputBorder(),
+            isDense: true,
+            hintText: 'e.g. "Mention our facility name for a discount."',
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            FilledButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save'),
+            ),
+            if (url.isNotEmpty) ...[
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: () => _launchUrl(url),
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: const Text('Preview Link'),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 18),
+                tooltip: 'Copy URL',
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: url));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('URL copied.'), behavior: SnackBarBehavior.floating),
+                  );
+                },
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
   }
 }
