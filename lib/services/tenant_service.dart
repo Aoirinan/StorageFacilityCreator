@@ -849,28 +849,38 @@ class TenantService {
     }
   }
 
-  // Get all tenants for a facility
+  /// All of a facility's tenants. Throws when they cannot be read, so a
+  /// caller that publishes or writes from the list cannot mistake a failed
+  /// read for a facility with no tenants.
+  static Future<List<TenantModel>> getTenantsForFacilityOrThrow(
+      String facilityId) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('Not signed in');
+    }
+
+    if (kDebugMode) {
+      print('🔄 Getting tenants for facility: $facilityId');
+    }
+
+    final tenants = await _readFacilityTenants(
+      FacilitySubcollections.tenants(facilityId),
+      facilityId,
+    );
+
+    if (kDebugMode) {
+      print('✅ Successfully retrieved ${tenants.length} tenants');
+    }
+
+    return tenants;
+  }
+
+  /// All of a facility's tenants, or [] when they cannot be read. For
+  /// display only: anything that publishes or writes from the list uses
+  /// [getTenantsForFacilityOrThrow].
   static Future<List<TenantModel>> getTenantsForFacility(String facilityId) async {
     try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Not signed in');
-      }
-
-      if (kDebugMode) {
-        print('🔄 Getting tenants for facility: $facilityId');
-      }
-
-      final tenants = await _readFacilityTenants(
-        FacilitySubcollections.tenants(facilityId),
-        facilityId,
-      );
-
-      if (kDebugMode) {
-        print('✅ Successfully retrieved ${tenants.length} tenants');
-      }
-
-      return tenants;
+      return await getTenantsForFacilityOrThrow(facilityId);
     } catch (e) {
       if (kDebugMode) {
         print('❌ Error getting tenants: $e');

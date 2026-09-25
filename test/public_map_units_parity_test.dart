@@ -58,7 +58,7 @@ void main() {
       // reading the public settings (none here: the defaults) and writing.
       final units =
           await FacilityMapV2Service.fetchActiveUnitsForTesting('fac1');
-      final tenants = await TenantService.getTenantsForFacility('fac1');
+      final tenants = await TenantService.getTenantsForFacilityOrThrow('fac1');
       final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
         units: units,
         publicSettings: null,

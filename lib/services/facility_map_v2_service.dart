@@ -120,6 +120,10 @@ class FacilityMapV2Service {
     // failure writes nothing (getOrCreateMeta can create the meta doc).
     final publicSettings =
         await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
+    // Throws too. On a failed read this saw no tenants, so a unit taken only
+    // through an active tenant's unit number was published as rentable.
+    final claimedUnits = claimedUnitNumbersFromActiveTenants(
+        await TenantService.getTenantsForFacilityOrThrow(facilityId));
 
     final meta = await getOrCreateMeta(facilityId);
     final facilitySnap =
@@ -182,8 +186,6 @@ class FacilityMapV2Service {
         },
         SetOptions(merge: true));
 
-    final tenants = await TenantService.getTenantsForFacility(facilityId);
-    final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
     final inventory = publicUnitInventory(
       facilityId: facilityId,
       units: units,
@@ -591,7 +593,10 @@ class FacilityMapV2Service {
       final publicSettings =
           await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
       final units = await _fetchActiveUnitsOrdered(facilityId);
-      final tenants = await TenantService.getTenantsForFacility(facilityId);
+      // Throws and skips the refresh too, rather than list a unit taken only
+      // through an active tenant's unit number as rentable.
+      final tenants =
+          await TenantService.getTenantsForFacilityOrThrow(facilityId);
       final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
       final inventory = publicUnitInventory(
         facilityId: facilityId,
