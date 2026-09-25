@@ -85,6 +85,13 @@ class UnitModel {
   /// `true` counts; missing is false.
   final bool internalUse;
 
+  /// The part of the facility the unit is in, as the owner names it
+  /// ("Complex 2", "Outdoor storage", "Rental house"): trimmed, null when not
+  /// set. Only the Units and Tenants lists read it, to filter by area; it is
+  /// not shown on the public website. Unit numbers stay unique across the
+  /// whole facility whatever the area.
+  final String? area;
+
   const UnitModel({
     required this.id,
     required this.facilityId,
@@ -119,6 +126,7 @@ class UnitModel {
     this.overlock,
     this.publicListingEnabled = true,
     this.internalUse = false,
+    this.area,
   });
 
   /// Reads every field so that a value of the wrong type never throws (see
@@ -172,6 +180,7 @@ class UnitModel {
       // public map publish failed.
       publicListingEnabled: data['publicListingEnabled'] != false,
       internalUse: data['internalUse'] == true,
+      area: _areaFromField(data['area']),
     );
   }
 
@@ -203,6 +212,7 @@ class UnitModel {
       'updatedBy': updatedBy,
       'publicListingEnabled': publicListingEnabled,
       'internalUse': internalUse,
+      'area': area,
     };
     if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
       map['mapLayout'] = {
@@ -248,6 +258,8 @@ class UnitModel {
     OverlockInfo? overlock,
     bool? publicListingEnabled,
     bool? internalUse,
+    String? area,
+    bool clearArea = false,
   }) {
     return UnitModel(
       id: id ?? this.id,
@@ -284,7 +296,14 @@ class UnitModel {
       overlock: overlock ?? this.overlock,
       publicListingEnabled: publicListingEnabled ?? this.publicListingEnabled,
       internalUse: internalUse ?? this.internalUse,
+      area: clearArea ? null : (area ?? this.area),
     );
+  }
+
+  static String? _areaFromField(Object? raw) {
+    if (raw is! String) return null;
+    final trimmed = raw.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   // Helper methods
