@@ -39,6 +39,7 @@ import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -997,6 +998,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           ],
                         ),
                       ),
+                      // Previous / next tenant, without going back to the list.
+                      TenantPrevNextControls(tenant: tenant, page: TenantPage.detail),
                     ],
                   ),
                 ),

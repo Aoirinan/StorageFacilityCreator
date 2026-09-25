@@ -17,6 +17,7 @@ import 'package:sfcapp/services/contract_service.dart';
 import 'package:sfcapp/services/lien_service.dart';
 import 'package:sfcapp/services/payment_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
 
 // The detail routes that open with their model as `extra` or load it by id.
 // app_router.dart uses these as they are. Tests pass their own loader and a
@@ -50,6 +51,42 @@ Future<LienModel?> _loadLien(String facilityId, String lienId) =>
 TenantModel _tenantIn(TenantModel tenant, String facilityId) =>
     tenant.facilityId.isEmpty ? tenant.copyWith(facilityId: facilityId) : tenant;
 
+// A tenant's page or ledger, with previous / next tenant on the arrow keys.
+// Keyed by tenant: previous / next replace the page in place (same route,
+// same page key), and without a key the next tenant's page reused the last
+// one's State: its DNR result, its ledger filters, its running balance.
+
+Widget _tenantDetail(
+  TenantModel tenant,
+  Widget Function(TenantModel tenant) page,
+) {
+  return KeyedSubtree(
+    key: ValueKey('tenant-detail/${tenant.facilityId}/${tenant.id}'),
+    child: TenantPrevNextShortcuts(
+      tenant: tenant,
+      page: TenantPage.detail,
+      child: page(tenant),
+    ),
+  );
+}
+
+Widget _tenantLedger(
+  TenantModel tenant,
+  Widget Function(TenantModel tenant) page,
+) {
+  return KeyedSubtree(
+    key: ValueKey('tenant-ledger/${tenant.facilityId}/${tenant.id}'),
+    child: TenantPageFollowsLedger(
+      tenant: tenant,
+      child: TenantPrevNextShortcuts(
+        tenant: tenant,
+        page: TenantPage.ledger,
+        child: page(tenant),
+      ),
+    ),
+  );
+}
+
 ContractModel _contractIn(ContractModel contract, String facilityId) =>
     contract.facilityId.isEmpty
         ? contract.copyWith(facilityId: facilityId)
@@ -71,12 +108,13 @@ GoRoute tenantDetailRoute({
     name: 'tenant-detail',
     builder: (context, state) {
       final tenantExtra = state.extra;
-      if (tenantExtra is TenantModel) return page(tenantExtra);
+      if (tenantExtra is TenantModel) return _tenantDetail(tenantExtra, page);
       return loadByIdPage<TenantModel>(
         state,
         idParam: 'tenantId',
         load: load,
-        page: (tenant, facilityId) => page(_tenantIn(tenant, facilityId)),
+        page: (tenant, facilityId) =>
+            _tenantDetail(_tenantIn(tenant, facilityId), page),
       );
     },
   );
@@ -95,13 +133,14 @@ GoRoute tenantLedgerRoute({
       final tenantId = state.pathParameters['tenantId'];
       if (tenantId == null) return NotFoundPage(state: state);
       final tenantExtra = state.extra;
-      if (tenantExtra is TenantModel) return page(tenantExtra);
+      if (tenantExtra is TenantModel) return _tenantLedger(tenantExtra, page);
       return loadByIdPage<TenantModel>(
         state,
         idParam: 'tenantId',
         id: tenantId,
         load: load,
-        page: (tenant, facilityId) => page(_tenantIn(tenant, facilityId)),
+        page: (tenant, facilityId) =>
+            _tenantLedger(_tenantIn(tenant, facilityId), page),
       );
     },
   );

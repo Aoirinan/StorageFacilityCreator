@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/providers/tenant_navigation_provider.dart';
 import 'package:sfcapp/providers/permission_provider.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
@@ -49,10 +51,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   final Set<String> _selectedTenantIds = {};
   bool _hasInitializedFacility = false;
   final SetupRetryController _setupRetry = SetupRetryController();
+  late final StateController<List<TenantModel>?> _listOrder;
 
   @override
   void initState() {
     super.initState();
+    _listOrder = ref.read(tenantListOrderProvider.notifier);
     // Ensure account exists on init
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // The Area filter starts at All areas each time the list opens, as the
@@ -66,6 +70,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   void dispose() {
     _setupRetry.cancel();
     _searchController.dispose();
+    // The order is this list's while it is open underneath the tenant's
+    // page. Once it has gone, a tenant opened from elsewhere walks the
+    // facility's tenants by unit instead. Not during dispose: providers
+    // cannot change while the tree is being torn down.
+    final listOrder = _listOrder;
+    scheduleMicrotask(() => listOrder.state = null);
     super.dispose();
   }
 
@@ -771,6 +781,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               final tenant = tenants[index];
                               return _buildTenantCard(
                                 tenant,
+                                shownTenants: tenants,
                                 areas: areaIndex?.areasFor(tenant) ?? const [],
                                 gracePeriodDays: gracePeriodDays,
                                 canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
@@ -878,8 +889,17 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
   }
 
+  /// Opens [tenant]'s page, with previous / next there walking [shownTenants]:
+  /// the list as it is showing now (facility, search and sort).
+  void _openTenant(TenantModel tenant, List<TenantModel> shownTenants) {
+    ref.read(tenantListOrderProvider.notifier).state =
+        List<TenantModel>.unmodifiable(shownTenants);
+    unawaited(context.push(AppRoute.tenantDetail, extra: tenant));
+  }
+
   Widget _buildTenantCard(
     TenantModel tenant, {
+    required List<TenantModel> shownTenants,
     List<String> areas = const [],
     int? gracePeriodDays,
     bool canDeleteTenant = false,
@@ -960,7 +980,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                 onSelected: (value) async {
                   switch (value) {
                     case 'view':
-                      unawaited(context.push(AppRoute.tenantDetail, extra: tenant));
+                      _openTenant(tenant, shownTenants);
                       break;
                     case 'edit':
                       unawaited(context.push(
@@ -1063,7 +1083,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                   }
                 });
               }
-            : () => context.push(AppRoute.tenantDetail, extra: tenant),
+            : () => _openTenant(tenant, shownTenants),
       ),
     );
   }

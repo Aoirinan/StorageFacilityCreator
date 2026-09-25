@@ -26,6 +26,7 @@ import '../widgets/map_legend.dart';
 import '../widgets/map_unit_tooltip.dart';
 import '../widgets/map_search_bar.dart';
 import '../widgets/map_bulk_actions_toolbar.dart';
+import 'package:sfcapp/utils/unit_number_sort.dart';
 import 'dart:ui' as ui;
 import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
@@ -58,37 +59,6 @@ const int kMapStarterRowBlockCount = 20;
 
 /// Horizontal gap between shapes when using "duplicate many in a row" (matches starter row spacing).
 const double kMapDuplicateRowGap = 12.0;
-
-List<Object> _alphanumericPartsForSort(String raw) {
-  final s = raw.trim();
-  if (s.isEmpty) return <Object>[''];
-  final out = <Object>[];
-  for (final m in RegExp(r'\d+|\D+').allMatches(s)) {
-    final g = m.group(0)!;
-    final n = int.tryParse(g);
-    out.add(n ?? g.toLowerCase());
-  }
-  return out;
-}
-
-/// Puts "2" before "10" for typical storage unit labels.
-int compareUnitNumbersNatural(String a, String b) {
-  final pa = _alphanumericPartsForSort(a);
-  final pb = _alphanumericPartsForSort(b);
-  final n = pa.length < pb.length ? pa.length : pb.length;
-  for (var i = 0; i < n; i++) {
-    final va = pa[i];
-    final vb = pb[i];
-    if (va is int && vb is int) {
-      final c = va.compareTo(vb);
-      if (c != 0) return c;
-    } else {
-      final c = va.toString().compareTo(vb.toString());
-      if (c != 0) return c;
-    }
-  }
-  return pa.length.compareTo(pb.length);
-}
 
 /// One unassigned map block on the clipboard (geometry + position relative to group origin).
 class _ClipboardShapeItem {

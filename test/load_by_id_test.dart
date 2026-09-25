@@ -2,12 +2,14 @@ import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/lien_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/detail_routes.dart';
 
@@ -176,7 +178,14 @@ void main() {
   Future<GoRouter> pumpApp(WidgetTester tester, String location) async {
     final router = _router(location);
     addTearDown(router.dispose);
-    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    // The tenant routes' previous / next tenant read the facility's tenants.
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        facilityTenantsProvider('f1')
+            .overrideWith((ref) => Stream.value(const <TenantModel>[])),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ));
     await tester.pumpAndSettle();
     return router;
   }

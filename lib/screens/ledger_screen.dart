@@ -17,6 +17,7 @@ import 'package:sfcapp/router/back_navigation.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
 
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
@@ -32,6 +33,11 @@ void backToTenantFromLedger(BuildContext context, TenantModel tenant) {
     ),
   );
 }
+
+/// The ledger header's width from which the name and the buttons share one
+/// row. The buttons and back arrow take about 670px, so this leaves the name
+/// (and previous / next under it) a good 200px.
+const double _ledgerHeaderOneRowWidth = 900;
 
 class LedgerScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -174,8 +180,10 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
               // Page header with back button and tenant name
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: Row(
-                  children: [
+                child: LayoutBuilder(builder: (context, constraints) {
+                  final title = Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                     IconButton(
                       icon: const Icon(Icons.arrow_back),
                       onPressed: () => backToTenantFromLedger(context, widget.tenant),
@@ -199,9 +207,19 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                                 color: AppTheme.textTertiary,
                               ),
                             ),
+                          // Previous / next tenant's ledger, to post
+                          // payments down the list without going back to
+                          // it. On its own line: in the row of buttons it
+                          // squeezed the tenant's name to nothing.
+                          TenantPrevNextControls(
+                            tenant: widget.tenant,
+                            page: TenantPage.ledger,
+                          ),
                         ],
                       ),
                     ),
+                  ]);
+                  final actions = <Widget>[
                     IconButton(
                       icon: const Icon(Icons.filter_alt),
                       onPressed: () => _showFiltersDialog(context),
@@ -281,8 +299,32 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       label: const Text('Add entry'),
                       onPressed: () => _showCreateEntryDialog(context),
                     ),
-                  ],
-                ),
+                  ];
+                  // One row when there is room for the name beside the
+                  // buttons; below that the buttons go on their own line
+                  // (and wrap), or the name was squeezed out and Add entry
+                  // clipped.
+                  if (constraints.maxWidth >= _ledgerHeaderOneRowWidth) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [Expanded(child: title), ...actions],
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      title,
+                      const SizedBox(height: 8),
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: actions,
+                      ),
+                    ],
+                  );
+                }),
               ),
               const SizedBox(height: 16),
               Expanded(
