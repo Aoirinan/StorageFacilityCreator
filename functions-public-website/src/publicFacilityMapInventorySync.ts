@@ -6,8 +6,8 @@ import {
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
-  movedToSlugOf,
 } from '@sfc/functions-shared';
+import { movedToSlugOf } from '@sfc/functions-shared';
 
 /** Fields that affect the anonymous public rental inventory payload. */
 const INVENTORY_KEYS = [
