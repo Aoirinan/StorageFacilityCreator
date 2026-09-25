@@ -1,11 +1,11 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
-import { readPublicFacilityMap } from '@sfc/functions-shared';
 import {
   categoryNavLabel,
   resolveHeroHeadline,
   resolveLocationLabel,
 } from './websiteSeo';
+import { readPublicFacilityMap } from '@sfc/functions-shared';
 
 function normalizeDomain(raw: string): string {
   return raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];

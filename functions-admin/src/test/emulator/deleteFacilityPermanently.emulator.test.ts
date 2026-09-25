@@ -110,13 +110,6 @@ async function seedFacility(): Promise<void> {
     [FACILITY, 'mine'],
     ['fac-2', 'theirs'],
   ]) {
-    await db.collection('user_roles').doc(`role-${suffix}`).set({ userId: 'manager-1', facilityId, roleType: 'manager' });
-    await db.collection('publicReservations').doc(`res-${suffix}`).set({ facilityId, unitId: 'u1', status: 'pending' });
-    await db
-      .collection('publicPaymentLinks')
-      .doc(`token-${suffix}`)
-      .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
-    await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
     // Public map docs of slugs left behind: one from before slug changes left
     // pointers, units and prices frozen, and one pointer.
     await db
@@ -127,6 +120,13 @@ async function seedFacility(): Promise<void> {
       .collection('publicFacilityMaps')
       .doc(`moved-${suffix}`)
       .set({ facilityId, movedToSlug: `stale-${suffix}`, movedAt: new Date(NOW) });
+    await db.collection('user_roles').doc(`role-${suffix}`).set({ userId: 'manager-1', facilityId, roleType: 'manager' });
+    await db.collection('publicReservations').doc(`res-${suffix}`).set({ facilityId, unitId: 'u1', status: 'pending' });
+    await db
+      .collection('publicPaymentLinks')
+      .doc(`token-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
+    await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
   }
 }
 
@@ -141,22 +141,24 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
-  'publicFacilityMaps/moved-theirs',
-  'publicFacilityMaps/stale-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
   'user_roles/role-theirs',
-];
+
+  'publicFacilityMaps/moved-theirs',
+  'publicFacilityMaps/stale-theirs',
+].sort();
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
-  // The current slug's (mapEngine/meta.publicSlug 'Acme').
-  'publicFacilityMaps/acme',
-  'publicFacilityMaps/moved-mine',
-  'publicFacilityMaps/stale-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
   'user_roles/role-mine',
+
+  // The current slug's (mapEngine/meta.publicSlug 'Acme'), and old ones.
+  'publicFacilityMaps/acme',
+  'publicFacilityMaps/moved-mine',
+  'publicFacilityMaps/stale-mine',
 ].sort();
 
 async function docsUnder(path: string): Promise<string[]> {

@@ -117,11 +117,11 @@ export async function purgeFacility(
  * world readable, name, units and prices, and stayed reserved.
  */
 export const FACILITY_KEYED_COLLECTIONS = [
+  'publicFacilityMaps',
   'user_roles',
   'publicReservations',
   'publicPaymentLinks',
   'customDomainClaims',
-  'publicFacilityMaps',
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */
