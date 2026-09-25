@@ -119,6 +119,7 @@ test('migration plan: nothing changes without a current map of the facility to p
     ['keepsake', [stale], /no publicFacilityMaps\/keepsake of this facility/],
     ['keepsake', [stale, { id: 'keepsake', data: { facilityId: 'other' } }], /no publicFacilityMaps\/keepsake/],
     ['keepsake', [stale, { id: 'keepsake', data: publicMapPointer(FACILITY, 'storage', 'then') }], /itself a pointer/],
+    [FACILITY, [stale, { id: FACILITY, data: { facilityId: FACILITY, units: units(1) } }], /not lower case/],
   ] as const) {
     const plan = planPublicSlugPointers(FACILITY, currentSlug, [...docs]);
     assert.ok('skipped' in plan, `expected a skip for ${currentSlug}`);

@@ -85,7 +85,9 @@ export type SlugPointerPlan =
  * mapEngine/meta.publicSlug. Every doc of the facility but the current one,
  * unless it already points there. Nothing changes when the current slug has no
  * published map of the facility's own to point at: pointers there would break
- * the old links rather than keep them.
+ * the old links rather than keep them. Nor when it has capitals: the site
+ * lowercases the slug it is asked for (resolveSlug), so a page served through
+ * a pointer would link to /w/<Slug>, which finds nothing.
  */
 export function planPublicSlugPointers(
   facilityId: string,
@@ -96,6 +98,9 @@ export function planPublicSlugPointers(
   const slug = (currentSlug || '').trim();
   if (!slug) {
     return { facilityId, currentSlug: null, skipped: 'no mapEngine/meta.publicSlug' };
+  }
+  if (slug !== slug.toLowerCase()) {
+    return { facilityId, currentSlug: slug, skipped: `current slug ${slug} is not lower case` };
   }
   const current = mine.find((d) => d.id === slug);
   if (!current) {

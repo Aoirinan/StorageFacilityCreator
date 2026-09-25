@@ -1142,8 +1142,8 @@ test('an operator cannot seize another operator’s public storefront slug', asy
 
 test("a slug change's one batch passes, and the old slug's pointer stays the owner's", async () => {
   // FacilityMapV2Service.setPublicSlug writes the meta, the map carried to the
-  // new slug and a pointer over the old one in a single batch: if the rules
-  // refused any of them, no slug could change at all.
+  // new slug, a pointer over the old one and the earlier pointers repointed,
+  // in a single batch: if the rules refused any of them, no slug could change.
   const RIVAL_FACILITY = 'fac-rival-1';
   await seedFacility();
   await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -1158,6 +1158,14 @@ test("a slug change's one batch passes, and the old slug's pointer stays the own
       publicSettings: { enabled: true },
       units: [{ unitId: 'u1', isRentable: true }],
     });
+    // Pointers from earlier changes, repointed in the same batch.
+    for (const slug of ['older-1', 'older-2', 'older-3']) {
+      await db.collection('publicFacilityMaps').doc(slug).set({
+        facilityId: FACILITY_ID,
+        movedToSlug: 'old-slug',
+        movedAt: new Date(),
+      });
+    }
   });
 
   const ownerDb = testEnv.authenticatedContext(OWNER_UID).firestore();
@@ -1173,11 +1181,13 @@ test("a slug change's one batch passes, and the old slug's pointer stays the own
     publicSettings: { enabled: true },
     units: [{ unitId: 'u1', isRentable: true }],
   });
-  batch.set(ownerDb.collection('publicFacilityMaps').doc('old-slug'), {
-    facilityId: FACILITY_ID,
-    movedToSlug: 'new-slug',
-    movedAt: serverTimestamp(),
-  });
+  for (const slug of ['old-slug', 'older-1', 'older-2', 'older-3']) {
+    batch.set(ownerDb.collection('publicFacilityMaps').doc(slug), {
+      facilityId: FACILITY_ID,
+      movedToSlug: 'new-slug',
+      movedAt: serverTimestamp(),
+    });
+  }
   await assertSucceeds(batch.commit());
 
   // The pointer keeps the old slug reserved: another operator can neither

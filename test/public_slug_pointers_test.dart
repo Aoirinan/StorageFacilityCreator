@@ -183,6 +183,34 @@ void main() {
       expect((await FacilityMapV2Service.resolvePublicMap(_live))?.slug, 'storage');
     });
 
+    test('a second change repoints the first one\'s pointers, so none is two hops',
+        () async {
+      meta('storage');
+      store.put('publicFacilityMaps/storage', _map('storage'));
+      store.put('publicFacilityMaps/theirs', _pointer('storage', facilityId: 'other'));
+      await FacilityMapV2Service.setPublicSlug(facilityId: _facility, slug: 'second');
+      await FacilityMapV2Service.setPublicSlug(facilityId: _facility, slug: _live);
+
+      for (final slug in ['storage', 'second']) {
+        expect(store.data('publicFacilityMaps/$slug')!['movedToSlug'], _live,
+            reason: slug);
+        expect((await FacilityMapV2Service.resolvePublicMap(slug))?.slug, _live,
+            reason: slug);
+      }
+      // Another facility's doc is never rewritten.
+      expect(store.data('publicFacilityMaps/theirs')!['movedToSlug'], 'storage');
+
+      // And a third, back to the first slug: it is the map again, the rest
+      // point at it.
+      await FacilityMapV2Service.setPublicSlug(facilityId: _facility, slug: 'storage');
+      expect(store.data('publicFacilityMaps/storage')!.containsKey('movedToSlug'),
+          isFalse);
+      for (final slug in ['second', _live]) {
+        expect((await FacilityMapV2Service.resolvePublicMap(slug))?.slug, 'storage',
+            reason: slug);
+      }
+    });
+
     test('a meta that named a pointer repoints it, with no map to carry', () async {
       meta('storage');
       store.put('publicFacilityMaps/storage', _pointer('older'));
@@ -294,6 +322,17 @@ void main() {
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), isNull);
       store.put('publicFacilityMaps/storage', _pointer(_live));
       expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), isNull);
+    });
+
+    test("a meta slug another facility's doc holds is passed over", () async {
+      keepsakeDocs();
+      meta('rival');
+      store.put('publicFacilityMaps/rival', _map('rival', facilityId: 'rival-facility'));
+      expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), _live);
+
+      // A slug not published yet is still the facility's answer.
+      meta('not-yet');
+      expect(await FacilityMapV2Service.getPublicSlugForFacility(_facility), 'not-yet');
     });
 
     test('a meta with no slug falls back to the query', () async {

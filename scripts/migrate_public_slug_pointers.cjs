@@ -102,7 +102,16 @@ async function main() {
     byFacility.get(facilityId).push({ id: doc.id, data: doc.data() });
   }
 
-  const totals = { facilities: 0, pointers: 0, unitsDropped: 0, skipped: 0, orphaned: 0, written: 0, raced: 0 };
+  const totals = {
+    facilities: 0,
+    pointers: 0,
+    unitsDropped: 0,
+    skipped: 0,
+    orphaned: 0,
+    slugMismatch: 0,
+    written: 0,
+    raced: 0,
+  };
   for (const [facilityId, docs] of [...byFacility.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     totals.facilities += 1;
     const facilitySnap = await db.collection('facilities').doc(facilityId).get();
@@ -116,6 +125,15 @@ async function main() {
     const currentSlug = typeof storedSlug === 'string' ? storedSlug : null;
     const plan = slugs.planPublicSlugPointers(facilityId, currentSlug, docs);
     const name = facilitySnap.get('name') || '';
+    // The settings screens save this and then set it as the slug, so when it
+    // differs from the meta's, the owner's next Save there is a slug change.
+    const settingsSnap = await db.doc(`facilities/${facilityId}/settings/public`).get();
+    const rentalSlug = String(settingsSnap.get('publicRentalSlug') || '').trim();
+    if (rentalSlug && currentSlug && rentalSlug !== currentSlug) {
+      totals.slugMismatch += 1;
+      console.log(`\n${facilityId} ${name}: note: settings/public.publicRentalSlug is ${rentalSlug}, ` +
+        `the meta's is ${currentSlug}; the next Save in the settings moves the site to ${rentalSlug}.`);
+    }
 
     if ('skipped' in plan) {
       totals.skipped += 1;
@@ -173,7 +191,8 @@ async function main() {
   console.log(
     `\n${totals.facilities} facilities; ${totals.pointers} docs ${apply ? 'to point' : 'would point'} at their ` +
       `current slug (${totals.unitsDropped} stale unit rows dropped); ${totals.skipped} facilities skipped; ` +
-      `${totals.orphaned} docs of facilities that no longer exist; ${noFacility.length} docs with no facilityId.`,
+      `${totals.orphaned} docs of facilities that no longer exist; ${noFacility.length} docs with no facilityId; ` +
+      `${totals.slugMismatch} facilities whose settings slug differs from the meta's.`,
   );
   if (apply) {
     console.log(`Written: ${totals.written}; left because they changed: ${totals.raced}.`);

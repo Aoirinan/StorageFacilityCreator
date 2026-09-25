@@ -332,6 +332,11 @@ class FacilityMapV2Service {
   /// rather than once the publish that follows succeeds. The pointer keeps
   /// the old slug reserved to this facility (the update rule pins facilityId).
   ///
+  /// The facility's other pointers, from earlier changes, are repointed at
+  /// the new slug in the same batch. Readers follow one hop only, so after
+  /// A to B to C a pointer left at A naming B, itself a pointer now, would
+  /// have served nothing.
+  ///
   /// A slug another facility's doc holds is refused before anything is
   /// written ([PublicSlugTakenException]). It used to be taken into the meta
   /// and only the publish after it failed, on the rules.
@@ -357,12 +362,21 @@ class FacilityMapV2Service {
     final oldSlug = storedSlug is String ? storedSlug.trim() : '';
     DocumentReference<Map<String, dynamic>>? oldRef;
     Map<String, dynamic>? oldMap;
+    final repoint = <DocumentReference<Map<String, dynamic>>>[];
     if (oldSlug.isNotEmpty && oldSlug != normalized) {
       final ref = maps.doc(oldSlug);
       final data = (await ref.get()).data();
       if (data != null && data['facilityId'] == facilityId) {
         oldRef = ref;
         oldMap = data;
+      }
+      final mine =
+          await maps.where('facilityId', isEqualTo: facilityId).get();
+      for (final doc in mine.docs) {
+        final movedTo = movedToSlugOf(doc.data());
+        if (movedTo == null || movedTo == normalized) continue;
+        if (doc.id == oldSlug || doc.id == normalized) continue;
+        repoint.add(doc.reference);
       }
     }
 
@@ -376,16 +390,16 @@ class FacilityMapV2Service {
           'updatedBy': user.uid,
         },
         SetOptions(merge: true));
-    if (oldRef != null && oldMap != null) {
-      // A pointer already (the meta named one) has no map to carry over.
-      if (movedToSlugOf(oldMap) == null) {
-        batch.set(newRef, {
-          ...oldMap,
-          'facilitySlug': normalized,
-          'rentalRouteTemplate': '/f/$normalized/rent?unitId={unitId}',
-        });
-      }
-      batch.set(oldRef, <String, dynamic>{
+    // A pointer already (the meta named one) has no map to carry over.
+    if (oldMap != null && movedToSlugOf(oldMap) == null) {
+      batch.set(newRef, {
+        ...oldMap,
+        'facilitySlug': normalized,
+        'rentalRouteTemplate': '/f/$normalized/rent?unitId={unitId}',
+      });
+    }
+    for (final ref in [if (oldRef != null) oldRef, ...repoint]) {
+      batch.set(ref, <String, dynamic>{
         'facilityId': facilityId,
         'movedToSlug': normalized,
         'movedAt': FieldValue.serverTimestamp(),
@@ -450,18 +464,25 @@ class FacilityMapV2Service {
   /// (Keepsake got 'eXnWPuwuqzBVFcZWv1ZL', frozen, over
   /// 'keepsakeonlinerentals'), and the settings screens then saved it back
   /// as the slug. The facility's own record of it, mapEngine/meta, comes
-  /// first. Only owners and managers can read that; staff and the public
-  /// pages, and a facility with no meta yet, get the query, which never
-  /// answers with a pointer and prefers the doc written most recently.
+  /// first, unless another facility's doc holds that slug (a meta could take
+  /// one before [setPublicSlug] refused them). Only owners and managers can
+  /// read the meta; staff and the public pages, and a facility with no meta
+  /// yet, get the query, which never answers with a pointer and prefers the
+  /// doc written most recently.
   static Future<String?> getPublicSlugForFacility(String facilityId) async {
+    final maps = _collection(_publicMapsCollection);
     try {
       final stored = (await _metaRef(facilityId).get()).data()?['publicSlug'];
-      if (stored is String && stored.trim().isNotEmpty) return stored.trim();
+      if (stored is String && stored.trim().isNotEmpty) {
+        final slug = stored.trim();
+        final owner = (await maps.doc(slug).get()).data()?['facilityId'];
+        if (owner == null || owner == facilityId) return slug;
+      }
     } on FirebaseException catch (e) {
       if (e.code != 'permission-denied') rethrow;
     }
 
-    final query = await _collection(_publicMapsCollection)
+    final query = await maps
         .where('facilityId', isEqualTo: facilityId)
         .get();
     String? best;
