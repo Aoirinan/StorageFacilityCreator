@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_service.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
 import '../theme/app_theme.dart';
@@ -17,6 +18,7 @@ import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
+import 'package:sfcapp/widgets/document_logo_layout_editor.dart';
 import '../constants/facility_capacity.dart';
 
 class FacilityEditScreen extends ConsumerStatefulWidget {
@@ -46,6 +48,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   String? _logoUrl;
   bool _isUploadingLogo = false;
   String? _logoError;
+
+  /// Logo size/position/name-text on printed documents; saved with Update
+  /// Facility like the logo itself.
+  late DocumentLogoLayout _documentLogo;
 
   String? _selectedTimeZone;
   String _lateFeeType = 'flat';
@@ -89,6 +95,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     _statementMessageController =
         TextEditingController(text: widget.facility.statementMessage ?? '');
     _logoUrl = widget.facility.logoUrl;
+    _documentLogo = widget.facility.documentLogo;
     _phoneController = TextEditingController(text: widget.facility.phone ?? '');
     _emailController = TextEditingController(text: widget.facility.email ?? '');
 
@@ -300,7 +307,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         ),
         const SizedBox(height: 4),
         const Text(
-          'Printed at the top of statements and invoices. PNG or JPG, under 2 MB.',
+          'Printed at the top of statements, invoices and receipts. PNG or JPG, under 2 MB. Set its size and position below.',
           style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
         ),
         const SizedBox(height: 8),
@@ -354,6 +361,32 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
           Text(_logoError!, style: const TextStyle(color: AppTheme.error)),
         ],
       ],
+    );
+  }
+
+  /// Logo size, position and name toggle, with a live preview that follows
+  /// the name, address, mailing address, phone and email fields as they are
+  /// typed, so the owner sees the header before saving.
+  Widget _buildLogoLayoutEditor() {
+    final hasLogo = _logoUrl != null && _logoUrl!.isNotEmpty;
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        _nameController,
+        _addressController,
+        _mailingAddressController,
+        _phoneController,
+        _emailController,
+      ]),
+      builder: (context, _) => DocumentLogoLayoutEditor(
+        value: _documentLogo,
+        onChanged: (v) => setState(() => _documentLogo = v),
+        logo: hasLogo ? NetworkImage(_logoUrl!) : null,
+        facilityName: _nameController.text,
+        address: _addressController.text,
+        mailingAddress: _mailingAddressController.text,
+        phone: _phoneController.text,
+        email: _emailController.text,
+      ),
     );
   }
 
@@ -425,6 +458,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         mailingAddress: _mailingAddressController.text.trim(),
         statementMessage: _statementMessageController.text.trim(),
         logoUrl: _logoUrl == widget.facility.logoUrl ? null : (_logoUrl ?? ''),
+        documentLogo: _documentLogo == widget.facility.documentLogo
+            ? null
+            : _documentLogo,
         phone: _phoneController.text.trim().isEmpty
             ? null
             : _phoneController.text.trim(),
@@ -602,6 +638,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   _sectionTitle('Statements & Invoices'),
                   const SizedBox(height: 16),
                   _buildLogoPicker(),
+                  const SizedBox(height: 16),
+                  _buildLogoLayoutEditor(),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _statementMessageController,

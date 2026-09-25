@@ -614,6 +614,7 @@ class _PaymentReceiptDialog extends StatelessWidget {
                 businessPhone: facility?.phone,
                 businessEmail: facility?.email,
                 logoUrl: facility?.logoUrl,
+                logoLayout: facility?.documentLogo,
               );
             },
             icon: const Icon(Icons.print, size: 18),

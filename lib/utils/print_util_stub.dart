@@ -1,3 +1,5 @@
+import 'package:sfcapp/models/document_logo_layout.dart';
+
 /// Stub for printWindow (non-web): no-op.
 void printWindow() {}
 
@@ -13,6 +15,7 @@ void printPaymentReceipt({
   String? businessPhone,
   String? businessEmail,
   String? logoUrl,
+  DocumentLogoLayout? logoLayout,
 }) {}
 
 /// Stub: invoice printing is web-only.
@@ -23,6 +26,7 @@ void printInvoice({
   String? facilityPhone,
   String? facilityEmail,
   String? facilityLogoUrl,
+  DocumentLogoLayout? logoLayout,
   required String tenantName,
   String? tenantAddress,
   String? tenantPhone,

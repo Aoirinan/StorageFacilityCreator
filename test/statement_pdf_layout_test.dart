@@ -1,13 +1,22 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/services/pdf_letterhead.dart';
 import 'package:sfcapp/services/statement_service.dart';
 
-FacilityModel _facility({String? logoUrl, String? mailing, String? message}) =>
+FacilityModel _facility({
+  String? logoUrl,
+  String? mailing,
+  String? message,
+  DocumentLogoLayout documentLogo = DocumentLogoLayout.defaults,
+}) =>
     FacilityModel(
       id: 'f1',
       name: 'Keepsake Self Storage and Boat & RV Parking',
@@ -19,7 +28,29 @@ FacilityModel _facility({String? logoUrl, String? mailing, String? message}) =>
       phone: '(555) 123-4567',
       email: 'office@keepsake.example',
       logoUrl: logoUrl,
+      documentLogo: documentLogo,
     );
+
+/// A 4x1 PNG: wide, like most logos with the business name in them.
+final _wideLogoPng = base64Decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAQAAAABCAIAAAB2XpiaAAAADUlEQVR4nGOQs+qCIwAVUQOJi/CUgQAAAABJRU5ErkJggg==');
+
+/// The letterhead alone on a page, uncompressed so its text can be found in
+/// the bytes.
+Future<String> _letterheadPdf(FacilityModel facility, {bool withLogo = true}) async {
+  final doc = pw.Document(compress: false);
+  doc.addPage(pw.Page(
+    pageFormat: PdfPageFormat.letter,
+    margin: const pw.EdgeInsets.all(72),
+    build: (_) => PdfLetterhead.build(
+      facility: facility,
+      title: 'Account Statement',
+      titleDetails: const ['Date: 09/25/2026'],
+      logo: withLogo ? pw.MemoryImage(_wideLogoPng) : null,
+    ),
+  ));
+  return latin1.decode(await doc.save());
+}
 
 final _tenant = TenantModel(
   id: 't1',
@@ -96,5 +127,65 @@ void main() {
     final logo = await PdfLetterhead.loadLogo(
         _facility(logoUrl: 'http://127.0.0.1:9/missing.png'));
     expect(logo, isNull);
+  });
+
+  group('letterhead logo layout', () {
+    test('every position and size lays out, with and without a logo', () async {
+      for (final position in DocumentLogoPosition.values) {
+        for (final height in [
+          DocumentLogoLayout.minHeight,
+          DocumentLogoLayout.defaultHeight,
+          DocumentLogoLayout.maxHeight,
+        ]) {
+          for (final showName in [true, false]) {
+            final facility = _facility(
+              mailing: 'PO Box 482\nSpringfield, MO 65801',
+              documentLogo: DocumentLogoLayout(
+                height: height,
+                position: position,
+                showName: showName,
+              ),
+            );
+            final withLogo = await _letterheadPdf(facility);
+            expect(withLogo, startsWith('%PDF'),
+                reason: '$position $height $showName');
+            await _letterheadPdf(facility, withLogo: false);
+          }
+        }
+      }
+    });
+
+    test('showName off drops the business name only when a logo prints',
+        () async {
+      final hidden = _facility(
+          documentLogo: const DocumentLogoLayout(showName: false));
+      final shown = _facility();
+
+      expect(await _letterheadPdf(shown), contains('Keepsake'));
+      final noName = await _letterheadPdf(hidden);
+      expect(noName, isNot(contains('Keepsake')));
+      expect(noName, contains('County'));
+      // No logo to carry the name, so the name prints after all.
+      expect(await _letterheadPdf(hidden, withLogo: false), contains('Keepsake'));
+    });
+
+    test('statements and invoices build with a saved layout', () async {
+      final facility = _facility(
+        documentLogo: const DocumentLogoLayout(
+          height: 140,
+          position: DocumentLogoPosition.center,
+          showName: false,
+        ),
+      );
+      final bytes = await StatementService.generateStatementPDF(
+        entries: [
+          _entry('e1', LedgerEntryType.rentCharge, 85, DateTime(2026, 9, 1),
+              'September rent'),
+        ],
+        tenant: _tenant,
+        facility: facility,
+      );
+      expect(bytes.length, greaterThan(1000));
+    });
   });
 }

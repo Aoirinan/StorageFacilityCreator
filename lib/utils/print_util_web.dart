@@ -8,6 +8,7 @@ import 'dart:html' as html;
 import 'dart:js_util' as js_util;
 
 import 'package:sfcapp/utils/print_documents.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 
 /// Triggers the browser print dialog (web only).
 void printWindow() {
@@ -28,6 +29,7 @@ void printPaymentReceipt({
   String? businessPhone,
   String? businessEmail,
   String? logoUrl,
+  DocumentLogoLayout? logoLayout,
 }) {
   _printDocument(buildPaymentReceiptHtml(
     tenantName: tenantName,
@@ -40,6 +42,7 @@ void printPaymentReceipt({
     businessPhone: businessPhone,
     businessEmail: businessEmail,
     logoUrl: logoUrl,
+    logoLayout: logoLayout ?? DocumentLogoLayout.defaults,
   ));
 }
 
@@ -57,6 +60,7 @@ void printInvoice({
   String? facilityPhone,
   String? facilityEmail,
   String? facilityLogoUrl,
+  DocumentLogoLayout? logoLayout,
   required String tenantName,
   String? tenantAddress,
   String? tenantPhone,
@@ -80,6 +84,7 @@ void printInvoice({
     facilityPhone: facilityPhone,
     facilityEmail: facilityEmail,
     facilityLogoUrl: facilityLogoUrl,
+    logoLayout: logoLayout ?? DocumentLogoLayout.defaults,
     tenantName: tenantName,
     tenantAddress: tenantAddress,
     tenantPhone: tenantPhone,
@@ -138,6 +143,7 @@ void _printDocument(String doc) {
     // braces: a logo still decoding gets a few seconds, and a slow or broken
     // one never holds the print back beyond that.
     await _waitForImages(iframe);
+    _fitLogos(iframe);
     final cw = iframe.contentWindow;
     if (cw == null) {
       html.window.console.error('Print failed: the frame has no window');
@@ -172,6 +178,56 @@ void _printDocument(String doc) {
     // so it can wait for the dialog to be done with it.
     Future<void>.delayed(const Duration(minutes: 5), cleanup);
   });
+}
+
+/// Sizes each letterhead logo exactly as the PDF letterhead does: the largest
+/// size, in its own proportions, that fits the owner's chosen height and the
+/// position's max width (the data-fit-* attributes, in points). CSS alone
+/// cannot do "whichever limit bites first" without knowing the image's
+/// proportions, so the markup's own sizing is only the fallback for a logo
+/// that has not loaded. Never throws.
+void _fitLogos(html.IFrameElement iframe) {
+  try {
+    final doc = js_util.getProperty<Object?>(iframe, 'contentDocument');
+    if (doc == null) return;
+    final images = js_util.callMethod<Object>(
+        doc, 'querySelectorAll', const ['img.logo[data-fit-width]']);
+    final count = js_util.getProperty<int>(images, 'length');
+    for (var i = 0; i < count; i++) {
+      final img = js_util.callMethod<Object>(images, 'item', [i]);
+      String? attr(String name) =>
+          js_util.callMethod<Object?>(img, 'getAttribute', [name]) as String?;
+      var maxWidth = double.tryParse(attr('data-fit-width') ?? '') ?? 0;
+      // On its own line the logo may not be wider than that line (the
+      // receipt is narrower than a centered logo's limit). Beside the
+      // details, the parent row also holds the details, so it does not
+      // bound the logo alone.
+      final parent = js_util.getProperty<Object?>(img, 'parentElement');
+      if (parent != null) {
+        final classes = js_util.getProperty<Object?>(parent, 'className');
+        final beside = classes is String && classes.contains('logo-left');
+        final parentPx = js_util.getProperty<num?>(parent, 'clientWidth');
+        if (!beside && parentPx != null && parentPx > 0) {
+          final parentPt = parentPx * 0.75; // CSS px to pt
+          if (parentPt < maxWidth) maxWidth = parentPt.toDouble();
+        }
+      }
+      final box = fitLogoBox(
+        naturalWidth: js_util.getProperty<num>(img, 'naturalWidth'),
+        naturalHeight: js_util.getProperty<num>(img, 'naturalHeight'),
+        maxWidth: maxWidth,
+        maxHeight: double.tryParse(attr('data-fit-height') ?? '') ?? 0,
+      );
+      if (box == null) continue;
+      final style = js_util.getProperty<Object>(img, 'style');
+      js_util.setProperty(style, 'width', '${box.width.toStringAsFixed(2)}pt');
+      js_util.setProperty(
+          style, 'height', '${box.height.toStringAsFixed(2)}pt');
+      js_util.setProperty(style, 'maxHeight', 'none');
+    }
+  } catch (_) {
+    // The markup's own sizing still prints a sensible logo.
+  }
 }
 
 /// Resolves once every <img> in [iframe]'s document is complete (or failed),

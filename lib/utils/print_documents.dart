@@ -1,4 +1,5 @@
 import 'package:sfcapp/models/address_model.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 
 /// The HTML behind the web "Print" buttons (invoice, payment receipt), kept
 /// apart from print_util_web.dart so it can be built and tested without a
@@ -63,16 +64,55 @@ String? tenantPrintAddress(List<Address> addresses) {
   return _clean(chosen.formattedAddress);
 }
 
+/// A CSS length in points for a layout number, e.g. `64pt`. The layout's
+/// numbers are already clamped and finite; this only keeps the markup tidy.
+String _pt(double v) {
+  final r = v.round();
+  return r == v ? '${r}pt' : '${v.toStringAsFixed(1)}pt';
+}
+
+/// The size a logo of [naturalWidth] x [naturalHeight] prints at: scaled up
+/// or down, keeping its proportions, to the largest size that fits inside
+/// [maxWidth] x [maxHeight]. The same rule pw.Image applies in the PDF
+/// letterhead. Null when the image has no size (not loaded, or broken).
+({double width, double height})? fitLogoBox({
+  required num naturalWidth,
+  required num naturalHeight,
+  required double maxWidth,
+  required double maxHeight,
+}) {
+  if (naturalWidth <= 0 || naturalHeight <= 0) return null;
+  if (maxWidth <= 0 || maxHeight <= 0) return null;
+  final byHeight = maxHeight / naturalHeight;
+  final byWidth = maxWidth / naturalWidth;
+  final scale = byHeight < byWidth ? byHeight : byWidth;
+  return (width: naturalWidth * scale, height: naturalHeight * scale);
+}
+
+/// The facility letterhead split in two: `banner` is the centered logo that
+/// runs across the top of the page (only for [DocumentLogoPosition.center],
+/// otherwise empty), `block` is the logo-and-details block that sits beside
+/// the document title. Documents whose letterhead shares a row with other
+/// content (the invoice) put `banner` above that row.
+typedef LetterheadHtmlParts = ({String banner, String block});
+
 /// The facility's letterhead as it appears on tenant-facing PDFs
 /// (lib/services/pdf_letterhead.dart): logo, business name, physical address,
 /// then the mailing address when it is set and different, phone and email.
-String buildLetterheadHtml({
+///
+/// [layout] is the facility's `documentLogo` setting: the logo's height,
+/// whether it sits left of the details, above them or centered at the top,
+/// and whether the business name prints as text. Sizes are CSS `pt`, the
+/// same unit the PDF letterhead uses, so both print the logo at the same
+/// physical size.
+LetterheadHtmlParts buildLetterheadHtmlParts({
   required String facilityName,
   String? logoUrl,
   String? address,
   String? mailingAddress,
   String? phone,
   String? email,
+  DocumentLogoLayout layout = DocumentLogoLayout.defaults,
 }) {
   final logo = safeLogoUrl(logoUrl);
   final physical = _clean(address);
@@ -80,30 +120,98 @@ String buildLetterheadHtml({
   // Same rule as PdfLetterhead: a mailing address that repeats the physical
   // one is not printed twice.
   final showMailing = mailing != null && mailing != physical;
-  final parts = <String>[
-    if (logo != null)
-      '<img class="logo" src="${escapeHtml(logo)}" alt="${escapeHtml(facilityName)} logo">',
-    '<div class="facility-name">${escapeHtml(facilityName)}</div>',
+  final showName = layout.nameVisible(logoShown: logo != null);
+  final position = layout.position;
+
+  String? img;
+  if (logo != null) {
+    // With the name hidden, the alt text is the bare name, so a logo that
+    // fails to load still leaves the business name on the page.
+    final alt = showName ? '$facilityName logo' : facilityName;
+    final h = _pt(layout.height);
+    final w = _pt(layout.maxWidth);
+    // The PDF scales the logo to fit a box [maxWidth] wide and [height] tall.
+    // CSS cannot size an image by "whichever limit bites first" without
+    // knowing its proportions, so each position fixes the side where any
+    // spare room is harmless: beside the details the height is fixed (a
+    // too-wide logo leaves space below it, not a gap before the details);
+    // on its own line the width is fixed (spare room is empty page beside it)
+    // and the height follows, capped at the chosen size.
+    // Once the logo has loaded, print_util_web.dart resizes it exactly
+    // (fitLogoBox, from the data-fit-* limits), so this is the fallback.
+    final size = position == DocumentLogoPosition.left
+        ? 'height: $h; max-width: min($w, 100%)'
+        : 'width: $w; max-width: 100%; max-height: $h';
+    img = '<img class="logo" src="${escapeHtml(logo)}" alt="${escapeHtml(alt)}"'
+        ' data-fit-width="${layout.maxWidth}" data-fit-height="${layout.height}"'
+        ' style="$size">';
+  }
+
+  final details = <String>[
+    if (showName)
+      '<div class="facility-name">${escapeHtml(facilityName)}</div>',
     if (physical != null) '<div>${_escapeLines(physical)}</div>',
     if (showMailing)
       '<div class="mailing"><span class="muted">Mail payments to:</span> ${_escapeLines(mailing)}</div>',
     if (_clean(phone) != null) '<div>${escapeHtml(_clean(phone)!)}</div>',
     if (_clean(email) != null) '<div>${escapeHtml(_clean(email)!)}</div>',
   ];
-  return '<div class="letterhead">\n        ${parts.join('\n        ')}\n      </div>';
+  final detailsHtml =
+      '<div class="details">\n          ${details.join('\n          ')}\n        </div>';
+
+  final banner = (img != null && position == DocumentLogoPosition.center)
+      ? '<div class="logo-banner">$img</div>'
+      : '';
+  final inBlock = (img != null && position != DocumentLogoPosition.center)
+      ? '$img\n        '
+      : '';
+  final block = '<div class="letterhead logo-${position.name}">\n'
+      '        $inBlock$detailsHtml\n'
+      '      </div>';
+  return (banner: banner, block: block);
 }
 
-/// Styles shared by every printed document's letterhead.
+/// The whole letterhead as one piece: the centered banner (if any) followed
+/// by the logo-and-details block. See [buildLetterheadHtmlParts].
+String buildLetterheadHtml({
+  required String facilityName,
+  String? logoUrl,
+  String? address,
+  String? mailingAddress,
+  String? phone,
+  String? email,
+  DocumentLogoLayout layout = DocumentLogoLayout.defaults,
+}) {
+  final parts = buildLetterheadHtmlParts(
+    facilityName: facilityName,
+    logoUrl: logoUrl,
+    address: address,
+    mailingAddress: mailingAddress,
+    phone: phone,
+    email: email,
+    layout: layout,
+  );
+  return parts.banner.isEmpty
+      ? parts.block
+      : '${parts.banner}\n    ${parts.block}';
+}
+
+/// Styles shared by every printed document's letterhead. The logo's height
+/// and max width are inline on the <img>, from the facility's layout.
 const String _letterheadCss = '''
-    .letterhead .logo {
+    .letterhead .logo, .logo-banner .logo {
       display: block;
-      max-height: 64px;
-      max-width: 220px;
       width: auto;
       height: auto;
       object-fit: contain;
-      margin-bottom: 8px;
+      object-position: left top;
+      flex-shrink: 0;
     }
+    .letterhead.logo-left { display: flex; align-items: flex-start; gap: 12pt; }
+    .letterhead.logo-left .details { min-width: 0; }
+    .letterhead.logo-above .logo { margin-bottom: 8pt; }
+    .logo-banner { margin-bottom: 10pt; }
+    .logo-banner .logo { margin: 0 auto; object-position: center top; }
     .facility-name { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
     .mailing { margin-top: 2px; }
     .muted { color: #6b7280; }
@@ -120,6 +228,7 @@ String buildPaymentReceiptHtml({
   String? businessPhone,
   String? businessEmail,
   String? logoUrl,
+  DocumentLogoLayout logoLayout = DocumentLogoLayout.defaults,
 }) {
   final org = _clean(businessName) ?? 'Storage Facility Creator';
   final tenant = escapeHtml(tenantName);
@@ -142,6 +251,7 @@ String buildPaymentReceiptHtml({
     mailingAddress: businessMailingAddress,
     phone: businessPhone,
     email: businessEmail,
+    layout: logoLayout,
   );
 
   return '''
@@ -241,6 +351,7 @@ String buildInvoiceHtml({
   String? facilityPhone,
   String? facilityEmail,
   String? facilityLogoUrl,
+  DocumentLogoLayout logoLayout = DocumentLogoLayout.defaults,
   required String tenantName,
   String? tenantAddress,
   String? tenantPhone,
@@ -286,13 +397,16 @@ String buildInvoiceHtml({
       ? ''
       : '<div class="notes"><span class="muted">Notes</span><br>${_escapeLines(notes)}</div>';
 
-  final letterhead = buildLetterheadHtml(
+  // A centered logo runs across the top of the page, above the row that
+  // holds the business details and the invoice number.
+  final letterhead = buildLetterheadHtmlParts(
     facilityName: facilityName,
     logoUrl: facilityLogoUrl,
     address: facilityAddress,
     mailingAddress: facilityMailingAddress,
     phone: facilityPhone,
     email: facilityEmail,
+    layout: logoLayout,
   );
 
   return '''
@@ -334,8 +448,9 @@ $_letterheadCss
 </head>
 <body>
   <div class="wrap">
+    ${letterhead.banner}
     <div class="top">
-      $letterhead
+      ${letterhead.block}
       <div class="meta">
         <h1>Invoice</h1>
         <div>${escapeHtml(invoiceNumber)}</div>

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import '../models/facility_model.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import '../models/facility_creator_account_model.dart';
 import 'permission_service.dart';
 import 'facility_creator_account_service.dart';
@@ -918,6 +919,7 @@ class FacilityService {
     String? address,
     String? mailingAddress, // '' clears it
     String? statementMessage, // '' clears it
+    DocumentLogoLayout? documentLogo,
     String? phone,
     String? email,
     String? timeZone,
@@ -960,6 +962,9 @@ class FacilityService {
       if (statementMessage != null) {
         updateData['statementMessage'] =
             statementMessage.isEmpty ? FieldValue.delete() : statementMessage;
+      }
+      if (documentLogo != null) {
+        updateData['documentLogo'] = documentLogo.toMap();
       }
       if (phone != null) updateData['phone'] = phone;
       if (email != null) updateData['email'] = email;

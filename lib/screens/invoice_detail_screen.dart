@@ -658,6 +658,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
         facilityPhone: facility.phone,
         facilityEmail: facility.email,
         facilityLogoUrl: facility.logoUrl,
+        logoLayout: facility.documentLogo,
         tenantName: tenantName.isNotEmpty ? tenantName : 'Tenant',
         tenantAddress:
             tenant == null ? null : tenantPrintAddress(tenant.addresses),

@@ -259,6 +259,26 @@ test('facility docs: only a super admin deletes directly; owners use the callabl
   );
 });
 
+test('facility owners save their printed-document branding (logo and its layout)', async () => {
+  // Edit Facility → Statements & Invoices writes these with Update Facility.
+  // The facility rule is a deny-list (facilityEntitlementWriteForbiddenKeys),
+  // so they need no rule of their own; this keeps it that way.
+  await seedFacility();
+  const facilityAs = (context) => context.firestore().collection('facilities').doc(FACILITY_ID);
+  const branding = {
+    logoUrl: 'https://firebasestorage.googleapis.com/v0/b/x/o/logo.png?alt=media',
+    documentLogo: { height: 120, position: 'center', showName: false },
+    updatedAt: serverTimestamp(),
+  };
+
+  await assertSucceeds(facilityAs(testEnv.authenticatedContext(OWNER_UID)).update(branding));
+  await assertSucceeds(
+    facilityAs(testEnv.authenticatedContext(OWNER_UID)).update({ documentLogo: deleteField() }),
+  );
+  await assertFails(facilityAs(testEnv.authenticatedContext(STAFF_UID)).update(branding));
+  await assertFails(facilityAs(testEnv.authenticatedContext(OUTSIDER_UID)).update(branding));
+});
+
 test('unmatched collections like stripeWebhookEvents deny client access', async () => {
   const authed = testEnv.authenticatedContext(OWNER_UID);
   await assertFails(
