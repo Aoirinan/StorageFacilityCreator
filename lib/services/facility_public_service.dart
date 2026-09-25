@@ -242,6 +242,38 @@ class FacilityPublicService {
     }
   }
 
+  /// Saves what Edit Facility's Public Rental Links section edits. There is
+  /// no website parameter, so the facility keeps the website setting it has:
+  /// [updatePublicSettings] keeps every field it is not given. Edit Facility
+  /// used to pass `enabled: true`, so every save there turned the public
+  /// website back on for an owner who had switched it off in Website Setup,
+  /// or whose website add-on had lapsed, and the map publish that follows
+  /// the save put it back on /w/{slug}.
+  static Future<void> updateRentalSettings({
+    required String facilityId,
+    required bool publicRentalsEnabled,
+    required String publicRentalSlug,
+    bool? publicPricingEnabled,
+    bool? publicUnitNumbersEnabled,
+    bool? allowAutoAssign,
+    bool? allowUnitSelection,
+    bool? showAvailabilityCount,
+    bool? hideUnavailableTypes,
+    List<String>? enabledPublicUnitTypes,
+  }) =>
+      updatePublicSettings(
+        facilityId: facilityId,
+        publicRentalsEnabled: publicRentalsEnabled,
+        publicRentalSlug: publicRentalSlug,
+        publicPricingEnabled: publicPricingEnabled,
+        publicUnitNumbersEnabled: publicUnitNumbersEnabled,
+        allowAutoAssign: allowAutoAssign,
+        allowUnitSelection: allowUnitSelection,
+        showAvailabilityCount: showAvailabilityCount,
+        hideUnavailableTypes: hideUnavailableTypes,
+        enabledPublicUnitTypes: enabledPublicUnitTypes,
+      );
+
   /// Saves what Website Setup edits. There is no online-rentals parameter,
   /// so the facility keeps the rentals setting it has: [updatePublicSettings]
   /// keeps every field it is not given. Website Setup used to pass

@@ -63,6 +63,14 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   final TextEditingController _publicRentalSlugController =
       TextEditingController();
   bool _publicRentalsEnabled = false;
+  bool _websiteEnabled = false;
+  // Whether the facility has the website add-on. Starts from the facility
+  // this screen opened with and is re-read on return from Website Setup,
+  // where the add-on is bought.
+  late bool _websiteEntitled = widget.facility.hasActiveWebsiteSubscription;
+  // The slug as last read from the saved settings, so a return from Website
+  // Setup can tell whether the slug was changed there.
+  String? _savedSlug;
   bool _publicPricingEnabled = true;
   bool _publicUnitNumbersEnabled = true;
   bool _allowAutoAssign = true;
@@ -160,6 +168,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       if (!mounted) return;
       setState(() {
         _publicRentalsEnabled = settings.publicRentalsEnabled;
+        _websiteEnabled = settings.enabled;
         _publicPricingEnabled = settings.publicPricingEnabled;
         _publicUnitNumbersEnabled = settings.publicUnitNumbersEnabled;
         _allowAutoAssign = settings.allowAutoAssign;
@@ -168,6 +177,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _hideUnavailableTypes = settings.hideUnavailableTypes;
         _enabledPublicUnitTypes = settings.enabledPublicUnitTypes.toSet();
         _publicRentalSlugController.text = safeSlug;
+        _savedSlug = safeSlug;
         _publicSettingsLoaded = true;
         _isLoadingPublicSettings = false;
       });
@@ -207,9 +217,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     });
 
     try {
-      await FacilityPublicService.updatePublicSettings(
+      await FacilityPublicService.updateRentalSettings(
         facilityId: widget.facility.id,
-        enabled: true,
         publicRentalsEnabled: _publicRentalsEnabled,
         publicPricingEnabled: _publicPricingEnabled,
         publicUnitNumbersEnabled: _publicUnitNumbersEnabled,
@@ -231,6 +240,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       if (!mounted) return;
       setState(() {
         _publicRentalSlugController.text = slug;
+        _savedSlug = slug;
         _isSavingPublicSettings = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -246,6 +256,83 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _publicSettingsError = ErrorMessageHelper.getUserFriendlyMessage(e);
       });
     }
+  }
+
+  /// Opens Website Setup, where the public website is switched and the
+  /// add-on bought, then re-reads what can change there: the website
+  /// setting, the add-on, and the public URL name, which Website Setup also
+  /// edits. A full [_loadPublicRentalSettings] would drop unsaved rental
+  /// edits here, and keeping the old URL name would put it back on the next
+  /// save here.
+  Future<void> _openWebsiteSetup() async {
+    await context
+        .push('${AppRoute.websiteSetup}?facilityId=${widget.facility.id}');
+    final settingsFuture =
+        FacilityPublicService.getPublicSettings(widget.facility.id);
+    final facilityFuture = FacilityService.getFacility(widget.facility.id)
+        .then<FacilityModel?>((f) => f, onError: (_) => null);
+    final settings = await settingsFuture;
+    final facility = await facilityFuture;
+    if (!mounted) return;
+    setState(() {
+      if (facility != null) {
+        _websiteEntitled = facility.hasActiveWebsiteSubscription;
+      }
+      if (settings == null) return;
+      _websiteEnabled = settings.enabled;
+      final storedSlug = settings.publicRentalSlug?.trim();
+      // Take a URL name changed in Website Setup, unless the owner has
+      // an unsaved one typed here.
+      if (storedSlug != null &&
+          storedSlug.isNotEmpty &&
+          storedSlug != _savedSlug &&
+          _publicRentalSlugController.text.trim() == _savedSlug) {
+        _publicRentalSlugController.text = storedSlug;
+        _savedSlug = storedSlug;
+      }
+    });
+  }
+
+  /// Shown, not switched: the website is switched in Website Setup, and
+  /// saving this section leaves it as it is (it used to turn it on). The
+  /// Main Rent Link, All Available Units link and Preview go through
+  /// /f/{slug}/rent, which redirects to the website's unit list, and
+  /// publicWebsite.ts answers that with "Website not found" unless the
+  /// website is on and the facility has the website add-on. Category links
+  /// open the rental portal (PublicRentalPortalScreen) directly, which does
+  /// not check the website setting.
+  Widget _buildWebsiteStatus() {
+    final websiteLive = _websiteEnabled && _websiteEntitled;
+    final String title;
+    final String subtitle;
+    if (websiteLive) {
+      title = 'Your website is on';
+      subtitle = 'The Main Rent Link, All Available Units link and Preview '
+          'Public Page open your website\'s unit list.';
+    } else {
+      title = _websiteEnabled
+          ? 'Your website needs the website add-on'
+          : 'Your website is off';
+      final categoryNote = _enabledPublicUnitTypes.isEmpty
+          ? ''
+          : ' The category links below open the rental page directly.';
+      subtitle = 'The Main Rent Link, All Available Units link and Preview '
+          'Public Page open your website, so renters see "Website not '
+          'found" there until your website is live.$categoryNote';
+    }
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        websiteLive ? Icons.language : Icons.public_off_outlined,
+        color: websiteLive ? AppTheme.success : AppTheme.textSecondary,
+      ),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: TextButton(
+        onPressed: _openWebsiteSetup,
+        child: const Text('Change in Website Setup'),
+      ),
+    );
   }
 
   /// Uploads the logo printed on statements and invoices. PNG and JPEG only,
@@ -861,6 +948,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       }).toList(),
                     ),
                     const SizedBox(height: 12),
+                    _buildWebsiteStatus(),
+                    const SizedBox(height: 8),
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
