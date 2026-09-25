@@ -296,11 +296,10 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   /// Shown, not switched: the website is switched in Website Setup, and
   /// saving this section leaves it as it is (it used to turn it on). The
   /// Main Rent Link, All Available Units link and Preview go through
-  /// /f/{slug}/rent, which redirects to the website's unit list, and
-  /// publicWebsite.ts answers that with "Website not found" unless the
-  /// website is on and the facility has the website add-on. Category links
-  /// open the rental portal (PublicRentalPortalScreen) directly, which does
-  /// not check the website setting.
+  /// /f/{slug}/rent (PublicRentEntryPage), which opens the website's unit
+  /// list when the website is live (on, and the facility has the website
+  /// add-on) and the rental portal otherwise. Category links always open
+  /// the rental portal.
   Widget _buildWebsiteStatus() {
     final websiteLive = _websiteEnabled && _websiteEntitled;
     final String title;
@@ -313,12 +312,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       title = _websiteEnabled
           ? 'Your website needs the website add-on'
           : 'Your website is off';
-      final categoryNote = _enabledPublicUnitTypes.isEmpty
-          ? ''
-          : ' The category links below open the rental page directly.';
       subtitle = 'The Main Rent Link, All Available Units link and Preview '
-          'Public Page open your website, so renters see "Website not '
-          'found" there until your website is live.$categoryNote';
+          'Public Page open your online rental page. Once your website is '
+          'live, they open your website\'s unit list instead.';
     }
     return ListTile(
       contentPadding: EdgeInsets.zero,
