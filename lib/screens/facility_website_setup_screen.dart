@@ -72,15 +72,17 @@ class _FromEditFacility {
     required this.testimonials,
   });
 
-  /// [settings] null is read as a facility with no settings doc yet.
+  /// [settings] come from [FacilityPublicService.getPublicSettingsOrThrow]:
+  /// a facility with no settings doc yet reads as the defaults, and a failed
+  /// read throws before this, so a save never writes defaults over them.
   factory _FromEditFacility.read({
     required String facilityId,
     required FacilityModel facility,
-    required FacilityPublicSettings? settings,
+    required FacilityPublicSettings settings,
     required String? publishedSlug,
   }) {
     final websiteConfig =
-        (settings?.widgets?['websiteConfig'] as Map<String, dynamic>?) ??
+        (settings.widgets?['websiteConfig'] as Map<String, dynamic>?) ??
             const <String, dynamic>{};
     String? written(String key) {
       final value = websiteConfig[key];
@@ -91,16 +93,16 @@ class _FromEditFacility {
     // promise online rentals the facility does not take: it said 'reserve
     // online in minutes' and listed 'Online Rentals' whatever the setting,
     // and saving the page publishes it.
-    final rentals = settings?.publicRentalsEnabled ?? false;
-    final storedSlug = settings?.publicRentalSlug;
+    final rentals = settings.publicRentalsEnabled;
+    final storedSlug = settings.publicRentalSlug;
     return _FromEditFacility(
-      websiteEnabled: settings?.enabled ?? false,
+      websiteEnabled: settings.enabled,
       rentalsEnabled: rentals,
       slug: (storedSlug?.trim().isNotEmpty ?? false)
           ? storedSlug!
           : (publishedSlug ?? facilityId.toLowerCase()),
-      pageTitle: settings?.pageTitle ?? '${facility.name} | Self Storage',
-      pageDescription: settings?.pageDescription ??
+      pageTitle: settings.pageTitle ?? '${facility.name} | Self Storage',
+      pageDescription: settings.pageDescription ??
           facility.description ??
           (rentals
               ? 'Secure storage units with easy online rentals.'
@@ -110,7 +112,7 @@ class _FromEditFacility {
           (rentals
               ? 'Secure, convenient, and reliable storage with online rentals.'
               : 'Secure, convenient, and reliable storage.'),
-      marketingContent: settings?.marketingContent ??
+      marketingContent: settings.marketingContent ??
           (rentals
               ? 'Choose from a wide range of unit sizes and reserve online in minutes.'
               : 'Choose from a wide range of unit sizes. Call or stop by to rent yours.'),
@@ -179,6 +181,9 @@ class _FacilityWebsiteSetupScreenState
   ];
 
   bool _isLoading = true;
+  // Until [_load] succeeds the form holds defaults, not the saved website,
+  // and saving it would write them over the owner's content: Save is off.
+  bool _settingsLoaded = false;
   bool _isSaving = false;
   bool _subscriptionRequired = false;
   bool _isStartingCheckout = false;
@@ -435,6 +440,7 @@ class _FacilityWebsiteSetupScreenState
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
+      _settingsLoaded = false;
       _subscriptionRequired = false;
       _error = null;
     });
@@ -455,16 +461,18 @@ class _FacilityWebsiteSetupScreenState
         });
         return;
       }
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
+      // Throws when the saved settings cannot be read, rather than filling
+      // the form with defaults that a save would then write over them.
+      final settings = await FacilityPublicService.getPublicSettingsOrThrow(
+          widget.facilityId);
       final publicSlug = await actions.publishedSlug(widget.facilityId);
 
-      final widgets = settings?.widgets ?? const <String, dynamic>{};
+      final widgets = settings.widgets ?? const <String, dynamic>{};
       final websiteConfig =
           (widgets['websiteConfig'] as Map<String, dynamic>?) ??
               const <String, dynamic>{};
-      final customStyles = settings?.customStyles ?? const <String, dynamic>{};
-      final featuredImages = settings?.featuredImages ?? const <String>[];
+      final customStyles = settings.customStyles ?? const <String, dynamic>{};
+      final featuredImages = settings.featuredImages ?? const <String>[];
       final fromEditFacility = _FromEditFacility.read(
         facilityId: widget.facilityId,
         facility: facility,
@@ -480,7 +488,7 @@ class _FacilityWebsiteSetupScreenState
         _websiteEnabled = fromEditFacility.websiteEnabled;
         _publicRentalsEnabled = fromEditFacility.rentalsEnabled;
         _slugController.text = fromEditFacility.slug;
-        _customDomainController.text = settings?.customDomain ?? '';
+        _customDomainController.text = settings.customDomain ?? '';
         _pageTitleController.text = fromEditFacility.pageTitle;
         _pageDescriptionController.text = fromEditFacility.pageDescription;
         _heroHeadlineController.text = fromEditFacility.heroHeadline;
@@ -609,12 +617,14 @@ class _FacilityWebsiteSetupScreenState
             (websiteConfig['ogImageUrl'] as String?) ?? '';
         _canonicalUrlController.text =
             (websiteConfig['canonicalUrl'] as String?) ?? '';
+        _settingsLoaded = true;
         _isLoading = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to load website settings: $e';
+        _error = 'Failed to load website settings: $e\n'
+            'Saving is off until they load. Press Refresh to try again.';
         _isLoading = false;
       });
     }
@@ -714,14 +724,15 @@ class _FacilityWebsiteSetupScreenState
     if (!mounted) return;
     final actions = ref.read(websiteSetupActionsProvider);
     try {
-      final settings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
+      // Throws on a failed read, like [_load]: a null here would be taken
+      // for a facility with default settings.
+      final settings = await FacilityPublicService.getPublicSettingsOrThrow(
+          widget.facilityId);
       final facility = await actions.facility(widget.facilityId);
       final publishedSlug = await actions.publishedSlug(widget.facilityId);
       final loaded = _fromEditFacility;
-      // getPublicSettings answers null only when the read failed.
-      if (settings == null || facility == null || loaded == null) {
-        throw StateError('settings or facility not read');
+      if (facility == null || loaded == null) {
+        throw StateError('facility not read');
       }
       if (!mounted) return;
       final fresh = _FromEditFacility.read(
@@ -2577,7 +2588,7 @@ class _FacilityWebsiteSetupScreenState
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: _isSaving ? null : _save,
+                onPressed: _isSaving || !_settingsLoaded ? null : _save,
                 icon: _isSaving
                     ? const SizedBox(
                         width: 16,

@@ -17,8 +17,20 @@ import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/firestore_field_read.dart';
 
 class FacilityMapV2Service {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so tests can run a publish against a fake
+  // Firestore and a signed-in fake user.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   static DocumentReference<Map<String, dynamic>> _metaRef(String facilityId) {
     return _firestore
@@ -102,6 +114,13 @@ class FacilityMapV2Service {
       throw Exception('Not signed in');
     }
 
+    // Throws rather than publish a snapshot built from default settings: that
+    // switched the public site off, cleared its custom domain and page text,
+    // and opened every unit type, until the next publish. Read first, so a
+    // failure writes nothing (getOrCreateMeta can create the meta doc).
+    final publicSettings =
+        await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
+
     final meta = await getOrCreateMeta(facilityId);
     final facilitySnap =
         await _firestore.collection('facilities').doc(facilityId).get();
@@ -163,8 +182,6 @@ class FacilityMapV2Service {
         },
         SetOptions(merge: true));
 
-    final publicSettings =
-        await FacilityPublicService.getPublicSettings(facilityId);
     final tenants = await TenantService.getTenantsForFacility(facilityId);
     final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
     final inventory = publicUnitInventory(
@@ -569,8 +586,10 @@ class FacilityMapV2Service {
         return;
       }
 
+      // Throws, and the catch below skips the refresh, rather than list the
+      // unit types and unit numbers the owner hid (default settings show all).
       final publicSettings =
-          await FacilityPublicService.getPublicSettings(facilityId);
+          await FacilityPublicService.getPublicSettingsOrThrow(facilityId);
       final units = await _fetchActiveUnitsOrdered(facilityId);
       final tenants = await TenantService.getTenantsForFacility(facilityId);
       final claimedUnits = claimedUnitNumbersFromActiveTenants(tenants);
