@@ -14,6 +14,7 @@ import '../services/payment_service.dart';
 import '../services/reminder_service.dart';
 import '../services/reminders_digest_service.dart';
 import '../services/tenant_service.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 
 class ReminderAutomationResult {
   final int schedulesProcessed;
@@ -28,6 +29,24 @@ class ReminderAutomationResult {
     required this.digestQueued,
   });
 }
+
+/// The tenant and facility placeholders a reminder schedule's title and
+/// message fill ({{tenantName}}, {{facilityName}}, {{unitNumber}},
+/// {{unitArea}}, {{scheduleName}}). {{unitNumber}} is "12 (Complex 2)" once
+/// the facility numbers units per area ([includeUnitArea]); off, it is the
+/// tenant's unit number as stored.
+Map<String, String> reminderScheduleReplacements({
+  required TenantModel tenant,
+  required String facilityName,
+  required String scheduleName,
+  bool includeUnitArea = false,
+}) =>
+    <String, String>{
+      'tenantName': tenant.name,
+      'facilityName': facilityName,
+      ...tenantUnitTemplateVars(tenant, includeArea: includeUnitArea),
+      'scheduleName': scheduleName,
+    };
 
 class ReminderAutomationService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -110,6 +129,7 @@ class ReminderAutomationService {
           payment: target.payment,
           contract: target.contract,
           now: current,
+          includeUnitArea: unitLabelsIncludeArea(facility),
         );
 
         if (reminderId != null) {
@@ -348,13 +368,14 @@ class ReminderAutomationService {
     PaymentModel? payment,
     ContractModel? contract,
     required DateTime now,
+    bool includeUnitArea = false,
   }) async {
-    final replacements = <String, String>{
-      'tenantName': tenant.name,
-      'facilityName': facilityName,
-      'unitNumber': tenant.unitNumber,
-      'scheduleName': schedule.name,
-    };
+    final replacements = reminderScheduleReplacements(
+      tenant: tenant,
+      facilityName: facilityName,
+      scheduleName: schedule.name,
+      includeUnitArea: includeUnitArea,
+    );
 
     if (payment != null) {
       replacements.addAll({

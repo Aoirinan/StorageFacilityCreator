@@ -8,6 +8,8 @@ import 'package:printing/printing.dart';
 import '../models/ledger_entry_model.dart';
 import '../models/tenant_model.dart';
 import '../providers/ledger_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../services/ledger_service.dart';
 import '../services/statement_service.dart';
 import '../services/facility_service.dart';
@@ -174,6 +176,15 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
           }
 
+          final unitLabel = tenantUnitLabel(
+            widget.tenant,
+            includeArea: ref
+                    .watch(unitLabelsIncludeAreaProvider(
+                        widget.tenant.facilityId))
+                    .value ??
+                false,
+          );
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -200,9 +211,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
-                          if (widget.tenant.unitNumber != null && widget.tenant.unitNumber!.isNotEmpty)
+                          if (widget.tenant.unitNumber.isNotEmpty)
                             Text(
-                              'Unit ${widget.tenant.unitNumber}',
+                              'Unit $unitLabel',
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 color: AppTheme.textTertiary,
                               ),

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { tenantUnitLabel } from '@sfc/functions-shared';
 import {
   buildRentReminderMessage,
   daysUntil,
@@ -228,4 +229,36 @@ test('a tenant doc is active only when isActive is exactly true', () => {
       'inactive',
     );
   }
+});
+
+test('the text keeps the plain unit number until the facility numbers units per area', () => {
+  const tenantDoc = { unitNumber: '12', unitArea: 'Complex 2' };
+  const message = (facility: Record<string, unknown>) =>
+    buildRentReminderMessage({
+      tenantName: 'Doug Devoy',
+      amount: 130,
+      dueDate: new Date(2026, 9, 1),
+      unitNumber: tenantUnitLabel(tenantDoc, facility),
+    });
+  // Off (missing or false): byte for byte the text before the setting existed.
+  const before = 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.';
+  assert.equal(message({}), before);
+  assert.equal(message({ unitNumbersRepeatAcrossAreas: false }), before);
+  assert.equal(
+    message({ unitNumbersRepeatAcrossAreas: true }),
+    'Hi Doug, a reminder that rent for unit 12 (Complex 2) of $130.00 is due Oct 1.',
+  );
+});
+
+test('with the setting on, a tenant with no area still gets the plain number', () => {
+  const body = buildRentReminderMessage({
+    tenantName: 'Doug Devoy',
+    amount: 130,
+    dueDate: new Date(2026, 9, 1),
+    unitNumber: tenantUnitLabel(
+      { unitNumber: '12', unitArea: null },
+      { unitNumbersRepeatAcrossAreas: true },
+    ),
+  });
+  assert.equal(body, 'Hi Doug, a reminder that rent for unit 12 of $130.00 is due Oct 1.');
 });

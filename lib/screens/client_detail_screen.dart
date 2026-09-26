@@ -24,6 +24,8 @@ import '../models/gate_access_model.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
 import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
@@ -823,6 +825,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       },
       orElse: () => widget.tenant,
     );
+    // "12", or "12 (Complex 2)" once the facility numbers units per area.
+    final unitLabel = tenantUnitLabel(
+      tenant,
+      includeArea: ref
+              .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
+              .value ??
+          false,
+    );
 
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -974,7 +984,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Unit ${tenant.unitNumber}',
+                              'Unit $unitLabel',
                               style: TextStyle(
                                 fontSize: 16,
                                 color: AppTheme.textSecondary,
@@ -1080,7 +1090,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.person_outlined, label: 'Name', value: _valueOrPlaceholder(tenant.name)),
                       _buildInfoItem(context, icon: Icons.email_outlined, label: 'Email', value: _valueOrPlaceholder(tenant.email)),
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
-                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(tenant.unitNumber, fallback: 'No unit assigned')),
+                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
                       if (tenant.smsOptOut)
                         _buildInfoItem(context, icon: Icons.sms_failed_outlined, label: 'SMS', value: 'Opted out', valueColor: AppTheme.error)
