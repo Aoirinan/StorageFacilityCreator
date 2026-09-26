@@ -66,7 +66,10 @@
  * still-attached recorded tenant, matches neither state is refused. The
  * facility flag is restored last: only when the record says the apply set it,
  * no item was refused, and no number is used by two live units (trimmed,
- * ignoring case; the app refuses to turn the setting off then too). Dry run
+ * ignoring case; the app refuses to turn the setting off then too), counted
+ * as the units stand after the unit restores, so a dry run predicts the real
+ * outcome. A pending item whose unit is still as it was (never written)
+ * leaves a since-changed recorded tenant alone instead of refusing. Dry run
  * unless --apply is given too.
  *
  * Map shapes link to units by unitId (lib/models/map_shape_model.dart), so
@@ -562,7 +565,9 @@ export function revertDocAction(entry, current) {
  *
  * The unit: restore / already-before / refuse (revertDocAction). A recorded
  * tenant that is gone, inactive or whose unitId is no longer this unit is
- * `detached` and left alone; otherwise restore / already-before / refuse. When
+ * `detached` and left alone; otherwise restore / already-before / refuse
+ * (except on a `pending` item whose unit is already-before: never written,
+ * so a tenant changed since is detached, not refused). When
  * the unit is restored, an ACTIVE holder who was not recorded, is linked to
  * this unit (their unitId is it, or they have none and the unit's tenantId is
  * them) and whose label is the "after" number is `relabel`led to the old
@@ -580,7 +585,15 @@ export function planItemRevert(item, current) {
       docs.push({ kind: 'tenant', id: t.tenantId, action: 'detached' });
       continue;
     }
-    docs.push({ kind: 'tenant', id: t.tenantId, ...revertDocAction(t, data) });
+    const action = revertDocAction(t, data);
+    // A pending item whose unit is still as it was was never written (the
+    // apply stopped before its transaction): a tenant that has changed since
+    // was changed by someone else, so leave it rather than refuse the item.
+    if (action.action === 'refuse' && item.status === 'pending' && unitDoc.action === 'already-before') {
+      docs.push({ kind: 'tenant', id: t.tenantId, action: 'detached' });
+      continue;
+    }
+    docs.push({ kind: 'tenant', id: t.tenantId, ...action });
   }
   if (unitDoc.action === 'restore') {
     const unitHolder = textOf(current.unit?.tenantId);
@@ -602,6 +615,14 @@ export function planItemRevert(item, current) {
   }
   const refused = docs.filter((d) => d.action === 'refuse');
   return { refused: refused.length > 0, refusedDocs: refused.map((d) => `${d.kind} ${d.id}`), docs };
+}
+
+/**
+ * [units] ({ id, data } rows) with each unit in [restores] (unitId -> number)
+ * given that number, as they will stand once a revert's unit restores land.
+ */
+export function withRestoredNumbers(units, restores = new Map()) {
+  return units.map((u) => (restores.has(u.id) ? { id: u.id, data: { ...u.data, unitNumber: restores.get(u.id) } } : u));
 }
 
 /**
@@ -759,11 +780,15 @@ export async function runApplySteps(record, { setFlag, applyItem, save = () => {
  * or skipped are left out; applied and pending ones (pending: a crash
  * between commit and record write) go to revertItem(item), which decides by
  * state and returns { status, docs } or throws to refuse. The facility flag
- * last, via revertFlag(facilityChange) (returns a result, throws to refuse),
- * and only when the record says the apply set it and no item was refused.
+ * last, via revertFlag(facilityChange, { restores }) (returns a result,
+ * throws to refuse), and only when the record says the apply set it and no
+ * item was refused. `restores` maps each unit whose revert restores its
+ * number (revertItem returned `restoredUnitNumber`) to that number, so a dry
+ * run can check the flag against the numbers a real run would leave.
  */
 export async function runRevertSteps(rec, { revertItem, revertFlag, save = () => {}, log = () => {} }) {
   const out = { units: [], facility: null, refusedItems: 0 };
+  const restores = new Map();
   for (const item of rec.units ?? []) {
     if (item.status !== 'applied' && item.status !== 'pending') {
       out.units.push({ unitId: item.unitId, recordedStatus: item.status, status: 'skipped', reason: `the apply ${item.status ?? 'did not reach'} it` });
@@ -774,6 +799,7 @@ export async function runRevertSteps(rec, { revertItem, revertFlag, save = () =>
       const r = await revertItem(item);
       result.status = r.status;
       result.docs = r.docs;
+      if (r.restoredUnitNumber !== undefined) restores.set(item.unitId, r.restoredUnitNumber);
     } catch (e) {
       result.status = 'refused';
       result.error = String(e?.message ?? e);
@@ -794,7 +820,7 @@ export async function runRevertSteps(rec, { revertItem, revertFlag, save = () =>
     out.facility = { status: 'kept', reason: 'some unit items were refused; numbers may still repeat' };
   } else {
     try {
-      out.facility = await revertFlag(fc);
+      out.facility = await revertFlag(fc, { restores });
     } catch (e) {
       out.facility = { status: 'refused', error: String(e?.message ?? e) };
     }
@@ -1130,18 +1156,25 @@ async function runRevert(args, projectId) {
             txn.update(d.kind === 'unit' ? unitRef : tenantsCol.doc(d.id), fieldsFor(d));
           }
         }
-        return { status: args.apply ? 'reverted' : 'would-revert', docs };
+        const unitRestore = plan.docs.find((d) => d.kind === 'unit' && d.action === 'restore');
+        return {
+          status: args.apply ? 'reverted' : 'would-revert',
+          docs,
+          ...(unitRestore ? { restoredUnitNumber: item.before.unitNumber } : {}),
+        };
       });
     },
-    revertFlag: (fc) =>
+    revertFlag: (fc, { restores }) =>
       db.runTransaction(async (txn) => {
         const f = await txn.get(facilityRef);
         const d = revertDocAction(fc, f.exists ? f.data() : null);
         if (d.action === 'refuse') throw new Error('facility flag changed since the run');
         if (d.action === 'already-before') return { action: d.action, status: 'already-before' };
         // Off again only when no number is used twice; the app refuses the same.
+        // Checked as the units stand once the unit restores are in: after them
+        // in a real run (a no-op there), and as a dry run predicts them.
         const units = (await txn.get(facilityRef.collection('units'))).docs.map((x) => ({ id: x.id, data: x.data() }));
-        const repeated = repeatedNumbers(units);
+        const repeated = repeatedNumbers(withRestoredNumbers(units, restores));
         if (repeated.length) {
           throw new Error(`numbers still used by more than one live unit: ${repeated.map((g) => `"${g.number}" (${g.unitIds.length})`).join(', ')}`);
         }

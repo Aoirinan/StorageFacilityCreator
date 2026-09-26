@@ -18,6 +18,7 @@ import {
   runApplySteps,
   runRevertSteps,
   verifyAfterApply,
+  withRestoredNumbers,
 } from './renumber-units-by-area.mjs';
 
 const MAP = parsePrefixMap('C2-=Complex 2,C3-=Complex 3');
@@ -404,6 +405,67 @@ test('flag revert is refused while a number is used by two live units', () => {
     ],
   );
   assert.deepEqual(repeatedNumbers([unit('a', { unitNumber: 'C2-12' }), unit('b', { unitNumber: 'C3-12' })]), []);
+});
+
+test('revert dry run checks the flag against the numbers the unit restores would leave', async () => {
+  // Live units as a dry run sees them: still renumbered.
+  const live = [
+    unit('a', { unitNumber: '12', area: 'Complex 2' }),
+    unit('b', { unitNumber: '12', area: 'Complex 3' }),
+    unit('c', { unitNumber: '7', area: 'Outdoor' }),
+  ];
+  assert.equal(repeatedNumbers(live).length, 1);
+  const restores = new Map([
+    ['a', 'C2-12'],
+    ['b', 'C3-12'],
+  ]);
+  assert.deepEqual(repeatedNumbers(withRestoredNumbers(live, restores)), []);
+  // One of the pair restored is enough: "12" is then used once.
+  assert.deepEqual(repeatedNumbers(withRestoredNumbers(live, new Map([['a', 'C2-12']]))), []);
+  // A unit left renumbered next to a plain one: still repeated.
+  const withPlain = [...live, unit('d', { unitNumber: 'C2-12', area: 'Complex 2' })];
+  assert.equal(repeatedNumbers(withRestoredNumbers(withPlain, restores)).length, 1);
+  assert.equal(live[0].data.unitNumber, '12', 'input rows are not changed');
+
+  // runRevertSteps hands revertFlag the numbers the item reverts restored.
+  const item = revertItem();
+  let seen;
+  const out = await runRevertSteps(
+    {
+      units: [
+        { ...item, unitId: 'a', status: 'applied' },
+        { ...item, unitId: 'b', status: 'pending' },
+      ],
+      facilityChange: { before: {}, beforeMissing: [], after: { unitNumbersRepeatAcrossAreas: true }, status: 'applied' },
+    },
+    {
+      revertItem: async (i) =>
+        i.unitId === 'a' ? { status: 'would-revert', docs: [], restoredUnitNumber: 'C2-12' } : { status: 'would-revert', docs: [] },
+      revertFlag: async (_fc, { restores: r }) => {
+        seen = r;
+        return { status: 'would-restore' };
+      },
+    },
+  );
+  assert.deepEqual([...seen], [['a', 'C2-12']]);
+  assert.equal(out.facility.status, 'would-restore');
+});
+
+test('revert: a pending item whose unit was never written does not refuse over a changed tenant', () => {
+  const item = revertItem();
+  const current = {
+    unit: { unitNumber: 'C2-1', area: 'Complex 2', tenantId: 't1' },
+    tenants: { t1: { unitNumber: 'C2-1 (moved)', unitId: 'u1', unitArea: 'Complex 2', isActive: true } },
+    holders: [],
+  };
+  const pending = planItemRevert({ ...item, status: 'pending' }, current);
+  assert.equal(pending.refused, false);
+  assert.deepEqual(pending.docs.map((d) => d.action), ['already-before', 'detached']);
+  // Recorded as applied, the same state is still refused: something is off.
+  assert.equal(planItemRevert({ ...item, status: 'applied' }, current).refused, true);
+  // Pending with the unit in its after state: a changed tenant still refuses.
+  const unitAfter = { ...current, unit: { unitNumber: '1', legacyUnitNumber: 'C2-1', area: 'Complex 2', tenantId: 't1' } };
+  assert.equal(planItemRevert({ ...item, status: 'pending' }, unitAfter).refused, true);
 });
 
 test('apply sets the facility flag first; a refused flag writes no unit', async () => {
