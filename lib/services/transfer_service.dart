@@ -107,6 +107,34 @@ class TransferService {
     return null;
   }
 
+  /// The tenant's rent and unit number once [transfer] completes
+  /// ([unitNumber] null: left as it is). With no [otherUnits], the to-unit's
+  /// rate and number, as before. With others, the from-unit's rate comes off
+  /// their rent and the to-unit's goes on (never below zero), and their
+  /// unit number moves to the new unit only if it named the unit they left:
+  /// setting both to the new unit billed a tenant with units A and B who
+  /// moved B to C for C alone, and labelled them C.
+  static ({double monthlyRate, String? unitNumber}) tenantAfterTransfer({
+    required TransferModel transfer,
+    required double currentRate,
+    required String currentUnitNumber,
+    required List<UnitModel> otherUnits,
+  }) {
+    if (otherUnits.isEmpty) {
+      return (monthlyRate: transfer.toUnitRate, unitNumber: transfer.toUnitNumber);
+    }
+    final rate = currentRate - transfer.fromUnitRate + transfer.toUnitRate;
+    final label = currentUnitNumber.trim();
+    // A label that names one of the units they keep stays.
+    final namesKept = otherUnits.any((u) => u.unitNumber.trim() == label);
+    final movesLabel = label.isEmpty ||
+        (!namesKept && sameUnitNumber(label, transfer.fromUnitNumber));
+    return (
+      monthlyRate: rate <= 0 ? 0 : (rate * 100).round() / 100,
+      unitNumber: movesLabel ? transfer.toUnitNumber : null,
+    );
+  }
+
   /// Create a transfer request
   static Future<TransferModel> createTransfer({
     required String facilityId,
@@ -227,6 +255,15 @@ class TransferService {
         toUnit: await UnitService.getUnit(facilityId, transfer.toUnitId),
       );
       if (refusal != null) throw refusal;
+      // The other units they rent, read before either unit changes.
+      final otherUnits = [
+        for (final u in await TenantService.recordsFor(facilityId)
+            .linkedUnits(transfer.tenantId))
+          if (u.id != transfer.fromUnitId &&
+              u.id != transfer.toUnitId &&
+              u.status != UnitStatus.available)
+            u
+      ];
 
       // Update status to in progress
       await transferDoc.reference.update({
@@ -299,12 +336,18 @@ class TransferService {
       final tenant = await TenantService.getTenantById(facilityId, transfer.tenantId);
       
       if (tenant != null) {
+        final after = tenantAfterTransfer(
+          transfer: transfer,
+          currentRate: tenant.monthlyRate,
+          currentUnitNumber: tenant.unitNumber,
+          otherUnits: otherUnits,
+        );
         await TenantService.updateTenant(
           facilityId: facilityId,
           tenantId: transfer.tenantId,
-          unitNumber: transfer.toUnitNumber,
-          unitId: transfer.toUnitId,
-          monthlyRate: transfer.toUnitRate,
+          unitNumber: after.unitNumber,
+          unitId: after.unitNumber == null ? null : transfer.toUnitId,
+          monthlyRate: after.monthlyRate,
         );
       }
 

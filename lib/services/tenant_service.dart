@@ -752,6 +752,15 @@ class TenantService {
           : await _planUnitLink(store,
               tenantId: ref.id, unitNumber: requested, unit: picked);
       if (link != null) tenantData['unitNumber'] = link.unitNumber;
+      // No unit to link: one is made after the tenant is saved. Refused now
+      // if it can't be (an archived unit keeps its number and is in no
+      // list): made later, the refusal said "Nothing was saved" over a
+      // saved tenant, and a retry saved them twice.
+      if (link != null && link.unitId == null) {
+        final duplicate =
+            await UnitService.duplicateUnitNumber(facilityId, link.unitNumber);
+        if (duplicate != null) throw duplicate;
+      }
 
       await ref.set(tenantData);
 
@@ -1193,7 +1202,13 @@ class TenantService {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
         final newNum = unitNumber.trim();
         final nowActive = isActive ?? wasActive;
-        final numberChanged = !sameUnitNumber(newNum, oldNum);
+        // Exact (trimmed), not ignoring case: the lookup prefers the exact
+        // spelling, so "12a" to "12A" can name a different unit ("12A"
+        // beside "12a"), and is a change of unit like any other.
+        final numberChanged = newNum != oldNum;
+        // The same number saved again by an active tenant with nothing
+        // picked: an edit of other fields (phone, email, ...).
+        final keepingNumber = !numberChanged && wasActive && picked == null;
         if (newNum.isNotEmpty && nowActive) {
           try {
             link = await _planUnitLink(store,
@@ -1205,8 +1220,14 @@ class TenantService {
             // not linked. A new number, reactivating onto it, or picking
             // that unit from the list is still refused: that would bill
             // them for someone else's unit.
-            if (numberChanged || !wasActive || picked != null) rethrow;
+            if (!keepingNumber) rethrow;
             notice = staleUnitNumberNotice(e, _displayName(beforeData, tenantId));
+          } on AmbiguousUnitNumberException catch (e) {
+            // Likewise an unchanged number that several units have, none of
+            // them theirs: the phone change is saved, and the unit is left
+            // for the owner to pick.
+            if (!keepingNumber) rethrow;
+            notice = ambiguousUnitNumberNotice(e, _displayName(beforeData, tenantId));
           }
           final planned = link;
           // The unit's own spelling, so the tenant's number matches it.
@@ -1769,6 +1790,27 @@ class TenantService {
     return 'Unit ${held.unitNumber} is now assigned to '
         '${holder.isEmpty ? 'another tenant' : holder}, so it was not linked '
         "to $tenantName. Update $tenantName's unit number if they moved.";
+  }
+
+  /// The CSV import's line for row [rowNumber] that [createTenant] refused.
+  /// "Pick the unit from the list" means nothing in an import, so a number
+  /// several units have says how to add that tenant instead.
+  static String csvImportRowError(int rowNumber, Object error) {
+    if (error is AmbiguousUnitNumberException) {
+      return 'Row $rowNumber: More than one unit is numbered '
+          '${error.unitNumber}, so this tenant was not imported. Add them '
+          'with Add Tenant and pick their unit from the list.';
+    }
+    final message = error is UserFacingException ? error.message : '$error';
+    return 'Row $rowNumber: $message';
+  }
+
+  /// Why a tenant's unchanged unit number was not linked: more than one
+  /// unit has it, and they hold none of them.
+  static String ambiguousUnitNumberNotice(
+      AmbiguousUnitNumberException ambiguous, String tenantName) {
+    return 'More than one unit is numbered ${ambiguous.unitNumber}, so none '
+        'was linked to $tenantName. Pick their unit from the list to link it.';
   }
 
   static double _rateOf(Map<String, dynamic>? tenant) {

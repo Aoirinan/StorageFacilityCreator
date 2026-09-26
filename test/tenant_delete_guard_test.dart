@@ -11,6 +11,7 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/screens/unit_detail_screen.dart';
 import 'package:sfcapp/services/move_out_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
@@ -1751,18 +1752,67 @@ void main() {
     test('unitsNumbered matches trimmed and ignoring case, live units before archived ones', () async {
       final units = db.sub('units');
       await units.doc('u104').set({'unitNumber': ' 104A', 'status': 'available'});
-      await units.doc('u105old').set({'unitNumber': '105', 'archived': true});
+      // Archived as UnitService.archiveUnit writes it: switched off too.
+      await units.doc('u105old').set({'unitNumber': '105', 'archived': true, 'isActive': false});
       await units.doc('u105').set({'unitNumber': '105', 'status': 'available'});
-      await units.doc('u106').set({'unitNumber': '106', 'archived': true});
-      await units.doc('u107').set({'unitNumber': '107', 'isActive': false});
+      await units.doc('u106').set({'unitNumber': '106', 'archived': true, 'isActive': false});
+      // An archived flag with no isActive (older docs): found only when no
+      // live unit has the number, as the exact query found it before.
+      await units.doc('u108old').set({'unitNumber': '108', 'archived': true});
+      await units.doc('u108').set({'unitNumber': '108', 'status': 'available'});
+      await units.doc('u109').set({'unitNumber': '109', 'archived': true});
       final store = TenantService.recordsFor('f1');
       List<String> ids(List<UnitModel> units) => [for (final u in units) u.id];
       expect(ids(await store.unitsNumbered('104a')), ['u104']);
-      // An archived unit with the number no longer makes it ambiguous.
       expect(ids(await store.unitsNumbered('105')), ['u105']);
-      // Only archived: as before, it is found.
-      expect(ids(await store.unitsNumbered('106')), ['u106']);
-      expect(await store.unitsNumbered('107'), isEmpty);
+      expect(await store.unitsNumbered('106'), isEmpty);
+      // An archived unit with the number no longer makes it ambiguous.
+      expect(ids(await store.unitsNumbered('108')), ['u108']);
+      expect(ids(await store.unitsNumbered('109')), ['u109']);
+    });
+
+    group('createTenant', () {
+      setUp(() {
+        TenantService.authForTesting =
+            MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+        FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+      });
+      tearDown(() {
+        TenantService.authForTesting = null;
+        FacilitySubcollections.overrideForTesting(null);
+      });
+
+      Future<String> create(String unitNumber) => TenantService.createTenant(
+            facilityId: 'f1',
+            name: 'Bo Diaz',
+            email: '',
+            phone: '',
+            unitNumber: unitNumber,
+            monthlyRate: 60,
+          );
+
+      test("a number an archived unit keeps is refused before the tenant is saved", () async {
+        // The unit was made after the tenant was saved, so the refusal said
+        // "Nothing was saved" over a saved tenant, and a retry (or the CSV
+        // import's next run) saved them twice.
+        await db.sub('units').doc('u12').set(
+            {'unitNumber': '12', 'archived': true, 'isActive': false, 'status': 'available'});
+        final tenantsBefore = db.sub('tenants').stored.length;
+        await expectLater(
+          create('12'),
+          throwsA(isA<DuplicateUnitNumberException>().having((e) => e.message, 'message',
+              startsWith('Unit number 12 belongs to an archived unit. Nothing was saved.'))),
+        );
+        expect(db.sub('tenants').stored, hasLength(tenantsBefore));
+        expect(db.sub('units').log.writes.map((w) => w.$2), ['u12']);
+      });
+
+      test('a number no unit has makes the unit and links it', () async {
+        final id = await create('14');
+        final made = db.sub('units').stored.where((d) => d.data()['unitNumber'] == '14').single;
+        expect(made.data()['tenantId'], id);
+        expect(db.data('tenants', id)!['unitNumber'], '14');
+      });
     });
   });
 
@@ -1930,13 +1980,16 @@ void main() {
       return store;
     }
 
-    Future<String?> update(_FakeRecords store, {String? unitNumber, String? unitId, String? phone}) =>
+    Future<String?> update(_FakeRecords store,
+            {String? unitNumber, String? unitId, String? phone, bool? isActive, ConfirmFreeUnit? confirmFree}) =>
         TenantService.updateTenant(
           facilityId: 'f1',
           tenantId: 't1',
           unitNumber: unitNumber,
           unitId: unitId,
           phone: phone,
+          isActive: isActive,
+          confirmFreeOldUnit: confirmFree,
           records: store,
           effects: _FakeEffects(),
           actingUid: 'owner',
@@ -2103,6 +2156,100 @@ void main() {
       await expectLater(moveIn(store, unitNumber: '12'),
           throwsA(isA<AmbiguousUnitNumberException>()));
       expect(store.allWrites, isEmpty);
+    });
+
+    test("typing \"12A\" over \"12a\" names 12A: another tenant's 12A is refused, not saved with a notice", () async {
+      // Compared ignoring case, the number read as unchanged, so the
+      // refusal became "not linked" and the label moved to 12A anyway.
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.addAll([
+        mine,
+        unitAt('u12A', '12A', UnitStatus.occupied, 't2'),
+      ]);
+      await expectLater(update(store, unitNumber: '12A'),
+          throwsA(isA<UnitHeldByAnotherTenantException>()));
+      expect(store.allWrites, isEmpty);
+      expect(store['t1'].doc!['unitNumber'], '12a');
+    });
+
+    test('typing "12A" over "12a" when 12A is free is a change of unit: asked, and the rent follows', () async {
+      // It linked 12A with no question and no rent change: they held both
+      // and were billed for one.
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.addAll([
+        mine,
+        unitAt('u12A', '12A', UnitStatus.available, null, rate: 80),
+      ]);
+      String? asked;
+      final notice = await update(store, unitNumber: '12A', confirmFree: (n) async {
+        asked = n;
+        return false;
+      });
+      expect(asked, '12a');
+      expect(store.writtenPaths, ['update units/u12A', 'update tenants/t1']);
+      expect(store['t1'].doc!['monthlyRate'], 180);
+      expect(store['t1'].doc!['unitNumber'], '12A');
+      expect(notice, contains(r'$180.00'));
+    });
+
+    test('a case-only change of the number of the unit they hold changes nothing else', () async {
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.add(mine);
+      store.unitHolders['u12a'] = 't1';
+      String? asked;
+      await update(store, unitNumber: '12A', confirmFree: (n) async {
+        asked = n;
+        return true;
+      });
+      expect(asked, isNull);
+      expect(store.allWrites, ['update tenants/t1']);
+      // The unit's own spelling.
+      expect(store['t1'].doc!['unitNumber'], '12a');
+    });
+
+    test('an unchanged number several units have: other fields are saved, with a notice', () async {
+      // Edit Tenant and the contact dialog always send the number, so a
+      // phone change was refused for a tenant whose number two units have.
+      final store = tenantWith(label: '12');
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      final notice = await update(store, unitNumber: '12', phone: '555-0100');
+      expect(store.allWrites, ['update tenants/t1']);
+      expect(store['t1'].doc!['phone'], '555-0100');
+      expect(notice,
+          'More than one unit is numbered 12, so none was linked to Ada Park. Pick their unit from the list to link it.');
+    });
+
+    test('reactivating onto a number several units have is still refused', () async {
+      final store = tenantWith(label: '12');
+      store['t1'].doc!['isActive'] = false;
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      await expectLater(update(store, unitNumber: '12', isActive: true),
+          throwsA(isA<AmbiguousUnitNumberException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test("the CSV import's row line says how to add a tenant whose number several units have", () {
+      expect(
+        TenantService.csvImportRowError(
+            4, const AmbiguousUnitNumberException(unitNumber: '12', count: 2)),
+        'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
+        'Add them with Add Tenant and pick their unit from the list.',
+      );
+      expect(
+        TenantService.csvImportRowError(5, const DuplicateUnitNumberException(
+            unitNumber: '9', existingNumber: '9', archived: true)),
+        startsWith('Row 5: Unit number 9 belongs to an archived unit.'),
+      );
+      expect(TenantService.csvImportRowError(6, Exception('x')), 'Row 6: Exception: x');
     });
 
     group('unitForNumber', () {

@@ -269,6 +269,66 @@ void main() {
       );
     });
 
+    group("the tenant's rent and unit number after it", () {
+      // _transfer(): unit 12 at $100 to unit 14 at $100; these use 14 at $80.
+      TransferModel transfer() => _transfer().copyWith(toUnitRate: 80);
+
+      test('their only unit: the new unit\'s rate and number, as before', () {
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 95,
+          currentUnitNumber: '12',
+          otherUnits: const [],
+        );
+        expect(after.monthlyRate, 80);
+        expect(after.unitNumber, '14');
+      });
+
+      test('with another unit: only the moved unit\'s rate changes, and a label on the kept unit stays', () {
+        // Holding 7 and 12 at $200, moving 12 to 14: it set $80 and "14",
+        // billing them for 14 alone while they held 7 and 14.
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 200,
+          currentUnitNumber: '7',
+          otherUnits: [_unit('u7', '7', UnitStatus.occupied, 't1')],
+        );
+        expect(after.monthlyRate, 180);
+        expect(after.unitNumber, isNull);
+      });
+
+      test('with another unit and the label on the unit they leave: the label moves', () {
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 200,
+          currentUnitNumber: '12',
+          otherUnits: [_unit('u7', '7', UnitStatus.occupied, 't1')],
+        );
+        expect(after.monthlyRate, 180);
+        expect(after.unitNumber, '14');
+      });
+
+      test('never below zero', () {
+        // A discounted rent lower than the unit they leave: 10 - 100 + 80.
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 10,
+          currentUnitNumber: '7',
+          otherUnits: [_unit('u7', '7', UnitStatus.occupied, 't1')],
+        );
+        expect(after.monthlyRate, 0);
+      });
+
+      test('completeTransfer uses it, with the other units read before the units change', () {
+        final source = File('lib/services/transfer_service.dart').readAsStringSync();
+        final complete = source.substring(source.indexOf('static Future<void> completeTransfer('));
+        expect(complete, contains('tenantAfterTransfer('));
+        expect(complete, isNot(contains('monthlyRate: transfer.toUnitRate')));
+        expect(complete.indexOf('.linkedUnits(transfer.tenantId)'),
+            lessThan(complete.indexOf("'status': TransferStatus.inProgress.name")));
+      });
+    });
+
     test('completeTransfer checks before it writes anything', () {
       // completeTransfer talks to Firestore directly, so pin the order in
       // its source: the refusal comes before the first write (the status

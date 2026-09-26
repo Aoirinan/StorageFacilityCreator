@@ -19,6 +19,7 @@ class DuplicateUnitNumberException implements UserFacingException {
   const DuplicateUnitNumberException({
     required this.unitNumber,
     required this.existingNumber,
+    this.archived = false,
   });
 
   /// The number asked for.
@@ -27,10 +28,19 @@ class DuplicateUnitNumberException implements UserFacingException {
   /// The other unit's number as stored.
   final String existingNumber;
 
+  /// Whether the other unit is archived (or switched off): it is in no
+  /// list, so the number looks free, but archived units keep theirs.
+  final bool archived;
+
   @override
   String get message {
     final existing = existingNumber.trim();
     final spelled = existing == unitNumber ? '' : ' (as $existing)';
+    if (archived) {
+      return 'Unit number $unitNumber belongs to an archived unit$spelled. '
+          'Nothing was saved. Use a different number: archived units keep '
+          'theirs.';
+    }
     return 'Unit number $unitNumber already exists in this facility$spelled. '
         'Nothing was saved. Use a different number.';
   }
@@ -90,11 +100,8 @@ class UnitService {
       // ignoring case (archived units included, as before). Through
       // FacilitySubcollections, like the reads, so tests run this write.
       final unitsRef = FacilitySubcollections.units(facilityId);
-      final existing = await _unitWithNumber(facilityId, unitNumber);
-      if (existing != null) {
-        throw DuplicateUnitNumberException(
-            unitNumber: unitNumber.trim(), existingNumber: existing);
-      }
+      final duplicate = await duplicateUnitNumber(facilityId, unitNumber);
+      if (duplicate != null) throw duplicate;
 
       final ref = unitsRef.doc();
 
@@ -383,12 +390,9 @@ class UnitService {
           newNumber.isNotEmpty &&
           newNumber != beforeNumber.trim();
       if (renaming) {
-        final other = await _unitWithNumber(facilityId, newNumber,
+        final duplicate = await duplicateUnitNumber(facilityId, newNumber,
             exceptUnitId: unitId, includeArchived: false);
-        if (other != null) {
-          throw DuplicateUnitNumberException(
-              unitNumber: newNumber, existingNumber: other);
-        }
+        if (duplicate != null) throw duplicate;
         await _renameWithTenant(
           facilityId,
           unitRef,
@@ -463,11 +467,12 @@ class UnitService {
     }
   }
 
-  /// The stored number of a unit of [facilityId] other than [exceptUnitId]
-  /// whose number is [unitNumber] under [unitNumberKey], or null. Reads the
-  /// whole collection: Firestore cannot match ignoring case. Unique across
-  /// the facility for now, not per area.
-  static Future<String?> _unitWithNumber(
+  /// Why [unitNumber] cannot be given to a unit of [facilityId] (other
+  /// than [exceptUnitId]): another unit has it under [unitNumberKey]. Null
+  /// when it is free. Reads the whole collection: Firestore cannot match
+  /// ignoring case. Unique across the facility for now, not per area.
+  /// [includeArchived]: archived units count (createUnit), as before.
+  static Future<DuplicateUnitNumberException?> duplicateUnitNumber(
     String facilityId,
     String unitNumber, {
     String? exceptUnitId,
@@ -485,7 +490,13 @@ class UnitService {
       final data = d.data();
       if (!includeArchived && data['archived'] == true) continue;
       final number = data['unitNumber']?.toString() ?? '';
-      if (unitNumberKey(number) == key) return number;
+      if (unitNumberKey(number) == key) {
+        return DuplicateUnitNumberException(
+          unitNumber: unitNumber.trim(),
+          existingNumber: number,
+          archived: data['archived'] == true || data['isActive'] == false,
+        );
+      }
     }
     return null;
   }
