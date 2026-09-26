@@ -113,15 +113,22 @@ class TransferService {
   /// their rent and the to-unit's goes on (never below zero), and their
   /// unit number moves to the new unit only if it named the unit they left:
   /// setting both to the new unit billed a tenant with units A and B who
-  /// moved B to C for C alone, and labelled them C.
-  static ({double monthlyRate, String? unitNumber}) tenantAfterTransfer({
+  /// moved B to C for C alone, and labelled them C. [unitId] is the unit
+  /// [unitNumber] names (the to-unit), null with it: updateTenant links it
+  /// by id and makes it their primary unit (`unitId`, `unitArea`).
+  static ({double monthlyRate, String? unitNumber, String? unitId})
+      tenantAfterTransfer({
     required TransferModel transfer,
     required double currentRate,
     required String currentUnitNumber,
     required List<UnitModel> otherUnits,
   }) {
     if (otherUnits.isEmpty) {
-      return (monthlyRate: transfer.toUnitRate, unitNumber: transfer.toUnitNumber);
+      return (
+        monthlyRate: transfer.toUnitRate,
+        unitNumber: transfer.toUnitNumber,
+        unitId: transfer.toUnitId,
+      );
     }
     final rate = currentRate - transfer.fromUnitRate + transfer.toUnitRate;
     final label = currentUnitNumber.trim();
@@ -132,6 +139,7 @@ class TransferService {
     return (
       monthlyRate: rate <= 0 ? 0 : (rate * 100).round() / 100,
       unitNumber: movesLabel ? transfer.toUnitNumber : null,
+      unitId: movesLabel ? transfer.toUnitId : null,
     );
   }
 
@@ -346,7 +354,7 @@ class TransferService {
           facilityId: facilityId,
           tenantId: transfer.tenantId,
           unitNumber: after.unitNumber,
-          unitId: after.unitNumber == null ? null : transfer.toUnitId,
+          unitId: after.unitId,
           monthlyRate: after.monthlyRate,
         );
       }

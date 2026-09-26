@@ -83,29 +83,49 @@ bool unitMatchesAreaFilter(UnitModel unit, String? filter) =>
     filter == null || _areaMatches(unit.area, filter);
 
 /// A facility's units looked up the ways a tenant points at them: by the
-/// unit's `tenantId` (how move-out and unit changes find a tenant's units)
-/// and by the tenant's `unitNumber`, trimmed and ignoring case (tenants
-/// imported or created with a unit number and never assigned through the
-/// unit carry only that).
+/// unit's `tenantId` (how move-out and unit changes find a tenant's units),
+/// by the tenant's `unitId` (their primary unit, when the writer knew it),
+/// and otherwise by the tenant's `unitNumber`, trimmed and ignoring case
+/// (tenants imported or created with a unit number and never assigned
+/// through the unit carry only that). The number is only used when exactly
+/// one of [units] has it: with two units numbered alike (in two areas) it
+/// names neither.
 class TenantUnitAreaIndex {
   TenantUnitAreaIndex(Iterable<UnitModel> units) {
+    final numbered = <String, List<UnitModel>>{};
     for (final unit in units) {
+      _byId[unit.id] = unit;
       final tenantId = unit.tenantId?.trim() ?? '';
       if (tenantId.isNotEmpty) {
         (_byTenantId[tenantId] ??= []).add(unit);
       }
       final number = unitNumberKey(unit.unitNumber);
-      if (number.isNotEmpty) _byNumber.putIfAbsent(number, () => unit);
+      if (number.isNotEmpty) (numbered[number] ??= []).add(unit);
+    }
+    for (final e in numbered.entries) {
+      if (e.value.length == 1) _byUniqueNumber[e.key] = e.value.single;
     }
   }
 
+  final Map<String, UnitModel> _byId = {};
   final Map<String, List<UnitModel>> _byTenantId = {};
-  final Map<String, UnitModel> _byNumber = {};
+  final Map<String, UnitModel> _byUniqueNumber = {};
+
+  /// The unit [tenant]'s label names: their `unitId` when it is one of the
+  /// units, else the one unit with their number, else null.
+  UnitModel? namedUnit(TenantModel tenant) {
+    final id = tenant.unitId?.trim() ?? '';
+    if (id.isNotEmpty) {
+      final byId = _byId[id];
+      if (byId != null) return byId;
+    }
+    return _byUniqueNumber[unitNumberKey(tenant.unitNumber)];
+  }
 
   /// The units [tenant] holds or names, each once.
   List<UnitModel> unitsFor(TenantModel tenant) {
     final units = <UnitModel>[...?_byTenantId[tenant.id]];
-    final named = _byNumber[unitNumberKey(tenant.unitNumber)];
+    final named = namedUnit(tenant);
     if (named != null && !units.any((u) => u.id == named.id)) {
       units.add(named);
     }

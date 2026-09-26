@@ -94,3 +94,6 @@ app.*.map.json
 # Cloud Functions (each package has its own node_modules; never commit)
 functions/node_modules/
 functions-*/node_modules/
+
+# Before/after records from scripts/backfill-*.mjs (tenant data; never commit)
+backfill-records/

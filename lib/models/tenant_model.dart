@@ -101,6 +101,18 @@ class TenantModel {
   final String email;
   final String phone;
   final String unitNumber;
+
+  /// The unit [unitNumber] names (its doc id), when the writer knew it: the
+  /// tenant's primary (label) unit. Null for tenants written before it was
+  /// kept, and for online move-ins until their next edit or the backfill
+  /// (scripts/backfill-tenant-unit-id.mjs). Which units a tenant holds is
+  /// still `units/{id}.tenantId`; this only says which one the label is.
+  final String? unitId;
+
+  /// The area of the [unitId] unit, copied from it (trimmed, null when the
+  /// unit has none). UnitService keeps it in step when the unit's area
+  /// changes.
+  final String? unitArea;
   final double monthlyRate;
   final DateTime? paidThrough;
   final DateTime createdAt;
@@ -177,6 +189,8 @@ class TenantModel {
     required this.email,
     required this.phone,
     required this.unitNumber,
+    this.unitId,
+    this.unitArea,
     required this.monthlyRate,
     this.paidThrough,
     required this.createdAt,
@@ -245,6 +259,44 @@ class TenantModel {
   /// tenant writer (createTenant, the online move-in) sets the field.
   static bool isActiveField(Object? value) => value == true;
 
+  /// A tenant doc's `unitId` or `unitArea`: trimmed, null when it is not a
+  /// string or is blank.
+  static String? textField(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// The update fields that make [unitId] (area [unitArea]) the tenant's
+  /// primary unit, written with every change of `unitNumber`: both deleted
+  /// when [unitId] is null or blank (no unit, or one not known), the area
+  /// deleted when the unit has none.
+  static Map<String, dynamic> primaryUnitUpdate({
+    String? unitId,
+    String? unitArea,
+  }) {
+    final id = textField(unitId);
+    final area = id == null ? null : textField(unitArea);
+    return {
+      'unitId': id ?? FieldValue.delete(),
+      'unitArea': area ?? FieldValue.delete(),
+    };
+  }
+
+  /// [primaryUnitUpdate] for a new tenant doc (a `set`): only the fields
+  /// that have a value.
+  static Map<String, dynamic> primaryUnitCreate({
+    String? unitId,
+    String? unitArea,
+  }) {
+    final id = textField(unitId);
+    final area = id == null ? null : textField(unitArea);
+    return {
+      if (id != null) 'unitId': id,
+      if (area != null) 'unitArea': area,
+    };
+  }
+
   // Create TenantModel from Firestore document
   factory TenantModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>?;
@@ -256,6 +308,8 @@ class TenantModel {
       email: data?['email'] ?? '',
       phone: data?['phone'] ?? '',
       unitNumber: data?['unitNumber'] ?? '',
+      unitId: textField(data?['unitId']),
+      unitArea: textField(data?['unitArea']),
       monthlyRate: (data?['monthlyRate'] ?? 0.0).toDouble(),
       paidThrough: (data?['paidThrough'] as Timestamp?)?.toDate(),
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
@@ -377,6 +431,7 @@ class TenantModel {
       'email': email,
       'phone': phone,
       'unitNumber': unitNumber,
+      ...primaryUnitCreate(unitId: unitId, unitArea: unitArea),
       'monthlyRate': monthlyRate,
       'paidThrough':
           paidThrough != null ? Timestamp.fromDate(paidThrough!) : null,
@@ -477,6 +532,10 @@ class TenantModel {
     String? email,
     String? phone,
     String? unitNumber,
+    String? unitId,
+    bool clearUnitId = false,
+    String? unitArea,
+    bool clearUnitArea = false,
     double? monthlyRate,
     DateTime? paidThrough,
     DateTime? createdAt,
@@ -540,6 +599,8 @@ class TenantModel {
       email: email ?? this.email,
       phone: phone ?? this.phone,
       unitNumber: unitNumber ?? this.unitNumber,
+      unitId: clearUnitId ? null : (unitId ?? this.unitId),
+      unitArea: clearUnitArea ? null : (unitArea ?? this.unitArea),
       monthlyRate: monthlyRate ?? this.monthlyRate,
       paidThrough: paidThrough ?? this.paidThrough,
       createdAt: createdAt ?? this.createdAt,

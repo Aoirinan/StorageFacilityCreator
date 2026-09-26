@@ -18,6 +18,7 @@ import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
 
 import 'support/fake_facility_collection.dart';
+import 'support/fake_facility_firestore.dart';
 
 UnitModel _unit(
   String id,
@@ -50,15 +51,21 @@ TenantModel _tenant(String id, String name, String unitNumber) => TenantModel(
       createdAt: DateTime(2026, 1, 1),
     );
 
-FakeQueryLog _serveUnits(List<FakeDoc> docs) {
-  final log = FakeQueryLog();
-  final units = FakeCollection(docs, log: log);
+/// The facility [_serveUnits] serves last.
+late FakeFacilityFirestore _db;
+
+/// Serves fac1's units ([docs]) and tenants; returns the units' log. An area
+/// change writes the tenants whose primary unit it is in the same
+/// transaction, so both are served.
+FakeQueryLog _serveUnits(List<FakeDoc> docs,
+    {List<FakeDoc> tenants = const []}) {
+  _db = FakeFacilityFirestore('fac1', {'units': docs, 'tenants': tenants});
   FacilitySubcollections.overrideForTesting((facilityId, name) {
     expect(facilityId, 'fac1');
-    expect(name, 'units');
-    return units;
+    expect(name, anyOf('units', 'tenants'));
+    return _db.sub(name);
   });
-  return log;
+  return _db.sub('units').log;
 }
 
 void main() {

@@ -474,6 +474,7 @@ class _UnitLink {
   const _UnitLink({
     required this.unitNumber,
     this.unitId,
+    this.unitArea,
     this.unitRate,
     this.seenHolder,
     this.write = true,
@@ -481,6 +482,10 @@ class _UnitLink {
 
   final String unitNumber;
   final String? unitId;
+
+  /// The unit's area, for the tenant's `unitArea`; null when it has none or
+  /// doesn't exist yet.
+  final String? unitArea;
 
   /// The unit's monthly rate; null when it doesn't exist yet.
   final double? unitRate;
@@ -752,6 +757,12 @@ class TenantService {
           : await _planUnitLink(store,
               tenantId: ref.id, unitNumber: requested, unit: picked);
       if (link != null) tenantData['unitNumber'] = link.unitNumber;
+      // The unit the number names, by id, as the tenant's primary unit. A
+      // unit made below (none had the number) is added once it exists.
+      if (link?.unitId != null) {
+        tenantData.addAll(TenantModel.primaryUnitCreate(
+            unitId: link!.unitId, unitArea: link.unitArea));
+      }
       // No unit to link: one is made after the tenant is saved. Refused now
       // if it can't be (an archived unit keeps its number and is in no
       // list): made later, the refusal said "Nothing was saved" over a
@@ -791,7 +802,12 @@ class TenantService {
             tenantId: ref.id,
             tenantName: name,
             monthlyRate: monthlyRate,
-            uid: user.uid);
+            uid: user.uid,
+            tenantUpdate: link.unitId != null
+                ? null
+                : (_, createdUnitId) => createdUnitId == null
+                    ? null
+                    : TenantModel.primaryUnitUpdate(unitId: createdUnitId));
       }
 
       if (kDebugMode) {
@@ -1230,9 +1246,12 @@ class TenantService {
             notice = ambiguousUnitNumberNotice(e, _displayName(beforeData, tenantId));
           }
           final planned = link;
-          // The unit's own spelling, so the tenant's number matches it.
+          // The unit's own spelling, so the tenant's number matches it, and
+          // the unit by id as their primary unit.
           if (planned != null && planned.unitId != null) {
             updateData['unitNumber'] = planned.unitNumber;
+            updateData.addAll(TenantModel.primaryUnitUpdate(
+                unitId: planned.unitId, unitArea: planned.unitArea));
           }
           // A picked unit with the number of another unit they hold (two
           // units numbered alike) is a change of unit too.
@@ -1273,6 +1292,19 @@ class TenantService {
         }
       }
 
+      // A unit number written with no unit to name by id (cleared, a unit
+      // still to be made, an inactive tenant's number): a unitId left from
+      // the old number would name the wrong unit, so it goes. An unchanged
+      // number keeps it.
+      final label = updateData['unitNumber'];
+      if (label is String && !updateData.containsKey('unitId')) {
+        final previous =
+            (beforeData?['unitNumber'] as Object?)?.toString().trim() ?? '';
+        if (label.trim().isEmpty || label.trim() != previous) {
+          updateData.addAll(TenantModel.primaryUnitUpdate());
+        }
+      }
+
       ({int unitsFreed, int gateCodesOff})? deactivation;
       var unitsChanged = false;
       var written = updateData;
@@ -1304,8 +1336,17 @@ class TenantService {
           monthlyRate: monthlyRate ?? _rateOf(beforeData),
           release: [for (final u in release) u.id],
           uid: uid,
-          tenantUpdate: (tenant) {
+          tenantUpdate: (tenant, linkedUnitId) {
             written = {...updateData};
+            // A unit made for the new number: its id, now that it exists.
+            final made = link;
+            if (made != null &&
+                made.unitId == null &&
+                linkedUnitId != null &&
+                updateData['unitNumber'] is String) {
+              written.addAll(
+                  TenantModel.primaryUnitUpdate(unitId: linkedUnitId));
+            }
             final plan = rent;
             if (plan != null) {
               final change = rentAfterUnitChange(
@@ -1446,7 +1487,7 @@ class TenantService {
       tenantName: name,
       monthlyRate: monthlyRate ?? 0,
       uid: uid,
-      tenantUpdate: (tenant) {
+      tenantUpdate: (tenant, linkedUnitId) {
         final change = adding
             ? rentAfterUnitChange(
                 tenantName: name,
@@ -1461,12 +1502,17 @@ class TenantService {
         notice = change?.notice;
         final current =
             (tenant?['unitNumber'] as Object?)?.toString().trim() ?? '';
+        final movesLabel =
+            !others.any((u) => sameUnitNumber(u.unitNumber, current));
         return written = {
           if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
           'isActive': true,
           'updatedAt': FieldValue.serverTimestamp(),
-          if (!others.any((u) => sameUnitNumber(u.unitNumber, current)))
+          if (movesLabel) ...{
             'unitNumber': newNum,
+            ...TenantModel.primaryUnitUpdate(
+                unitId: linkedUnitId, unitArea: link.unitArea),
+          },
         };
       },
     );
@@ -1559,8 +1605,10 @@ class TenantService {
         // Rent, autopay and lockout skip inactive tenants.
         if (!TenantModel.isActiveField(tenant['isActive'])) 'isActive': true,
         if (number.isNotEmpty &&
-            !others.any((u) => u.unitNumber.trim() == current))
+            !others.any((u) => u.unitNumber.trim() == current)) ...{
           'unitNumber': number,
+          ...TenantModel.primaryUnitUpdate(unitId: unitId, unitArea: unit.area),
+        },
         'updatedAt': FieldValue.serverTimestamp(),
       };
       txn.update('tenants', tenantId, written);
@@ -1632,6 +1680,8 @@ class TenantService {
       facilityId: facilityId,
       tenantId: tenantId,
       unitNumber: keepsNumber ? null : stillHeld.first.unitNumber,
+      // By id, so the unit they keep is linked as their primary unit.
+      unitId: keepsNumber ? null : stillHeld.first.id,
       monthlyRate: rate,
       records: records,
       effects: effects,
@@ -1686,6 +1736,7 @@ class TenantService {
         txn.update('tenants', tenantId, {
           'isActive': false,
           'unitNumber': '',
+          ...TenantModel.primaryUnitUpdate(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
         final gateOff = _gateAccessOffFields(uid);
@@ -1707,8 +1758,13 @@ class TenantService {
       final current = (tenant['unitNumber'] as Object?)?.toString().trim() ?? '';
       final fields = <String, dynamic>{
         if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
-        if (vacated.isNotEmpty && current == vacated)
+        if (vacated.isNotEmpty && current == vacated) ...{
           'unitNumber': others.isEmpty ? '' : others.first.unitNumber,
+          ...TenantModel.primaryUnitUpdate(
+            unitId: others.firstOrNull?.id,
+            unitArea: others.firstOrNull?.area,
+          ),
+        },
       };
       if (fields.isEmpty) return;
       txn.update('tenants', tenantId, {
@@ -2813,6 +2869,7 @@ class TenantService {
       return _UnitLink(
         unitNumber: unitNumber,
         unitId: unit.id,
+        unitArea: unit.area,
         unitRate: unit.monthlyRate,
         seenHolder: holder,
         write: unit.status == UnitStatus.available,
@@ -2827,6 +2884,7 @@ class TenantService {
     return _UnitLink(
       unitNumber: unitNumber,
       unitId: unit.id,
+      unitArea: unit.area,
       unitRate: unit.monthlyRate,
       seenHolder: unit.tenantId,
     );
@@ -2883,7 +2941,9 @@ class TenantService {
   /// the unit when none had the number. Frees each unit in [release] that
   /// still shows the tenant, and writes what [tenantUpdate] returns for the
   /// tenant doc as read in the same transaction, so the tenant's side and the
-  /// units commit together or not at all. Returns whether a unit was
+  /// units commit together or not at all. [tenantUpdate] is also given the
+  /// id of [link]'s unit (the one just created when none had the number), for
+  /// the tenant's `unitId`; null when there is no link. Returns whether a unit was
   /// written. Refuses if the linked unit changed hands since [_planUnitLink]
   /// looked.
   static Future<bool> _commitUnitLink(
@@ -2894,7 +2954,9 @@ class TenantService {
     required double monthlyRate,
     List<String> release = const [],
     required String uid,
-    Map<String, dynamic>? Function(Map<String, dynamic>? tenant)? tenantUpdate,
+    Map<String, dynamic>? Function(
+            Map<String, dynamic>? tenant, String? linkedUnitId)?
+        tenantUpdate,
   }) async {
     final linking = link != null && link.write ? link : null;
     if (linking == null && release.isEmpty && tenantUpdate == null) {
@@ -2931,7 +2993,7 @@ class TenantService {
         }
       }
       if (unitId != null) txn.update('units', unitId, fields);
-      final tenantFields = tenantUpdate?.call(tenant);
+      final tenantFields = tenantUpdate?.call(tenant, unitId ?? link?.unitId);
       if (tenantFields != null) txn.update('tenants', tenantId, tenantFields);
     });
     return linking != null || release.isNotEmpty;

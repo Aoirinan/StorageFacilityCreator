@@ -1,3 +1,5 @@
+import { FieldValue } from 'firebase-admin/firestore';
+
 type DocData = Record<string, unknown>;
 
 /** A unit the moving-out tenant is linked to, as read in the move-out transaction. */
@@ -13,6 +15,29 @@ function rateOf(data: DocData | null | undefined): number {
 
 function numberOf(data: DocData | null | undefined): string {
   return String(data?.unitNumber ?? '').trim();
+}
+
+/** A doc's text field trimmed, or null when it is not a string or is blank (TenantModel.textField). */
+function textOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * The tenant fields that make [unitId] (with [unitData]'s area) their primary
+ * unit, written with every change of tenant.unitNumber: both deleted when
+ * there is no unit, the area deleted when the unit has none.
+ *
+ * PARITY: TenantModel.primaryUnitUpdate in lib/models/tenant_model.dart.
+ */
+export function primaryUnitFields(unitId: string | null, unitData?: DocData | null): DocData {
+  const id = textOf(unitId);
+  const area = id ? textOf(unitData?.area) : null;
+  return {
+    unitId: id ?? FieldValue.delete(),
+    unitArea: area ?? FieldValue.delete(),
+  };
 }
 
 /** [x] rounded to the cent: sums of rates drift (100.1 + 150.2 is 250.29999999999998). */
@@ -110,6 +135,8 @@ export function rentAfterUnitChange(input: {
  * else holds, or one already freed, was not). A unitNumber that named the
  * vacated unit moves to a unit they still hold; the rent job bills tenants
  * with a unit number, so it is never cleared while they rent another.
+ * The tenant's unitId and unitArea (their primary unit) follow unitNumber:
+ * deleted with it, or set to the unit it moves to.
  */
 export function tenantFieldsAfterMoveOut(input: {
   tenantId: string;
@@ -122,7 +149,12 @@ export function tenantFieldsAfterMoveOut(input: {
   const { tenantId, tenant, unitId, unit, linkedUnits } = input;
   const stillHeld = linkedUnits.filter((u) => u.id !== unitId && isHeld(u, tenantId));
   if (stillHeld.length === 0) {
-    return { fields: { unitNumber: '', isActive: false }, rentNotice: null, rentWarning: null, endsTenancy: true };
+    return {
+      fields: { unitNumber: '', isActive: false, ...primaryUnitFields(null) },
+      rentNotice: null,
+      rentWarning: null,
+      endsTenancy: true,
+    };
   }
   const fields: DocData = {};
   let rentNotice: string | null = null;
@@ -143,7 +175,10 @@ export function tenantFieldsAfterMoveOut(input: {
   const vacated = numberOf(unit);
   if (vacated && numberOf(tenant) === vacated) {
     const other = stillHeld.find((u) => numberOf(u.data));
-    if (other) fields.unitNumber = numberOf(other.data);
+    if (other) {
+      fields.unitNumber = numberOf(other.data);
+      Object.assign(fields, primaryUnitFields(other.id, other.data));
+    }
   }
   return { fields, rentNotice, rentWarning, endsTenancy: false };
 }
