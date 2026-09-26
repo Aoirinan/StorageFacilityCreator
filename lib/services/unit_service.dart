@@ -21,6 +21,7 @@ class DuplicateUnitNumberException implements UserFacingException {
     required this.unitNumber,
     required this.existingNumber,
     this.archived = false,
+    this.area,
   });
 
   /// The number asked for.
@@ -33,10 +34,25 @@ class DuplicateUnitNumberException implements UserFacingException {
   /// list, so the number looks free, but archived units keep theirs.
   final bool archived;
 
+  /// The area both units are in, when the facility repeats unit numbers
+  /// across areas (the number is then only taken within that area). Null
+  /// when numbers are unique across the facility.
+  final String? area;
+
   @override
   String get message {
     final existing = existingNumber.trim();
     final spelled = existing == unitNumber ? '' : ' (as $existing)';
+    final inArea = area;
+    if (inArea != null) {
+      if (archived) {
+        return 'Unit number $unitNumber in $inArea belongs to an archived '
+            'unit$spelled. Nothing was saved. Use a different number or '
+            'area: archived units keep theirs.';
+      }
+      return 'Unit number $unitNumber already exists in $inArea$spelled. '
+          'Nothing was saved. Use a different number or area.';
+    }
     if (archived) {
       return 'Unit number $unitNumber belongs to an archived unit$spelled. '
           'Nothing was saved. Use a different number: archived units keep '
@@ -44,6 +60,82 @@ class DuplicateUnitNumberException implements UserFacingException {
     }
     return 'Unit number $unitNumber already exists in this facility$spelled. '
         'Nothing was saved. Use a different number.';
+  }
+
+  @override
+  String toString() => message;
+}
+
+/// A unit number more than one unit has, in a facility that repeats unit
+/// numbers across areas (`unitNumbersRepeatAcrossAreas`), where one of those
+/// units has no area: nothing would tell them apart on a statement, an
+/// invoice or a text.
+class UnitNumberNeedsAreaException implements UserFacingException {
+  const UnitNumberNeedsAreaException({
+    required this.unitNumber,
+    this.otherArea,
+    this.otherUnitHasNoArea = false,
+    this.clearingArea = false,
+  });
+
+  /// The number, trimmed.
+  final String unitNumber;
+
+  /// The area of another unit with the number, when it has one.
+  final String? otherArea;
+
+  /// The unit being saved has an area, but another unit with the number
+  /// has none: that unit needs one first.
+  final bool otherUnitHasNoArea;
+
+  /// The area is being removed from (or changed to blank on) a unit whose
+  /// number another unit also has.
+  final bool clearingArea;
+
+  @override
+  String get message {
+    if (otherUnitHasNoArea) {
+      return 'Unit number $unitNumber is already used by a unit with no '
+          'area. Nothing was saved. Give that unit an area first (Units > '
+          'unit $unitNumber > Edit), then this unit can use the number too.';
+    }
+    final where = otherArea == null ? '' : ' (in $otherArea)';
+    if (clearingArea) {
+      return 'Unit $unitNumber needs an area: another unit is also numbered '
+          '$unitNumber$where. Nothing was saved. Keep an area on this unit, '
+          'or renumber one of them.';
+    }
+    return 'Unit number $unitNumber is already used by another unit$where. '
+        'Units with a repeated number must have an area. Nothing was saved. '
+        'Enter an area for this unit, or use a different number.';
+  }
+
+  @override
+  String toString() => message;
+}
+
+/// Turning off "Unit numbers repeat across areas" while two live units
+/// share a number: the facility would go back to one unit per number with
+/// two units a tenant's number could mean.
+class RepeatedUnitNumbersException implements UserFacingException {
+  const RepeatedUnitNumbersException(this.unitNumbers);
+
+  /// Each number more than one live unit has, as one of them spells it.
+  final List<String> unitNumbers;
+
+  @override
+  String get message {
+    const shown = 10;
+    final list = unitNumbers.take(shown).join(', ');
+    final more = unitNumbers.length > shown
+        ? ' and ${unitNumbers.length - shown} more'
+        : '';
+    final plural = unitNumbers.length == 1;
+    return '"Unit numbers repeat across areas" can only be turned off when '
+        'every unit number is used once. '
+        '${plural ? 'Unit number $list is' : 'Unit numbers $list$more are'} '
+        'used by more than one unit. Nothing was saved. Renumber those units '
+        '(Units > unit > Edit), then turn this off.';
   }
 
   @override
@@ -97,12 +189,14 @@ class UnitService {
         print('🔄 Creating unit: $unitNumber for facility: $facilityId');
       }
 
-      // Check if unit number already exists in facility, trimmed and
-      // ignoring case (archived units included, as before). Through
+      // Check if unit number already exists in facility (or, where numbers
+      // repeat across areas, in this unit's area), trimmed and ignoring
+      // case (archived units included, as before). Through
       // FacilitySubcollections, like the reads, so tests run this write.
       final unitsRef = FacilitySubcollections.units(facilityId);
-      final duplicate = await duplicateUnitNumber(facilityId, unitNumber);
-      if (duplicate != null) throw duplicate;
+      final conflict =
+          await unitNumberWriteConflict(facilityId, unitNumber, area: areaValue);
+      if (conflict != null) throw conflict;
 
       final ref = unitsRef.doc();
 
@@ -390,10 +484,25 @@ class UnitService {
       final renaming = beforeData != null &&
           newNumber.isNotEmpty &&
           newNumber != beforeNumber.trim();
-      if (renaming) {
-        final duplicate = await duplicateUnitNumber(facilityId, newNumber,
-            exceptUnitId: unitId, includeArchived: false);
-        if (duplicate != null) throw duplicate;
+      // A new area matters where numbers repeat across areas: the number is
+      // then unique per area, and a repeated number needs one.
+      final beforeArea = normalizeUnitArea(beforeData?['area']);
+      final areaAfter = area == null ? beforeArea : _areaValue(area);
+      final areaChanging = beforeData != null &&
+          area != null &&
+          (areaAfter?.toLowerCase() != beforeArea?.toLowerCase());
+      if (renaming || areaChanging) {
+        final conflict = await unitNumberWriteConflict(
+          facilityId,
+          renaming ? newNumber : beforeNumber,
+          area: areaAfter,
+          exceptUnitId: unitId,
+          includeArchived: false,
+          // Only a rename is checked where numbers are unique facility-wide.
+          checkNumberWhenNotRepeating: renaming,
+          clearingArea: !renaming && areaChanging && areaAfter == null,
+        );
+        if (conflict != null) throw conflict;
       }
       // A new number or area reaches the tenant whose primary unit this is
       // (their unitNumber and unitArea), in the same transaction.
@@ -471,38 +580,160 @@ class UnitService {
     }
   }
 
-  /// Why [unitNumber] cannot be given to a unit of [facilityId] (other
-  /// than [exceptUnitId]): another unit has it under [unitNumberKey]. Null
-  /// when it is free. Reads the whole collection: Firestore cannot match
-  /// ignoring case. Unique across the facility for now, not per area.
-  /// [includeArchived]: archived units count (createUnit), as before.
-  static Future<DuplicateUnitNumberException?> duplicateUnitNumber(
+  /// Whether [facilityData] (a facility doc) has "Unit numbers repeat
+  /// across areas" on: only an exact true, as FacilityModel reads it.
+  static bool repeatsUnitNumbersAcrossAreas(Map<String, dynamic>? facilityData) =>
+      facilityData?['unitNumbersRepeatAcrossAreas'] == true;
+
+  /// Why a unit of [facilityId] (other than [exceptUnitId]) cannot be
+  /// numbered [unitNumber] in [area]; null when it can. Reads the facility's
+  /// setting and every unit ([unitNumberConflict] has the rule). Reads the
+  /// whole collection: Firestore cannot match ignoring case.
+  static Future<UserFacingException?> unitNumberWriteConflict(
     String facilityId,
     String unitNumber, {
+    String? area,
     String? exceptUnitId,
     bool includeArchived = true,
+    bool checkNumberWhenNotRepeating = true,
+    bool clearingArea = false,
   }) async {
-    final key = unitNumberKey(unitNumber);
-    if (key.isEmpty) return null;
+    if (unitNumberKey(unitNumber).isEmpty) return null;
+    final repeat = repeatsUnitNumbersAcrossAreas(
+        await FacilitySubcollections.facilityData(facilityId));
+    if (!repeat && !checkNumberWhenNotRepeating) return null;
     final snap = await FacilitySubcollections.units(facilityId)
         .limit(facilityUnitReadLimit)
         .get();
     FacilitySubcollections.reportIfReadLimitReached(
         facilityId, 'unit', snap.docs.length);
-    for (final d in snap.docs) {
-      if (d.id == exceptUnitId) continue;
-      final data = d.data();
-      if (!includeArchived && data['archived'] == true) continue;
-      final number = data['unitNumber']?.toString() ?? '';
-      if (unitNumberKey(number) == key) {
-        return DuplicateUnitNumberException(
-          unitNumber: unitNumber.trim(),
+    return unitNumberConflict(
+      [for (final d in snap.docs) (d.id, d.data())],
+      unitNumber: unitNumber,
+      area: area,
+      repeatAcrossAreas: repeat,
+      exceptUnitId: exceptUnitId,
+      includeArchived: includeArchived,
+      clearingArea: clearingArea,
+    );
+  }
+
+  /// The unit-number rule, for a unit (other than [exceptUnitId]) numbered
+  /// [unitNumber] in [area] among [units] (id and doc data). Numbers and
+  /// areas compare trimmed and ignoring case.
+  ///
+  /// [repeatAcrossAreas] off (every facility unless its owner turns it on):
+  /// one unit per number across the facility, as before. On: one unit per
+  /// number within an area, and a number more than one live unit has needs
+  /// an area on each of them, so nothing names two units alike.
+  /// [includeArchived]: an archived unit keeps its number (and area) against
+  /// a new unit, as createUnit always did; a rename or area change only
+  /// looks at live units. [clearingArea] words the refusal for an area being
+  /// removed.
+  @visibleForTesting
+  static UserFacingException? unitNumberConflict(
+    Iterable<(String, Map<String, dynamic>)> units, {
+    required String unitNumber,
+    required String? area,
+    required bool repeatAcrossAreas,
+    String? exceptUnitId,
+    bool includeArchived = true,
+    bool clearingArea = false,
+  }) {
+    final key = unitNumberKey(unitNumber);
+    if (key.isEmpty) return null;
+    final typed = unitNumber.trim();
+    final areaName = normalizeUnitArea(area);
+    final areaKey = areaName?.toLowerCase();
+    DuplicateUnitNumberException duplicate(
+            Map<String, dynamic> data, String number) =>
+        DuplicateUnitNumberException(
+          unitNumber: typed,
           existingNumber: number,
           archived: data['archived'] == true || data['isActive'] == false,
+          area: repeatAcrossAreas ? areaName : null,
         );
+
+    final sameNumber = <(Map<String, dynamic>, String)>[];
+    for (final (id, data) in units) {
+      if (id == exceptUnitId) continue;
+      final archived = data['archived'] == true;
+      if (archived && !includeArchived) continue;
+      final number = data['unitNumber']?.toString() ?? '';
+      if (unitNumberKey(number) == key) sameNumber.add((data, number));
+    }
+    if (sameNumber.isEmpty) return null;
+    if (!repeatAcrossAreas) {
+      final (data, number) = sameNumber.first;
+      return duplicate(data, number);
+    }
+
+    bool live(Map<String, dynamic> data) => data['archived'] != true;
+    String? areaOf(Map<String, dynamic> data) => normalizeUnitArea(data['area']);
+
+    if (areaName == null) {
+      // No area here: refused beside any live unit with the number, and
+      // beside an archived one that has no area either (the same key).
+      for (final (data, _) in sameNumber) {
+        if (live(data)) {
+          return UnitNumberNeedsAreaException(
+            unitNumber: typed,
+            otherArea: areaOf(data),
+            clearingArea: clearingArea,
+          );
+        }
+      }
+      for (final (data, number) in sameNumber) {
+        if (areaOf(data) == null) return duplicate(data, number);
+      }
+      return null;
+    }
+    for (final (data, _) in sameNumber) {
+      if (live(data) && areaOf(data) == null) {
+        return UnitNumberNeedsAreaException(
+            unitNumber: typed, otherUnitHasNoArea: true);
       }
     }
+    for (final (data, number) in sameNumber) {
+      if (areaOf(data)?.toLowerCase() == areaKey) return duplicate(data, number);
+    }
     return null;
+  }
+
+  /// The numbers more than one live (non-archived) unit has, trimmed and
+  /// ignoring case, each as the first unit read spells it, sorted.
+  @visibleForTesting
+  static List<String> repeatedLiveUnitNumbers(
+      Iterable<Map<String, dynamic>> units) {
+    final seen = <String, String>{};
+    final repeated = <String, String>{};
+    for (final data in units) {
+      if (data['archived'] == true) continue;
+      final number = data['unitNumber']?.toString().trim() ?? '';
+      final key = unitNumberKey(number);
+      if (key.isEmpty) continue;
+      final first = seen[key];
+      if (first == null) {
+        seen[key] = number;
+      } else {
+        repeated.putIfAbsent(key, () => first);
+      }
+    }
+    return repeated.values.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
+  /// Refuses turning "Unit numbers repeat across areas" off for
+  /// [facilityId] while two live units share a number
+  /// ([RepeatedUnitNumbersException]).
+  static Future<void> checkCanStopRepeatingUnitNumbers(String facilityId) async {
+    final snap = await FacilitySubcollections.units(facilityId)
+        .limit(facilityUnitReadLimit)
+        .get();
+    FacilitySubcollections.reportIfReadLimitReached(
+        facilityId, 'unit', snap.docs.length);
+    final repeated = repeatedLiveUnitNumbers([for (final d in snap.docs) d.data()]);
+    if (repeated.isNotEmpty) throw RepeatedUnitNumbersException(repeated);
   }
 
   /// Most tenant docs [_updateWithTenants] looks at by `unitId`: a unit is
@@ -630,11 +861,31 @@ class UnitService {
     if (user == null) {
       throw Exception('Not signed in');
     }
+    final areaValue = _areaValue(area);
+    final unitRef = FacilitySubcollections.units(facilityId).doc(unitId);
+    // Where numbers repeat across areas, a new area must not give two units
+    // one number in one area, or leave a repeated number without an area.
+    final before = (await unitRef.get()).data();
+    final number = before?['unitNumber']?.toString() ?? '';
+    final beforeArea = normalizeUnitArea(before?['area']);
+    if (before != null &&
+        areaValue?.toLowerCase() != beforeArea?.toLowerCase()) {
+      final conflict = await unitNumberWriteConflict(
+        facilityId,
+        number,
+        area: areaValue,
+        exceptUnitId: unitId,
+        includeArchived: false,
+        checkNumberWhenNotRepeating: false,
+        clearingArea: areaValue == null,
+      );
+      if (conflict != null) throw conflict;
+    }
     await _updateWithTenants(
       facilityId,
-      FacilitySubcollections.units(facilityId).doc(unitId),
+      unitRef,
       {
-        'area': _areaValue(area) ?? FieldValue.delete(),
+        'area': areaValue ?? FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
         'updatedBy': user.uid,
       },

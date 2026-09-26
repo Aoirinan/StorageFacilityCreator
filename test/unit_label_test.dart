@@ -380,7 +380,7 @@ void main() {
           ).overrideWith((ref) => Stream.value(const <LedgerEntry>[])),
           facilityTenantsProvider('f1')
               .overrideWith((ref) => Stream.value([tenant])),
-          unitLabelsIncludeAreaProvider('f1').overrideWith((ref) async => on),
+          unitLabelsIncludeAreaProvider('f1').overrideWith((ref) => Stream.value(on)),
         ],
         child: MaterialApp(home: Scaffold(body: LedgerScreen(tenant: tenant))),
       ));

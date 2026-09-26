@@ -1,5 +1,6 @@
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
 
 /// [UnitLabelStyle.plain]: "12 (Complex 2)". [UnitLabelStyle.withPrefix]:
@@ -45,6 +46,26 @@ String formatUnitLabel({
   final a = includeArea ? _labelPart(area) : '';
   final label = a.isEmpty ? n : '$n ($a)';
   return style == UnitLabelStyle.withPrefix ? 'Unit $label' : label;
+}
+
+/// How an operator's unit list or picker names [unit]: "Unit 12 (Complex 2)"
+/// (or "12 (Complex 2)" with [UnitLabelStyle.plain]) whenever the unit has an
+/// area, whatever the facility setting, so two units with one number can be
+/// told apart before one is picked. Tenant-facing text follows the setting
+/// ([tenantUnitLabel]) instead.
+String unitPickerLabel(
+  UnitModel unit, {
+  UnitLabelStyle style = UnitLabelStyle.withPrefix,
+}) {
+  final label = formatUnitLabel(
+    number: unit.unitNumber,
+    area: unit.area,
+    includeArea: true,
+    style: style,
+  );
+  if (label.isNotEmpty) return label;
+  // A unit with no number still needs a row in the list.
+  return style == UnitLabelStyle.withPrefix ? 'Unit' : '';
 }
 
 /// Whether [facility] names units with their area

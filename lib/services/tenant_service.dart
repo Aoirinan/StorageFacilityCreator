@@ -20,6 +20,7 @@ import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_number.dart';
 
 /// A unit that still shows a tenant as its occupant, and how to free it.
@@ -441,6 +442,7 @@ class AmbiguousUnitNumberException implements UserFacingException {
   const AmbiguousUnitNumberException({
     required this.unitNumber,
     required this.count,
+    this.areas = const [],
   });
 
   final String unitNumber;
@@ -448,9 +450,46 @@ class AmbiguousUnitNumberException implements UserFacingException {
   /// How many units have the number.
   final int count;
 
+  /// The areas of the units with the number (those that have one), so the
+  /// operator knows which to pick; empty when none has an area.
+  final List<String> areas;
+
+  /// " (in Complex 2, Complex 3)", or '' without areas.
+  String get _inAreas => areas.isEmpty ? '' : ' (in ${areas.join(', ')})';
+
   @override
-  String get message => 'More than one unit is numbered $unitNumber. '
-      'Nothing was saved. Pick the unit from the list.';
+  String get message => 'More than one unit is numbered $unitNumber$_inAreas. '
+      'Nothing was saved. Pick the unit from the list instead of typing its '
+      "number: the list shows each unit's area.";
+
+  @override
+  String toString() => message;
+}
+
+/// A CSV import row whose unit number several units have, none of them in
+/// the row's area.
+class CsvUnitAreaNotFoundException implements UserFacingException {
+  const CsvUnitAreaNotFoundException({
+    required this.unitNumber,
+    required this.area,
+    this.areas = const [],
+  });
+
+  final String unitNumber;
+
+  /// The area the row gives.
+  final String area;
+
+  /// The areas that do have a unit with the number.
+  final List<String> areas;
+
+  @override
+  String get message {
+    final known = areas.isEmpty ? '' : ' It is in ${areas.join(', ')}.';
+    return 'No unit numbered $unitNumber is in area $area.$known '
+        'This tenant was not imported. Fix the Area column, or add them '
+        'with Add Tenant and pick their unit from the list.';
+  }
 
   @override
   String toString() => message;
@@ -768,9 +807,10 @@ class TenantService {
       // list): made later, the refusal said "Nothing was saved" over a
       // saved tenant, and a retry saved them twice.
       if (link != null && link.unitId == null) {
-        final duplicate =
-            await UnitService.duplicateUnitNumber(facilityId, link.unitNumber);
-        if (duplicate != null) throw duplicate;
+        // The check createUnit makes for the unit it makes (no area).
+        final conflict = await UnitService.unitNumberWriteConflict(
+            facilityId, link.unitNumber);
+        if (conflict != null) throw conflict;
       }
 
       await ref.set(tenantData);
@@ -1927,18 +1967,78 @@ class TenantService {
   static String csvImportRowError(int rowNumber, Object error) {
     if (error is AmbiguousUnitNumberException) {
       return 'Row $rowNumber: More than one unit is numbered '
-          '${error.unitNumber}, so this tenant was not imported. Add them '
+          '${error.unitNumber}${error._inAreas}, so this tenant was not '
+          "imported. Put the unit's area in an Area column, or add them "
           'with Add Tenant and pick their unit from the list.';
     }
     final message = error is UserFacingException ? error.message : '$error';
     return 'Row $rowNumber: $message';
   }
 
+  /// The unit a CSV import row (or an existing tenant) names, for the
+  /// import's duplicate check: the number trimmed and ignoring case, and
+  /// where numbers repeat across areas ([repeatAcrossAreas]) the area too,
+  /// so "12, Complex 2" and "12, Complex 3" are two units. '' for no number.
+  static String csvImportUnitKey(
+    String unitNumber, {
+    String? area,
+    required bool repeatAcrossAreas,
+  }) {
+    final number = unitNumberKey(unitNumber);
+    if (number.isEmpty || !repeatAcrossAreas) return number;
+    return '$number|${normalizeUnitArea(area)?.toLowerCase() ?? ''}';
+  }
+
+  /// The unit a CSV import row names by [unitNumber] and [area], for a
+  /// facility whose units are [units] (the live ones): its id to link the
+  /// tenant by, or null to link by number as before (no number, no unit or
+  /// one unit with it, or [repeatAcrossAreas] off, where [area] is not
+  /// used). With the setting on and several units numbered alike, the one
+  /// in [area] (trimmed, ignoring case); throws
+  /// [AmbiguousUnitNumberException] when the row has no area or more than
+  /// one of them is in it, and [CsvUnitAreaNotFoundException] when none is.
+  static String? csvImportUnitId(
+    Iterable<UnitModel> units, {
+    required String unitNumber,
+    String? area,
+    required bool repeatAcrossAreas,
+  }) {
+    final key = unitNumberKey(unitNumber);
+    if (!repeatAcrossAreas || key.isEmpty) return null;
+    final numbered = [
+      for (final u in units)
+        if (unitNumberKey(u.unitNumber) == key) u
+    ];
+    if (numbered.length < 2) return null;
+    final typed = unitNumber.trim();
+    final areaName = normalizeUnitArea(area);
+    final ambiguous = AmbiguousUnitNumberException(
+      unitNumber: typed,
+      count: numbered.length,
+      areas: distinctUnitAreas(numbered),
+    );
+    if (areaName == null) throw ambiguous;
+    final inArea = [
+      for (final u in numbered)
+        if (normalizeUnitArea(u.area)?.toLowerCase() == areaName.toLowerCase())
+          u
+    ];
+    if (inArea.isEmpty) {
+      throw CsvUnitAreaNotFoundException(
+        unitNumber: typed,
+        area: areaName,
+        areas: distinctUnitAreas(numbered),
+      );
+    }
+    if (inArea.length > 1) throw ambiguous;
+    return inArea.single.id;
+  }
+
   /// Why a tenant's unchanged unit number was not linked: more than one
   /// unit has it, and they hold none of them.
   static String ambiguousUnitNumberNotice(
       AmbiguousUnitNumberException ambiguous, String tenantName) {
-    return 'More than one unit is numbered ${ambiguous.unitNumber}, so none '
+    return 'More than one unit is numbered ${ambiguous.unitNumber}${ambiguous._inAreas}, so none '
         'was linked to $tenantName. Pick their unit from the list to link it.';
   }
 
@@ -3003,7 +3103,8 @@ class TenantService {
     for (final u in pool) {
       if (u.tenantId == tenantId) return u;
     }
-    throw AmbiguousUnitNumberException(unitNumber: typed, count: pool.length);
+    throw AmbiguousUnitNumberException(
+        unitNumber: typed, count: pool.length, areas: distinctUnitAreas(pool));
   }
 
   /// The unit [unitId] of [facilityId], picked from a list. Throws

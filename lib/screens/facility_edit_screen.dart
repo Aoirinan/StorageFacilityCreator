@@ -16,9 +16,11 @@ import '../models/unit_model.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
 import 'package:sfcapp/widgets/document_logo_layout_editor.dart';
+import 'package:sfcapp/widgets/unit_numbers_repeat_setting.dart';
 import '../constants/facility_capacity.dart';
 
 class FacilityEditScreen extends ConsumerStatefulWidget {
@@ -58,6 +60,14 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
 
   bool _isLoading = false;
   String? _errorMessage;
+
+  /// "Unit numbers repeat across areas", as the switch shows it. Saved only
+  /// when it differs from the facility's.
+  late bool _unitNumbersRepeat;
+
+  /// Why the switch could not be turned off (units still share a number).
+  String? _unitNumbersRepeatError;
+  bool _checkingUnitNumbersRepeat = false;
 
   bool _isLoadingPublicSettings = true;
   bool _isSavingPublicSettings = false;
@@ -121,6 +131,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     );
     _selectedTimeZone =
         widget.facility.timeZone ?? TimeZoneHelper.defaultTimeZoneId;
+    _unitNumbersRepeat = widget.facility.unitNumbersRepeatAcrossAreas;
     _loadPublicRentalSettings();
   }
 
@@ -470,6 +481,12 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         timeZone: _selectedTimeZone,
         billingSettings: billingSettings,
         totalUnits: totalUnits,
+        // Written only when changed; turning it off is refused there while
+        // two units share a number.
+        unitNumbersRepeatAcrossAreas: _unitNumbersRepeat ==
+                widget.facility.unitNumbersRepeatAcrossAreas
+            ? null
+            : _unitNumbersRepeat,
       );
 
       // No stats step on save. It used to await a client-side orphan heal
@@ -509,10 +526,51 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = e.toString();
+          _errorMessage =
+              e is UserFacingException ? e.message : e.toString();
         });
       }
     }
+  }
+
+  /// The "Unit numbers repeat across areas" switch. Turning it off checks
+  /// first that no two units share a number (the save checks again).
+  Future<void> _setUnitNumbersRepeat(bool on) async {
+    if (on || !widget.facility.unitNumbersRepeatAcrossAreas) {
+      setState(() {
+        _unitNumbersRepeat = on;
+        _unitNumbersRepeatError = null;
+      });
+      return;
+    }
+    setState(() {
+      _checkingUnitNumbersRepeat = true;
+      _unitNumbersRepeatError = null;
+    });
+    String? refusal;
+    try {
+      await UnitService.checkCanStopRepeatingUnitNumbers(widget.facility.id);
+    } on RepeatedUnitNumbersException catch (e) {
+      refusal = e.message;
+    } catch (_) {
+      // Could not check now: Update Facility checks again before saving.
+    }
+    if (!mounted) return;
+    setState(() {
+      _checkingUnitNumbersRepeat = false;
+      _unitNumbersRepeatError = refusal;
+      if (refusal == null) _unitNumbersRepeat = false;
+    });
+  }
+
+  Widget _buildUnitNumbersRepeatSetting() {
+    return UnitNumbersRepeatSetting(
+      value: _unitNumbersRepeat,
+      onChanged: _setUnitNumbersRepeat,
+      checking: _checkingUnitNumbersRepeat,
+      error: _unitNumbersRepeatError,
+      onlineRentalsEnabled: !_isLoadingPublicSettings && _publicRentalsEnabled,
+    );
   }
 
   Widget _sectionTitle(String title) {
@@ -709,6 +767,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       });
                     },
                   ),
+                  const SizedBox(height: 16),
+
+                  _buildUnitNumbersRepeatSetting(),
                   const SizedBox(height: 24),
 
                   _sectionTitle('Billing Settings'),
