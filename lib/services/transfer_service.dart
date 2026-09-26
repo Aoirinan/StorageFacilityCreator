@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/models/ledger_entry_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/transfer_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/services/audit_service.dart';
@@ -9,6 +10,20 @@ import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/prorate_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_number.dart';
+
+/// A transfer that cannot go ahead as it stands: the unit to move out of is
+/// not (or no longer) the tenant's, or the unit to move into is taken.
+class TransferRefusedException implements UserFacingException {
+  const TransferRefusedException(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 /// Service for managing unit transfers
 class TransferService {
@@ -37,6 +52,59 @@ class TransferService {
       monthlyRate: monthlyRate,
       moveInDate: transferDate,
     );
+  }
+
+  /// The unit [tenant] transfers out of, from the facility's [units], and
+  /// the units they could pick from ([choices], the ones they occupy).
+  /// [unit] is null when they occupy several and none, or more than one,
+  /// has their unit number: the operator picks. Throws
+  /// [TransferRefusedException] when they occupy none.
+  ///
+  /// The screen used to take the occupied unit numbered like the tenant,
+  /// else any unit with that number, else the facility's first unit, which
+  /// could be another tenant's.
+  static ({UnitModel? unit, List<UnitModel> choices}) transferFromUnit(
+    TenantModel tenant,
+    Iterable<UnitModel> units,
+  ) {
+    final held = [
+      for (final u in units)
+        if (u.tenantId == tenant.id && u.status != UnitStatus.available) u
+    ];
+    if (held.isEmpty) {
+      final name = tenant.name.trim().isEmpty ? 'This tenant' : tenant.name.trim();
+      throw TransferRefusedException(
+          '$name has no unit assigned, so there is nothing to transfer from. '
+          'Assign their unit first (Units > unit > Assign Tenant).');
+    }
+    if (held.length == 1) return (unit: held.single, choices: held);
+    final named = [
+      for (final u in held)
+        if (sameUnitNumber(u.unitNumber, tenant.unitNumber)) u
+    ];
+    return (unit: named.length == 1 ? named.single : null, choices: held);
+  }
+
+  /// Why [transfer] cannot be completed now, or null. Checked before
+  /// anything is written: completing used to free the from-unit whoever
+  /// held it by then, and give the tenant the to-unit whoever had taken it.
+  static TransferRefusedException? completionRefusal({
+    required TransferModel transfer,
+    required UnitModel? fromUnit,
+    required UnitModel? toUnit,
+  }) {
+    if (fromUnit == null || fromUnit.tenantId != transfer.tenantId) {
+      return TransferRefusedException(
+          'Unit ${transfer.fromUnitNumber} is no longer assigned to this '
+          'tenant, so it was not freed. Nothing was changed. Cancel this '
+          'transfer and start a new one.');
+    }
+    if (toUnit == null || toUnit.status != UnitStatus.available) {
+      return TransferRefusedException(
+          'Unit ${transfer.toUnitNumber} is no longer available. Nothing was '
+          'changed. Cancel this transfer and pick another unit.');
+    }
+    return null;
   }
 
   /// Create a transfer request
@@ -152,6 +220,14 @@ class TransferService {
         throw Exception('Transfer is not in pending status');
       }
 
+      // The units as they are now, not as they were when it was worked out.
+      final refusal = completionRefusal(
+        transfer: transfer,
+        fromUnit: await UnitService.getUnit(facilityId, transfer.fromUnitId),
+        toUnit: await UnitService.getUnit(facilityId, transfer.toUnitId),
+      );
+      if (refusal != null) throw refusal;
+
       // Update status to in progress
       await transferDoc.reference.update({
         'status': TransferStatus.inProgress.name,
@@ -227,6 +303,7 @@ class TransferService {
           facilityId: facilityId,
           tenantId: transfer.tenantId,
           unitNumber: transfer.toUnitNumber,
+          unitId: transfer.toUnitId,
           monthlyRate: transfer.toUnitRate,
         );
       }

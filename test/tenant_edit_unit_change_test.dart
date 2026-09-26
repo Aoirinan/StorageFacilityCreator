@@ -10,12 +10,14 @@ import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/screens/tenant_edit_screen.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 /// Stands in for the save: asks the screen's question about unit 101, as
 /// TenantService.updateTenant does when the unit number changes while the
 /// tenant still holds 101, and returns the notice it would.
 class _FakeOperations extends TenantOperationsNotifier {
   String? savedUnitNumber;
+  String? savedUnitId;
   bool? freeAnswer;
   bool asked = false;
 
@@ -27,6 +29,7 @@ class _FakeOperations extends TenantOperationsNotifier {
     String? email,
     String? phone,
     String? unitNumber,
+    String? unitId,
     double? monthlyRate,
     String? notes,
     bool? isActive,
@@ -50,6 +53,7 @@ class _FakeOperations extends TenantOperationsNotifier {
     ConfirmFreeUnit? confirmFreeOldUnit,
   }) async {
     savedUnitNumber = unitNumber;
+    savedUnitId = unitId;
     // No callback: TenantService keeps unit 101 without asking.
     if (confirmFreeOldUnit != null) {
       asked = true;
@@ -178,5 +182,73 @@ void main() {
     expect(ops.savedUnitNumber, '102');
     expect(find.text(r'Contact info updated. Monthly rent is now $220.00 for units 101 and 102.'),
         findsOneWidget);
+  });
+
+  group('the unit picked from the list is saved by id', () {
+    // Two units numbered 12. The picker wrote only the number, so the save
+    // linked whichever unit numbered 12 came first.
+    UnitModel twelve(String id, String area) => UnitModel(
+          id: id,
+          facilityId: 'f1',
+          unitNumber: '12',
+          unitType: 'standard',
+          status: UnitStatus.available,
+          monthlyRate: 50,
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 1),
+          createdBy: 'owner',
+          area: area,
+        );
+
+    Future<_FakeOperations> open(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1200, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final ops = _FakeOperations();
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          tenantOperationsProvider.overrideWith((ref) => ops),
+          facilityProvider('f1').overrideWith((ref) async => null as FacilityModel?),
+          facilityUnitsProvider('f1').overrideWith((ref) => Stream.value(
+              [twelve('c2-12', 'Complex 2'), twelve('c3-12', 'Complex 3')])),
+        ],
+        child: MaterialApp(home: Scaffold(body: TenantEditScreen(tenant: tenant))),
+      ));
+      await tester.pumpAndSettle();
+      final picker = find.descendant(
+          of: find.byType(TenantFacilityUnitPicker),
+          matching: find.byType(DropdownButtonFormField<String>));
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      // The areas tell the two apart.
+      await tester.tap(find.text(r'Unit 12 (Complex 3) - $50.00/mo').last);
+      await tester.pumpAndSettle();
+      return ops;
+    }
+
+    Future<void> save(WidgetTester tester) async {
+      final button = find.widgetWithText(ElevatedButton, 'Save Changes');
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await settle(tester);
+      await tester.tap(find.text('Keep both'));
+      await settle(tester);
+    }
+
+    testWidgets('picked: the id goes with the number', (tester) async {
+      final ops = await open(tester);
+      await save(tester);
+      expect(ops.savedUnitNumber, '12');
+      expect(ops.savedUnitId, 'c3-12');
+    });
+
+    testWidgets('typed over after picking: by number again', (tester) async {
+      final ops = await open(tester);
+      await tester.enterText(find.widgetWithText(TextFormField, 'Unit Number *'), '14');
+      await save(tester);
+      expect(ops.savedUnitNumber, '14');
+      expect(ops.savedUnitId, isNull);
+    });
   });
 }

@@ -7,7 +7,37 @@ import 'facility_limits_service.dart';
 import 'facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/utils/unit_number.dart';
+
+/// A unit number another unit in the facility already has, trimmed and
+/// ignoring case. The check was exact, so "12a" beside "12A" (or a rename
+/// onto another unit's number, which was not checked at all) made two units
+/// a tenant's unit number could mean.
+class DuplicateUnitNumberException implements UserFacingException {
+  const DuplicateUnitNumberException({
+    required this.unitNumber,
+    required this.existingNumber,
+  });
+
+  /// The number asked for.
+  final String unitNumber;
+
+  /// The other unit's number as stored.
+  final String existingNumber;
+
+  @override
+  String get message {
+    final existing = existingNumber.trim();
+    final spelled = existing == unitNumber ? '' : ' (as $existing)';
+    return 'Unit number $unitNumber already exists in this facility$spelled. '
+        'Nothing was saved. Use a different number.';
+  }
+
+  @override
+  String toString() => message;
+}
 
 class UnitService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -56,14 +86,14 @@ class UnitService {
         print('🔄 Creating unit: $unitNumber for facility: $facilityId');
       }
 
-      // Check if unit number already exists in facility. Through
+      // Check if unit number already exists in facility, trimmed and
+      // ignoring case (archived units included, as before). Through
       // FacilitySubcollections, like the reads, so tests run this write.
       final unitsRef = FacilitySubcollections.units(facilityId);
-      final existingUnit =
-          await unitsRef.where('unitNumber', isEqualTo: unitNumber).get();
-
-      if (existingUnit.docs.isNotEmpty) {
-        throw Exception('Unit number $unitNumber already exists in this facility');
+      final existing = await _unitWithNumber(facilityId, unitNumber);
+      if (existing != null) {
+        throw DuplicateUnitNumberException(
+            unitNumber: unitNumber.trim(), existingNumber: existing);
       }
 
       final ref = unitsRef.doc();
@@ -344,7 +374,31 @@ class UnitService {
       // Read as UnitModel does: only an exact true.
       final beforeInternalUse = beforeData?['internalUse'] == true;
 
-      await unitRef.update(updateData);
+      // A new number: refused when another live unit has it, and the tenant
+      // in the unit keeps pointing at it. Renamed alone, the tenant's
+      // unitNumber named no unit, and their next edit made one.
+      final beforeNumber = beforeData?['unitNumber']?.toString() ?? '';
+      final newNumber = unitNumber?.trim() ?? '';
+      final renaming = beforeData != null &&
+          newNumber.isNotEmpty &&
+          newNumber != beforeNumber.trim();
+      if (renaming) {
+        final other = await _unitWithNumber(facilityId, newNumber,
+            exceptUnitId: unitId, includeArchived: false);
+        if (other != null) {
+          throw DuplicateUnitNumberException(
+              unitNumber: newNumber, existingNumber: other);
+        }
+        await _renameWithTenant(
+          facilityId,
+          unitRef,
+          updateData,
+          oldNumber: beforeNumber,
+          newNumber: newNumber,
+        );
+      } else {
+        await unitRef.update(updateData);
+      }
 
       // Get after snapshot for audit log
       final afterDoc = await unitRef.get();
@@ -407,6 +461,72 @@ class UnitService {
       }
       rethrow;
     }
+  }
+
+  /// The stored number of a unit of [facilityId] other than [exceptUnitId]
+  /// whose number is [unitNumber] under [unitNumberKey], or null. Reads the
+  /// whole collection: Firestore cannot match ignoring case. Unique across
+  /// the facility for now, not per area.
+  static Future<String?> _unitWithNumber(
+    String facilityId,
+    String unitNumber, {
+    String? exceptUnitId,
+    bool includeArchived = true,
+  }) async {
+    final key = unitNumberKey(unitNumber);
+    if (key.isEmpty) return null;
+    final snap = await FacilitySubcollections.units(facilityId)
+        .limit(facilityUnitReadLimit)
+        .get();
+    FacilitySubcollections.reportIfReadLimitReached(
+        facilityId, 'unit', snap.docs.length);
+    for (final d in snap.docs) {
+      if (d.id == exceptUnitId) continue;
+      final data = d.data();
+      if (!includeArchived && data['archived'] == true) continue;
+      final number = data['unitNumber']?.toString() ?? '';
+      if (unitNumberKey(number) == key) return number;
+    }
+    return null;
+  }
+
+  /// Writes [updateData] (which renames the unit from [oldNumber] to
+  /// [newNumber]) and, in the same transaction, the new number to the tenant
+  /// in the unit when their unitNumber named the old one.
+  static Future<void> _renameWithTenant(
+    String facilityId,
+    DocumentReference<Map<String, dynamic>> unitRef,
+    Map<String, dynamic> updateData, {
+    required String oldNumber,
+    required String newNumber,
+  }) {
+    return unitRef.firestore.runTransaction<void>((txn) async {
+      final unit = (await txn.get(unitRef)).data();
+      // The tenant in the unit once this update lands: one it assigns, or
+      // the one already there unless it frees the unit.
+      final assigned = updateData['tenantId'];
+      Object? holder;
+      if (assigned is String) {
+        holder = assigned;
+      } else if (assigned == null) {
+        holder = unit?['tenantId'];
+      }
+      DocumentReference<Map<String, dynamic>>? tenantRef;
+      if (holder is String && holder.trim().isNotEmpty) {
+        final ref = FacilitySubcollections.tenants(facilityId).doc(holder);
+        final label = (await txn.get(ref)).data()?['unitNumber'];
+        if (label is String && sameUnitNumber(label, oldNumber)) {
+          tenantRef = ref;
+        }
+      }
+      txn.update(unitRef, updateData);
+      if (tenantRef != null) {
+        txn.update(tenantRef, {
+          'unitNumber': newNumber,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+    });
   }
 
   /// [area] trimmed, or null when blank. Throws when longer than

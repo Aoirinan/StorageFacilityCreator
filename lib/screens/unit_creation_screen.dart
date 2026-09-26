@@ -1472,7 +1472,10 @@ class _UnitCreationScreenState extends ConsumerState<UnitCreationScreen> {
           );
           // Invalidate providers to refresh unit lists
           ref.invalidate(facilityUnitsProvider(widget.facilityId));
-          if (assigning) {
+          // A renamed unit renames its tenant's unit number too.
+          final renamed = _unitNumberController.text.trim() !=
+              previous.unitNumber.trim();
+          if (assigning || renamed) {
             ref.invalidate(
                 tenant_provider.facilityTenantsProvider(widget.facilityId));
           }

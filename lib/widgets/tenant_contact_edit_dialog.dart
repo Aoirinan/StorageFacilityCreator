@@ -26,6 +26,8 @@ Future<void> editTenantContactInfo(
   final unitCtrl = TextEditingController(text: tenant.unitNumber);
   final rateCtrl = TextEditingController(text: tenant.monthlyRate.toString());
   bool smsConsent = tenant.smsOptInDate != null && !tenant.smsOptOut;
+  // The unit picked from the list, linked by id; null when typed.
+  String? pickedUnitId;
   final formKey = GlobalKey<FormState>();
   void disposeAll() {
     nameCtrl.dispose();
@@ -58,6 +60,7 @@ Future<void> editTenantContactInfo(
               unitNumberController: unitCtrl,
               monthlyRateController: rateCtrl,
               forTenantId: tenant.id,
+              onUnitIdChanged: (id) => pickedUnitId = id,
             ),
             const SizedBox(height: 12),
             TextFormField(controller: rateCtrl, decoration: const InputDecoration(labelText: 'Monthly Rate *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.attach_money)), keyboardType: TextInputType.number, validator: (v) {
@@ -95,7 +98,7 @@ Future<void> editTenantContactInfo(
     final notice = await ref.read(tenantOperationsProvider.notifier).updateTenant(
       facilityId: tenant.facilityId, tenantId: tenant.id,
       name: nameCtrl.text.trim(), email: emailCtrl.text.trim(), phone: phoneCtrl.text.trim(),
-      unitNumber: unitCtrl.text.trim(), monthlyRate: double.parse(rateCtrl.text.trim()),
+      unitNumber: unitCtrl.text.trim(), unitId: pickedUnitId, monthlyRate: double.parse(rateCtrl.text.trim()),
       smsOptInDate: smsConsent && !tenant.smsOptOut ? DateTime.now() : null,
       // As in Edit Tenant: a different unit asks before freeing the old one.
       confirmFreeOldUnit: (oldUnitNumber) => confirmFreeOldUnitDialog(context,

@@ -43,14 +43,25 @@ class FakeQueryLog {
 /// writes. Anything else fails the test.
 class FakeCollection extends Fake
     implements CollectionReference<Map<String, dynamic>> {
-  FakeCollection(List<FakeDoc> docs, {FakeQueryLog? log})
-      : this._(docs, log ?? FakeQueryLog(), null);
+  FakeCollection(List<FakeDoc> docs,
+      {FakeQueryLog? log, FirebaseFirestore? firestore})
+      : this._(docs, log ?? FakeQueryLog(), null, firestore);
 
-  FakeCollection._(this._docs, this.log, this._limit);
+  FakeCollection._(this._docs, this.log, this._limit, [this._firestore]);
 
   final List<FakeDoc> _docs;
   final FakeQueryLog log;
   final int? _limit;
+
+  /// What [firestore] answers, here and for this collection's docs, for
+  /// code that runs a transaction over them ([FakeFacilityFirestore] passes
+  /// itself). Unset, asking fails the test.
+  final FirebaseFirestore? _firestore;
+
+  @override
+  FirebaseFirestore get firestore =>
+      _firestore ??
+      (throw UnimplementedError('FakeCollection has no firestore'));
 
   /// The docs as stored now, writes included.
   List<FakeDoc> get stored => List.unmodifiable(_docs);
@@ -97,6 +108,7 @@ class FakeCollection extends Fake
       ],
       log,
       _limit,
+      _firestore,
     );
   }
 
@@ -112,13 +124,13 @@ class FakeCollection extends Fake
             (a.data()[field] as Comparable).compareTo(b.data()[field]);
         return descending ? -byField : byField;
       });
-    return FakeCollection._(kept, log, _limit);
+    return FakeCollection._(kept, log, _limit, _firestore);
   }
 
   @override
   Query<Map<String, dynamic>> limit(int limit) {
     log.limits.add(limit);
-    return FakeCollection._(_docs, log, limit);
+    return FakeCollection._(_docs, log, limit, _firestore);
   }
 
   @override
@@ -148,6 +160,9 @@ class _FakeDocRef extends Fake
 
   @override
   final String id;
+
+  @override
+  FirebaseFirestore get firestore => _collection.firestore;
 
   FakeDoc? get _stored {
     for (final d in _collection._docs) {

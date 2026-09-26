@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 /// Unit number field plus optional dropdown of existing facility units (same UX as create tenant).
 class TenantFacilityUnitPicker extends ConsumerStatefulWidget {
@@ -13,6 +14,7 @@ class TenantFacilityUnitPicker extends ConsumerStatefulWidget {
     required this.monthlyRateController,
     this.forTenantId,
     this.unitFieldRequired = true,
+    this.onUnitIdChanged,
   });
 
   final String facilityId;
@@ -24,6 +26,14 @@ class TenantFacilityUnitPicker extends ConsumerStatefulWidget {
 
   final bool unitFieldRequired;
 
+  /// The id of the unit picked from the list, or null once the number is
+  /// typed (or "Enter unit number manually" is chosen). Saves pass it to
+  /// TenantService so the unit is linked by id: the number alone is a guess
+  /// when two units have it. Only a pick reports an id; the unit shown when
+  /// the form opens does not, so saving other fields links by number as
+  /// before.
+  final ValueChanged<String?>? onUnitIdChanged;
+
   @override
   ConsumerState<TenantFacilityUnitPicker> createState() =>
       _TenantFacilityUnitPickerState();
@@ -33,24 +43,34 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
   String? _selectedUnitId;
   bool _scheduledInitialSelection = false;
 
+  /// The unit to show as picked when the form opens: the tenant's unit with
+  /// the number in the field, else the one unit with that number, else any
+  /// unit the tenant holds. None when several units have the number and the
+  /// tenant holds none of them (it used to show the first).
   String? _resolveSelectedUnitId(List<UnitModel> units) {
-    if (widget.forTenantId != null) {
-      for (final u in units) {
-        if (u.tenantId == widget.forTenantId) return u.id;
-      }
+    final n = widget.unitNumberController.text;
+    final held = widget.forTenantId == null
+        ? const <UnitModel>[]
+        : units.where((u) => u.tenantId == widget.forTenantId).toList();
+    for (final u in held) {
+      if (n.trim().isNotEmpty && sameUnitNumber(u.unitNumber, n)) return u.id;
     }
-    final n = widget.unitNumberController.text.trim();
-    if (n.isEmpty) return null;
-    final matches =
-        units.where((u) => u.unitNumber.trim() == n).toList();
-    if (matches.isEmpty) return null;
-    if (matches.length == 1) return matches.first.id;
-    if (widget.forTenantId != null) {
-      for (final u in matches) {
-        if (u.tenantId == widget.forTenantId) return u.id;
-      }
+    if (n.trim().isNotEmpty) {
+      final matches =
+          units.where((u) => sameUnitNumber(u.unitNumber, n)).toList();
+      if (matches.length == 1) return matches.single.id;
+      if (matches.length > 1) return null;
     }
-    return matches.first.id;
+    return held.isEmpty ? null : held.first.id;
+  }
+
+  /// "Unit 12 (Complex 2)" when the unit has an area, so two units with one
+  /// number can be told apart.
+  static String _unitLabel(UnitModel unit) {
+    final area = unit.area?.trim() ?? '';
+    return area.isEmpty
+        ? 'Unit ${unit.unitNumber}'
+        : 'Unit ${unit.unitNumber} ($area)';
   }
 
   void _scheduleInitialSelection(List<UnitModel> units) {
@@ -78,6 +98,7 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
       onChanged: (_) {
         if (_selectedUnitId != null) {
           setState(() => _selectedUnitId = null);
+          widget.onUnitIdChanged?.call(null);
         }
       },
       validator: widget.unitFieldRequired
@@ -109,6 +130,10 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
             if (units.isNotEmpty)
               DropdownButtonFormField<String>(
                 value: _selectedUnitId,
+                // Each item is a Row with an Expanded label: without a
+                // bounded width its layout failed (debug) whenever the
+                // facility had units.
+                isExpanded: true,
                 decoration: const InputDecoration(
                   labelText: 'Select from Existing Units (Optional)',
                   hintText: 'Choose a unit to fill number and rate',
@@ -142,7 +167,7 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Unit ${unit.unitNumber} - \$${unit.monthlyRate.toStringAsFixed(2)}/mo',
+                              '${_unitLabel(unit)} - \$${unit.monthlyRate.toStringAsFixed(2)}/mo',
                               style: TextStyle(
                                 color: unit.status == UnitStatus.occupied
                                     ? AppTheme.textTertiary
@@ -165,6 +190,7 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
                           unit.monthlyRate.toStringAsFixed(2);
                     }
                   });
+                  widget.onUnitIdChanged?.call(value);
                 },
               ),
           ],

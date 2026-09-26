@@ -297,8 +297,10 @@ void main() {
     testWidgets(
         'turning internal use on and off again puts a listed unit back on the website',
         (tester) async {
+      // Stored as the screen shows it ('OFF'): 'A1' here made the save a
+      // rename, which is checked against the other units.
       final log = _serveUnits([
-        FakeDoc('u1', {'unitNumber': 'A1', 'status': 'available'}),
+        FakeDoc('u1', {'unitNumber': 'OFF', 'status': 'available'}),
       ]);
       await _openScreen(tester, unit: _unit());
 
@@ -320,7 +322,7 @@ void main() {
         (tester) async {
       final log = _serveUnits([
         FakeDoc('u1', {
-          'unitNumber': 'A1',
+          'unitNumber': 'OFF',
           'status': 'available',
           'publicListingEnabled': false,
         }),
