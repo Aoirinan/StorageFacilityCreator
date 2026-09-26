@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/models/stripe_connect_status_model.dart';
 
@@ -26,6 +27,10 @@ class FacilityModel {
   /// The owner's own closing note on account statements. Null keeps the
   /// default wording.
   final String? statementMessage;
+
+  /// Size and position of [logoUrl] on printed statements, invoices and
+  /// receipts. Defaults when the facility has never set it.
+  final DocumentLogoLayout documentLogo;
   final String? phone;
   final String? email;
   final String? description;
@@ -132,6 +137,7 @@ class FacilityModel {
     this.address,
     this.mailingAddress,
     this.statementMessage,
+    this.documentLogo = DocumentLogoLayout.defaults,
     this.phone,
     this.email,
     this.description,
@@ -202,6 +208,7 @@ class FacilityModel {
       address: data?['address'],
       mailingAddress: data?['mailingAddress'] as String?,
       statementMessage: data?['statementMessage'] as String?,
+      documentLogo: DocumentLogoLayout.fromMap(data?['documentLogo']),
       phone: data?['phone'],
       email: data?['email'],
       description: data?['description'],
@@ -322,6 +329,8 @@ class FacilityModel {
       'address': address,
       if (mailingAddress != null) 'mailingAddress': mailingAddress,
       if (statementMessage != null) 'statementMessage': statementMessage,
+      if (documentLogo != DocumentLogoLayout.defaults)
+        'documentLogo': documentLogo.toMap(),
       'phone': phone,
       'email': email,
       'description': description,
@@ -388,6 +397,7 @@ class FacilityModel {
     String? address,
     String? mailingAddress,
     String? statementMessage,
+    DocumentLogoLayout? documentLogo,
     String? phone,
     String? email,
     String? description,
@@ -455,6 +465,7 @@ class FacilityModel {
       address: address ?? this.address,
       mailingAddress: mailingAddress ?? this.mailingAddress,
       statementMessage: statementMessage ?? this.statementMessage,
+      documentLogo: documentLogo ?? this.documentLogo,
       phone: phone ?? this.phone,
       email: email ?? this.email,
       description: description ?? this.description,

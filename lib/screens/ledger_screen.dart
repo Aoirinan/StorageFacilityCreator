@@ -278,7 +278,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                             contentPadding: EdgeInsets.zero,
                             leading: Icon(Icons.tune),
                             title: Text('Customize statement'),
-                            subtitle: Text('Logo, mailing address, message'),
+                            subtitle: Text('Logo and its layout, mailing address, message'),
                           ),
                         ),
                       ],
