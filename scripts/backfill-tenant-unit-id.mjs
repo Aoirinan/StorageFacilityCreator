@@ -12,8 +12,10 @@
  *
  * DRY RUN BY DEFAULT: reads only. Writing needs --apply and at least one
  * --facility. Every run writes a before/after record to --out (default
- * ./backfill-records/, gitignored). With --apply each tenant is re-checked
- * in its own transaction (still active, same label, still no unitId, the
+ * backfill-records/ at the repo root, found from this script's own path so
+ * the .gitignore entry applies wherever it is run from; the records hold
+ * tenant names). With --apply each tenant is re-checked in its own
+ * transaction (still active, same label, still no unitId, the
  * unit still theirs with that number) before it is written; only unitId and
  * unitArea change, updatedAt is left alone.
  *
@@ -32,6 +34,15 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Where records go without --out: the repo root's backfill-records/ (in
+ * .gitignore), never the current directory, which may be outside the repo
+ * or somewhere the ignore rule doesn't reach.
+ */
+export function defaultOutDir() {
+  return path.join(repoRoot, 'backfill-records');
+}
 
 /** A unit number as the app compares it (unitNumberKey): trimmed, ignoring case. */
 export function unitNumberKey(value) {
@@ -169,7 +180,7 @@ async function main() {
   initializeApp({ credential: applicationDefault(), projectId });
   const db = getFirestore();
 
-  const outDir = path.resolve(args.outDir || path.join(process.cwd(), 'backfill-records'));
+  const outDir = path.resolve(args.outDir || defaultOutDir());
   mkdirSync(outDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 

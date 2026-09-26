@@ -574,9 +574,11 @@ class UnitService {
   ///
   /// It is theirs when their `unitId` names it, or, for a tenant with no
   /// `unitId`, when they are in it ([isHolder]) and their unitNumber names it
-  /// (trimmed, ignoring case). A rename renames the unitNumber of the tenant
-  /// in it, or naming it by id, when it named the old number, as before.
-  /// Either way the unit becomes their `unitId` and its area their
+  /// (trimmed, ignoring case). A tenant whose `unitId` names another unit
+  /// (one of two units they hold with the same number) is left alone: that
+  /// other unit is their primary one. A rename renames the unitNumber of the
+  /// tenant it is the primary unit of when it named the old number, as
+  /// before. Either way the unit becomes their `unitId` and its area their
   /// `unitArea`.
   @visibleForTesting
   static Map<String, dynamic>? tenantFieldsForUnitChange({
@@ -593,12 +595,9 @@ class UnitService {
     final labelNamesUnit = label is String &&
         label.trim().isNotEmpty &&
         sameUnitNumber(label, numberBefore);
-    final renamesLabel =
-        renamedTo != null && labelNamesUnit && (isHolder || pointsHere);
-    final ours = renamesLabel ||
-        pointsHere ||
-        (isHolder && namedId == null && labelNamesUnit);
+    final ours = pointsHere || (isHolder && namedId == null && labelNamesUnit);
     if (!ours) return null;
+    final renamesLabel = renamedTo != null && labelNamesUnit;
     return {
       if (renamesLabel) 'unitNumber': renamedTo,
       ...TenantModel.primaryUnitUpdate(unitId: unitId, unitArea: areaAfter),

@@ -106,7 +106,8 @@ class TenantModel {
   /// tenant's primary (label) unit. Null for tenants written before it was
   /// kept, and for online move-ins until their next edit or the backfill
   /// (scripts/backfill-tenant-unit-id.mjs). Which units a tenant holds is
-  /// still `units/{id}.tenantId`; this only says which one the label is.
+  /// still `units/{id}.tenantId`; this only says which one the label is, and
+  /// does not by itself mean they hold it.
   final String? unitId;
 
   /// The area of the [unitId] unit, copied from it (trimmed, null when the

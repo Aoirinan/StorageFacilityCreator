@@ -2983,4 +2983,186 @@ void main() {
       });
     });
   });
+
+  group('a tenant holding two units with the same number keeps the primary one', () {
+    // Not possible while unit numbers are unique per facility, but what
+    // later phases allow: "12" in Complex 2 (c2-12) and in Complex 3
+    // (c3-12), both held by t1. Their unitId says which is the primary one.
+    final deleted = FieldValue.delete();
+
+    UnitModel unitAt(String id, String number, {String? area, double rate = 100}) => UnitModel(
+          id: id,
+          facilityId: 'f1',
+          unitNumber: number,
+          unitType: 'standard',
+          status: UnitStatus.occupied,
+          tenantId: 't1',
+          monthlyRate: rate,
+          createdAt: day,
+          updatedAt: day,
+          createdBy: 'owner',
+          area: area,
+        );
+
+    final c2 = unitAt('c2-12', '12', area: 'Complex 2');
+    final c3 = unitAt('c3-12', '12', area: 'Complex 3', rate: 150);
+    final u14 = unitAt('u14', '14', area: 'Outdoor', rate: 50);
+
+    _FakeRecords holding(List<UnitModel> held, {required String primary, double rate = 250}) {
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {
+          'name': 'Ada Park',
+          'isActive': true,
+          'unitNumber': '12',
+          'unitId': primary,
+          'monthlyRate': rate,
+        }
+        ..units = held;
+      store.facilityUnits.addAll(held);
+      for (final u in held) {
+        store.unitHolders[u.id] = 't1';
+      }
+      return store;
+    }
+
+    test('saving other fields keeps unitId on their primary unit, not the first match', () async {
+      // unitForNumber took the first held unit numbered 12, so a phone
+      // change flipped unitId to c2-12.
+      final store = holding([c2, c3], primary: 'c3-12');
+      await TenantService.updateTenant(
+        facilityId: 'f1',
+        tenantId: 't1',
+        unitNumber: '12',
+        phone: '555-0100',
+        records: store,
+        effects: _FakeEffects(),
+        actingUid: 'owner',
+      );
+      expect(store.allWrites, ['update tenants/t1']);
+      expect(store['t1'].doc!['unitId'], 'c3-12');
+      expect(store['t1'].doc!['unitArea'], 'Complex 3');
+    });
+
+    test('unitForNumber: their primary unit first among the ones they hold', () {
+      expect(
+          TenantService.unitForNumber([c2, c3], '12', tenantId: 't1', currentUnitId: 'c3-12')?.id,
+          'c3-12');
+      expect(TenantService.unitForNumber([c2, c3], '12', tenantId: 't1')?.id, 'c2-12');
+      // A unitId they don't hold is no reason to pick it.
+      final other = UnitModel.fromFirestore(FakeDoc('x-12', {'unitNumber': '12', 'tenantId': 't2', 'status': 'occupied'}));
+      expect(
+          TenantService.unitForNumber([c2, other], '12', tenantId: 't1', currentUnitId: 'x-12')?.id,
+          'c2-12');
+    });
+
+    group('move-out (recordMoveOut)', () {
+      Future<String?> settle(_FakeRecords store, String unitId) => TenantService.recordMoveOut(
+            facilityId: 'f1',
+            tenantId: 't1',
+            movedOutUnitId: unitId,
+            records: store,
+            effects: _FakeEffects(),
+            actingUid: 'owner',
+          );
+
+      test('leaving their primary unit moves unitId and unitArea to the kept unit numbered alike', () async {
+        // The label still named a kept unit ("12"), so nothing was written
+        // and unitId stayed on the freed unit; processMoveOut moved it.
+        final store = holding([u14, c3], primary: 'c2-12');
+        store.facilityUnits.add(c2);
+        await settle(store, 'c2-12');
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+        expect(store['t1'].doc!['unitArea'], 'Complex 3');
+      });
+
+      test('leaving the other unit numbered alike leaves the primary alone', () async {
+        final store = holding([u14, c3], primary: 'c3-12', rate: 35);
+        store.facilityUnits.add(c2);
+        await settle(store, 'c2-12');
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+        for (final w in store.directWrites) {
+          expect(w.fields!.containsKey('unitId'), isFalse);
+          expect(w.fields!.containsKey('unitNumber'), isFalse);
+        }
+      });
+    });
+
+    group('Unassign Tenant (unassignUnit)', () {
+      Future<String?> unassign(_FakeRecords store, String unitId) =>
+          TenantService.unassignUnit(store, unitId: unitId, uid: 'owner');
+
+      test('freeing the other unit numbered alike leaves the primary alone', () async {
+        // The label named the freed unit's number, so it moved to
+        // others.first (unit 14) and took unitId with it.
+        final store = holding([c2, u14, c3], primary: 'c3-12', rate: 300);
+        await unassign(store, 'c2-12');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitNumber'), isFalse);
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields.containsKey('unitArea'), isFalse);
+      });
+
+      test('freeing the primary moves it to the kept unit numbered alike before any other', () async {
+        final store = holding([c2, u14, c3], primary: 'c2-12', rate: 300);
+        await unassign(store, 'c2-12');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields['unitNumber'], '12');
+        expect(fields['unitId'], 'c3-12');
+        expect(fields['unitArea'], 'Complex 3');
+      });
+
+      test('freeing a unit that is not the primary, with a different number, changes nothing', () async {
+        final store = holding([c2, u14], primary: 'c2-12', rate: 150);
+        await unassign(store, 'u14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields['unitArea'], isNot(deleted));
+      });
+    });
+  });
+
+  test('primaryMovesOnRelease and primaryUnitAfterRelease match the table processMoveOut runs', () {
+    final fixture = jsonDecode(File(
+            'functions-tenant-lifecycle/src/test/fixtures/primaryUnitAfterRelease.json')
+        .readAsStringSync()) as Map<String, dynamic>;
+    final cases = (fixture['cases'] as List).cast<Map<String, dynamic>>();
+    expect(cases.length, greaterThan(5));
+    for (final c in cases) {
+      final stillHeld = [
+        for (final row in (c['stillHeld'] as List).cast<List<dynamic>>())
+          UnitModel(
+            id: row[0] as String,
+            facilityId: 'f1',
+            unitNumber: row[1] as String,
+            unitType: 'standard',
+            status: UnitStatus.occupied,
+            tenantId: 't1',
+            monthlyRate: 100,
+            createdAt: day,
+            updatedAt: day,
+            createdBy: 'owner',
+          ),
+      ];
+      final vacated = (c['vacated'] as List).cast<String>();
+      final moves = TenantService.primaryMovesOnRelease(
+        label: c['label'] as String,
+        unitId: c['unitId'] as String?,
+        vacatedId: vacated[0],
+        vacatedNumber: vacated[1],
+        stillHeld: stillHeld,
+      );
+      final name = c['name'] as String;
+      expect(moves, c['moves'], reason: name);
+      final to = moves
+          ? TenantService.primaryUnitAfterRelease(
+              label: c['label'] as String,
+              unitId: c['unitId'] as String?,
+              stillHeld: stillHeld,
+            )
+          : null;
+      expect(to?.id, c['to'], reason: name);
+    }
+  });
 }

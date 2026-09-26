@@ -2,7 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseArgs, planTenantUnitIdBackfill } from './backfill-tenant-unit-id.mjs';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { defaultOutDir, parseArgs, planTenantUnitIdBackfill } from './backfill-tenant-unit-id.mjs';
 
 const tenant = (id, data) => ({ id, data: { name: `Tenant ${id}`, isActive: true, ...data } });
 const unit = (id, data) => ({ id, data: { status: 'occupied', ...data } });
@@ -127,4 +132,19 @@ test('parseArgs: dry run by default, a facility is required, --apply is explicit
   assert.throws(() => parseArgs(['--apply']), /--facility/);
   assert.throws(() => parseArgs(['--facility']), /needs a value/);
   assert.throws(() => parseArgs(['--facility', 'f1', '--force']), /Unknown argument/);
+});
+
+test('records default to the repo root backfill-records/ (gitignored), whatever the working directory', () => {
+  // They hold tenant names; relative to the working directory they could
+  // land where the .gitignore entry doesn't reach.
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const before = process.cwd();
+  try {
+    process.chdir(os.tmpdir());
+    assert.equal(path.resolve(defaultOutDir()), path.join(repoRoot, 'backfill-records'));
+  } finally {
+    process.chdir(before);
+  }
+  const ignore = readFileSync(path.join(repoRoot, '.gitignore'), 'utf8').split(/\r?\n/);
+  assert.ok(ignore.includes('backfill-records/'));
 });

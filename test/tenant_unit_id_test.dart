@@ -168,6 +168,13 @@ void main() {
       expect(fields({'unitNumber': '12', 'unitId': 'u7'}), isNull);
     });
 
+    test('a unitId naming another unit numbered alike wins: no rename, no area, no unitId', () {
+      // One of two units numbered 12 that they hold, not their primary one:
+      // renaming it used to take their label and unitId with it.
+      expect(fields({'unitNumber': '12', 'unitId': 'c3-12'}, renamedTo: 'C2-12'), isNull);
+      expect(fields({'unitNumber': '12', 'unitId': 'c3-12'}), isNull);
+    });
+
     test('a rename renames the label that named it, as before, and links it by id', () {
       expect(fields({'unitNumber': '12'}, renamedTo: 'C3-12'),
           {'unitNumber': 'C3-12', 'unitId': 'u12', 'unitArea': 'Complex 3'});
@@ -254,6 +261,24 @@ void main() {
       await UnitService.updateUnit(facilityId: 'f1', unitId: 'u12', notes: 'x');
       expect(db.commits, 0);
       expect(db.sub('tenants').log.writes, isEmpty);
+    });
+
+    test("renaming or re-areaing the tenant's other unit numbered alike leaves them alone", () async {
+      serve(
+        [
+          FakeDoc('c2-12', {'unitNumber': '12', 'status': 'occupied', 'tenantId': 't1', 'area': 'Complex 2'}),
+          FakeDoc('c3-12', {'unitNumber': '12', 'status': 'occupied', 'tenantId': 't1', 'area': 'Complex 3'}),
+        ],
+        [FakeDoc('t1', {'unitNumber': '12', 'unitId': 'c3-12', 'unitArea': 'Complex 3'})],
+      );
+      // Straight to the rename path: duplicateUnitNumber would refuse a
+      // second "12" today, so rename c2-12 to a free number.
+      await UnitService.updateUnit(facilityId: 'f1', unitId: 'c2-12', unitNumber: 'C2-12');
+      await UnitService.setUnitArea(facilityId: 'f1', unitId: 'c2-12', area: 'Outdoor');
+      expect(db.data('units', 'c2-12')!['unitNumber'], 'C2-12');
+      expect(db.sub('tenants').log.writes, isEmpty);
+      expect(db.data('tenants', 't1')!['unitNumber'], '12');
+      expect(db.data('tenants', 't1')!['unitId'], 'c3-12');
     });
 
     test('a rename renames the label and keeps unitId and the unit area on the tenant', () async {

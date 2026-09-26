@@ -64,6 +64,55 @@ export function isHeld(unit: TenantUnit, tenantId: string): boolean {
   );
 }
 
+/** A unit by id and number, as the primary-unit rules below compare them. */
+export type NumberedUnit = { id: string; unitNumber: string };
+
+/**
+ * Whether freeing [vacatedId] (numbered [vacatedNumber]) moves the tenant's
+ * primary unit (their unitNumber label, unitId and unitArea): when their
+ * unitId is the vacated unit, or, when their unitId is not a unit they keep
+ * ([stillHeld]), when their label is the vacated unit's number (trimmed).
+ * Freeing another unit, even one numbered like their primary, leaves it.
+ *
+ * PARITY: TenantService.primaryMovesOnRelease in lib/services/tenant_service.dart.
+ * Both test suites run src/test/fixtures/primaryUnitAfterRelease.json.
+ */
+export function primaryMovesOnRelease(input: {
+  label: string;
+  unitId: string | null;
+  vacatedId: string;
+  vacatedNumber: string;
+  stillHeld: NumberedUnit[];
+}): boolean {
+  const id = textOf(input.unitId);
+  if (id === input.vacatedId) return true;
+  if (id && input.stillHeld.some((u) => u.id === id)) return false;
+  const vacated = input.vacatedNumber.trim();
+  return vacated !== '' && input.label.trim() === vacated;
+}
+
+/**
+ * The unit the tenant's primary unit moves to when it moves: their unitId if
+ * they still hold it, else a unit they keep with their label's number, else
+ * the first unit they keep that has a number; null when none has one.
+ *
+ * PARITY: TenantService.primaryUnitAfterRelease; same fixture.
+ */
+export function primaryUnitAfterRelease<T extends NumberedUnit>(input: {
+  label: string;
+  unitId: string | null;
+  stillHeld: T[];
+}): T | null {
+  const id = textOf(input.unitId);
+  const label = input.label.trim();
+  return (
+    (id ? input.stillHeld.find((u) => u.id === id) : undefined) ??
+    (label ? input.stillHeld.find((u) => u.unitNumber.trim() === label) : undefined) ??
+    input.stillHeld.find((u) => u.unitNumber.trim() !== '') ??
+    null
+  );
+}
+
 function unitRent(unit: TenantUnit): UnitRent {
   return { unitNumber: numberOf(unit.data), rate: rateOf(unit.data) };
 }
@@ -136,7 +185,10 @@ export function rentAfterUnitChange(input: {
  * vacated unit moves to a unit they still hold; the rent job bills tenants
  * with a unit number, so it is never cleared while they rent another.
  * The tenant's unitId and unitArea (their primary unit) follow unitNumber:
- * deleted with it, or set to the unit it moves to.
+ * deleted with it, or set to the unit it moves to. Whether it moves, and
+ * where, is primaryMovesOnRelease and primaryUnitAfterRelease: freeing a
+ * unit that is not their primary leaves it, and it moves to a kept unit
+ * with the same number before any other.
  */
 export function tenantFieldsAfterMoveOut(input: {
   tenantId: string;
@@ -172,11 +224,21 @@ export function tenantFieldsAfterMoveOut(input: {
     if (change.needsCheck) rentWarning = change.notice;
     else rentNotice = change.notice;
   }
-  const vacated = numberOf(unit);
-  if (vacated && numberOf(tenant) === vacated) {
-    const other = stillHeld.find((u) => numberOf(u.data));
+  const kept = stillHeld.map((u) => ({ id: u.id, unitNumber: numberOf(u.data), data: u.data }));
+  const label = numberOf(tenant);
+  const tenantUnitId = textOf(tenant.unitId);
+  if (
+    primaryMovesOnRelease({
+      label,
+      unitId: tenantUnitId,
+      vacatedId: unitId,
+      vacatedNumber: numberOf(unit),
+      stillHeld: kept,
+    })
+  ) {
+    const other = primaryUnitAfterRelease({ label, unitId: tenantUnitId, stillHeld: kept });
     if (other) {
-      fields.unitNumber = numberOf(other.data);
+      fields.unitNumber = other.unitNumber;
       Object.assign(fields, primaryUnitFields(other.id, other.data));
     }
   }

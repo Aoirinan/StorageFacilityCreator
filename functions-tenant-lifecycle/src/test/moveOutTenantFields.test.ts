@@ -5,7 +5,14 @@ import { join } from 'node:path';
 
 import { FieldValue } from 'firebase-admin/firestore';
 
-import { UnitRent, primaryUnitFields, rentAfterUnitChange, tenantFieldsAfterMoveOut } from '../moveOutTenantFields';
+import {
+  UnitRent,
+  primaryMovesOnRelease,
+  primaryUnitAfterRelease,
+  primaryUnitFields,
+  rentAfterUnitChange,
+  tenantFieldsAfterMoveOut,
+} from '../moveOutTenantFields';
 
 const deleted = FieldValue.delete();
 
@@ -100,6 +107,74 @@ test('a unit number naming a unit they keep leaves unitId and unitArea alone', (
   assert.equal('unitNumber' in settled.fields, false);
   assert.equal('unitId' in settled.fields, false);
   assert.equal('unitArea' in settled.fields, false);
+});
+
+// Two live units numbered 12 (Complex 2 and Complex 3), held by one tenant.
+const c2 = { unitNumber: '12', status: 'occupied', tenantId: 't1', monthlyRate: 100, area: 'Complex 2' };
+const c3 = { unitNumber: '12', status: 'occupied', tenantId: 't1', monthlyRate: 150, area: 'Complex 3' };
+
+test('freeing their primary unit moves unitId and unitArea to the kept unit with the same number', () => {
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '12', unitId: 'c2-12', monthlyRate: 350 },
+    unitId: 'c2-12',
+    unit: c2,
+    linkedUnits: [
+      { id: 'c2-12', data: c2 },
+      { id: 'u14', data: { ...unit102, unitNumber: '14', monthlyRate: 100 } },
+      { id: 'c3-12', data: c3 },
+    ],
+  });
+  assert.equal(settled.fields.unitNumber, '12');
+  assert.equal(settled.fields.unitId, 'c3-12');
+  assert.equal(settled.fields.unitArea, 'Complex 3');
+});
+
+test('freeing a unit numbered like their primary, but not it, leaves the primary alone', () => {
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '12', unitId: 'c3-12', monthlyRate: 250 },
+    unitId: 'c2-12',
+    unit: c2,
+    linkedUnits: [
+      { id: 'c2-12', data: c2 },
+      { id: 'u14', data: { ...unit102, unitNumber: '14' } },
+      { id: 'c3-12', data: c3 },
+    ],
+  });
+  assert.equal('unitNumber' in settled.fields, false);
+  assert.equal('unitId' in settled.fields, false);
+  assert.equal('unitArea' in settled.fields, false);
+});
+
+type PrimaryFixture = {
+  cases: Array<{
+    name: string;
+    label: string;
+    unitId: string | null;
+    vacated: [string, string];
+    stillHeld: Array<[string, string]>;
+    moves: boolean;
+    to: string | null;
+  }>;
+};
+
+test('primaryMovesOnRelease and primaryUnitAfterRelease match the shared table (the app runs it too)', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(__dirname, '..', '..', 'src', 'test', 'fixtures', 'primaryUnitAfterRelease.json'), 'utf8'),
+  ) as PrimaryFixture;
+  assert.ok(fixture.cases.length > 5);
+  for (const c of fixture.cases) {
+    const stillHeld = c.stillHeld.map(([id, unitNumber]) => ({ id, unitNumber }));
+    const moves = primaryMovesOnRelease({
+      label: c.label,
+      unitId: c.unitId,
+      vacatedId: c.vacated[0],
+      vacatedNumber: c.vacated[1],
+      stillHeld,
+    });
+    assert.equal(moves, c.moves, c.name);
+    const to = moves ? primaryUnitAfterRelease({ label: c.label, unitId: c.unitId, stillHeld }) : null;
+    assert.equal(to?.id ?? null, c.to, c.name);
+  }
 });
 
 test('primaryUnitFields: the unit and its trimmed area, or deletes (TenantModel.primaryUnitUpdate)', () => {
