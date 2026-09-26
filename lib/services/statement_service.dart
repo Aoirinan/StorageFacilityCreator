@@ -12,7 +12,18 @@ import 'tenant_service.dart';
 import 'facility_service.dart';
 import 'email_service.dart';
 import 'package:sfcapp/services/pdf_letterhead.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:intl/intl.dart';
+
+/// The statement's unit line under the account holder: "Unit: 12", or
+/// "Unit: 12 (Complex 2)" when [facility] names units with their area. Null
+/// for a tenant with no unit number.
+String? statementUnitLine(TenantModel tenant, FacilityModel facility) {
+  if (tenant.unitNumber.isEmpty) return null;
+  final label = tenantUnitLabel(tenant,
+      includeArea: unitLabelsIncludeArea(facility));
+  return 'Unit: $label';
+}
 
 /// Service for generating and sending account statements
 class StatementService {
@@ -103,9 +114,10 @@ class StatementService {
                         pw.Text(tenant.name, style: const pw.TextStyle(fontSize: 11)),
                         pw.Text(tenant.email, style: const pw.TextStyle(fontSize: 10)),
                         pw.Text(tenant.phone, style: const pw.TextStyle(fontSize: 10)),
-                        if (tenant.unitNumber.isNotEmpty)
+                        if (statementUnitLine(tenant, facility)
+                            case final unitLine?)
                           pw.Text(
-                            'Unit: ${tenant.unitNumber}',
+                            unitLine,
                             style: const pw.TextStyle(fontSize: 10),
                           ),
                       ],

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/app_theme.dart';
 import '../utils/breakpoints.dart';
 import '../providers/tenant_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../models/tenant_model.dart';
 import '../constants/quick_message_templates.dart';
 import '../services/email_service.dart';
@@ -492,13 +494,11 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     );
   }
 
-  static String _firstNameFromTenant(TenantModel tenant) {
-    final name = tenant.name.trim();
-    if (name.isEmpty) return 'there';
-    return name.split(RegExp(r'\s+')).first;
-  }
-
-  String _interpolateTemplate(String template, TenantModel? tenant) {
+  String _interpolateTemplate(
+    String template,
+    TenantModel? tenant, {
+    bool includeUnitArea = false,
+  }) {
     if (tenant == null) {
       return template
           .replaceAll('{{tenant_name}}', 'Tenant')
@@ -509,13 +509,8 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
           .replaceAll('{{phone}}', '');
     }
 
-    return template
-        .replaceAll('{{tenant_name}}', tenant.name)
-        .replaceAll('{{name}}', tenant.name)
-        .replaceAll('{{first_name}}', _firstNameFromTenant(tenant))
-        .replaceAll('{{unit}}', tenant.unitNumber)
-        .replaceAll('{{email}}', tenant.email)
-        .replaceAll('{{phone}}', tenant.phone);
+    return fillTenantQuickMessage(template, tenant,
+        includeArea: includeUnitArea);
   }
 
   TenantModel? _templateTenant() {
@@ -528,12 +523,23 @@ class _BulkMessagingScreenState extends ConsumerState<BulkMessagingScreen> {
     return null;
   }
 
-  void _applyQuickTemplate(QuickMessageTemplate template) {
+  Future<void> _applyQuickTemplate(QuickMessageTemplate template) async {
     final tenant = _templateTenant();
+    // {{unit}} names the area too once the tenant's facility numbers units
+    // per area.
+    final includeUnitArea = tenant == null
+        ? false
+        : await readUnitLabelsIncludeArea(
+            ref,
+            tenant.facilityId.isNotEmpty ? tenant.facilityId : widget.facilityId,
+          );
+    if (!mounted) return;
     setState(() {
-      _messageController.text = _interpolateTemplate(template.body, tenant);
+      _messageController.text = _interpolateTemplate(template.body, tenant,
+          includeUnitArea: includeUnitArea);
       if (template.subject != null) {
-        _subjectController.text = _interpolateTemplate(template.subject!, tenant);
+        _subjectController.text = _interpolateTemplate(template.subject!, tenant,
+            includeUnitArea: includeUnitArea);
       }
     });
   }

@@ -14,6 +14,7 @@ import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/services/facility_creator_account_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -313,6 +314,11 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         areaOptions.isEmpty ? null : TenantUnitAreaIndex(facilityUnits);
     final areaFilter = effectiveUnitAreaFilter(
         ref.watch(tenantAreaFilterProvider), areaOptions);
+    // Whether this facility's unit labels carry the area, "12 (Complex 2)".
+    // All Facilities keeps the plain number.
+    final includeUnitArea = permFacilityId.isNotEmpty &&
+        facilities.any((f) =>
+            f.id == permFacilityId && unitLabelsIncludeArea(f));
 
     return Column(
             children: [
@@ -783,6 +789,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                                 tenant,
                                 shownTenants: tenants,
                                 areas: areaIndex?.areasFor(tenant) ?? const [],
+                                labelUnitArea:
+                                    areaIndex?.namedUnit(tenant)?.area,
+                                includeUnitArea: includeUnitArea,
                                 gracePeriodDays: gracePeriodDays,
                                 canDeleteTenant: canDeleteTenant && _selectedFacilityId != 'all',
                               );
@@ -901,6 +910,8 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     TenantModel tenant, {
     required List<TenantModel> shownTenants,
     List<String> areas = const [],
+    String? labelUnitArea,
+    bool includeUnitArea = false,
     int? gracePeriodDays,
     bool canDeleteTenant = false,
   }) {
@@ -945,9 +956,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(areas.isEmpty
-                ? 'Unit: ${tenant.unitNumber}'
-                : 'Unit: ${tenant.unitNumber} · ${areas.join(', ')}'),
+            Text(tenantListUnitLine(
+              tenant,
+              includeArea: includeUnitArea,
+              areas: areas,
+              labelUnitArea: labelUnitArea,
+            )),
             Text('Email: ${tenant.email}'),
             Text('Phone: ${tenant.phone}'),
             Text(

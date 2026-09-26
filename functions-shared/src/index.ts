@@ -312,3 +312,6 @@ export {
   isUnlistedUnit,
   unitNotOfferedOnlineReason,
 } from './units/onlineRental';
+
+export type { UnitLabelOptions, UnitLabelStyle } from './units/unitLabel';
+export { formatUnitLabel, tenantUnitLabel, unitLabelsIncludeArea } from './units/unitLabel';

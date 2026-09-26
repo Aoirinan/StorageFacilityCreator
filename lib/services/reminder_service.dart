@@ -12,6 +12,7 @@ import 'package:sfcapp/services/reminders_digest_service.dart';
 import 'package:sfcapp/services/sms_service.dart';
 import 'package:sfcapp/services/template_integration_service.dart';
 import 'package:sfcapp/services/audit_service.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 
 /// What [ReminderService.sendReminder] got to the tenant.
 class ReminderSendResult {
@@ -913,7 +914,10 @@ class ReminderService {
               'facilityName': facility.name,
               'message': message,
               'amount': tenant.monthlyRate.toStringAsFixed(2),
-              'unitNumber': tenant.unitNumber,
+              // unitNumber is "12 (Complex 2)" once the facility numbers
+              // units per area; unitArea is the area alone.
+              ...tenantUnitTemplateVars(tenant,
+                  includeArea: unitLabelsIncludeArea(facility)),
             },
             language: languageCode,
           );
@@ -982,7 +986,10 @@ class ReminderService {
           'facilityName': facility.name,
           'message': message,
           'amount': tenant.monthlyRate.toStringAsFixed(2),
-          'unitNumber': tenant.unitNumber,
+          // unitNumber is "12 (Complex 2)" once the facility numbers units
+          // per area; unitArea is the area alone.
+          ...tenantUnitTemplateVars(tenant,
+              includeArea: unitLabelsIncludeArea(facility)),
           'dueDate': DateTime.now().add(const Duration(days: 30)).toString().split(' ')[0],
           if (templateVars != null) ...templateVars.map((key, value) => MapEntry(key, value.toString())),
         };
@@ -1032,7 +1039,8 @@ class ReminderService {
               message: message,
               facilityName: facility.name,
               tenantName: tenant.name,
-              unitNumber: tenant.unitNumber,
+              unitNumber: tenantUnitLabel(tenant,
+                  includeArea: unitLabelsIncludeArea(facility)),
               amount: tenant.monthlyRate.toString(),
               dueDate: DateTime.now().add(const Duration(days: 30)).toString().split(' ')[0],
             );

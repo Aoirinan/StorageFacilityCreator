@@ -4,6 +4,7 @@ import {
   formatPhoneNumber,
   getOutboundGateConfig,
   isCustomerRecipientAllowed,
+  tenantUnitLabel,
 } from '@sfc/functions-shared';
 import {
   SENDGRID_SECRETS,
@@ -348,7 +349,9 @@ export const processRentDueTextReminders = functions
           tenantName: tenant.name,
           amount,
           dueDate: decision.dueDate,
-          unitNumber: data.unitNumber,
+          // "12 (Complex 2)" once the facility numbers units per area; the
+          // stored number, untouched, until then.
+          unitNumber: tenantUnitLabel(data, facilityData),
         });
 
         try {

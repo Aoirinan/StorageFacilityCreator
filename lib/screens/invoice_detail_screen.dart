@@ -17,6 +17,7 @@ import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/invoice_edit_rules.dart';
 import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/utils/print_util.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../widgets/invoice_pdf_viewer.dart';
 
 class InvoiceDetailScreen extends ConsumerStatefulWidget {
@@ -664,7 +665,12 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             tenant == null ? null : tenantPrintAddress(tenant.addresses),
         tenantPhone: tenant?.phone,
         tenantEmail: tenant?.email,
-        unitNumber: tenant?.unitNumber,
+        unitNumber: tenant == null
+            ? null
+            : tenantUnitLabel(
+                tenant,
+                includeArea: unitLabelsIncludeArea(facility),
+              ),
         invoiceNumber: _invoice.invoiceNumber,
         issueDateFormatted: date.format(_invoice.issueDate),
         dueDateFormatted: date.format(_invoice.dueDate),
