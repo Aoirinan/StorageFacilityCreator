@@ -338,7 +338,7 @@ void main() {
       final firstWrite = source.indexOf("'status': TransferStatus.inProgress.name");
       expect(check, greaterThan(0));
       expect(check, lessThan(firstWrite));
-      expect(source, contains('unitId: transfer.toUnitId,'));
+      expect(source, contains('unitId: after.unitId,'));
     });
   });
 }

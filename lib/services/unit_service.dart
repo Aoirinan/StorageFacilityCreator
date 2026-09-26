@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import '../models/unit_model.dart';
 import 'audit_service.dart';
 import 'facility_limits_service.dart';
@@ -393,12 +394,15 @@ class UnitService {
         final duplicate = await duplicateUnitNumber(facilityId, newNumber,
             exceptUnitId: unitId, includeArchived: false);
         if (duplicate != null) throw duplicate;
-        await _renameWithTenant(
+      }
+      // A new number or area reaches the tenant whose primary unit this is
+      // (their unitNumber and unitArea), in the same transaction.
+      if (renaming || area != null) {
+        await _updateWithTenants(
           facilityId,
           unitRef,
           updateData,
-          oldNumber: beforeNumber,
-          newNumber: newNumber,
+          renamedTo: renaming ? newNumber : null,
         );
       } else {
         await unitRef.update(updateData);
@@ -501,20 +505,30 @@ class UnitService {
     return null;
   }
 
-  /// Writes [updateData] (which renames the unit from [oldNumber] to
-  /// [newNumber]) and, in the same transaction, the new number to the tenant
-  /// in the unit when their unitNumber named the old one.
-  static Future<void> _renameWithTenant(
+  /// Most tenant docs [_updateWithTenants] looks at by `unitId`: a unit is
+  /// one tenant's primary unit, so more than one is left from bad data.
+  static const int _tenantsByUnitIdLimit = 20;
+
+  /// Writes [updateData] to the unit and, in the same transaction, keeps the
+  /// tenants whose primary unit it is in step ([tenantFieldsForUnitChange]):
+  /// their unitNumber when [renamedTo] renames it, and their unitId and
+  /// unitArea. Those tenants are the ones naming the unit by `unitId`, and
+  /// the tenant in the unit once this update lands (one it assigns, or the
+  /// one already there unless it frees the unit).
+  static Future<void> _updateWithTenants(
     String facilityId,
     DocumentReference<Map<String, dynamic>> unitRef,
     Map<String, dynamic> updateData, {
-    required String oldNumber,
-    required String newNumber,
-  }) {
+    String? renamedTo,
+  }) async {
+    final tenants = FacilitySubcollections.tenants(facilityId);
+    // Queries can't run in a client transaction: found here, re-read in it.
+    final byId = await tenants
+        .where('unitId', isEqualTo: unitRef.id)
+        .limit(_tenantsByUnitIdLimit)
+        .get();
     return unitRef.firestore.runTransaction<void>((txn) async {
       final unit = (await txn.get(unitRef)).data();
-      // The tenant in the unit once this update lands: one it assigns, or
-      // the one already there unless it frees the unit.
       final assigned = updateData['tenantId'];
       Object? holder;
       if (assigned is String) {
@@ -522,22 +536,72 @@ class UnitService {
       } else if (assigned == null) {
         holder = unit?['tenantId'];
       }
-      DocumentReference<Map<String, dynamic>>? tenantRef;
-      if (holder is String && holder.trim().isNotEmpty) {
-        final ref = FacilitySubcollections.tenants(facilityId).doc(holder);
-        final label = (await txn.get(ref)).data()?['unitNumber'];
-        if (label is String && sameUnitNumber(label, oldNumber)) {
-          tenantRef = ref;
-        }
+      final holderId = holder is String ? holder.trim() : '';
+      final ids = <String>{
+        if (holderId.isNotEmpty) holderId,
+        for (final d in byId.docs) d.id,
+      };
+      final read = <String, Map<String, dynamic>>{};
+      for (final id in ids) {
+        final data = (await txn.get(tenants.doc(id))).data();
+        if (data != null) read[id] = data;
       }
+      final areaAfter = updateData.containsKey('area')
+          ? normalizeUnitArea(updateData['area'])
+          : normalizeUnitArea(unit?['area']);
       txn.update(unitRef, updateData);
-      if (tenantRef != null) {
-        txn.update(tenantRef, {
-          'unitNumber': newNumber,
+      for (final e in read.entries) {
+        final fields = tenantFieldsForUnitChange(
+          unitId: unitRef.id,
+          tenant: e.value,
+          isHolder: e.key == holderId,
+          numberBefore: unit?['unitNumber']?.toString() ?? '',
+          renamedTo: renamedTo,
+          areaAfter: areaAfter,
+        );
+        if (fields == null) continue;
+        txn.update(tenants.doc(e.key), {
+          ...fields,
           'updatedAt': FieldValue.serverTimestamp(),
         });
       }
     });
+  }
+
+  /// What a tenant doc [tenant] gets when unit [unitId] (numbered
+  /// [numberBefore]) is renamed to [renamedTo] or its area becomes
+  /// [areaAfter]; null for a tenant it is not the primary unit of.
+  ///
+  /// It is theirs when their `unitId` names it, or, for a tenant with no
+  /// `unitId`, when they are in it ([isHolder]) and their unitNumber names it
+  /// (trimmed, ignoring case). A tenant whose `unitId` names another unit
+  /// (one of two units they hold with the same number) is left alone: that
+  /// other unit is their primary one. A rename renames the unitNumber of the
+  /// tenant it is the primary unit of when it named the old number, as
+  /// before. Either way the unit becomes their `unitId` and its area their
+  /// `unitArea`.
+  @visibleForTesting
+  static Map<String, dynamic>? tenantFieldsForUnitChange({
+    required String unitId,
+    required Map<String, dynamic> tenant,
+    required bool isHolder,
+    required String numberBefore,
+    String? renamedTo,
+    required String? areaAfter,
+  }) {
+    final namedId = TenantModel.textField(tenant['unitId']);
+    final pointsHere = namedId == unitId;
+    final label = tenant['unitNumber'];
+    final labelNamesUnit = label is String &&
+        label.trim().isNotEmpty &&
+        sameUnitNumber(label, numberBefore);
+    final ours = pointsHere || (isHolder && namedId == null && labelNamesUnit);
+    if (!ours) return null;
+    final renamesLabel = renamedTo != null && labelNamesUnit;
+    return {
+      if (renamesLabel) 'unitNumber': renamedTo,
+      ...TenantModel.primaryUnitUpdate(unitId: unitId, unitArea: areaAfter),
+    };
   }
 
   /// [area] trimmed, or null when blank. Throws when longer than
@@ -553,8 +617,10 @@ class UnitService {
   }
 
   /// Sets one unit's area (Units > select units > Set area), or removes it
-  /// when [area] is blank. Writes only `area` and the update stamp: the area
-  /// is not on the public website, so no inventory sync.
+  /// when [area] is blank. Writes only `area` and the update stamp to the
+  /// unit, and in the same transaction the area to the tenant whose primary
+  /// unit it is (`unitArea`, [_updateWithTenants]). The area is not on the
+  /// public website, so no inventory sync.
   static Future<void> setUnitArea({
     required String facilityId,
     required String unitId,
@@ -564,11 +630,15 @@ class UnitService {
     if (user == null) {
       throw Exception('Not signed in');
     }
-    await FacilitySubcollections.units(facilityId).doc(unitId).update({
-      'area': _areaValue(area) ?? FieldValue.delete(),
-      'updatedAt': FieldValue.serverTimestamp(),
-      'updatedBy': user.uid,
-    });
+    await _updateWithTenants(
+      facilityId,
+      FacilitySubcollections.units(facilityId).doc(unitId),
+      {
+        'area': _areaValue(area) ?? FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': user.uid,
+      },
+    );
   }
 
   // Assign tenant to unit (Units > unit > Assign Tenant, and a tenant picked

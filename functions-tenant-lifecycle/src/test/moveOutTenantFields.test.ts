@@ -3,7 +3,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { UnitRent, rentAfterUnitChange, tenantFieldsAfterMoveOut } from '../moveOutTenantFields';
+import { FieldValue } from 'firebase-admin/firestore';
+
+import {
+  UnitRent,
+  primaryMovesOnRelease,
+  primaryUnitAfterRelease,
+  primaryUnitFields,
+  rentAfterUnitChange,
+  tenantFieldsAfterMoveOut,
+} from '../moveOutTenantFields';
+
+const deleted = FieldValue.delete();
 
 const unit101 = { unitNumber: '101', status: 'occupied', tenantId: 't1', monthlyRate: 100 };
 const unit102 = { unitNumber: '102', status: 'occupied', tenantId: 't1', monthlyRate: 150 };
@@ -24,7 +35,7 @@ function after(overrides: Partial<Parameters<typeof tenantFieldsAfterMoveOut>[0]
 
 test("still holding another unit: the vacated unit's rate comes off and the unit number moves", () => {
   assert.deepEqual(after(), {
-    fields: { monthlyRate: 150, unitNumber: '102' },
+    fields: { monthlyRate: 150, unitNumber: '102', unitId: 'u102', unitArea: deleted },
     rentNotice: 'Monthly rent is now $150.00 for unit 102.',
     rentWarning: null,
     endsTenancy: false,
@@ -33,7 +44,7 @@ test("still holding another unit: the vacated unit's rate comes off and the unit
 
 test('the last unit ends the tenancy and leaves the rate alone', () => {
   assert.deepEqual(after({ linkedUnits: [{ id: 'u101', data: unit101 }] }), {
-    fields: { unitNumber: '', isActive: false },
+    fields: { unitNumber: '', isActive: false, unitId: deleted, unitArea: deleted },
     rentNotice: null,
     rentWarning: null,
     endsTenancy: true,
@@ -75,7 +86,103 @@ test('a stale link on an available or archived unit is not somewhere they rent',
       { id: 'u8', data: { unitNumber: '8', status: 'occupied', tenantId: 't1', archived: true } },
     ],
   });
-  assert.deepEqual(settled.fields, { unitNumber: '', isActive: false });
+  assert.deepEqual(settled.fields, { unitNumber: '', isActive: false, unitId: deleted, unitArea: deleted });
+});
+
+test("the unit number's move takes unitId and unitArea to the unit they keep", () => {
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '101', unitId: 'u101', unitArea: 'Complex 2', monthlyRate: 250 },
+    linkedUnits: [
+      { id: 'u101', data: { ...unit101, area: 'Complex 2' } },
+      { id: 'u102', data: { ...unit102, area: '  Complex 3 ' } },
+    ],
+  });
+  assert.equal(settled.fields.unitNumber, '102');
+  assert.equal(settled.fields.unitId, 'u102');
+  assert.equal(settled.fields.unitArea, 'Complex 3');
+});
+
+test('a unit number naming a unit they keep leaves unitId and unitArea alone', () => {
+  const settled = after({ tenant: { name: 'Ada Park', unitNumber: '102', unitId: 'u102', monthlyRate: 250 } });
+  assert.equal('unitNumber' in settled.fields, false);
+  assert.equal('unitId' in settled.fields, false);
+  assert.equal('unitArea' in settled.fields, false);
+});
+
+// Two live units numbered 12 (Complex 2 and Complex 3), held by one tenant.
+const c2 = { unitNumber: '12', status: 'occupied', tenantId: 't1', monthlyRate: 100, area: 'Complex 2' };
+const c3 = { unitNumber: '12', status: 'occupied', tenantId: 't1', monthlyRate: 150, area: 'Complex 3' };
+
+test('freeing their primary unit moves unitId and unitArea to the kept unit with the same number', () => {
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '12', unitId: 'c2-12', monthlyRate: 350 },
+    unitId: 'c2-12',
+    unit: c2,
+    linkedUnits: [
+      { id: 'c2-12', data: c2 },
+      { id: 'u14', data: { ...unit102, unitNumber: '14', monthlyRate: 100 } },
+      { id: 'c3-12', data: c3 },
+    ],
+  });
+  assert.equal(settled.fields.unitNumber, '12');
+  assert.equal(settled.fields.unitId, 'c3-12');
+  assert.equal(settled.fields.unitArea, 'Complex 3');
+});
+
+test('freeing a unit numbered like their primary, but not it, leaves the primary alone', () => {
+  const settled = after({
+    tenant: { name: 'Ada Park', unitNumber: '12', unitId: 'c3-12', monthlyRate: 250 },
+    unitId: 'c2-12',
+    unit: c2,
+    linkedUnits: [
+      { id: 'c2-12', data: c2 },
+      { id: 'u14', data: { ...unit102, unitNumber: '14' } },
+      { id: 'c3-12', data: c3 },
+    ],
+  });
+  assert.equal('unitNumber' in settled.fields, false);
+  assert.equal('unitId' in settled.fields, false);
+  assert.equal('unitArea' in settled.fields, false);
+});
+
+type PrimaryFixture = {
+  cases: Array<{
+    name: string;
+    label: string;
+    unitId: string | null;
+    vacated: [string, string];
+    stillHeld: Array<[string, string]>;
+    moves: boolean;
+    to: string | null;
+  }>;
+};
+
+test('primaryMovesOnRelease and primaryUnitAfterRelease match the shared table (the app runs it too)', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(__dirname, '..', '..', 'src', 'test', 'fixtures', 'primaryUnitAfterRelease.json'), 'utf8'),
+  ) as PrimaryFixture;
+  assert.ok(fixture.cases.length > 5);
+  for (const c of fixture.cases) {
+    const stillHeld = c.stillHeld.map(([id, unitNumber]) => ({ id, unitNumber }));
+    const moves = primaryMovesOnRelease({
+      label: c.label,
+      unitId: c.unitId,
+      vacatedId: c.vacated[0],
+      vacatedNumber: c.vacated[1],
+      stillHeld,
+    });
+    assert.equal(moves, c.moves, c.name);
+    const to = moves ? primaryUnitAfterRelease({ label: c.label, unitId: c.unitId, stillHeld }) : null;
+    assert.equal(to?.id ?? null, c.to, c.name);
+  }
+});
+
+test('primaryUnitFields: the unit and its trimmed area, or deletes (TenantModel.primaryUnitUpdate)', () => {
+  assert.deepEqual(primaryUnitFields('u12', { area: ' Complex 2 ' }), { unitId: 'u12', unitArea: 'Complex 2' });
+  assert.deepEqual(primaryUnitFields('u12', { area: '   ' }), { unitId: 'u12', unitArea: deleted });
+  assert.deepEqual(primaryUnitFields('u12', { area: 7 }), { unitId: 'u12', unitArea: deleted });
+  assert.deepEqual(primaryUnitFields(null, { area: 'Complex 2' }), { unitId: deleted, unitArea: deleted });
+  assert.deepEqual(primaryUnitFields('  '), { unitId: deleted, unitArea: deleted });
 });
 
 test('rounded to the cent', () => {

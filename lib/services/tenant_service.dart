@@ -474,6 +474,7 @@ class _UnitLink {
   const _UnitLink({
     required this.unitNumber,
     this.unitId,
+    this.unitArea,
     this.unitRate,
     this.seenHolder,
     this.write = true,
@@ -481,6 +482,10 @@ class _UnitLink {
 
   final String unitNumber;
   final String? unitId;
+
+  /// The unit's area, for the tenant's `unitArea`; null when it has none or
+  /// doesn't exist yet.
+  final String? unitArea;
 
   /// The unit's monthly rate; null when it doesn't exist yet.
   final double? unitRate;
@@ -752,6 +757,12 @@ class TenantService {
           : await _planUnitLink(store,
               tenantId: ref.id, unitNumber: requested, unit: picked);
       if (link != null) tenantData['unitNumber'] = link.unitNumber;
+      // The unit the number names, by id, as the tenant's primary unit. A
+      // unit made below (none had the number) is added once it exists.
+      if (link?.unitId != null) {
+        tenantData.addAll(TenantModel.primaryUnitCreate(
+            unitId: link!.unitId, unitArea: link.unitArea));
+      }
       // No unit to link: one is made after the tenant is saved. Refused now
       // if it can't be (an archived unit keeps its number and is in no
       // list): made later, the refusal said "Nothing was saved" over a
@@ -791,7 +802,12 @@ class TenantService {
             tenantId: ref.id,
             tenantName: name,
             monthlyRate: monthlyRate,
-            uid: user.uid);
+            uid: user.uid,
+            tenantUpdate: link.unitId != null
+                ? null
+                : (_, createdUnitId) => createdUnitId == null
+                    ? null
+                    : TenantModel.primaryUnitUpdate(unitId: createdUnitId));
       }
 
       if (kDebugMode) {
@@ -1212,7 +1228,10 @@ class TenantService {
         if (newNum.isNotEmpty && nowActive) {
           try {
             link = await _planUnitLink(store,
-                tenantId: tenantId, unitNumber: newNum, unit: picked);
+                tenantId: tenantId,
+                unitNumber: newNum,
+                unit: picked,
+                currentUnitId: TenantModel.textField(beforeData['unitId']));
           } on UnitHeldByAnotherTenantException catch (e) {
             // An unchanged number another tenant now holds (left behind by
             // an old Unassign Tenant): a phone change was refused with
@@ -1230,9 +1249,12 @@ class TenantService {
             notice = ambiguousUnitNumberNotice(e, _displayName(beforeData, tenantId));
           }
           final planned = link;
-          // The unit's own spelling, so the tenant's number matches it.
+          // The unit's own spelling, so the tenant's number matches it, and
+          // the unit by id as their primary unit.
           if (planned != null && planned.unitId != null) {
             updateData['unitNumber'] = planned.unitNumber;
+            updateData.addAll(TenantModel.primaryUnitUpdate(
+                unitId: planned.unitId, unitArea: planned.unitArea));
           }
           // A picked unit with the number of another unit they hold (two
           // units numbered alike) is a change of unit too.
@@ -1273,6 +1295,19 @@ class TenantService {
         }
       }
 
+      // A unit number written with no unit to name by id (cleared, a unit
+      // still to be made, an inactive tenant's number): a unitId left from
+      // the old number would name the wrong unit, so it goes. An unchanged
+      // number keeps it.
+      final label = updateData['unitNumber'];
+      if (label is String && !updateData.containsKey('unitId')) {
+        final previous =
+            (beforeData?['unitNumber'] as Object?)?.toString().trim() ?? '';
+        if (label.trim().isEmpty || label.trim() != previous) {
+          updateData.addAll(TenantModel.primaryUnitUpdate());
+        }
+      }
+
       ({int unitsFreed, int gateCodesOff})? deactivation;
       var unitsChanged = false;
       var written = updateData;
@@ -1304,8 +1339,17 @@ class TenantService {
           monthlyRate: monthlyRate ?? _rateOf(beforeData),
           release: [for (final u in release) u.id],
           uid: uid,
-          tenantUpdate: (tenant) {
+          tenantUpdate: (tenant, linkedUnitId) {
             written = {...updateData};
+            // A unit made for the new number: its id, now that it exists.
+            final made = link;
+            if (made != null &&
+                made.unitId == null &&
+                linkedUnitId != null &&
+                updateData['unitNumber'] is String) {
+              written.addAll(
+                  TenantModel.primaryUnitUpdate(unitId: linkedUnitId));
+            }
             final plan = rent;
             if (plan != null) {
               final change = rentAfterUnitChange(
@@ -1406,7 +1450,8 @@ class TenantService {
     final typed = picked?.unitNumber.trim() ?? unitNumber.trim();
     final target = picked ??
         unitForNumber(await store.unitsNumbered(typed), typed,
-            tenantId: tenantId);
+            tenantId: tenantId,
+            currentUnitId: TenantModel.textField(before?['unitId']));
     final newNum = target?.unitNumber.trim() ?? typed;
     final held = _heldUnitModels(tenantId, await store.linkedUnits(tenantId));
     // By id: by number, a second unit numbered like one they hold read as
@@ -1446,7 +1491,7 @@ class TenantService {
       tenantName: name,
       monthlyRate: monthlyRate ?? 0,
       uid: uid,
-      tenantUpdate: (tenant) {
+      tenantUpdate: (tenant, linkedUnitId) {
         final change = adding
             ? rentAfterUnitChange(
                 tenantName: name,
@@ -1461,12 +1506,17 @@ class TenantService {
         notice = change?.notice;
         final current =
             (tenant?['unitNumber'] as Object?)?.toString().trim() ?? '';
+        final movesLabel =
+            !others.any((u) => sameUnitNumber(u.unitNumber, current));
         return written = {
           if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
           'isActive': true,
           'updatedAt': FieldValue.serverTimestamp(),
-          if (!others.any((u) => sameUnitNumber(u.unitNumber, current)))
+          if (movesLabel) ...{
             'unitNumber': newNum,
+            ...TenantModel.primaryUnitUpdate(
+                unitId: linkedUnitId, unitArea: link.unitArea),
+          },
         };
       },
     );
@@ -1559,8 +1609,10 @@ class TenantService {
         // Rent, autopay and lockout skip inactive tenants.
         if (!TenantModel.isActiveField(tenant['isActive'])) 'isActive': true,
         if (number.isNotEmpty &&
-            !others.any((u) => u.unitNumber.trim() == current))
+            !others.any((u) => u.unitNumber.trim() == current)) ...{
           'unitNumber': number,
+          ...TenantModel.primaryUnitUpdate(unitId: unitId, unitArea: unit.area),
+        },
         'updatedAt': FieldValue.serverTimestamp(),
       };
       txn.update('tenants', tenantId, written);
@@ -1613,7 +1665,18 @@ class TenantService {
       return null;
     }
     final current = (before?['unitNumber'] as Object?)?.toString().trim() ?? '';
+    final primaryId = TenantModel.textField(before?['unitId']);
     final keepsNumber = stillHeld.any((u) => u.unitNumber.trim() == current);
+    // Their primary unit moves when it is the unit they left (even with
+    // another unit numbered alike kept: the unitId named the freed one), or
+    // when the label names no unit they keep. It moves to their unitId if
+    // they keep it, then a unit with the label's number, then any.
+    final movesPrimary = primaryId == movedOutUnitId || !keepsNumber;
+    final moveTo = movesPrimary
+        ? primaryUnitAfterRelease(
+                label: current, unitId: primaryId, stillHeld: stillHeld) ??
+            stillHeld.first
+        : null;
     final left = await store.unit(movedOutUnitId);
     // Freed by this move-out (or still theirs if that step failed); a unit
     // someone else holds was never theirs to take off.
@@ -1627,11 +1690,13 @@ class TenantService {
           )
         : null;
     final rate = change?.monthlyRate;
-    if (keepsNumber && rate == null) return change?.notice;
+    if (moveTo == null && rate == null) return change?.notice;
     await updateTenant(
       facilityId: facilityId,
       tenantId: tenantId,
-      unitNumber: keepsNumber ? null : stillHeld.first.unitNumber,
+      unitNumber: moveTo?.unitNumber,
+      // By id, so the unit they keep is linked as their primary unit.
+      unitId: moveTo?.id,
       monthlyRate: rate,
       records: records,
       effects: effects,
@@ -1686,6 +1751,7 @@ class TenantService {
         txn.update('tenants', tenantId, {
           'isActive': false,
           'unitNumber': '',
+          ...TenantModel.primaryUnitUpdate(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
         final gateOff = _gateAccessOffFields(uid);
@@ -1703,12 +1769,30 @@ class TenantService {
             )
           : null;
       notice = change?.notice;
-      final vacated = unit.unitNumber.trim();
       final current = (tenant['unitNumber'] as Object?)?.toString().trim() ?? '';
+      final primaryId = TenantModel.textField(tenant['unitId']);
+      // Only when the freed unit was their primary one (as processMoveOut):
+      // freeing another unit, even one numbered like it, leaves it.
+      final moves = primaryMovesOnRelease(
+        label: current,
+        unitId: primaryId,
+        vacatedId: unit.id,
+        vacatedNumber: unit.unitNumber,
+        stillHeld: others,
+      );
+      final moveTo = moves
+          ? primaryUnitAfterRelease(
+              label: current, unitId: primaryId, stillHeld: others)
+          : null;
       final fields = <String, dynamic>{
         if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
-        if (vacated.isNotEmpty && current == vacated)
-          'unitNumber': others.isEmpty ? '' : others.first.unitNumber,
+        if (moves) ...{
+          'unitNumber': moveTo?.unitNumber.trim() ?? '',
+          ...TenantModel.primaryUnitUpdate(
+            unitId: moveTo?.id,
+            unitArea: moveTo?.area,
+          ),
+        },
       };
       if (fields.isEmpty) return;
       txn.update('tenants', tenantId, {
@@ -1775,6 +1859,51 @@ class TenantService {
           '${numbers.length == 1 ? 'unit' : 'units'} ${joinReadable(numbers)}; '
           'their rent is \$${cents(current).toStringAsFixed(2)}.',
     );
+  }
+
+  /// Whether freeing unit [vacatedId] (numbered [vacatedNumber]) moves the
+  /// tenant's primary unit (their unitNumber label, unitId and unitArea):
+  /// when [unitId] (theirs) is the freed unit, or, when [unitId] is not a
+  /// unit they keep ([stillHeld]), when [label] is the freed unit's number
+  /// (trimmed). Freeing another unit, even one numbered like their primary,
+  /// leaves it.
+  ///
+  /// PARITY: primaryMovesOnRelease in
+  /// functions-tenant-lifecycle/src/moveOutTenantFields.ts; both test suites
+  /// run functions-tenant-lifecycle/src/test/fixtures/primaryUnitAfterRelease.json.
+  static bool primaryMovesOnRelease({
+    required String label,
+    required String? unitId,
+    required String vacatedId,
+    required String vacatedNumber,
+    required List<UnitModel> stillHeld,
+  }) {
+    final id = TenantModel.textField(unitId);
+    if (id == vacatedId) return true;
+    if (id != null && stillHeld.any((u) => u.id == id)) return false;
+    final vacated = vacatedNumber.trim();
+    return vacated.isNotEmpty && label.trim() == vacated;
+  }
+
+  /// Where the tenant's primary unit moves when it does: [unitId] if they
+  /// still hold it, else a unit they keep with [label]'s number, else the
+  /// first unit they keep that has a number; null when none has one.
+  ///
+  /// PARITY: primaryUnitAfterRelease in moveOutTenantFields.ts; same fixture.
+  static UnitModel? primaryUnitAfterRelease({
+    required String label,
+    required String? unitId,
+    required List<UnitModel> stillHeld,
+  }) {
+    final id = TenantModel.textField(unitId);
+    final typed = label.trim();
+    return (id == null
+            ? null
+            : stillHeld.where((u) => u.id == id).firstOrNull) ??
+        (typed.isEmpty
+            ? null
+            : stillHeld.where((u) => u.unitNumber.trim() == typed).firstOrNull) ??
+        stillHeld.where((u) => u.unitNumber.trim().isNotEmpty).firstOrNull;
   }
 
   /// "Monthly rent is now $250.00 for units 101 and 102."
@@ -2796,10 +2925,11 @@ class TenantService {
     required String tenantId,
     required String unitNumber,
     UnitModel? unit,
+    String? currentUnitId,
   }) async {
     final found = unit ??
         unitForNumber(await store.unitsNumbered(unitNumber), unitNumber,
-            tenantId: tenantId);
+            tenantId: tenantId, currentUnitId: currentUnitId);
     if (found == null) return _UnitLink(unitNumber: unitNumber);
     return _linkTo(found, tenantId: tenantId);
   }
@@ -2813,6 +2943,7 @@ class TenantService {
       return _UnitLink(
         unitNumber: unitNumber,
         unitId: unit.id,
+        unitArea: unit.area,
         unitRate: unit.monthlyRate,
         seenHolder: holder,
         write: unit.status == UnitStatus.available,
@@ -2827,6 +2958,7 @@ class TenantService {
     return _UnitLink(
       unitNumber: unitNumber,
       unitId: unit.id,
+      unitArea: unit.area,
       unitRate: unit.monthlyRate,
       seenHolder: unit.tenantId,
     );
@@ -2838,11 +2970,15 @@ class TenantService {
   /// one that differs only in case, so a facility that already has "12a"
   /// and "12A" links each as before. Among several with the number, the one
   /// the tenant holds; if they hold none, [AmbiguousUnitNumberException]:
-  /// this used to take the first, which could be any of them.
+  /// this used to take the first, which could be any of them. Among several
+  /// they hold, their primary unit ([currentUnitId], the tenant's `unitId`)
+  /// first, so saving the same number again doesn't move it to another of
+  /// their units with that number.
   static UnitModel? unitForNumber(
     Iterable<UnitModel> candidates,
     String unitNumber, {
     required String tenantId,
+    String? currentUnitId,
   }) {
     final typed = unitNumber.trim();
     final key = unitNumberKey(typed);
@@ -2858,6 +2994,12 @@ class TenantService {
     final pool = exact.isNotEmpty ? exact : matches;
     if (pool.isEmpty) return null;
     if (pool.length == 1) return pool.single;
+    final current = TenantModel.textField(currentUnitId);
+    for (final u in pool) {
+      if (current != null && u.id == current && u.tenantId == tenantId) {
+        return u;
+      }
+    }
     for (final u in pool) {
       if (u.tenantId == tenantId) return u;
     }
@@ -2883,7 +3025,9 @@ class TenantService {
   /// the unit when none had the number. Frees each unit in [release] that
   /// still shows the tenant, and writes what [tenantUpdate] returns for the
   /// tenant doc as read in the same transaction, so the tenant's side and the
-  /// units commit together or not at all. Returns whether a unit was
+  /// units commit together or not at all. [tenantUpdate] is also given the
+  /// id of [link]'s unit (the one just created when none had the number), for
+  /// the tenant's `unitId`; null when there is no link. Returns whether a unit was
   /// written. Refuses if the linked unit changed hands since [_planUnitLink]
   /// looked.
   static Future<bool> _commitUnitLink(
@@ -2894,7 +3038,9 @@ class TenantService {
     required double monthlyRate,
     List<String> release = const [],
     required String uid,
-    Map<String, dynamic>? Function(Map<String, dynamic>? tenant)? tenantUpdate,
+    Map<String, dynamic>? Function(
+            Map<String, dynamic>? tenant, String? linkedUnitId)?
+        tenantUpdate,
   }) async {
     final linking = link != null && link.write ? link : null;
     if (linking == null && release.isEmpty && tenantUpdate == null) {
@@ -2931,7 +3077,7 @@ class TenantService {
         }
       }
       if (unitId != null) txn.update('units', unitId, fields);
-      final tenantFields = tenantUpdate?.call(tenant);
+      final tenantFields = tenantUpdate?.call(tenant, unitId ?? link?.unitId);
       if (tenantFields != null) txn.update('tenants', tenantId, tenantFields);
     });
     return linking != null || release.isNotEmpty;
