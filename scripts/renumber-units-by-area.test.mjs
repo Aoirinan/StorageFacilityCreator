@@ -13,7 +13,11 @@ import {
   parsePrefixMap,
   planItemRevert,
   planRenumber,
+  repeatedNumbers,
   revertDocAction,
+  runApplySteps,
+  runRevertSteps,
+  verifyAfterApply,
 } from './renumber-units-by-area.mjs';
 
 const MAP = parsePrefixMap('C2-=Complex 2,C3-=Complex 3');
@@ -245,9 +249,11 @@ test('revert maps after back to before, deleting fields that were missing', () =
     tenants: [tenant('t1', { unitNumber: 'C2-1', unitId: 'u1', unitArea: 'Complex 2' })],
   });
   const item = p.units[0];
+  const t1After = { unitNumber: '1', legacyUnitNumber: 'C2-1', unitId: 'u1', unitArea: 'Complex 2', isActive: true };
   const applied = {
     unit: { unitNumber: '1', legacyUnitNumber: 'C2-1', area: 'Complex 2', tenantId: 't1' },
-    t1: { unitNumber: '1', legacyUnitNumber: 'C2-1', unitId: 'u1', isActive: true },
+    tenants: { t1: t1After },
+    holders: [{ id: 't1', data: t1After }],
   };
   const r = planItemRevert(item, applied);
   assert.equal(r.refused, false);
@@ -260,14 +266,20 @@ test('revert maps after back to before, deleting fields that were missing', () =
   );
 
   // Never applied (or already reverted): nothing to do.
-  const untouched = { unit: { unitNumber: 'C2-1', area: 'Complex 2' }, t1: { unitNumber: 'C2-1' } };
+  const untouched = {
+    unit: { unitNumber: 'C2-1', area: 'Complex 2', tenantId: 't1' },
+    tenants: { t1: { unitNumber: 'C2-1', unitId: 'u1', isActive: true } },
+  };
   assert.deepEqual(planItemRevert(item, untouched).docs.map((d) => d.action), ['already-before', 'already-before']);
 
-  // Edited since the run: the whole item is refused.
-  const edited = { ...applied, t1: { ...applied.t1, unitNumber: '1B' } };
+  // Edited since the run, tenant still attached: the whole item is refused.
+  const edited = { ...applied, tenants: { t1: { ...t1After, unitNumber: '1B' } } };
   const refused = planItemRevert(item, edited);
   assert.equal(refused.refused, true);
   assert.deepEqual(refused.refusedDocs, ['tenant t1']);
+
+  // The unit itself edited since: refused.
+  assert.deepEqual(planItemRevert(item, { ...applied, unit: { ...applied.unit, unitNumber: '1X' } }).refusedDocs, ['unit u1']);
 
   // Facility flag: a recorded false comes back as false, a missing flag is deleted.
   assert.deepEqual(
@@ -278,6 +290,189 @@ test('revert maps after back to before, deleting fields that were missing', () =
     revertDocAction(p.facilityChange, { unitNumbersRepeatAcrossAreas: true, name: 'x' }),
     { action: 'restore', set: {}, remove: ['unitNumbersRepeatAcrossAreas'] },
   );
+});
+
+const revertItem = () =>
+  plan({
+    units: [unit('u1', { unitNumber: 'C2-1', area: 'Complex 2', tenantId: 't1' })],
+    tenants: [tenant('t1', { unitNumber: 'C2-1', unitId: 'u1', unitArea: 'Complex 2' })],
+  }).units[0];
+
+test('revert: a recorded tenant who moved on is detached and the unit still reverts', () => {
+  const item = revertItem();
+  const unitAfter = { unitNumber: '1', legacyUnitNumber: 'C2-1', area: 'Complex 2', tenantId: null };
+  for (const t1 of [
+    { unitNumber: '1', legacyUnitNumber: 'C2-1', unitId: 'u1', isActive: false },
+    { unitNumber: '7', legacyUnitNumber: 'C2-1', unitId: 'u7', isActive: true },
+    null,
+  ]) {
+    const r = planItemRevert(item, { unit: unitAfter, tenants: { t1 }, holders: [] });
+    assert.equal(r.refused, false);
+    assert.deepEqual(r.docs.map((d) => [d.kind, d.id, d.action]), [
+      ['unit', 'u1', 'restore'],
+      ['tenant', 't1', 'detached'],
+    ]);
+  }
+});
+
+test('revert: the active tenant now in the unit is relabelled when their label is the new number', () => {
+  const item = revertItem();
+  const r = planItemRevert(item, {
+    unit: { unitNumber: '1', legacyUnitNumber: 'C2-1', area: 'Complex 2', tenantId: 'new' },
+    tenants: { t1: { unitNumber: '1', legacyUnitNumber: 'C2-1', unitId: 'u1', isActive: false } },
+    holders: [
+      { id: 'new', data: { unitNumber: ' 1 ', unitId: 'u1', unitArea: 'Complex 2', isActive: true } },
+      // Holds this unit too, but their label names their primary unit elsewhere.
+      { id: 'multi', data: { unitNumber: '1', unitId: 'u-other', isActive: true } },
+      { id: 'other', data: { unitNumber: '1-annex', unitId: 'u1', isActive: true } },
+      { id: 'old', data: { unitNumber: '1', unitId: 'u1', isActive: false } },
+    ],
+  });
+  assert.equal(r.refused, false);
+  assert.deepEqual(r.docs.map((d) => [d.kind, d.id, d.action, d.set]), [
+    ['unit', 'u1', 'restore', { unitNumber: 'C2-1' }],
+    ['tenant', 't1', 'detached', undefined],
+    ['tenant', 'new', 'relabel', { unitNumber: 'C2-1' }],
+    ['tenant', 'other', 'holder-other-label', undefined],
+  ]);
+  // A holder with no unitId counts only when the unit's tenantId is them.
+  const noId = planItemRevert(item, {
+    unit: { unitNumber: '1', legacyUnitNumber: 'C2-1', area: 'Complex 2', tenantId: 'h' },
+    tenants: {},
+    holders: [{ id: 'h', data: { unitNumber: '1', isActive: true } }],
+  });
+  assert.deepEqual(noId.docs.map((d) => d.action), ['restore', 'detached', 'relabel']);
+});
+
+test('revert honours the apply record: refused items skipped, flag only when applied, pending by state', async () => {
+  const item = revertItem();
+  const fc = { before: { unitNumbersRepeatAcrossAreas: null }, beforeMissing: ['unitNumbersRepeatAcrossAreas'], after: { unitNumbersRepeatAcrossAreas: true } };
+  const rec = {
+    units: [
+      { ...item, unitId: 'a', status: 'applied' },
+      { ...item, unitId: 'b', status: 'refused' },
+      { ...item, unitId: 'c', status: 'pending' },
+      { ...item, unitId: 'd', status: 'skipped' },
+    ],
+    facilityChange: { ...fc, status: 'applied' },
+  };
+  const calls = [];
+  const out = await runRevertSteps(rec, {
+    revertItem: async (i) => {
+      calls.push(i.unitId);
+      return { status: 'reverted', docs: [] };
+    },
+    revertFlag: async () => {
+      calls.push('flag');
+      return { status: 'restored' };
+    },
+  });
+  assert.deepEqual(calls, ['a', 'c', 'flag']);
+  assert.deepEqual(out.units.map((u) => u.status), ['reverted', 'skipped', 'reverted', 'skipped']);
+
+  // Flag change not recorded as applied: left alone.
+  const notApplied = await runRevertSteps({ units: [], facilityChange: { ...fc, status: 'pending' } }, {
+    revertItem: async () => ({}),
+    revertFlag: async () => assert.fail('flag must not be reverted'),
+  });
+  assert.equal(notApplied.facility.status, 'kept');
+
+  // An item refused: the flag stays on.
+  const oneRefused = await runRevertSteps({ units: [{ ...item, status: 'applied' }], facilityChange: { ...fc, status: 'applied' } }, {
+    revertItem: async () => {
+      throw new Error('changed');
+    },
+    revertFlag: async () => assert.fail('flag must not be reverted'),
+  });
+  assert.equal(oneRefused.refusedItems, 1);
+  assert.equal(oneRefused.facility.status, 'kept');
+});
+
+test('flag revert is refused while a number is used by two live units', () => {
+  assert.deepEqual(
+    repeatedNumbers([
+      unit('a', { unitNumber: '12', area: 'Complex 2' }),
+      unit('b', { unitNumber: ' 12 ', area: 'Complex 3' }),
+      unit('c', { unitNumber: '12', archived: true }),
+      unit('d', { unitNumber: '5A' }),
+      unit('e', { unitNumber: '5a' }),
+      unit('f', { unitNumber: '7' }),
+    ]),
+    [
+      { number: '12', unitIds: ['a', 'b'] },
+      { number: '5A', unitIds: ['d', 'e'] },
+    ],
+  );
+  assert.deepEqual(repeatedNumbers([unit('a', { unitNumber: 'C2-12' }), unit('b', { unitNumber: 'C3-12' })]), []);
+});
+
+test('apply sets the facility flag first; a refused flag writes no unit', async () => {
+  const record = () => ({
+    units: [
+      { unitId: 'a', tenants: [] },
+      { unitId: 'b', tenants: [] },
+    ],
+    facilityChange: { before: {}, beforeMissing: [], after: { unitNumbersRepeatAcrossAreas: true }, status: 'pending' },
+  });
+  const calls = [];
+  const r1 = record();
+  const res = await runApplySteps(r1, {
+    setFlag: async () => calls.push('flag'),
+    applyItem: async (i) => {
+      calls.push(i.unitId);
+      if (i.unitId === 'b') throw new Error('unit number changed since planning');
+    },
+  });
+  assert.deepEqual(calls, ['flag', 'a', 'b']);
+  assert.deepEqual(res, { applied: 1, refused: 1, result: 'partial' });
+  assert.equal(r1.facilityChange.status, 'applied');
+  assert.deepEqual(r1.units.map((u) => u.status), ['applied', 'refused']);
+
+  const r2 = record();
+  const res2 = await runApplySteps(r2, {
+    setFlag: async () => {
+      throw new Error('flag changed since planning');
+    },
+    applyItem: async () => assert.fail('no unit may be written without the flag'),
+  });
+  assert.equal(res2.result, 'aborted');
+  assert.deepEqual(r2.units.map((u) => u.status), ['skipped', 'skipped']);
+
+  // Flag already on: straight to the units.
+  const r3 = { ...record(), facilityChange: null };
+  assert.equal((await runApplySteps(r3, { setFlag: async () => assert.fail(), applyItem: async () => {} })).result, 'applied');
+});
+
+test('check after apply reports duplicates, no-area clashes, holds and reservations', () => {
+  const items = [{ unitId: 'a', before: { unitNumber: 'C2-12' }, after: { unitNumber: '12' } }];
+  const clean = verifyAfterApply({
+    facilityId: 'f1',
+    items,
+    units: [unit('a', { unitNumber: '12', area: 'Complex 2' }), unit('b', { unitNumber: '12', area: 'Complex 3' })],
+    now: NOW,
+  });
+  assert.deepEqual(clean, []);
+  const later = new Date(NOW.getTime() + 60_000);
+  const issues = verifyAfterApply({
+    facilityId: 'f1',
+    items,
+    units: [
+      unit('a', { unitNumber: '12', area: 'Complex 2' }),
+      unit('dup', { unitNumber: '12 ', area: 'complex 2' }),
+      unit('bare', { unitNumber: '12' }),
+    ],
+    holds: [{ id: 'a', data: { unitId: 'a', expiresAt: later } }],
+    publicReservations: [{ id: 'r1', data: { facilityId: 'f1', unitNumber: 'C2-12', status: 'pending', expiresAt: later } }],
+    facilityReservations: [{ id: 'fr1', data: { unitId: 'a', status: 'confirmed' } }],
+    now: NOW,
+  });
+  assert.deepEqual(issues.map((i) => i.code), [
+    'duplicate-after-apply',
+    'no-area-clash-after-apply',
+    'active-hold-after-apply',
+    'open-public-reservation-after-apply',
+    'open-facility-reservation-after-apply',
+  ]);
 });
 
 test('prefix map and args parsing', () => {
@@ -296,6 +491,12 @@ test('prefix map and args parsing', () => {
   assert.equal(a.apply, false);
   assert.equal(a.allowNearRentRun, false);
   assert.equal(parseArgs(['--revert', 'r.json']).revert, 'r.json');
+  assert.equal(parseArgs(['--revert', 'r.json', '--apply']).apply, true);
+  assert.throws(() => parseArgs(['--facility', 'f1', '--prefix-map', 'C2-=A', '--apply']), /--confirm-app-supports-repeats/);
+  const b = parseArgs(['--facility', 'f1', '--prefix-map', 'C2-=A', '--apply', '--confirm-app-supports-repeats', '--out', 'x']);
+  assert.equal(b.apply, true);
+  assert.equal(b.confirmAppSupportsRepeats, true);
+  assert.equal(b.outDir, 'x');
 });
 
 test('default out dir is the repo root backfill-records/, whatever the cwd', () => {

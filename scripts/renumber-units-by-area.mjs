@@ -34,24 +34,40 @@
  * reservations still pending, units in `reserved` status, stale unit
  * holders, map labels that spell out old numbers.
  *
- * Writes (--apply): per unit, one transaction re-reads the unit, the tenants
- * it relabels and the unit's hold, refuses the item if any changed since
- * planning, and writes unit.unitNumber (+ legacyUnitNumber = old) and each
- * tenant's unitNumber (+ legacyUnitNumber = old label). unitId, unitArea and
- * updatedAt are left alone. The facility flag is set last. Ledgers, payments,
+ * Writes (--apply, which also needs --confirm-app-supports-repeats: the app
+ * build that allows a number to repeat across areas must be live first):
+ * the facility flag is set FIRST, in its own transaction (harmless while the
+ * numbers are still prefixed and unique), so a crash part-way never leaves
+ * repeated numbers with the flag off. Then per unit, one transaction re-reads
+ * the unit, the tenants it relabels and the unit's hold, refuses the item if
+ * any changed since planning, and writes unit.unitNumber (+ legacyUnitNumber
+ * = old) and each tenant's unitNumber (+ legacyUnitNumber = old label).
+ * unitId, unitArea and updatedAt are left alone. Ledgers, payments,
  * contracts, invoices, reservations and other historical snapshots are never
- * touched; inactive tenants keep their old label.
+ * touched; inactive tenants keep their old label. Afterwards the live units,
+ * holds and reservations are read again and any (area, number) duplicate,
+ * clash with a no-area unit, or new hold/reservation on a renumbered unit is
+ * reported. Exit code 2 when anything was refused or the check found issues.
  *
  * The record (write-ahead): before the first write the full before/after
  * plan is written to --out (default backfill-records/ at the repo root, which
  * is gitignored), and it is rewritten as each item applies or is refused.
+ * The record is the only source for --revert: keep it outside the checkout.
  *
- * --revert <record>: for each unit item, one transaction checks that every
- * doc is still in its recorded "after" state (or already back at "before")
- * and restores the recorded "before" values (deleting fields that were not
- * there). An item where any doc matches neither is refused. The facility flag
- * is restored last, and only when no item was refused. Dry run unless
- * --apply is given too.
+ * --revert <record>: honours what the apply did. Items the apply refused are
+ * skipped; applied and pending items (pending: a crash between commit and
+ * record write) are handled by state. Per unit, one transaction restores the
+ * recorded "before" values (deleting fields that were not there) when the
+ * unit is still in its "after" state. A recorded tenant that has since moved
+ * on (inactive, or its unitId no longer this unit) is detached and left
+ * alone; an ACTIVE tenant who now holds the unit (unit.tenantId, or their
+ * unitId is the unit) and whose label is the "after" number is relabelled to
+ * the old number in the same transaction. An item where the unit, or a
+ * still-attached recorded tenant, matches neither state is refused. The
+ * facility flag is restored last: only when the record says the apply set it,
+ * no item was refused, and no number is used by two live units (trimmed,
+ * ignoring case; the app refuses to turn the setting off then too). Dry run
+ * unless --apply is given too.
  *
  * Map shapes link to units by unitId (lib/models/map_shape_model.dart), so
  * they need no change. The public map's unit list (publicFacilityMaps units)
@@ -66,9 +82,10 @@
  *
  * Usage:
  *   node scripts/renumber-units-by-area.mjs --facility <id> --prefix-map "C2-=Complex 2,C3-=Complex 3"
- *   node scripts/renumber-units-by-area.mjs --facility <id> --prefix-map "..." --apply
+ *   node scripts/renumber-units-by-area.mjs --facility <id> --prefix-map "..." --apply --confirm-app-supports-repeats --out <dir outside the checkout>
  *   node scripts/renumber-units-by-area.mjs --revert backfill-records/<record>.json [--apply]
  *   Options: --project <id>  --out <dir>  --json  --allow-near-rent-run  --admin-from <dir>
+ *            --confirm-app-supports-repeats (required with --apply)
  */
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -81,6 +98,10 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function defaultOutDir() {
   return path.join(repoRoot, 'backfill-records');
 }
+
+/** What must be true of the deployed app before --apply. */
+export const APP_SUPPORT_NOTE =
+  'The live app build must include the repeat-unit-numbers rules (PR #14: a number may repeat across areas when unitNumbersRepeatAcrossAreas is on) before --apply.';
 
 /** Hours either side of 00:00Z on the 1st when the monthly rent jobs run. */
 export const RENT_RUN_WINDOW_HOURS = 6;
@@ -534,17 +555,253 @@ export function revertDocAction(entry, current) {
 }
 
 /**
- * Revert of one unit item: the action for the unit and each tenant, and
- * whether the item is refused (any doc matches neither its after nor its
- * before state). [current] maps 'unit' and each tenantId to data or null.
+ * Revert of one unit item. [current] is what the transaction read:
+ * `unit` (data or null), `tenants` (recorded tenant id -> data or null) and
+ * `holders` ([{ id, data }], tenants linked to the unit now: unit.tenantId or
+ * their unitId).
+ *
+ * The unit: restore / already-before / refuse (revertDocAction). A recorded
+ * tenant that is gone, inactive or whose unitId is no longer this unit is
+ * `detached` and left alone; otherwise restore / already-before / refuse. When
+ * the unit is restored, an ACTIVE holder who was not recorded, is linked to
+ * this unit (their unitId is it, or they have none and the unit's tenantId is
+ * them) and whose label is the "after" number is `relabel`led to the old
+ * number; other holders are left (`holder-other-label`). The item is refused
+ * when any doc is `refuse`.
  */
 export function planItemRevert(item, current) {
-  const docs = [{ kind: 'unit', id: item.unitId, ...revertDocAction(item, current.unit) }];
+  const unitDoc = { kind: 'unit', id: item.unitId, ...revertDocAction(item, current.unit ?? null) };
+  const docs = [unitDoc];
+  const recorded = new Set();
   for (const t of item.tenants) {
-    docs.push({ kind: 'tenant', id: t.tenantId, ...revertDocAction(t, current[t.tenantId]) });
+    recorded.add(t.tenantId);
+    const data = current.tenants?.[t.tenantId] ?? null;
+    if (!data || data.isActive !== true || textOf(data.unitId) !== item.unitId) {
+      docs.push({ kind: 'tenant', id: t.tenantId, action: 'detached' });
+      continue;
+    }
+    docs.push({ kind: 'tenant', id: t.tenantId, ...revertDocAction(t, data) });
+  }
+  if (unitDoc.action === 'restore') {
+    const unitHolder = textOf(current.unit?.tenantId);
+    const seen = new Set();
+    for (const h of current.holders ?? []) {
+      if (recorded.has(h.id) || seen.has(h.id)) continue;
+      seen.add(h.id);
+      const data = h.data ?? {};
+      if (data.isActive !== true) continue;
+      const unitId = textOf(data.unitId);
+      const linked = unitId ? unitId === item.unitId : unitHolder === h.id;
+      if (!linked) continue;
+      if (unitNumberKey(data.unitNumber) === unitNumberKey(item.after.unitNumber)) {
+        docs.push({ kind: 'tenant', id: h.id, action: 'relabel', set: { unitNumber: item.before.unitNumber }, remove: [] });
+      } else {
+        docs.push({ kind: 'tenant', id: h.id, action: 'holder-other-label' });
+      }
+    }
   }
   const refused = docs.filter((d) => d.action === 'refuse');
   return { refused: refused.length > 0, refusedDocs: refused.map((d) => `${d.kind} ${d.id}`), docs };
+}
+
+/**
+ * Unit numbers (trimmed, ignoring case) that more than one live unit uses,
+ * as [{ number, unitIds }]. While any exist the facility flag must stay on:
+ * the app refuses to turn the setting off then as well.
+ */
+export function repeatedNumbers(units) {
+  const byKey = new Map();
+  for (const unit of units) {
+    if (!isLive(unit)) continue;
+    const k = unitNumberKey(unit.data?.unitNumber);
+    if (!k) continue;
+    if (!byKey.has(k)) byKey.set(k, { number: String(unit.data?.unitNumber ?? '').trim(), unitIds: [] });
+    byKey.get(k).unitIds.push(unit.id);
+  }
+  return [...byKey.values()].filter((g) => g.unitIds.length > 1);
+}
+
+/**
+ * The check after --apply, on fresh reads. [items] are the applied unit
+ * items. Issues: two live units with the same (area, number) ignoring case
+ * and spaces; a renumbered unit whose number a no-area live unit has; an
+ * active hold, or an open public or facility reservation, on a renumbered
+ * unit (by unitId, or by its old or new number).
+ */
+export function verifyAfterApply({ facilityId, items, units = [], holds = [], publicReservations = [], facilityReservations = [], now = new Date() }) {
+  const issues = [];
+  const live = units.filter(isLive);
+  const liveById = new Map(live.map((u) => [u.id, u]));
+  const groups = new Map();
+  for (const u of live) {
+    const n = looseKey(u.data?.unitNumber);
+    if (!n) continue;
+    const key = `${looseKey(u.data?.area)}\u0000${n}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(u.id);
+  }
+  for (const ids of groups.values()) {
+    if (ids.length < 2) continue;
+    const u = liveById.get(ids[0]);
+    issues.push({
+      code: 'duplicate-after-apply',
+      message: `${ids.length} live units numbered "${u.data?.unitNumber}" in ${textOf(u.data?.area) ?? '(no area)'}: ${ids.join(', ')}`,
+      unitIds: ids,
+    });
+  }
+  const noArea = new Map();
+  for (const u of live) {
+    const n = looseKey(u.data?.unitNumber);
+    if (!textOf(u.data?.area) && n) noArea.set(n, u.id);
+  }
+  const itemIds = new Set(items.map((i) => i.unitId));
+  for (const item of items) {
+    const u = liveById.get(item.unitId);
+    const other = u && textOf(u.data?.area) ? noArea.get(looseKey(u.data?.unitNumber)) : null;
+    if (other) {
+      issues.push({
+        code: 'no-area-clash-after-apply',
+        message: `Unit ${item.unitId} "${u.data?.unitNumber}" has the number of no-area unit ${other}`,
+        unitIds: [item.unitId, other],
+      });
+    }
+  }
+  const names = (unitId, unitNumber) => {
+    const out = new Set();
+    const id = textOf(unitId);
+    if (id && itemIds.has(id)) out.add(id);
+    const k = unitNumberKey(unitNumber);
+    if (k) {
+      for (const i of items) {
+        if (k === unitNumberKey(i.before.unitNumber) || k === unitNumberKey(i.after.unitNumber)) out.add(i.unitId);
+      }
+    }
+    return [...out];
+  };
+  for (const h of holds) {
+    const unitId = textOf(h.data?.unitId) ?? h.id;
+    if (!itemIds.has(unitId)) continue;
+    const expires = toDate(h.data?.expiresAt);
+    if (!expires || expires > now) issues.push({ code: 'active-hold-after-apply', message: `Unit ${unitId} has an active checkout hold`, unitId });
+  }
+  for (const r of publicReservations) {
+    const d = r.data ?? {};
+    if (d.facilityId !== undefined && d.facilityId !== facilityId) continue;
+    if (!OPEN_RESERVATION.has(String(d.status ?? ''))) continue;
+    const expires = toDate(d.expiresAt);
+    if (expires && expires <= now) continue;
+    for (const unitId of names(d.unitId, d.unitNumber)) {
+      issues.push({ code: 'open-public-reservation-after-apply', message: `Public reservation ${r.id} (${d.status}) is open on unit ${unitId}`, unitId, reservationId: r.id });
+    }
+  }
+  for (const r of facilityReservations) {
+    const d = r.data ?? {};
+    if (!OPEN_RESERVATION.has(String(d.status ?? ''))) continue;
+    for (const unitId of names(d.unitId, d.unitNumber)) {
+      issues.push({ code: 'open-facility-reservation-after-apply', message: `Reservation ${r.id} (${d.status}) is open on unit ${unitId}`, unitId, reservationId: r.id });
+    }
+  }
+  return issues;
+}
+
+/**
+ * The --apply sequence over [record] (mutated: statuses, errors, result).
+ * The facility flag first, in its own step: if it cannot be set nothing else
+ * is written. Then each unit item. [ops]: setFlag(facilityChange),
+ * applyItem(item) (throws to refuse), save() after every step.
+ * Returns { applied, refused, result }: result 'applied', 'partial' (some
+ * item refused) or 'aborted' (flag not set, nothing written).
+ */
+export async function runApplySteps(record, { setFlag, applyItem, save = () => {}, log = () => {} }) {
+  const fc = record.facilityChange;
+  if (fc) {
+    try {
+      await setFlag(fc);
+      fc.status = 'applied';
+      fc.appliedAt = new Date().toISOString();
+    } catch (e) {
+      fc.status = 'refused';
+      fc.error = String(e?.message ?? e);
+      for (const item of record.units) {
+        item.status = 'skipped';
+        item.error = 'facility flag was not set';
+      }
+      record.result = 'aborted';
+      save();
+      log(`  refused facility flag: ${fc.error}; no unit written`);
+      return { applied: 0, refused: 0, result: 'aborted' };
+    }
+    save();
+  }
+  let applied = 0;
+  let refused = 0;
+  for (const item of record.units) {
+    try {
+      await applyItem(item);
+      item.status = 'applied';
+      item.appliedAt = new Date().toISOString();
+      applied++;
+    } catch (e) {
+      item.status = 'refused';
+      item.error = String(e?.message ?? e);
+      refused++;
+      log(`  refused unit ${item.unitId}: ${item.error}`);
+    }
+    save();
+  }
+  record.result = refused ? 'partial' : 'applied';
+  save();
+  return { applied, refused, result: record.result };
+}
+
+/**
+ * The --revert sequence over an apply record [rec]. Items the apply refused
+ * or skipped are left out; applied and pending ones (pending: a crash
+ * between commit and record write) go to revertItem(item), which decides by
+ * state and returns { status, docs } or throws to refuse. The facility flag
+ * last, via revertFlag(facilityChange) (returns a result, throws to refuse),
+ * and only when the record says the apply set it and no item was refused.
+ */
+export async function runRevertSteps(rec, { revertItem, revertFlag, save = () => {}, log = () => {} }) {
+  const out = { units: [], facility: null, refusedItems: 0 };
+  for (const item of rec.units ?? []) {
+    if (item.status !== 'applied' && item.status !== 'pending') {
+      out.units.push({ unitId: item.unitId, recordedStatus: item.status, status: 'skipped', reason: `the apply ${item.status ?? 'did not reach'} it` });
+      continue;
+    }
+    const result = { unitId: item.unitId, recordedStatus: item.status };
+    try {
+      const r = await revertItem(item);
+      result.status = r.status;
+      result.docs = r.docs;
+    } catch (e) {
+      result.status = 'refused';
+      result.error = String(e?.message ?? e);
+      if (e?.docs) result.docs = e.docs;
+      out.refusedItems++;
+    }
+    out.units.push(result);
+    const summary = (result.docs ?? []).map((d) => `${d.kind} ${d.id}: ${d.action}`).join('; ');
+    log(`  unit ${item.unitId}: ${result.status}${result.error ? ` (${result.error})` : ''}${summary ? ` [${summary}]` : ''}`);
+    save(out);
+  }
+  const fc = rec.facilityChange;
+  if (!fc) {
+    out.facility = { status: 'unchanged', reason: 'the apply did not change the flag' };
+  } else if (fc.status !== 'applied') {
+    out.facility = { status: 'kept', reason: `the record says the flag change was ${fc.status ?? 'not run'}; check it by hand` };
+  } else if (out.refusedItems > 0) {
+    out.facility = { status: 'kept', reason: 'some unit items were refused; numbers may still repeat' };
+  } else {
+    try {
+      out.facility = await revertFlag(fc);
+    } catch (e) {
+      out.facility = { status: 'refused', error: String(e?.message ?? e) };
+    }
+  }
+  log(`  facility flag: ${JSON.stringify(out.facility)}`);
+  save(out);
+  return out;
 }
 
 /** Parses argv; throws on anything it does not know. */
@@ -559,6 +816,7 @@ export function parseArgs(argv) {
     json: false,
     allowNearRentRun: false,
     adminFrom: null,
+    confirmAppSupportsRepeats: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -578,6 +836,7 @@ export function parseArgs(argv) {
     else if (arg === '--json') out.json = true;
     else if (arg === '--allow-near-rent-run') out.allowNearRentRun = true;
     else if (arg === '--admin-from') out.adminFrom = value();
+    else if (arg === '--confirm-app-supports-repeats') out.confirmAppSupportsRepeats = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (out.revert) {
@@ -585,6 +844,9 @@ export function parseArgs(argv) {
   } else {
     if (!out.facility) throw new Error('Pass --facility <id>.');
     if (!out.prefixMap) throw new Error('Pass --prefix-map "C2-=Complex 2,...".');
+    if (out.apply && !out.confirmAppSupportsRepeats) {
+      throw new Error(`${APP_SUPPORT_NOTE} Confirm it by passing --confirm-app-supports-repeats with --apply.`);
+    }
   }
   return out;
 }
@@ -671,14 +933,41 @@ function printPlan(plan, publicMap) {
   }
 }
 
+/** Units, holds and reservations of the facility as rows, for the check after --apply. */
+async function readForVerify(db, facilityRef, facilityId) {
+  const rows = (snap) => snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+  const [unitSnap, holdSnap, publicResSnap, resSnap] = await Promise.all([
+    facilityRef.collection('units').get(),
+    facilityRef.collection('mapEngine').doc('activeHolds').collection('items').get(),
+    db.collection('publicReservations').where('facilityId', '==', facilityId).get(),
+    facilityRef.collection('reservations').get(),
+  ]);
+  return {
+    units: rows(unitSnap),
+    holds: rows(holdSnap),
+    publicReservations: rows(publicResSnap),
+    facilityReservations: rows(resSnap),
+  };
+}
+
 async function runPlanOrApply(args, projectId) {
   const { db } = loadAdmin(args, projectId);
   const facilityId = args.facility;
   const now = new Date();
+  const outDir = path.resolve(args.outDir || defaultOutDir());
+  if (args.apply && !args.outDir) {
+    console.log('='.repeat(78));
+    console.log('NOTE: no --out given. The revert record will be written inside this checkout:');
+    console.log(`  ${outDir}`);
+    console.log('The record is the ONLY source for --revert. Prefer --out <dir> outside the');
+    console.log('checkout/worktree (a cleaned-up worktree takes the record with it).');
+    console.log('='.repeat(78));
+  }
   const { facilityRef, publicMap, input } = await readFacility(db, facilityId);
   const plan = planRenumber({ ...input, prefixMap: args.prefixMap, now, allowNearRentRun: args.allowNearRentRun });
+  // Not an abort: the operator confirms it (--confirm-app-supports-repeats is required with --apply).
+  plan.warnings.push({ code: 'app-must-support-repeats', message: APP_SUPPORT_NOTE });
 
-  const outDir = path.resolve(args.outDir || defaultOutDir());
   mkdirSync(outDir, { recursive: true });
   const stamp = now.toISOString().replace(/[:.]/g, '-');
   const mode = args.apply ? 'apply' : 'dry-run';
@@ -690,6 +979,7 @@ async function runPlanOrApply(args, projectId) {
     facilityId,
     prefixMap: args.prefixMap,
     plannedAt: now.toISOString(),
+    confirmedAppSupportsRepeats: args.confirmAppSupportsRepeats,
     ok: plan.ok,
     counts: plan.counts,
     aborts: plan.aborts,
@@ -713,7 +1003,7 @@ async function runPlanOrApply(args, projectId) {
   if (!args.apply) {
     record.result = 'dry-run';
     writeRecord(file, record);
-    console.log('  pre-checks passed (dry run; pass --apply to write)');
+    console.log('  pre-checks passed (dry run; --apply also needs --confirm-app-supports-repeats)');
     console.log(`  record: ${file}`);
     return;
   }
@@ -723,14 +1013,23 @@ async function runPlanOrApply(args, projectId) {
   writeRecord(file, record);
   console.log(`  record (write-ahead): ${file}`);
 
-  let applied = 0;
-  let refused = 0;
-  for (const item of record.units) {
-    const unitRef = facilityRef.collection('units').doc(item.unitId);
-    const holdRef = facilityRef.collection('mapEngine').doc('activeHolds').collection('items').doc(item.unitId);
-    const tenantRefs = item.tenants.map((t) => facilityRef.collection('tenants').doc(t.tenantId));
-    try {
-      await db.runTransaction(async (txn) => {
+  const { applied, refused, result } = await runApplySteps(record, {
+    save: () => writeRecord(file, record),
+    log: (line) => console.log(line),
+    // First: harmless while the numbers are still prefixed, and a crash later
+    // never leaves plain repeated numbers with the flag off.
+    setFlag: (fc) =>
+      db.runTransaction(async (txn) => {
+        const f = await txn.get(facilityRef);
+        if (!f.exists) throw new Error('facility no longer exists');
+        if (!fieldsMatch(f.data(), fc.before, fc.beforeMissing)) throw new Error('flag changed since planning');
+        txn.update(facilityRef, fc.after);
+      }),
+    applyItem: (item) => {
+      const unitRef = facilityRef.collection('units').doc(item.unitId);
+      const holdRef = facilityRef.collection('mapEngine').doc('activeHolds').collection('items').doc(item.unitId);
+      const tenantRefs = item.tenants.map((t) => facilityRef.collection('tenants').doc(t.tenantId));
+      return db.runTransaction(async (txn) => {
         const [u, h, ...ts] = await Promise.all([txn.get(unitRef), txn.get(holdRef), ...tenantRefs.map((r) => txn.get(r))]);
         const tenantData = Object.fromEntries(item.tenants.map((t, i) => [t.tenantId, ts[i].exists ? ts[i].data() : null]));
         const why = applyItemRefusal(item, u.exists ? u.data() : null, tenantData, h.exists ? h.data() : null, new Date());
@@ -738,43 +1037,33 @@ async function runPlanOrApply(args, projectId) {
         txn.update(unitRef, item.after);
         item.tenants.forEach((t, i) => txn.update(tenantRefs[i], t.after));
       });
-      item.status = 'applied';
-      item.appliedAt = new Date().toISOString();
-      applied++;
-    } catch (e) {
-      item.status = 'refused';
-      item.error = String(e?.message ?? e);
-      refused++;
-      console.log(`  refused unit ${item.unitId}: ${item.error}`);
-    }
-    writeRecord(file, record);
-  }
+    },
+  });
 
-  // The flag last: once any unit is plain the app must allow numbers to repeat per area.
-  const fc = record.facilityChange;
-  if (fc && (applied > 0 || record.units.length === 0)) {
-    try {
-      await db.runTransaction(async (txn) => {
-        const f = await txn.get(facilityRef);
-        if (!f.exists) throw new Error('facility no longer exists');
-        if (!fieldsMatch(f.data(), fc.before, fc.beforeMissing)) throw new Error('flag changed since planning');
-        txn.update(facilityRef, fc.after);
-      });
-      fc.status = 'applied';
-    } catch (e) {
-      fc.status = 'refused';
-      fc.error = String(e?.message ?? e);
-      console.log(`  refused facility flag: ${fc.error}`);
+  if (result !== 'aborted') {
+    const fresh = await readForVerify(db, facilityRef, facilityId);
+    const issues = verifyAfterApply({
+      facilityId,
+      items: record.units.filter((i) => i.status === 'applied'),
+      ...fresh,
+      now: new Date(),
+    });
+    record.postApplyIssues = issues;
+    for (const issue of issues) console.log(`  CHECK [${issue.code}] ${issue.message}`);
+    if (issues.length) {
+      record.result = `${record.result}-needs-attention`;
+      console.log(`  ${issues.length} issue(s) after the run: look at them before anything else (revert with --revert ${file})`);
+    } else {
+      console.log('  check after the run: no duplicates, no-area clashes, holds or open reservations');
     }
-  } else if (fc) {
-    fc.status = 'skipped';
-    fc.error = 'no unit applied';
   }
-  record.result = refused || fc?.status === 'refused' ? 'partial' : 'applied';
   record.finishedAt = new Date().toISOString();
   record.counts = { ...record.counts, applied, refused };
   writeRecord(file, record);
-  console.log(`  applied ${applied}, refused ${refused}, facility flag ${fc ? fc.status : 'unchanged'}`);
+  const fc = record.facilityChange;
+  console.log(`  result ${record.result}: applied ${applied}, refused ${refused}, facility flag ${fc ? fc.status : 'already on'}`);
+  console.log(`  record: ${file}`);
+  if (record.result !== 'applied') process.exitCode = 2;
 }
 
 async function runRevert(args, projectId) {
@@ -791,12 +1080,13 @@ async function runRevert(args, projectId) {
   }
   const { db, FieldValue } = loadAdmin(args, projectId);
   const facilityRef = db.collection('facilities').doc(rec.facilityId);
+  const tenantsCol = facilityRef.collection('tenants');
 
   const outDir = path.resolve(args.outDir || defaultOutDir());
   mkdirSync(outDir, { recursive: true });
   const stamp = now.toISOString().replace(/[:.]/g, '-');
   const file = path.join(outDir, `renumber-units-${rec.facilityId}-revert-${args.apply ? 'apply' : 'dry-run'}-${stamp}.json`);
-  const out = { kind: 'renumber-units-by-area-revert', mode: args.apply ? 'apply' : 'dry-run', source, projectId, facilityId: rec.facilityId, startedAt: now.toISOString(), units: [], facility: null };
+  const meta = { kind: 'renumber-units-by-area-revert', mode: args.apply ? 'apply' : 'dry-run', source, projectId, facilityId: rec.facilityId, startedAt: now.toISOString() };
   console.log(`${args.apply ? 'APPLY' : 'DRY RUN'}: revert ${source}`);
 
   const fieldsFor = (d) => {
@@ -804,65 +1094,65 @@ async function runRevert(args, projectId) {
     for (const f of d.remove) fields[f] = FieldValue.delete();
     return fields;
   };
-  let refusedItems = 0;
-  for (const item of rec.units ?? []) {
-    const unitRef = facilityRef.collection('units').doc(item.unitId);
-    const tenantRefs = Object.fromEntries(item.tenants.map((t) => [t.tenantId, facilityRef.collection('tenants').doc(t.tenantId)]));
-    const result = { unitId: item.unitId, recordedStatus: item.status };
-    try {
-      await db.runTransaction(async (txn) => {
-        const u = await txn.get(unitRef);
-        const current = { unit: u.exists ? u.data() : null };
-        for (const [id, ref] of Object.entries(tenantRefs)) {
-          const s = await txn.get(ref);
-          current[id] = s.exists ? s.data() : null;
-        }
-        const plan = planItemRevert(item, current);
-        result.docs = plan.docs.map((d) => ({ kind: d.kind, id: d.id, action: d.action }));
-        if (plan.refused) throw new Error(`changed since the run: ${plan.refusedDocs.join(', ')}`);
-        if (!args.apply) return;
-        for (const d of plan.docs) {
-          if (d.action !== 'restore') continue;
-          txn.update(d.kind === 'unit' ? unitRef : tenantRefs[d.id], fieldsFor(d));
-        }
-      });
-      result.status = args.apply ? 'reverted' : 'would-revert';
-    } catch (e) {
-      result.status = 'refused';
-      result.error = String(e?.message ?? e);
-      refusedItems++;
-    }
-    out.units.push(result);
-    const summary = (result.docs ?? []).map((d) => `${d.kind} ${d.id}: ${d.action}`).join('; ');
-    console.log(`  unit ${item.unitId}: ${result.status}${result.error ? ` (${result.error})` : ''}${summary ? ` [${summary}]` : ''}`);
-    if (args.apply) writeRecord(file, out);
-  }
 
-  const fc = rec.facilityChange;
-  if (fc) {
-    if (refusedItems > 0) {
-      out.facility = { status: 'kept', reason: 'some unit items were refused; numbers may still repeat per area' };
-    } else {
-      try {
-        await db.runTransaction(async (txn) => {
-          const f = await txn.get(facilityRef);
-          const d = revertDocAction(fc, f.exists ? f.data() : null);
-          out.facility = { action: d.action };
-          if (d.action === 'refuse') throw new Error('facility flag changed since the run');
-          if (d.action !== 'restore' || !args.apply) return;
-          txn.update(facilityRef, fieldsFor(d));
-        });
-        out.facility.status = args.apply ? 'done' : 'dry-run';
-      } catch (e) {
-        out.facility = { status: 'refused', error: String(e?.message ?? e) };
-      }
-    }
-    console.log(`  facility flag: ${JSON.stringify(out.facility)}`);
-  }
-  out.finishedAt = new Date().toISOString();
-  writeRecord(file, out);
+  const out = await runRevertSteps(rec, {
+    log: (line) => console.log(line),
+    save: (partial) => {
+      if (args.apply) writeRecord(file, { ...meta, ...partial });
+    },
+    revertItem: (item) => {
+      const unitRef = facilityRef.collection('units').doc(item.unitId);
+      return db.runTransaction(async (txn) => {
+        const u = await txn.get(unitRef);
+        const unit = u.exists ? u.data() : null;
+        const tenants = {};
+        for (const t of item.tenants) {
+          const s = await txn.get(tenantsCol.doc(t.tenantId));
+          tenants[t.tenantId] = s.exists ? s.data() : null;
+        }
+        // Whoever holds the unit now: by their unitId, and the unit's tenantId.
+        const holders = (await txn.get(tenantsCol.where('unitId', '==', item.unitId))).docs.map((d) => ({ id: d.id, data: d.data() }));
+        const holderId = textOf(unit?.tenantId);
+        if (holderId && !holders.some((h) => h.id === holderId)) {
+          const s = await txn.get(tenantsCol.doc(holderId));
+          if (s.exists) holders.push({ id: s.id, data: s.data() });
+        }
+        const plan = planItemRevert(item, { unit, tenants, holders });
+        const docs = plan.docs.map((d) => ({ kind: d.kind, id: d.id, action: d.action }));
+        if (plan.refused) {
+          const err = new Error(`changed since the run: ${plan.refusedDocs.join(', ')}`);
+          err.docs = docs;
+          throw err;
+        }
+        if (args.apply) {
+          for (const d of plan.docs) {
+            if (d.action !== 'restore' && d.action !== 'relabel') continue;
+            txn.update(d.kind === 'unit' ? unitRef : tenantsCol.doc(d.id), fieldsFor(d));
+          }
+        }
+        return { status: args.apply ? 'reverted' : 'would-revert', docs };
+      });
+    },
+    revertFlag: (fc) =>
+      db.runTransaction(async (txn) => {
+        const f = await txn.get(facilityRef);
+        const d = revertDocAction(fc, f.exists ? f.data() : null);
+        if (d.action === 'refuse') throw new Error('facility flag changed since the run');
+        if (d.action === 'already-before') return { action: d.action, status: 'already-before' };
+        // Off again only when no number is used twice; the app refuses the same.
+        const units = (await txn.get(facilityRef.collection('units'))).docs.map((x) => ({ id: x.id, data: x.data() }));
+        const repeated = repeatedNumbers(units);
+        if (repeated.length) {
+          throw new Error(`numbers still used by more than one live unit: ${repeated.map((g) => `"${g.number}" (${g.unitIds.length})`).join(', ')}`);
+        }
+        if (args.apply) txn.update(facilityRef, fieldsFor(d));
+        return { action: d.action, status: args.apply ? 'restored' : 'would-restore' };
+      }),
+  });
+
+  writeRecord(file, { ...meta, ...out, finishedAt: new Date().toISOString() });
   console.log(`  record: ${file}`);
-  if (refusedItems) process.exitCode = 2;
+  if (out.refusedItems || out.facility?.status === 'refused') process.exitCode = 2;
 }
 
 async function main() {
