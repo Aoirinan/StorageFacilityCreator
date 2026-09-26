@@ -21,8 +21,8 @@ jobs:
         run: node scripts/check_tracked_generated_artifacts.js
       - name: firestore.rules matches firestore-rules-src/
         run: node scripts/build_firestore_rules.cjs --check
-      - name: Backfill script planners
-        run: node --test scripts/backfill-tenant-unit-id.test.mjs
+      - name: Backfill and migration script planners
+        run: node --test scripts/backfill-tenant-unit-id.test.mjs scripts/renumber-units-by-area.test.mjs
 
   email-limits-parity:
     runs-on: ubuntu-latest
