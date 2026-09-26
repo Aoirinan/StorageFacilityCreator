@@ -166,11 +166,18 @@ class RecurringChargesService {
 
   /// Whether [entries] already contain this month's recurring rent charge.
   ///
-  /// Matches the month two ways on purpose: the entry's own date, and the
-  /// month and year the generator stamped into metadata. The scheduled job in
-  /// functions-automation writes the same four metadata fields with a 1-based
-  /// month, so a charge posted server-side is recognised here and the two
-  /// paths cannot bill the same month twice between them.
+  /// Matches on the month and year the generator stamped into metadata. The
+  /// scheduled job in functions-automation writes the same four metadata
+  /// fields with a 1-based month, so a charge posted server-side is recognised
+  /// here and the two paths cannot bill the same month twice between them.
+  ///
+  /// The entry's own date is deliberately not compared. It is read in the
+  /// viewer's local time, and the scheduled job dated charges at 00:00 UTC on
+  /// the 1st until 2026-10, which is the last day of the previous month
+  /// anywhere in the US. September's server-posted charge read as August 31,
+  /// failed a same-month date check, and generating September here would have
+  /// billed every tenant a second time. The metadata month does not move with
+  /// the viewer's time zone.
   ///
   /// Voided entries do not count. A month whose charge was voided is a month
   /// with no charge, and the operator must be able to post it again.
@@ -181,12 +188,6 @@ class RecurringChargesService {
     return entries.any((entry) {
       if (entry.type != LedgerEntryType.rentCharge) return false;
       if (entry.status != LedgerEntryStatus.posted) return false;
-
-      final entryDate = entry.entryDate;
-      final isSameMonth = entryDate.year == targetDate.year &&
-          entryDate.month == targetDate.month;
-
-      if (!isSameMonth) return false;
 
       // Check metadata to confirm it's a recurring charge
       final metadata = entry.metadata;

@@ -7,6 +7,13 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { writeAuditLog } from './guardrails';
 import { isPaymentSafetyFeatureEnabled } from './paymentSafetyFlags';
+import {
+  buildRentChargeDescription,
+  isRentChargeForMonth,
+  rentChargeDateFor,
+  rentChargeMonthAt,
+  rentChargeMonthFromInput,
+} from './rentChargeHelpers';
 
 /**
  * Callable function to generate monthly rent charges for a facility
@@ -45,14 +52,20 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
       throw new functions.https.HttpsError('permission-denied', 'User does not have permission to generate charges for this facility');
     }
 
-    // Parse target date or use first of current month
-    let targetDate: Date;
-    if (forDate) {
-      targetDate = new Date(forDate);
-    } else {
-      const now = new Date();
-      targetDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    // The billing month: the one named by forDate, or the current UTC month.
+    //
+    // forDate used to become the charge date as-is. The Automation Preview
+    // screen sends whatever day was picked in its date picker, so charges were
+    // dated mid-month at 00:00 UTC (the previous evening in US time zones).
+    // Only the month is taken from it now; the charge is dated like the
+    // scheduled job's, at noon UTC on the 1st (see rentChargeDateFor).
+    const targetMonthRef = forDate
+      ? rentChargeMonthFromInput(forDate)
+      : rentChargeMonthAt(new Date());
+    if (!targetMonthRef) {
+      throw new functions.https.HttpsError('invalid-argument', 'forDate is not a valid date');
     }
+    const targetDate = rentChargeDateFor(targetMonthRef.year, targetMonthRef.month);
 
     // Get all active tenants for the facility
     const tenantsSnapshot = await admin.firestore()
@@ -87,8 +100,8 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
     let errorCount = 0;
     const errors: string[] = [];
 
-    const targetMonth = targetDate.getMonth() + 1; // JavaScript months are 0-indexed
-    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetMonthRef.month; // 1-based, as stored in metadata
+    const targetYear = targetMonthRef.year;
 
     for (const tenantDoc of activeTenants) {
       try {
@@ -165,22 +178,11 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
           .where('status', '==', 'posted')
           .get();
 
-        const existingCharge = ledgerSnapshot.docs.some(doc => {
-          const entryData = doc.data();
-          const entryDate = entryData.entryDate?.toDate();
-          if (!entryDate) return false;
-
-          const entryMonth = entryDate.getMonth() + 1;
-          const entryYear = entryDate.getFullYear();
-
-          if (entryMonth !== targetMonth || entryYear !== targetYear) return false;
-
-          const metadata = entryData.metadata || {};
-          return metadata.recurringCharge === true &&
-                 metadata.chargeType === 'monthlyRent' &&
-                 metadata.month === targetMonth &&
-                 metadata.year === targetYear;
-        });
+        // Same match as the scheduled job, so a charge either path posted
+        // (including older ones dated 00:00 UTC) is recognised here.
+        const existingCharge = ledgerSnapshot.docs.find((doc) =>
+          isRentChargeForMonth(doc.data(), targetMonth, targetYear),
+        );
 
         if (existingCharge) {
           // Store idempotency key for future checks (if enabled)
@@ -192,7 +194,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
               .doc(chargeIdempotencyKey);
             
             await idempotencyRef.set({
-              ledgerEntryId: ledgerSnapshot.docs[0].id,
+              ledgerEntryId: existingCharge.id,
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
               facilityId,
               tenantId,
@@ -205,9 +207,7 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
         }
 
         // Generate rent charge
-        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-          'July', 'August', 'September', 'October', 'November', 'December'];
-        const description = `Monthly Rent - ${monthNames[targetDate.getMonth()]} ${targetYear}`;
+        const description = buildRentChargeDescription(targetYear, targetMonth);
 
         // In dry-run mode, skip actual creation
         if (isDryRun) {
@@ -365,6 +365,9 @@ export const generateMonthlyRentCharges = functions.https.onCall(async (data, co
       } : {}),
     };
   } catch (error: any) {
+    // Pass deliberate errors (auth, permission, bad input) through unchanged
+    // rather than reporting them to the app as internal failures.
+    if (error instanceof functions.https.HttpsError) throw error;
     functions.logger.error('Error generating monthly rent charges:', error);
     throw new functions.https.HttpsError('internal', `Failed to generate charges: ${error.message}`);
   }

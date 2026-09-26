@@ -10,6 +10,10 @@ import {
 import {
   buildRentChargeDescription,
   hasRentChargeForMonth,
+  rentChargeDateFor,
+  rentChargeDuplicateWindow,
+  rentChargeMonthAt,
+  rentChargeMonthFromInput,
   shouldChargeTenant,
 } from './rentChargeHelpers';
 
@@ -61,6 +65,7 @@ export const processFacilityRentChargeJob = functions
   .onCreate(async (snapshot) => {
     const jobRef = snapshot.ref;
     const facilityId = snapshot.data()?.facilityId as string | undefined;
+    const runDate = snapshot.data()?.runDate as string | undefined;
 
     if (!facilityId) {
       functions.logger.error(`Rent-charge job ${snapshot.id} has no facilityId; marking failed`);
@@ -84,7 +89,7 @@ export const processFacilityRentChargeJob = functions
     }
 
     try {
-      const result = await generateFacilityRentCharges(facilityId);
+      const result = await generateFacilityRentCharges(facilityId, runDate);
       await jobRef.update({
         status: 'completed',
         ...result,
@@ -105,19 +110,29 @@ export const processFacilityRentChargeJob = functions
     }
   });
 
-async function generateFacilityRentCharges(facilityId: string): Promise<{
+async function generateFacilityRentCharges(
+  facilityId: string,
+  runDate: string | undefined,
+): Promise<{
   successCount: number;
   skippedCount: number;
   errorCount: number;
 }> {
-  const targetDate = new Date();
-  targetDate.setDate(1); // charges are dated to the 1st of the month
-  const targetMonth = targetDate.getMonth() + 1;
-  const targetYear = targetDate.getFullYear();
+  // The month comes from the job's run date (UTC, written by the scheduler) so
+  // a job processed late still bills the month it was enqueued for; the clock
+  // is only a fallback for a job without one.
+  const { year: targetYear, month: targetMonth } =
+    rentChargeMonthFromInput(runDate) ?? rentChargeMonthAt(new Date());
+  // Dated at noon UTC on the 1st, not at the run instant (00:00 UTC), which
+  // the app showed as the last day of the previous month in US time zones.
+  const targetDate = rentChargeDateFor(targetYear, targetMonth);
 
-  // Half-open [monthStart, nextMonthStart) window for the duplicate check.
-  const monthStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
-  const nextMonthStart = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 1);
+  // Half-open window for the duplicate check: the month plus a day either
+  // side, so an older charge dated 00:00 UTC or at a local midnight is found.
+  const { start: windowStart, end: windowEnd } = rentChargeDuplicateWindow(
+    targetYear,
+    targetMonth,
+  );
 
   const tenantsSnapshot = await admin
     .firestore()
@@ -149,12 +164,13 @@ async function generateFacilityRentCharges(facilityId: string): Promise<{
         .where('tenantId', '==', tenantId)
         .where('type', '==', 'rentCharge')
         .where('status', '==', 'posted')
-        // Bounded to the target month. The duplicate check only cares whether
+        // Bounded to the target month (plus a day either side, see
+        // rentChargeDuplicateWindow). The duplicate check only cares whether
         // *this* month's charge exists, so reading a tenant's entire rent
         // history is wasted work that grows every month they stay — by year
         // five that is ~60 documents per tenant, every tenant, every run.
-        .where('entryDate', '>=', admin.firestore.Timestamp.fromDate(monthStart))
-        .where('entryDate', '<', admin.firestore.Timestamp.fromDate(nextMonthStart))
+        .where('entryDate', '>=', admin.firestore.Timestamp.fromDate(windowStart))
+        .where('entryDate', '<', admin.firestore.Timestamp.fromDate(windowEnd))
         .get();
 
       if (
@@ -181,7 +197,7 @@ async function generateFacilityRentCharges(facilityId: string): Promise<{
         facilityId,
         type: 'rentCharge',
         amount: monthlyRate,
-        description: buildRentChargeDescription(targetDate),
+        description: buildRentChargeDescription(targetYear, targetMonth),
         entryDate: admin.firestore.Timestamp.fromDate(targetDate),
         dueDate: admin.firestore.Timestamp.fromDate(targetDate),
         status: 'posted',
