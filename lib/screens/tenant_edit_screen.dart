@@ -55,6 +55,9 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
   bool _isActive = true;
   bool _isOnDNR = false;
   String? _errorMessage;
+  // The unit picked from the list, linked by id; null when typed or
+  // unchanged.
+  String? _pickedUnitId;
   bool _portalEnabled = false;
   DateTime? _portalLastAccessAt;
   int _portalVisitCount = 0;
@@ -923,6 +926,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
         unitNumber: _unitController.text.trim(),
+        unitId: _pickedUnitId,
         monthlyRate: double.parse(_rateController.text.trim()),
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         isActive: _isActive,
@@ -1193,6 +1197,7 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
                             unitNumberController: _unitController,
                             monthlyRateController: _rateController,
                             forTenantId: widget.tenant.id,
+                            onUnitIdChanged: (id) => _pickedUnitId = id,
                           )
                         else
                           TextFormField(

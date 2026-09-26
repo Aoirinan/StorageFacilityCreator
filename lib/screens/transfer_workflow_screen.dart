@@ -30,6 +30,11 @@ class TransferWorkflowScreen extends ConsumerStatefulWidget {
 class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen> {
   TenantModel? _tenant;
   UnitModel? _fromUnit;
+  // The units the tenant occupies; the operator picks among them when there
+  // are several and their unit number does not say which.
+  List<UnitModel> _fromChoices = const [];
+  // Why there is no unit to transfer from, shown in its place.
+  String? _fromProblem;
   UnitModel? _toUnit;
   DateTime _transferDate = DateTime.now();
   String? _notes;
@@ -55,16 +60,22 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
         _tenant = await TenantService.getTenantById(widget.facilityId, widget.tenantId);
       }
 
-      // Load current unit
-      if (_tenant != null && _tenant!.unitNumber.isNotEmpty) {
+      // The unit they move out of: one they occupy (units.tenantId), never
+      // one picked by number alone. This used to fall back to the
+      // facility's first unit, which could be another tenant's.
+      final tenant = _tenant;
+      if (tenant != null) {
         final units = await UnitService.getUnitsForFacility(widget.facilityId);
-        _fromUnit = units.firstWhere(
-          (u) => u.unitNumber == _tenant!.unitNumber && u.status == UnitStatus.occupied,
-          orElse: () => units.firstWhere(
-            (u) => u.unitNumber == _tenant!.unitNumber,
-            orElse: () => units.first,
-          ),
-        );
+        try {
+          final from = TransferService.transferFromUnit(tenant, units);
+          _fromUnit = from.unit;
+          _fromChoices = from.choices;
+          _fromProblem = null;
+        } on TransferRefusedException catch (e) {
+          _fromUnit = null;
+          _fromChoices = const [];
+          _fromProblem = e.message;
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -303,7 +314,31 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
               ),
             ),
             const SizedBox(height: 12),
-            if (_fromUnit != null)
+            if (_fromChoices.length > 1)
+              DropdownButtonFormField<String>(
+                value: _fromUnit?.id,
+                decoration: const InputDecoration(
+                  labelText: 'Unit they move out of',
+                  helperText: 'They rent more than one unit. Pick the one they leave.',
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  for (final unit in _fromChoices)
+                    DropdownMenuItem(
+                      value: unit.id,
+                      child: Text(
+                        '${_unitLabel(unit)} - \$${unit.monthlyRate.toStringAsFixed(2)}/month',
+                      ),
+                    ),
+                ],
+                onChanged: (id) {
+                  setState(() {
+                    _fromUnit = _fromChoices.where((u) => u.id == id).firstOrNull;
+                    _calculatedTransfer = null; // Reset calculation
+                  });
+                },
+              )
+            else if (_fromUnit != null)
               Container(
                 padding: const EdgeInsets.all(12.0),
                 decoration: BoxDecoration(
@@ -320,7 +355,7 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _fromUnit!.unitNumber,
+                            _unitLabel(_fromUnit!),
                             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -337,7 +372,7 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
               )
             else
               Text(
-                'No current unit found',
+                _fromProblem ?? 'No current unit found',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: AppTheme.textSecondary,
                 ),
@@ -346,6 +381,13 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
         ),
       ),
     );
+  }
+
+  /// "12 (Complex 2)" when the unit has an area, so two units with one
+  /// number can be told apart.
+  static String _unitLabel(UnitModel unit) {
+    final area = unit.area?.trim() ?? '';
+    return area.isEmpty ? unit.unitNumber : '${unit.unitNumber} ($area)';
   }
 
   Widget _buildToUnitSelector() {
@@ -396,7 +438,7 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
                     return DropdownMenuItem(
                       value: unit,
                       child: Text(
-                        '${unit.unitNumber} - \$${unit.monthlyRate.toStringAsFixed(2)}/month',
+                        '${_unitLabel(unit)} - \$${unit.monthlyRate.toStringAsFixed(2)}/month',
                       ),
                     );
                   }).toList(),

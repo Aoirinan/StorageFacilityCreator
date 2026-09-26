@@ -19,6 +19,8 @@ import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 /// A unit that still shows a tenant as its occupant, and how to free it.
 class HeldUnit {
@@ -368,7 +370,9 @@ abstract class TenantRecordsStore {
   /// Writes [fields] to the tenant doc.
   Future<void> updateTenant(String tenantId, Map<String, dynamic> fields);
 
-  /// Units numbered [unitNumber] that are not switched off.
+  /// Units whose number is [unitNumber] under [unitNumberKey] (trimmed,
+  /// ignoring case) and that are not switched off. Archived units only when
+  /// no other unit has the number. [TenantService.unitForNumber] picks one.
   Future<List<UnitModel>> unitsNumbered(String unitNumber);
 
   /// Creates a standard unit numbered [unitNumber]; returns its id.
@@ -409,7 +413,7 @@ class TenantUpdateEffects {
 /// Assigning a unit that another tenant holds. Assigning by number used to
 /// overwrite that tenant's link: a stale unit number on reactivation, or a
 /// typo in Edit Tenant, took someone else's unit.
-class UnitHeldByAnotherTenantException implements Exception {
+class UnitHeldByAnotherTenantException implements UserFacingException {
   const UnitHeldByAnotherTenantException({
     required this.unitNumber,
     this.holderName,
@@ -418,12 +422,47 @@ class UnitHeldByAnotherTenantException implements Exception {
   final String unitNumber;
   final String? holderName;
 
+  @override
   String get message {
     final holder = (holderName ?? '').trim();
     return 'Unit $unitNumber is assigned to '
         '${holder.isEmpty ? 'another tenant' : holder}. Nothing was saved. '
         'Pick another unit, or free it first (Units > unit $unitNumber).';
   }
+
+  @override
+  String toString() => message;
+}
+
+/// A unit number that more than one unit has, none of them the tenant's:
+/// linking by number took whichever of them Firestore returned first.
+/// Picking the unit from the list links it by id instead.
+class AmbiguousUnitNumberException implements UserFacingException {
+  const AmbiguousUnitNumberException({
+    required this.unitNumber,
+    required this.count,
+  });
+
+  final String unitNumber;
+
+  /// How many units have the number.
+  final int count;
+
+  @override
+  String get message => 'More than one unit is numbered $unitNumber. '
+      'Nothing was saved. Pick the unit from the list.';
+
+  @override
+  String toString() => message;
+}
+
+/// A unit picked from the list (by id) that is no longer in this facility.
+class PickedUnitNotFoundException implements UserFacingException {
+  const PickedUnitNotFoundException();
+
+  @override
+  String get message => 'That unit is no longer in this facility. '
+      'Nothing was saved. Pick the unit from the list again.';
 
   @override
   String toString() => message;
@@ -535,14 +574,26 @@ class _FirestoreTenantRecords implements TenantRecordsStore {
 
   @override
   Future<List<UnitModel>> unitsNumbered(String unitNumber) async {
+    // The whole collection, not an equality query: Firestore cannot match
+    // ignoring case, and an exact match missed " 12" and "12A" for "12a",
+    // so the link made a second unit with the same number.
     final snap = await _facility
         .collection('units')
-        .where('unitNumber', isEqualTo: unitNumber)
+        .limit(FacilitySubcollections.readLimit)
         .get();
-    return [
-      for (final d in snap.docs)
-        if ((d.data()['isActive'] ?? true) == true) UnitModel.fromFirestore(d),
-    ];
+    FacilitySubcollections.reportIfReadLimitReached(
+        _facility.id, 'units', snap.docs.length);
+    final key = unitNumberKey(unitNumber);
+    final live = <UnitModel>[];
+    final archived = <UnitModel>[];
+    for (final d in snap.docs) {
+      final data = d.data();
+      if ((data['isActive'] ?? true) != true) continue;
+      final unit = UnitModel.fromFirestore(d);
+      if (unitNumberKey(unit.unitNumber) != key) continue;
+      (data['archived'] == true ? archived : live).add(unit);
+    }
+    return live.isNotEmpty ? live : archived;
   }
 
   @override
@@ -605,6 +656,9 @@ class TenantService {
     required String phone,
     required String unitNumber,
     required double monthlyRate,
+    // The unit picked from the list; when set it is linked by id and
+    // [unitNumber] is taken from it.
+    String? unitId,
     String? notes,
     DateTime? moveInDate,
     String? governmentIdType,
@@ -687,10 +741,26 @@ class TenantService {
       }
 
       // Refused before the tenant exists when another tenant holds the unit.
+      // A unit picked from the list ([unitId]) is linked by id, and the
+      // tenant's unit number is its number.
       final store = _records(facilityId);
-      final link = unitNumber.isEmpty
+      final picked =
+          unitId == null ? null : await _pickedUnit(store, facilityId, unitId);
+      final requested = picked?.unitNumber.trim() ?? unitNumber;
+      final link = requested.isEmpty
           ? null
-          : await _planUnitLink(store, tenantId: ref.id, unitNumber: unitNumber);
+          : await _planUnitLink(store,
+              tenantId: ref.id, unitNumber: requested, unit: picked);
+      if (link != null) tenantData['unitNumber'] = link.unitNumber;
+      // No unit to link: one is made after the tenant is saved. Refused now
+      // if it can't be (an archived unit keeps its number and is in no
+      // list): made later, the refusal said "Nothing was saved" over a
+      // saved tenant, and a retry saved them twice.
+      if (link != null && link.unitId == null) {
+        final duplicate =
+            await UnitService.duplicateUnitNumber(facilityId, link.unitNumber);
+        if (duplicate != null) throw duplicate;
+      }
 
       await ref.set(tenantData);
 
@@ -705,7 +775,7 @@ class TenantService {
           'name': name,
           'email': email,
           'phone': phone,
-          'unitNumber': unitNumber,
+          'unitNumber': tenantData['unitNumber'],
           'monthlyRate': monthlyRate,
         },
         metadata: {
@@ -940,6 +1010,9 @@ class TenantService {
     String? email,
     String? phone,
     String? unitNumber,
+    // The unit picked from the list; when set it is linked by id and
+    // [unitNumber] is taken from it.
+    String? unitId,
     double? monthlyRate,
     DateTime? paidThrough, // NEW: Allow updating paid through date
     bool clearPaidThrough = false, // NEW: Allow clearing paid through date
@@ -988,6 +1061,12 @@ class TenantService {
       if (kDebugMode) {
         print('🔄 Updating tenant: $tenantId');
       }
+
+      // A unit picked from the list: linked by id, and its number is the
+      // tenant's. By number alone, two units with one number were a guess.
+      final picked =
+          unitId == null ? null : await _pickedUnit(store, facilityId, unitId);
+      if (picked != null) unitNumber = picked.unitNumber.trim();
 
       final updateData = <String, dynamic>{
         'updatedAt': FieldValue.serverTimestamp(),
@@ -1123,20 +1202,45 @@ class TenantService {
         final oldNum = (beforeData['unitNumber'] as String?)?.trim() ?? '';
         final newNum = unitNumber.trim();
         final nowActive = isActive ?? wasActive;
+        // Exact (trimmed), not ignoring case: the lookup prefers the exact
+        // spelling, so "12a" to "12A" can name a different unit ("12A"
+        // beside "12a"), and is a change of unit like any other.
+        final numberChanged = newNum != oldNum;
+        // The same number saved again by an active tenant with nothing
+        // picked: an edit of other fields (phone, email, ...).
+        final keepingNumber = !numberChanged && wasActive && picked == null;
         if (newNum.isNotEmpty && nowActive) {
           try {
-            link = await _planUnitLink(store, tenantId: tenantId, unitNumber: newNum);
+            link = await _planUnitLink(store,
+                tenantId: tenantId, unitNumber: newNum, unit: picked);
           } on UnitHeldByAnotherTenantException catch (e) {
             // An unchanged number another tenant now holds (left behind by
             // an old Unassign Tenant): a phone change was refused with
             // "Nothing was saved". Save the rest and say why the unit was
-            // not linked. A new number, or reactivating onto it, is still
-            // refused: that would bill them for someone else's unit.
-            if (newNum != oldNum || !wasActive) rethrow;
+            // not linked. A new number, reactivating onto it, or picking
+            // that unit from the list is still refused: that would bill
+            // them for someone else's unit.
+            if (!keepingNumber) rethrow;
             notice = staleUnitNumberNotice(e, _displayName(beforeData, tenantId));
+          } on AmbiguousUnitNumberException catch (e) {
+            // Likewise an unchanged number that several units have, none of
+            // them theirs: the phone change is saved, and the unit is left
+            // for the owner to pick.
+            if (!keepingNumber) rethrow;
+            notice = ambiguousUnitNumberNotice(e, _displayName(beforeData, tenantId));
           }
           final planned = link;
-          if (planned != null && newNum != oldNum) {
+          // The unit's own spelling, so the tenant's number matches it.
+          if (planned != null && planned.unitId != null) {
+            updateData['unitNumber'] = planned.unitNumber;
+          }
+          // A picked unit with the number of another unit they hold (two
+          // units numbered alike) is a change of unit too.
+          if (planned != null &&
+              (numberChanged ||
+                  (picked != null &&
+                      await _holdsOtherNumbered(store, tenantId,
+                          number: oldNum, exceptUnitId: picked.id)))) {
             final change = await _planUnitChange(
               store,
               tenantId: tenantId,
@@ -1157,7 +1261,7 @@ class TenantService {
           // rent (the rent job bills tenants with a unit number) while the
           // unit still shows them.
           final held = unitsHeldByTenant(tenantId, await store.linkedUnits(tenantId))
-              .where((u) => u.unitNumber.trim() == oldNum)
+              .where((u) => sameUnitNumber(u.unitNumber, oldNum))
               .toList();
           if (held.isNotEmpty) {
             throw TenantStillAssignedToUnitException(
@@ -1287,24 +1391,36 @@ class TenantService {
     required String facilityId,
     required String tenantId,
     required String unitNumber,
+    String? unitId,
     double? monthlyRate,
     TenantRecordsStore? records,
     TenantUpdateEffects? effects,
     String? actingUid,
   }) async {
     final store = records ?? _records(facilityId);
+    // The unit moved into: by id when the caller has it (the wizard does),
+    // else by number.
+    final picked =
+        unitId == null ? null : await _pickedUnit(store, facilityId, unitId);
     final before = await store.tenant(tenantId);
-    final newNum = unitNumber.trim();
+    final typed = picked?.unitNumber.trim() ?? unitNumber.trim();
+    final target = picked ??
+        unitForNumber(await store.unitsNumbered(typed), typed,
+            tenantId: tenantId);
+    final newNum = target?.unitNumber.trim() ?? typed;
     final held = _heldUnitModels(tenantId, await store.linkedUnits(tenantId));
+    // By id: by number, a second unit numbered like one they hold read as
+    // already theirs, so the move-in linked nothing and billed nothing.
     final others = [
       for (final u in held)
-        if (u.unitNumber.trim() != newNum) u
+        if (u.id != target?.id) u
     ];
     if (others.isEmpty) {
       return updateTenant(
         facilityId: facilityId,
         tenantId: tenantId,
         unitNumber: newNum,
+        unitId: unitId,
         monthlyRate: monthlyRate,
         isActive: true,
         records: records,
@@ -1315,8 +1431,9 @@ class TenantService {
     final uid = actingUid ?? _auth.currentUser?.uid;
     if (uid == null) throw Exception('Not signed in');
     final fx = effects ?? const TenantUpdateEffects();
-    final link =
-        await _planUnitLink(store, tenantId: tenantId, unitNumber: newNum);
+    final link = target == null
+        ? _UnitLink(unitNumber: newNum)
+        : _linkTo(target, tenantId: tenantId);
     // Already theirs (a move-in that went through): nothing to add.
     final adding = held.length == others.length;
     final name = _displayName(before, tenantId);
@@ -1348,7 +1465,7 @@ class TenantService {
           if (change?.monthlyRate != null) 'monthlyRate': change!.monthlyRate,
           'isActive': true,
           'updatedAt': FieldValue.serverTimestamp(),
-          if (!others.any((u) => u.unitNumber.trim() == current))
+          if (!others.any((u) => sameUnitNumber(u.unitNumber, current)))
             'unitNumber': newNum,
         };
       },
@@ -1675,6 +1792,27 @@ class TenantService {
         "to $tenantName. Update $tenantName's unit number if they moved.";
   }
 
+  /// The CSV import's line for row [rowNumber] that [createTenant] refused.
+  /// "Pick the unit from the list" means nothing in an import, so a number
+  /// several units have says how to add that tenant instead.
+  static String csvImportRowError(int rowNumber, Object error) {
+    if (error is AmbiguousUnitNumberException) {
+      return 'Row $rowNumber: More than one unit is numbered '
+          '${error.unitNumber}, so this tenant was not imported. Add them '
+          'with Add Tenant and pick their unit from the list.';
+    }
+    final message = error is UserFacingException ? error.message : '$error';
+    return 'Row $rowNumber: $message';
+  }
+
+  /// Why a tenant's unchanged unit number was not linked: more than one
+  /// unit has it, and they hold none of them.
+  static String ambiguousUnitNumberNotice(
+      AmbiguousUnitNumberException ambiguous, String tenantName) {
+    return 'More than one unit is numbered ${ambiguous.unitNumber}, so none '
+        'was linked to $tenantName. Pick their unit from the list to link it.';
+  }
+
   static double _rateOf(Map<String, dynamic>? tenant) {
     final rate = tenant?['monthlyRate'];
     return rate is num ? rate.toDouble() : 0;
@@ -1688,9 +1826,23 @@ class TenantService {
           if (u.tenantId == tenantId && u.status != UnitStatus.available) u
       ];
 
+  /// Whether [tenantId] holds a unit numbered [number] other than
+  /// [exceptUnitId].
+  static Future<bool> _holdsOtherNumbered(
+    TenantRecordsStore store,
+    String tenantId, {
+    required String number,
+    required String exceptUnitId,
+  }) async {
+    if (number.trim().isEmpty) return false;
+    return _heldUnitModels(tenantId, await store.linkedUnits(tenantId)).any(
+        (u) => u.id != exceptUnitId && sameUnitNumber(u.unitNumber, number));
+  }
+
   /// Edit Tenant giving the tenant a different unit ([link], numbered
-  /// differently from [oldNum]). The unit they leave is freed only if the
-  /// owner says so ([confirmFree]; none means keep it): it used to stay
+  /// differently from [oldNum], or picked from the list). The unit they
+  /// leave is freed only if the owner says so ([confirmFree]; none means
+  /// keep it): it used to stay
   /// assigned unannounced, overstating occupancy and blocking a later
   /// archive.
   ///
@@ -1712,18 +1864,25 @@ class TenantService {
   }) async {
     final newNum = link.unitNumber.trim();
     final held = _heldUnitModels(tenantId, await store.linkedUnits(tenantId));
+    // The linked unit by id: compared by number, a unit they hold with the
+    // new number counted as the one being added, and one with the old
+    // number as the one being left even when it was the unit being linked.
+    bool isLinked(UnitModel u) => link.unitId != null && u.id == link.unitId;
     final leaving = [
       for (final u in held)
-        if (oldNum.isNotEmpty && u.unitNumber.trim() == oldNum) u
+        if (oldNum.isNotEmpty &&
+            sameUnitNumber(u.unitNumber, oldNum) &&
+            !isLinked(u))
+          u
     ];
     final release = leaving.isNotEmpty &&
             (await confirmFree?.call(oldNum) ?? false)
         ? leaving
         : const <UnitModel>[];
-    final adding = !held.any((u) => u.unitNumber.trim() == newNum);
+    final adding = !held.any(isLinked);
     final kept = [
       for (final u in held)
-        if (!release.contains(u) && u.unitNumber.trim() != newNum) u
+        if (!release.contains(u) && !isLinked(u)) u
     ];
     if ((!adding && release.isEmpty) || (adding && kept.isEmpty)) {
       return (release: release, rent: null);
@@ -2627,15 +2786,28 @@ class TenantService {
   /// before anything is written. Throws [UnitHeldByAnotherTenantException]
   /// when another tenant holds it: assigning by number used to overwrite
   /// their link, so a stale unit number on reactivation took their unit.
+  ///
+  /// [unit] is the unit picked from a list (by id): it is linked as it is,
+  /// and the link carries its number. Without it the unit is looked up by
+  /// [unitNumber] ([unitForNumber]), which refuses a number more than one
+  /// unit has rather than taking the first.
   static Future<_UnitLink> _planUnitLink(
     TenantRecordsStore store, {
     required String tenantId,
     required String unitNumber,
+    UnitModel? unit,
   }) async {
-    final units = await store.unitsNumbered(unitNumber);
-    if (units.isEmpty) return _UnitLink(unitNumber: unitNumber);
-    final unit = units.firstWhere((u) => u.tenantId == tenantId,
-        orElse: () => units.first);
+    final found = unit ??
+        unitForNumber(await store.unitsNumbered(unitNumber), unitNumber,
+            tenantId: tenantId);
+    if (found == null) return _UnitLink(unitNumber: unitNumber);
+    return _linkTo(found, tenantId: tenantId);
+  }
+
+  /// [_planUnitLink] for the unit [unit], found or picked.
+  static _UnitLink _linkTo(UnitModel unit, {required String tenantId}) {
+    // The unit's own number, so the tenant's matches it exactly.
+    final unitNumber = unit.unitNumber.trim();
     final holder = unit.tenantId?.trim() ?? '';
     if (holder == tenantId) {
       return _UnitLink(
@@ -2658,6 +2830,53 @@ class TenantService {
       unitRate: unit.monthlyRate,
       seenHolder: unit.tenantId,
     );
+  }
+
+  /// The unit of [candidates] that [unitNumber] names for [tenantId], or
+  /// null when none has the number. Numbers compare trimmed and ignoring
+  /// case ([unitNumberKey]), but a unit spelled exactly as typed wins over
+  /// one that differs only in case, so a facility that already has "12a"
+  /// and "12A" links each as before. Among several with the number, the one
+  /// the tenant holds; if they hold none, [AmbiguousUnitNumberException]:
+  /// this used to take the first, which could be any of them.
+  static UnitModel? unitForNumber(
+    Iterable<UnitModel> candidates,
+    String unitNumber, {
+    required String tenantId,
+  }) {
+    final typed = unitNumber.trim();
+    final key = unitNumberKey(typed);
+    if (key.isEmpty) return null;
+    final matches = [
+      for (final u in candidates)
+        if (unitNumberKey(u.unitNumber) == key) u
+    ];
+    final exact = [
+      for (final u in matches)
+        if (u.unitNumber.trim() == typed) u
+    ];
+    final pool = exact.isNotEmpty ? exact : matches;
+    if (pool.isEmpty) return null;
+    if (pool.length == 1) return pool.single;
+    for (final u in pool) {
+      if (u.tenantId == tenantId) return u;
+    }
+    throw AmbiguousUnitNumberException(unitNumber: typed, count: pool.length);
+  }
+
+  /// The unit [unitId] of [facilityId], picked from a list. Throws
+  /// [PickedUnitNotFoundException] when it is gone or in another facility.
+  static Future<UnitModel> _pickedUnit(
+    TenantRecordsStore store,
+    String facilityId,
+    String unitId,
+  ) async {
+    final unit = await store.unit(unitId);
+    if (unit == null ||
+        (unit.facilityId.isNotEmpty && unit.facilityId != facilityId)) {
+      throw const PickedUnitNotFoundException();
+    }
+    return unit;
   }
 
   /// Links [link]'s unit to the tenant: occupied, their id and name. Creates

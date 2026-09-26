@@ -459,7 +459,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         final rowNum = row['_rowNumber'] as int? ?? 0;
         setState(() {
           _errorCount++;
-          _importErrors.add('Row $rowNum: $e');
+          _importErrors.add(TenantService.csvImportRowError(rowNum, e));
         });
       }
     }

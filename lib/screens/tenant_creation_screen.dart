@@ -59,6 +59,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   final _portalWelcomeController = TextEditingController();
   
   String _selectedFacilityId = '';
+  // The unit picked from the list, linked by id; null when typed.
+  String? _pickedUnitId;
   String _selectedIdType = 'none';
   String? _selectedIdState;
   String? _selectedIdCountry;
@@ -981,6 +983,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
         unitNumber: _unitController.text.trim(),
+        unitId: _pickedUnitId,
         monthlyRate: double.parse(_rateController.text.trim()),
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         governmentIdType: idType,
@@ -1271,6 +1274,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                     _selectedFacilityId = value ?? '';
                     _unitController.clear();
                     _rateController.clear();
+                    _pickedUnitId = null;
                   });
                 },
                 validator: (value) {
@@ -1420,6 +1424,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 facilityId: _selectedFacilityId,
                 unitNumberController: _unitController,
                 monthlyRateController: _rateController,
+                onUnitIdChanged: (id) => _pickedUnitId = id,
               ),
               const SizedBox(height: 16),
               

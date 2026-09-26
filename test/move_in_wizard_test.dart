@@ -509,5 +509,31 @@ void main() {
       expect(db.data('units', 'u1')!['tenantId'], 't1');
       expect(db.data('units', 'u1')!['status'], 'occupied');
     });
+
+    test('the unit picked in the wizard is the one linked, by id, when another has its number', () async {
+      // A second "A1" (say in another area). The wizard had the unit but
+      // passed only its number.
+      await db.sub('units').doc('u1b').set({
+        'facilityId': 'f1',
+        'unitNumber': 'A1',
+        'status': 'available',
+        'monthlyRate': 90,
+      });
+      final result = await MoveInService.completeMoveIn(
+        moveInData: MoveInData(
+          existingTenant: _tenant,
+          unit: _unit(),
+          contract: _lease,
+          lineItems: const [],
+          totalAmount: 0,
+          moveInDate: DateTime(2026, 9, 23),
+        ),
+        skipPayment: true,
+      );
+      expect(result.success, isTrue, reason: result.error);
+      expect(db.data('units', 'u1')!['tenantId'], 't1');
+      expect(db.data('units', 'u1b')!['tenantId'], isNull);
+      expect(db.data('tenants', 't1')!['monthlyRate'], 250);
+    });
   });
 }

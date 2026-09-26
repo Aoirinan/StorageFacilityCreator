@@ -1,5 +1,6 @@
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 /// Longest area name the unit editor and "Set area" accept.
 const int unitAreaMaxLength = 60;
@@ -81,8 +82,6 @@ bool _areaMatches(String? area, String filter) {
 bool unitMatchesAreaFilter(UnitModel unit, String? filter) =>
     filter == null || _areaMatches(unit.area, filter);
 
-String _unitNumberKey(String unitNumber) => unitNumber.trim().toLowerCase();
-
 /// A facility's units looked up the ways a tenant points at them: by the
 /// unit's `tenantId` (how move-out and unit changes find a tenant's units)
 /// and by the tenant's `unitNumber`, trimmed and ignoring case (tenants
@@ -95,7 +94,7 @@ class TenantUnitAreaIndex {
       if (tenantId.isNotEmpty) {
         (_byTenantId[tenantId] ??= []).add(unit);
       }
-      final number = _unitNumberKey(unit.unitNumber);
+      final number = unitNumberKey(unit.unitNumber);
       if (number.isNotEmpty) _byNumber.putIfAbsent(number, () => unit);
     }
   }
@@ -106,7 +105,7 @@ class TenantUnitAreaIndex {
   /// The units [tenant] holds or names, each once.
   List<UnitModel> unitsFor(TenantModel tenant) {
     final units = <UnitModel>[...?_byTenantId[tenant.id]];
-    final named = _byNumber[_unitNumberKey(tenant.unitNumber)];
+    final named = _byNumber[unitNumberKey(tenant.unitNumber)];
     if (named != null && !units.any((u) => u.id == named.id)) {
       units.add(named);
     }
