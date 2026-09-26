@@ -310,6 +310,52 @@ void main() {
       expect(html, contains('data-fit-width="260.0" data-fit-height="120.0"'));
     });
 
+    test('a logo on its own line is fitted no wider than the receipt column',
+        () {
+      // The print frame is 0x0 on screen, so the column cannot be measured
+      // there; the limit has to be in the markup.
+      final receipt = buildPaymentReceiptHtml(
+        tenantName: 'Jane Doe',
+        amountFormatted: r'$95.00',
+        dateFormatted: '2026-09-25 10:00',
+        businessName: 'Caprock Storage',
+        logoUrl: logo,
+        logoLayout: const DocumentLogoLayout(
+            height: 160, position: DocumentLogoPosition.center),
+      );
+      expect(receiptColumnPt, 315);
+      expect(receipt, contains('max-width: 420px;'));
+      expect(receipt, contains('data-fit-width="315.0" data-fit-height="160.0"'));
+      expect(receipt, contains('width: 315pt; max-width: 100%; max-height: 160pt'));
+
+      // The invoice column (480pt) is wider than a centered logo's own
+      // 400pt limit, so that limit stands.
+      final inv = invoice(
+        facilityLogoUrl: logo,
+        logoLayout: const DocumentLogoLayout(
+            height: 160, position: DocumentLogoPosition.center),
+      );
+      expect(invoiceColumnPt, 480);
+      expect(inv, contains('max-width: 640px;'));
+      expect(inv, contains('data-fit-width="400.0" data-fit-height="160.0"'));
+
+      // Beside the details the position's own 180pt limit is the smaller.
+      expect(
+          buildLetterheadHtml(
+            facilityName: 'Caprock Storage',
+            logoUrl: logo,
+            contentWidthPt: receiptColumnPt,
+          ),
+          contains('data-fit-width="180.0"'));
+    });
+
+    test('a logo that loaded without an image counts as failed', () {
+      expect(logoFailedToLoad(complete: true, naturalWidth: 0), isTrue);
+      expect(logoFailedToLoad(complete: true, naturalWidth: 400), isFalse);
+      // Still loading after the wait: leave it be, it may yet arrive.
+      expect(logoFailedToLoad(complete: false, naturalWidth: 0), isFalse);
+    });
+
     test('fitLogoBox: largest size in proportion inside the limits', () {
       // A wide logo is held by the width limit...
       expect(
@@ -377,9 +423,14 @@ void main() {
       expect(parts.block, contains('Caprock Storage'));
     });
 
-    test('showName off drops the name text but keeps it as the alt text', () {
+    test('showName off hides the name text but keeps it as the alt text', () {
       final html = letterhead(const DocumentLogoLayout(showName: false));
-      expect(html, isNot(contains('facility-name')));
+      expect(html, isNot(contains('<div class="facility-name">')));
+      // Present but hidden, for the print frame to reveal if the logo fails.
+      expect(
+          html,
+          contains('<div class="facility-name" data-logo-fallback hidden>'
+              'Caprock Storage</div>'));
       expect(html, contains('alt="Caprock Storage"'));
       // Addresses still print.
       expect(html, contains('100 Main St'));
@@ -417,6 +468,8 @@ void main() {
       expect(html, contains('<div class="logo-banner"><img class="logo"'));
       expect(html, contains('height: 120pt'));
       expect(html, isNot(contains('<div class="facility-name">')));
+      expect(html, contains('data-logo-fallback hidden>Caprock Storage</div>'));
+      expect(html, contains('.facility-name[hidden] { display: none; }'));
       expect(html.indexOf('logo-banner'),
           lessThan(html.indexOf('<h1>Payment receipt</h1>')));
     });

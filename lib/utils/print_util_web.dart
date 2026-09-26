@@ -182,10 +182,14 @@ void _printDocument(String doc) {
 
 /// Sizes each letterhead logo exactly as the PDF letterhead does: the largest
 /// size, in its own proportions, that fits the owner's chosen height and the
-/// position's max width (the data-fit-* attributes, in points). CSS alone
-/// cannot do "whichever limit bites first" without knowing the image's
-/// proportions, so the markup's own sizing is only the fallback for a logo
-/// that has not loaded. Never throws.
+/// max width (the data-fit-* attributes, in points, already capped at the
+/// document's column). CSS alone cannot do "whichever limit bites first"
+/// without knowing the image's proportions, so the markup's own sizing is only
+/// the fallback for a logo that has not loaded.
+///
+/// A logo that failed to load (expired link, deleted file) is hidden rather
+/// than printed as a broken-image box, and the business name it stood in for
+/// is shown. Never throws.
 void _fitLogos(html.IFrameElement iframe) {
   try {
     final doc = js_util.getProperty<Object?>(iframe, 'contentDocument');
@@ -197,25 +201,28 @@ void _fitLogos(html.IFrameElement iframe) {
       final img = js_util.callMethod<Object>(images, 'item', [i]);
       String? attr(String name) =>
           js_util.callMethod<Object?>(img, 'getAttribute', [name]) as String?;
-      var maxWidth = double.tryParse(attr('data-fit-width') ?? '') ?? 0;
-      // On its own line the logo may not be wider than that line (the
-      // receipt is narrower than a centered logo's limit). Beside the
-      // details, the parent row also holds the details, so it does not
-      // bound the logo alone.
-      final parent = js_util.getProperty<Object?>(img, 'parentElement');
-      if (parent != null) {
-        final classes = js_util.getProperty<Object?>(parent, 'className');
-        final beside = classes is String && classes.contains('logo-left');
-        final parentPx = js_util.getProperty<num?>(parent, 'clientWidth');
-        if (!beside && parentPx != null && parentPx > 0) {
-          final parentPt = parentPx * 0.75; // CSS px to pt
-          if (parentPt < maxWidth) maxWidth = parentPt.toDouble();
+      final naturalWidth = js_util.getProperty<num>(img, 'naturalWidth');
+      if (logoFailedToLoad(
+        complete: js_util.getProperty<bool>(img, 'complete') == true,
+        naturalWidth: naturalWidth,
+      )) {
+        js_util.setProperty(
+            js_util.getProperty<Object>(img, 'style'), 'display', 'none');
+        final names = js_util.callMethod<Object>(
+            doc, 'querySelectorAll', const ['[data-logo-fallback]']);
+        final nameCount = js_util.getProperty<int>(names, 'length');
+        for (var j = 0; j < nameCount; j++) {
+          js_util.callMethod<void>(
+              js_util.callMethod<Object>(names, 'item', [j]),
+              'removeAttribute',
+              const ['hidden']);
         }
+        continue;
       }
       final box = fitLogoBox(
-        naturalWidth: js_util.getProperty<num>(img, 'naturalWidth'),
+        naturalWidth: naturalWidth,
         naturalHeight: js_util.getProperty<num>(img, 'naturalHeight'),
-        maxWidth: maxWidth,
+        maxWidth: double.tryParse(attr('data-fit-width') ?? '') ?? 0,
         maxHeight: double.tryParse(attr('data-fit-height') ?? '') ?? 0,
       );
       if (box == null) continue;

@@ -14,7 +14,7 @@ import 'package:sfcapp/models/facility_model.dart';
 /// The logo's size and position, and whether the name prints beside it, come
 /// from the facility's [FacilityModel.documentLogo]. The HTML invoice and
 /// receipt (lib/utils/print_documents.dart) and the Edit Facility preview
-/// (lib/widgets/document_letterhead_preview.dart) follow the same settings.
+/// (lib/widgets/document_logo_layout_editor.dart) follow the same settings.
 class PdfLetterhead {
   /// Fetches the facility logo for embedding. Returns null when there is no
   /// logo or it cannot be loaded, so a broken logo never blocks a statement.

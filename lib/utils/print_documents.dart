@@ -89,6 +89,20 @@ String _pt(double v) {
   return (width: naturalWidth * scale, height: naturalHeight * scale);
 }
 
+/// Content column widths of the HTML documents, in CSS px (the `.wrap`
+/// max-width) and in points (px * 0.75). A logo on its own line is never
+/// sized wider than its document's column: the print frame is 0x0 on screen,
+/// so the column cannot be measured when the logo is fitted.
+const int _receiptColumnPx = 420;
+const int _invoiceColumnPx = 640;
+const double receiptColumnPt = _receiptColumnPx * 0.75;
+const double invoiceColumnPt = _invoiceColumnPx * 0.75;
+
+/// Whether a logo <img> finished loading without an image (expired link,
+/// deleted file). The print frame then hides it and shows the business name.
+bool logoFailedToLoad({required bool complete, required num naturalWidth}) =>
+    complete && naturalWidth <= 0;
+
 /// The facility letterhead split in two: `banner` is the centered logo that
 /// runs across the top of the page (only for [DocumentLogoPosition.center],
 /// otherwise empty), `block` is the logo-and-details block that sits beside
@@ -105,6 +119,9 @@ typedef LetterheadHtmlParts = ({String banner, String block});
 /// and whether the business name prints as text. Sizes are CSS `pt`, the
 /// same unit the PDF letterhead uses, so both print the logo at the same
 /// physical size.
+///
+/// [contentWidthPt] is the document's column width; the logo is never fitted
+/// wider than it.
 LetterheadHtmlParts buildLetterheadHtmlParts({
   required String facilityName,
   String? logoUrl,
@@ -113,6 +130,7 @@ LetterheadHtmlParts buildLetterheadHtmlParts({
   String? phone,
   String? email,
   DocumentLogoLayout layout = DocumentLogoLayout.defaults,
+  double? contentWidthPt,
 }) {
   final logo = safeLogoUrl(logoUrl);
   final physical = _clean(address);
@@ -128,8 +146,12 @@ LetterheadHtmlParts buildLetterheadHtmlParts({
     // With the name hidden, the alt text is the bare name, so a logo that
     // fails to load still leaves the business name on the page.
     final alt = showName ? '$facilityName logo' : facilityName;
+    final fitWidth =
+        contentWidthPt != null && contentWidthPt < layout.maxWidth
+            ? contentWidthPt
+            : layout.maxWidth;
     final h = _pt(layout.height);
-    final w = _pt(layout.maxWidth);
+    final w = _pt(fitWidth);
     // The PDF scales the logo to fit a box [maxWidth] wide and [height] tall.
     // CSS cannot size an image by "whichever limit bites first" without
     // knowing its proportions, so each position fixes the side where any
@@ -143,13 +165,17 @@ LetterheadHtmlParts buildLetterheadHtmlParts({
         ? 'height: $h; max-width: min($w, 100%)'
         : 'width: $w; max-width: 100%; max-height: $h';
     img = '<img class="logo" src="${escapeHtml(logo)}" alt="${escapeHtml(alt)}"'
-        ' data-fit-width="${layout.maxWidth}" data-fit-height="${layout.height}"'
+        ' data-fit-width="$fitWidth" data-fit-height="${layout.height}"'
         ' style="$size">';
   }
 
   final details = <String>[
     if (showName)
-      '<div class="facility-name">${escapeHtml(facilityName)}</div>',
+      '<div class="facility-name">${escapeHtml(facilityName)}</div>'
+    else
+      // Hidden behind the logo, and shown by the print frame if the logo
+      // fails to load, so the document is never left without a name.
+      '<div class="facility-name" data-logo-fallback hidden>${escapeHtml(facilityName)}</div>',
     if (physical != null) '<div>${_escapeLines(physical)}</div>',
     if (showMailing)
       '<div class="mailing"><span class="muted">Mail payments to:</span> ${_escapeLines(mailing)}</div>',
@@ -181,6 +207,7 @@ String buildLetterheadHtml({
   String? phone,
   String? email,
   DocumentLogoLayout layout = DocumentLogoLayout.defaults,
+  double? contentWidthPt,
 }) {
   final parts = buildLetterheadHtmlParts(
     facilityName: facilityName,
@@ -190,6 +217,7 @@ String buildLetterheadHtml({
     phone: phone,
     email: email,
     layout: layout,
+    contentWidthPt: contentWidthPt,
   );
   return parts.banner.isEmpty
       ? parts.block
@@ -213,6 +241,7 @@ const String _letterheadCss = '''
     .logo-banner { margin-bottom: 10pt; }
     .logo-banner .logo { margin: 0 auto; object-position: center top; }
     .facility-name { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
+    .facility-name[hidden] { display: none; }
     .mailing { margin-top: 2px; }
     .muted { color: #6b7280; }
 ''';
@@ -252,6 +281,7 @@ String buildPaymentReceiptHtml({
     phone: businessPhone,
     email: businessEmail,
     layout: logoLayout,
+    contentWidthPt: receiptColumnPt,
   );
 
   return '''
@@ -274,7 +304,7 @@ String buildPaymentReceiptHtml({
       background: #fff;
     }
     .wrap {
-      max-width: 420px;
+      max-width: ${_receiptColumnPx}px;
       margin: 0 auto;
     }
     .letterhead { font-size: 12px; margin-bottom: 20px; }
@@ -407,6 +437,7 @@ String buildInvoiceHtml({
     phone: facilityPhone,
     email: facilityEmail,
     layout: logoLayout,
+    contentWidthPt: invoiceColumnPt,
   );
 
   return '''
@@ -427,7 +458,7 @@ String buildInvoiceHtml({
       color: #111827;
       background: #fff;
     }
-    .wrap { max-width: 640px; margin: 0 auto; }
+    .wrap { max-width: ${_invoiceColumnPx}px; margin: 0 auto; }
     .top { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
     .letterhead { min-width: 0; }
 $_letterheadCss
