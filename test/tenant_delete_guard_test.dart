@@ -2035,7 +2035,8 @@ void main() {
       await expectLater(
         update(store, unitNumber: '12'),
         throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.message, 'message',
-            'More than one unit is numbered 12. Nothing was saved. Pick the unit from the list.')),
+            'More than one unit is numbered 12. Nothing was saved. Pick the unit from the list '
+            "instead of typing its number: the list shows each unit's area.")),
       );
       expect(store.allWrites, isEmpty);
       // The screens show it as written, not as a generic error.
@@ -2242,7 +2243,17 @@ void main() {
         TenantService.csvImportRowError(
             4, const AmbiguousUnitNumberException(unitNumber: '12', count: 2)),
         'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
-        'Add them with Add Tenant and pick their unit from the list.',
+        "Put the unit's area in an Area column, or add them with Add Tenant and pick "
+        'their unit from the list.',
+      );
+      // With areas, it names them.
+      expect(
+        TenantService.csvImportRowError(
+            4,
+            const AmbiguousUnitNumberException(
+                unitNumber: '12', count: 2, areas: ['Complex 2', 'Complex 3'])),
+        startsWith('Row 4: More than one unit is numbered 12 (in Complex 2, Complex 3), '
+            'so this tenant was not imported.'),
       );
       expect(
         TenantService.csvImportRowError(5, const DuplicateUnitNumberException(

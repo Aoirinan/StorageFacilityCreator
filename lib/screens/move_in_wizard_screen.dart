@@ -17,6 +17,7 @@ import '../models/facility_model.dart';
 import '../theme/app_theme.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 
 /// Creates the lease a move-in is signed against when the Contract step was
 /// skipped.
@@ -228,7 +229,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                       final unit = availableUnits[index];
                       return ListTile(
                         leading: const Icon(Icons.home),
-                        title: Text('Unit ${unit.unitNumber}'),
+                        title: Text(unitPickerLabel(unit)),
                         subtitle: Text('\$${unit.monthlyRate.toStringAsFixed(2)}/month'),
                         onTap: () => Navigator.of(context).pop(unit),
                       );
@@ -690,7 +691,7 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
               : Card(
                   child: ListTile(
                     leading: const Icon(Icons.home),
-                    title: Text('Unit ${_selectedUnit!.unitNumber}'),
+                    title: Text(unitPickerLabel(_selectedUnit!)),
                     subtitle: Text(
                         '\$${_selectedUnit!.monthlyRate.toStringAsFixed(2)}/month'),
                     trailing: IconButton(
@@ -1241,7 +1242,10 @@ class _MoveInWizardScreenState extends ConsumerState<MoveInWizardScreen> {
                 ListTile(
                   leading: const Icon(Icons.home),
                   title: const Text('Unit'),
-                  trailing: Text(_selectedUnit?.unitNumber ?? 'Not selected'),
+                  trailing: Text(_selectedUnit == null
+                      ? 'Not selected'
+                      : unitPickerLabel(_selectedUnit!,
+                          style: UnitLabelStyle.plain)),
                 ),
                 ListTile(
                   leading: const Icon(Icons.calendar_today),

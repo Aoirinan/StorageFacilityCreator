@@ -21,6 +21,7 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 
 /// Whether the unit menu offers Remove Lockout. Not only on occupied units:
@@ -690,7 +691,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
                   return _TenantSelectionDialogContent(
                     facilityId: widget.facilityId,
                     tenants: tenants,
-                    unitNumber: _unit!.unitNumber,
+                    unitLabel: unitPickerLabel(_unit!),
                   );
                 },
                 loading: () => const Center(
@@ -808,7 +809,7 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
         ref.invalidate(facilityTenantsProvider(widget.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tenant.name} assigned to Unit ${_unit!.unitNumber}'
+            content: Text('${tenant.name} assigned to ${unitPickerLabel(_unit!)}'
                 '${notice == null ? '' : '. $notice'}'),
             backgroundColor: AppTheme.success,
             duration: Duration(seconds: notice == null ? 4 : 10),
@@ -1192,12 +1193,15 @@ class _UnitDetailScreenState extends ConsumerState<UnitDetailScreen> {
 class _TenantSelectionDialogContent extends StatefulWidget {
   final String facilityId;
   final List<TenantModel> tenants;
-  final String unitNumber;
+
+  /// "Unit 12 (Complex 2)": with its area, so the operator can tell which
+  /// of two units numbered alike they are assigning.
+  final String unitLabel;
 
   const _TenantSelectionDialogContent({
     required this.facilityId,
     required this.tenants,
-    required this.unitNumber,
+    required this.unitLabel,
   });
 
   @override
@@ -1244,7 +1248,7 @@ class _TenantSelectionDialogContentState extends State<_TenantSelectionDialogCon
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          'Select a tenant to assign to Unit ${widget.unitNumber}',
+          'Select a tenant to assign to ${widget.unitLabel}',
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const SizedBox(height: 16),
