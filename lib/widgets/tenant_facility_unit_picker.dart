@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/unit_provider.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/utils/unit_number.dart';
 
 /// Unit number field plus optional dropdown of existing facility units (same UX as create tenant).
@@ -62,15 +63,6 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
       if (matches.length > 1) return null;
     }
     return held.isEmpty ? null : held.first.id;
-  }
-
-  /// "Unit 12 (Complex 2)" when the unit has an area, so two units with one
-  /// number can be told apart.
-  static String _unitLabel(UnitModel unit) {
-    final area = unit.area?.trim() ?? '';
-    return area.isEmpty
-        ? 'Unit ${unit.unitNumber}'
-        : 'Unit ${unit.unitNumber} ($area)';
   }
 
   void _scheduleInitialSelection(List<UnitModel> units) {
@@ -167,7 +159,7 @@ class _TenantFacilityUnitPickerState extends ConsumerState<TenantFacilityUnitPic
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '${_unitLabel(unit)} - \$${unit.monthlyRate.toStringAsFixed(2)}/mo',
+                              '${unitPickerLabel(unit)} - \$${unit.monthlyRate.toStringAsFixed(2)}/mo',
                               style: TextStyle(
                                 color: unit.status == UnitStatus.occupied
                                     ? AppTheme.textTertiary

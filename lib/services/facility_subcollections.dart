@@ -36,16 +36,39 @@ class FacilitySubcollections {
     String name,
   ) _open = _openInFirestore;
 
-  /// Serves [tenants] and [units] from [open] instead of Firestore; null
-  /// restores Firestore.
+  /// The facility doc's fields ({} when it is missing), for the unit writes
+  /// that follow a facility setting (`unitNumbersRepeatAcrossAreas`).
+  static Future<Map<String, dynamic>> facilityData(String facilityId) =>
+      _facilityData(facilityId);
+
+  static Future<Map<String, dynamic>> Function(String facilityId)
+      _facilityData = _facilityDataInFirestore;
+
+  /// Serves [tenants] and [units] from [open] instead of Firestore, and
+  /// [facilityData] from [facility] (with [open] set and no [facility], an
+  /// empty facility doc: every setting at its default). Null restores
+  /// Firestore.
   @visibleForTesting
   static void overrideForTesting(
     CollectionReference<Map<String, dynamic>> Function(
       String facilityId,
       String name,
-    )? open,
-  ) {
+    )? open, {
+    Map<String, dynamic> Function(String facilityId)? facility,
+  }) {
     _open = open ?? _openInFirestore;
+    _facilityData = open == null && facility == null
+        ? _facilityDataInFirestore
+        : (id) async => facility?.call(id) ?? const <String, dynamic>{};
+  }
+
+  static Future<Map<String, dynamic>> _facilityDataInFirestore(
+      String facilityId) async {
+    final doc = await FirebaseFirestore.instance
+        .collection('facilities')
+        .doc(facilityId)
+        .get();
+    return doc.data() ?? const <String, dynamic>{};
   }
 
   static CollectionReference<Map<String, dynamic>> _openInFirestore(

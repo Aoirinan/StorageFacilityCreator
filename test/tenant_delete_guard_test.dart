@@ -151,6 +151,22 @@ class _FakeRecords implements TenantRecordsStore {
               if (unitNumberKey(u.unitNumber) == unitNumberKey(unitNumber)) u
           ]);
 
+  /// "Unit numbers repeat across areas".
+  bool repeatAcrossAreas = false;
+
+  @override
+  Future<bool> repeatsUnitNumbersAcrossAreas() async => repeatAcrossAreas;
+
+  @override
+  Future<List<UnitModel>> unitsWithLegacyNumber(String unitNumber) => _read(
+      'unitsWithLegacyNumber',
+      () => [
+            for (final u in facilityUnits)
+              if (u.legacyUnitNumber != null &&
+                  unitNumberKey(u.legacyUnitNumber!) == unitNumberKey(unitNumber))
+                u
+          ]);
+
   @override
   Future<String> createUnit(String unitNumber, double monthlyRate) async {
     directWrites.add(_Write('create', 'units', 'new-$unitNumber'));
@@ -2045,6 +2061,112 @@ void main() {
           startsWith('More than one unit is numbered 12.'));
     });
 
+    test('by number alone, with the setting on: the refusal names the areas', () async {
+      final store = tenantWith()..repeatAcrossAreas = true;
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null, area: 'Complex 2'),
+        unitAt('c3-12', '12', UnitStatus.available, null, area: 'Complex 3'),
+      ]);
+      await expectLater(
+        update(store, unitNumber: '12'),
+        throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.message, 'message',
+            'More than one unit is numbered 12 (in Complex 2, Complex 3). Nothing was saved. '
+            'Pick the unit from the list instead of typing its number: the list shows each '
+            "unit's area.")),
+      );
+      expect(store.allWrites, isEmpty);
+    });
+
+    group('a number from before a renumbering (legacyUnitNumber)', () {
+      UnitModel renumbered(String id, String number, String legacy, String area,
+              {String? tenantId, UnitStatus status = UnitStatus.available}) =>
+          UnitModel(
+            id: id,
+            facilityId: 'f1',
+            unitNumber: number,
+            unitType: 'standard',
+            status: status,
+            tenantId: tenantId,
+            monthlyRate: 100,
+            createdAt: day,
+            updatedAt: day,
+            createdBy: 'owner',
+            area: area,
+            legacyUnitNumber: legacy,
+          );
+
+      test('links the renumbered unit instead of making a phantom "C2-12"', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('c2-12', '12', 'C2-12', 'Complex 2'),
+          renumbered('c3-12', '12', 'C3-12', 'Complex 3'),
+        ]);
+        await update(store, unitNumber: ' c2-12 ');
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store.allWrites, contains('update units/c2-12'));
+        // Their label becomes the unit's number now, linked by id.
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c2-12');
+      });
+
+      test('a move-in typing the old number moves into the renumbered unit', () async {
+        final store = tenantWith();
+        store.facilityUnits.add(renumbered('c3-12', '12', 'C3-12', 'Complex 3'));
+        await moveIn(store, unitNumber: 'C3-12');
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+      });
+
+      test('an old number two units had is refused, nothing written', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('a', '12', 'C2-12', 'Complex 2'),
+          renumbered('b', '14', 'c2-12', 'Complex 3'),
+        ]);
+        await expectLater(
+          update(store, unitNumber: 'C2-12'),
+          throwsA(isA<AmbiguousLegacyUnitNumberException>().having((e) => e.message, 'message',
+              'Unit C2-12 was renumbered, and more than one unit used to be numbered C2-12 '
+              '(now 12 (Complex 2), 14 (Complex 3)). Nothing was saved. Pick the unit from the list.')),
+        );
+        expect(store.allWrites, isEmpty);
+      });
+
+      test('a number that is a unit\'s number now wins over another\'s old number', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('old', '12', 'C2-12', 'Complex 2'),
+          unitAt('now', 'C2-12', UnitStatus.available, null),
+        ]);
+        await update(store, unitNumber: 'C2-12');
+        expect(store['t1'].doc!['unitId'], 'now');
+      });
+
+      test('reactivating a tenant whose label is the old number links the renumbered unit', () async {
+        final store = tenantWith(label: 'C2-12');
+        store['t1'].doc = {...store['t1'].doc!, 'isActive': false};
+        store.facilityUnits.addAll([
+          renumbered('c2-12', '12', 'C2-12', 'Complex 2'),
+          renumbered('c3-12', '12', 'C3-12', 'Complex 3'),
+        ]);
+        // Edit Tenant sends the Unit Number field (the stale label) with
+        // Active switched back on.
+        await update(store, unitNumber: 'C2-12', isActive: true);
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store.allWrites, contains('update units/c2-12'));
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c2-12');
+        expect(store['t1'].doc!['isActive'], isTrue);
+      });
+
+      test('a number no unit has, now or before, still makes a unit', () async {
+        final store = tenantWith();
+        store.facilityUnits.add(renumbered('c2-12', '12', 'C2-12', 'Complex 2'));
+        await update(store, unitNumber: 'C9-1');
+        expect(store.allWrites, contains('create units/new-C9-1'));
+      });
+    });
+
     test('by number, the one of them the tenant holds is theirs: saving other fields still works', () async {
       final c2 = unitAt('c2-12', '12', UnitStatus.occupied, 't1');
       final store = tenantWith(label: '12', held: [c2]);
@@ -2243,6 +2365,28 @@ void main() {
             4, const AmbiguousUnitNumberException(unitNumber: '12', count: 2)),
         'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
         'Add them with Add Tenant and pick their unit from the list.',
+      );
+      // Setting off, areas known or not: as it always read.
+      expect(
+        TenantService.csvImportRowError(
+            4,
+            const AmbiguousUnitNumberException(
+                unitNumber: '12', count: 2, areas: ['Complex 2', 'Complex 3'])),
+        'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
+        'Add them with Add Tenant and pick their unit from the list.',
+      );
+      // Setting on: it names the areas and suggests an Area column.
+      expect(
+        TenantService.csvImportRowError(
+            4,
+            const AmbiguousUnitNumberException(
+                unitNumber: '12',
+                count: 2,
+                areas: ['Complex 2', 'Complex 3'],
+                repeatAcrossAreas: true)),
+        'Row 4: More than one unit is numbered 12 (in Complex 2, Complex 3), so this '
+        "tenant was not imported. Put the unit's area in an Area column, or add them "
+        'with Add Tenant and pick their unit from the list.',
       );
       expect(
         TenantService.csvImportRowError(5, const DuplicateUnitNumberException(

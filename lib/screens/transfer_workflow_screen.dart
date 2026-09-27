@@ -9,6 +9,7 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/transfer_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
 
 class TransferWorkflowScreen extends ConsumerStatefulWidget {
@@ -279,7 +280,15 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
                   child: _buildInfoRow('Name', _tenant!.name),
                 ),
                 Expanded(
-                  child: _buildInfoRow('Current Unit', _tenant!.unitNumber),
+                  child: _buildInfoRow(
+                    'Current Unit',
+                    // With the area, as the unit lists below show it.
+                    formatUnitLabel(
+                      number: _tenant!.unitNumber,
+                      area: _tenant!.unitArea,
+                      includeArea: true,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -385,10 +394,8 @@ class _TransferWorkflowScreenState extends ConsumerState<TransferWorkflowScreen>
 
   /// "12 (Complex 2)" when the unit has an area, so two units with one
   /// number can be told apart.
-  static String _unitLabel(UnitModel unit) {
-    final area = unit.area?.trim() ?? '';
-    return area.isEmpty ? unit.unitNumber : '${unit.unitNumber} ($area)';
-  }
+  static String _unitLabel(UnitModel unit) =>
+      unitPickerLabel(unit, style: UnitLabelStyle.plain);
 
   Widget _buildToUnitSelector() {
     return Card(

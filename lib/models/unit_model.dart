@@ -92,6 +92,13 @@ class UnitModel {
   /// whole facility whatever the area.
   final String? area;
 
+  /// The number the unit had before a renumbering (scripts/
+  /// renumber-units-by-area.mjs turns "C2-12" into "12" in Complex 2 and
+  /// keeps "C2-12" here), trimmed; null when never renumbered. Read so a
+  /// stale form, CSV row or reactivation typing the old number finds the
+  /// unit instead of making a second one.
+  final String? legacyUnitNumber;
+
   const UnitModel({
     required this.id,
     required this.facilityId,
@@ -127,6 +134,7 @@ class UnitModel {
     this.publicListingEnabled = true,
     this.internalUse = false,
     this.area,
+    this.legacyUnitNumber,
   });
 
   /// Reads every field so that a value of the wrong type never throws (see
@@ -181,6 +189,7 @@ class UnitModel {
       publicListingEnabled: data['publicListingEnabled'] != false,
       internalUse: data['internalUse'] == true,
       area: _areaFromField(data['area']),
+      legacyUnitNumber: _areaFromField(data['legacyUnitNumber']),
     );
   }
 
@@ -213,6 +222,7 @@ class UnitModel {
       'publicListingEnabled': publicListingEnabled,
       'internalUse': internalUse,
       'area': area,
+      if (legacyUnitNumber != null) 'legacyUnitNumber': legacyUnitNumber,
     };
     if (mapX != null || mapY != null || mapWidth != null || mapHeight != null) {
       map['mapLayout'] = {
@@ -297,6 +307,7 @@ class UnitModel {
       publicListingEnabled: publicListingEnabled ?? this.publicListingEnabled,
       internalUse: internalUse ?? this.internalUse,
       area: clearArea ? null : (area ?? this.area),
+      legacyUnitNumber: legacyUnitNumber,
     );
   }
 
