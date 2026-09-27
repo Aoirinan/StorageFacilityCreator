@@ -41,13 +41,18 @@ String? safeLogoUrl(String? url) {
 
 /// The tenant address to print on a bill: the primary one, else a billing or
 /// mailing address, else the first. Null when the tenant has none that says
-/// anything.
+/// anything: a street or a city (a state, ZIP or country on its own does not
+/// count).
 ///
 /// `Address` has no toString, so printing `addresses.first.toString()` put
-/// "Instance of 'Address'" on the invoice; this uses [Address.formattedAddress].
+/// "Instance of 'Address'" on the invoice; this uses [Address.formattedAddress],
+/// which leaves out the parts that are blank.
 String? tenantPrintAddress(List<Address> addresses) {
   final usable = addresses
-      .where((a) => a.street1.trim().isNotEmpty || a.city.trim().isNotEmpty)
+      .where((a) =>
+          a.street1.trim().isNotEmpty ||
+          (a.street2?.trim().isNotEmpty ?? false) ||
+          a.city.trim().isNotEmpty)
       .toList();
   if (usable.isEmpty) return null;
   Address? pick(bool Function(Address) test) {
