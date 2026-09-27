@@ -21,6 +21,7 @@ import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/utils/unit_number.dart';
 
 /// A unit that still shows a tenant as its occupant, and how to free it.
@@ -376,6 +377,14 @@ abstract class TenantRecordsStore {
   /// no other unit has the number. [TenantService.unitForNumber] picks one.
   Future<List<UnitModel>> unitsNumbered(String unitNumber);
 
+  /// Whether the facility has "Unit numbers repeat across areas" on.
+  Future<bool> repeatsUnitNumbersAcrossAreas();
+
+  /// Units whose `legacyUnitNumber` (their number before a renumbering) is
+  /// [unitNumber] under [unitNumberKey], and that are not switched off.
+  /// Archived units only when no other unit has it.
+  Future<List<UnitModel>> unitsWithLegacyNumber(String unitNumber);
+
   /// Creates a standard unit numbered [unitNumber]; returns its id.
   Future<String> createUnit(String unitNumber, double monthlyRate);
 }
@@ -443,6 +452,7 @@ class AmbiguousUnitNumberException implements UserFacingException {
     required this.unitNumber,
     required this.count,
     this.areas = const [],
+    this.repeatAcrossAreas = false,
   });
 
   final String unitNumber;
@@ -454,13 +464,31 @@ class AmbiguousUnitNumberException implements UserFacingException {
   /// operator knows which to pick; empty when none has an area.
   final List<String> areas;
 
-  /// " (in Complex 2, Complex 3)", or '' without areas.
-  String get _inAreas => areas.isEmpty ? '' : ' (in ${areas.join(', ')})';
+  /// Whether the facility repeats unit numbers across areas. Only then do
+  /// the messages name the areas and give area advice; off, they read as
+  /// they always did.
+  final bool repeatAcrossAreas;
+
+  /// This refusal for a facility that repeats unit numbers across areas.
+  AmbiguousUnitNumberException withAreaAdvice() => AmbiguousUnitNumberException(
+        unitNumber: unitNumber,
+        count: count,
+        areas: areas,
+        repeatAcrossAreas: true,
+      );
+
+  /// " (in Complex 2, Complex 3)", or '' without areas or the setting.
+  String get _inAreas => !repeatAcrossAreas || areas.isEmpty
+      ? ''
+      : ' (in ${areas.join(', ')})';
 
   @override
-  String get message => 'More than one unit is numbered $unitNumber$_inAreas. '
-      'Nothing was saved. Pick the unit from the list instead of typing its '
-      "number: the list shows each unit's area.";
+  String get message => repeatAcrossAreas
+      ? 'More than one unit is numbered $unitNumber$_inAreas. Nothing was '
+          'saved. Pick the unit from the list instead of typing its number: '
+          "the list shows each unit's area."
+      : 'More than one unit is numbered $unitNumber. '
+          'Nothing was saved. Pick the unit from the list.';
 
   @override
   String toString() => message;
@@ -489,6 +517,31 @@ class CsvUnitAreaNotFoundException implements UserFacingException {
     return 'No unit numbered $unitNumber is in area $area.$known '
         'This tenant was not imported. Fix the Area column, or add them '
         'with Add Tenant and pick their unit from the list.';
+  }
+
+  @override
+  String toString() => message;
+}
+
+/// A typed unit number no unit has now, that more than one unit had before
+/// a renumbering (`legacyUnitNumber`): it names none of them for sure.
+class AmbiguousLegacyUnitNumberException implements UserFacingException {
+  const AmbiguousLegacyUnitNumberException({
+    required this.unitNumber,
+    this.currentLabels = const [],
+  });
+
+  final String unitNumber;
+
+  /// How those units are named now ("12 (Complex 2)").
+  final List<String> currentLabels;
+
+  @override
+  String get message {
+    final now = currentLabels.isEmpty ? '' : ' (now ${currentLabels.join(', ')})';
+    return 'Unit $unitNumber was renumbered, and more than one unit used to '
+        'be numbered $unitNumber$now. Nothing was saved. Pick the unit from '
+        'the list.';
   }
 
   @override
@@ -635,6 +688,39 @@ class _FirestoreTenantRecords implements TenantRecordsStore {
       if ((data['isActive'] ?? true) != true) continue;
       final unit = UnitModel.fromFirestore(d);
       if (unitNumberKey(unit.unitNumber) != key) continue;
+      (data['archived'] == true ? archived : live).add(unit);
+    }
+    return live.isNotEmpty ? live : archived;
+  }
+
+  @override
+  Future<bool> repeatsUnitNumbersAcrossAreas() async {
+    try {
+      return UnitService.repeatsUnitNumbersAcrossAreas(
+          (await _facility.get()).data());
+    } catch (_) {
+      // Only words a refusal: unread, it reads as it always did.
+      return false;
+    }
+  }
+
+  @override
+  Future<List<UnitModel>> unitsWithLegacyNumber(String unitNumber) async {
+    // The whole collection, as unitsNumbered: Firestore cannot match
+    // ignoring case. Only read when no unit has the number now.
+    final snap = await _facility
+        .collection('units')
+        .limit(FacilitySubcollections.readLimit)
+        .get();
+    final key = unitNumberKey(unitNumber);
+    final live = <UnitModel>[];
+    final archived = <UnitModel>[];
+    for (final d in snap.docs) {
+      final data = d.data();
+      if ((data['isActive'] ?? true) != true) continue;
+      final unit = UnitModel.fromFirestore(d);
+      final legacy = unit.legacyUnitNumber;
+      if (legacy == null || unitNumberKey(legacy) != key) continue;
       (data['archived'] == true ? archived : live).add(unit);
     }
     return live.isNotEmpty ? live : archived;
@@ -1489,7 +1575,7 @@ class TenantService {
     final before = await store.tenant(tenantId);
     final typed = picked?.unitNumber.trim() ?? unitNumber.trim();
     final target = picked ??
-        unitForNumber(await store.unitsNumbered(typed), typed,
+        await _unitForTyped(store, typed,
             tenantId: tenantId,
             currentUnitId: TenantModel.textField(before?['unitId']));
     final newNum = target?.unitNumber.trim() ?? typed;
@@ -1966,6 +2052,11 @@ class TenantService {
   /// several units have says how to add that tenant instead.
   static String csvImportRowError(int rowNumber, Object error) {
     if (error is AmbiguousUnitNumberException) {
+      if (!error.repeatAcrossAreas) {
+        return 'Row $rowNumber: More than one unit is numbered '
+            '${error.unitNumber}, so this tenant was not imported. Add them '
+            'with Add Tenant and pick their unit from the list.';
+      }
       return 'Row $rowNumber: More than one unit is numbered '
           '${error.unitNumber}${error._inAreas}, so this tenant was not '
           "imported. Put the unit's area in an Area column, or add them "
@@ -1986,17 +2077,22 @@ class TenantService {
   }) {
     final number = unitNumberKey(unitNumber);
     if (number.isEmpty || !repeatAcrossAreas) return number;
-    return '$number|${normalizeUnitArea(area)?.toLowerCase() ?? ''}';
+    return '$number|${unitAreaKey(area) ?? ''}';
   }
 
   /// The unit a CSV import row names by [unitNumber] and [area], for a
   /// facility whose units are [units] (the live ones): its id to link the
-  /// tenant by, or null to link by number as before (no number, no unit or
-  /// one unit with it, or [repeatAcrossAreas] off, where [area] is not
-  /// used). With the setting on and several units numbered alike, the one
-  /// in [area] (trimmed, ignoring case); throws
-  /// [AmbiguousUnitNumberException] when the row has no area or more than
-  /// one of them is in it, and [CsvUnitAreaNotFoundException] when none is.
+  /// tenant by, or null to link by number as before.
+  ///
+  /// [repeatAcrossAreas] off: always null; [area] is not used. On:
+  /// - a row with an Area links the unit with the number (or, with none
+  ///   numbered so now, the one renumbered from it: `legacyUnitNumber`) in
+  ///   that area, areas compared as [unitAreaKey]; none there is
+  ///   [CsvUnitAreaNotFoundException] (not a new unit with no area, and not
+  ///   the one unit with the number in another area), more than one is
+  ///   [AmbiguousUnitNumberException];
+  /// - a row with no Area: null (by number) unless several units have the
+  ///   number, then [AmbiguousUnitNumberException].
   static String? csvImportUnitId(
     Iterable<UnitModel> units, {
     required String unitNumber,
@@ -2005,23 +2101,33 @@ class TenantService {
   }) {
     final key = unitNumberKey(unitNumber);
     if (!repeatAcrossAreas || key.isEmpty) return null;
-    final numbered = [
+    var numbered = [
       for (final u in units)
         if (unitNumberKey(u.unitNumber) == key) u
     ];
-    if (numbered.length < 2) return null;
+    if (numbered.isEmpty) {
+      numbered = [
+        for (final u in units)
+          if (u.legacyUnitNumber != null &&
+              unitNumberKey(u.legacyUnitNumber!) == key)
+            u
+      ];
+    }
     final typed = unitNumber.trim();
-    final areaName = normalizeUnitArea(area);
+    final areaName = tidyUnitArea(area);
     final ambiguous = AmbiguousUnitNumberException(
       unitNumber: typed,
       count: numbered.length,
       areas: distinctUnitAreas(numbered),
+      repeatAcrossAreas: true,
     );
-    if (areaName == null) throw ambiguous;
+    if (areaName == null) {
+      if (numbered.length < 2) return null;
+      throw ambiguous;
+    }
     final inArea = [
       for (final u in numbered)
-        if (normalizeUnitArea(u.area)?.toLowerCase() == areaName.toLowerCase())
-          u
+        if (unitAreaKey(u.area) == unitAreaKey(areaName)) u
     ];
     if (inArea.isEmpty) {
       throw CsvUnitAreaNotFoundException(
@@ -3028,10 +3134,79 @@ class TenantService {
     String? currentUnitId,
   }) async {
     final found = unit ??
-        unitForNumber(await store.unitsNumbered(unitNumber), unitNumber,
+        await _unitForTyped(store, unitNumber,
             tenantId: tenantId, currentUnitId: currentUnitId);
     if (found == null) return _UnitLink(unitNumber: unitNumber);
     return _linkTo(found, tenantId: tenantId);
+  }
+
+  /// The unit a typed [unitNumber] names ([unitForNumber]); when no unit
+  /// has it now, the unit renumbered from it ([unitForLegacyNumber]). Null
+  /// when neither: the caller makes a unit with that number.
+  ///
+  /// After a renumbering ("C2-12" became "12" in Complex 2), a stale form,
+  /// CSV row or reactivation still typing "C2-12" made a phantom unit
+  /// "C2-12" beside the real one.
+  static Future<UnitModel?> _unitForTyped(
+    TenantRecordsStore store,
+    String unitNumber, {
+    required String tenantId,
+    String? currentUnitId,
+  }) async {
+    final UnitModel? found;
+    try {
+      found = unitForNumber(await store.unitsNumbered(unitNumber), unitNumber,
+          tenantId: tenantId, currentUnitId: currentUnitId);
+    } on AmbiguousUnitNumberException catch (e) {
+      // Area advice only where numbers repeat across areas; the setting is
+      // read only for this refusal.
+      if (await store.repeatsUnitNumbersAcrossAreas()) {
+        throw e.withAreaAdvice();
+      }
+      rethrow;
+    }
+    if (found != null || unitNumberKey(unitNumber).isEmpty) return found;
+    return unitForLegacyNumber(
+        await store.unitsWithLegacyNumber(unitNumber), unitNumber,
+        tenantId: tenantId, currentUnitId: currentUnitId);
+  }
+
+  /// The unit of [candidates] whose `legacyUnitNumber` is [unitNumber]
+  /// (trimmed, ignoring case), or null when none. Among several, the
+  /// tenant's primary unit ([currentUnitId]) or the one they hold; else
+  /// [AmbiguousLegacyUnitNumberException].
+  static UnitModel? unitForLegacyNumber(
+    Iterable<UnitModel> candidates,
+    String unitNumber, {
+    required String tenantId,
+    String? currentUnitId,
+  }) {
+    final key = unitNumberKey(unitNumber);
+    if (key.isEmpty) return null;
+    final matches = [
+      for (final u in candidates)
+        if (u.legacyUnitNumber != null &&
+            unitNumberKey(u.legacyUnitNumber!) == key)
+          u
+    ];
+    if (matches.isEmpty) return null;
+    if (matches.length == 1) return matches.single;
+    final current = TenantModel.textField(currentUnitId);
+    for (final u in matches) {
+      if (current != null && u.id == current) return u;
+    }
+    final held = [
+      for (final u in matches)
+        if (u.tenantId == tenantId) u
+    ];
+    if (held.length == 1) return held.single;
+    throw AmbiguousLegacyUnitNumberException(
+      unitNumber: unitNumber.trim(),
+      currentLabels: [
+        for (final u in matches)
+          formatUnitLabel(number: u.unitNumber, area: u.area, includeArea: true)
+      ],
+    );
   }
 
   /// [_planUnitLink] for the unit [unit], found or picked.

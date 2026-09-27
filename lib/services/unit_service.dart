@@ -490,7 +490,7 @@ class UnitService {
       final areaAfter = area == null ? beforeArea : _areaValue(area);
       final areaChanging = beforeData != null &&
           area != null &&
-          (areaAfter?.toLowerCase() != beforeArea?.toLowerCase());
+          unitAreaKey(areaAfter) != unitAreaKey(beforeArea);
       if (renaming || areaChanging) {
         final conflict = await unitNumberWriteConflict(
           facilityId,
@@ -643,8 +643,8 @@ class UnitService {
     final key = unitNumberKey(unitNumber);
     if (key.isEmpty) return null;
     final typed = unitNumber.trim();
-    final areaName = normalizeUnitArea(area);
-    final areaKey = areaName?.toLowerCase();
+    final areaName = tidyUnitArea(area);
+    final areaKey = unitAreaKey(areaName);
     DuplicateUnitNumberException duplicate(
             Map<String, dynamic> data, String number) =>
         DuplicateUnitNumberException(
@@ -695,7 +695,7 @@ class UnitService {
       }
     }
     for (final (data, number) in sameNumber) {
-      if (areaOf(data)?.toLowerCase() == areaKey) return duplicate(data, number);
+      if (unitAreaKey(areaOf(data)) == areaKey) return duplicate(data, number);
     }
     return null;
   }
@@ -835,10 +835,11 @@ class UnitService {
     };
   }
 
-  /// [area] trimmed, or null when blank. Throws when longer than
-  /// [unitAreaMaxLength], which the editor and "Set area" already stop.
+  /// [area] trimmed with each run of whitespace one space ([tidyUnitArea]),
+  /// or null when blank. Throws when longer than [unitAreaMaxLength], which
+  /// the editor and "Set area" already stop.
   static String? _areaValue(String? area) {
-    final trimmed = area?.trim() ?? '';
+    final trimmed = tidyUnitArea(area) ?? '';
     if (trimmed.isEmpty) return null;
     if (trimmed.length > unitAreaMaxLength) {
       throw Exception(
@@ -869,7 +870,7 @@ class UnitService {
     final number = before?['unitNumber']?.toString() ?? '';
     final beforeArea = normalizeUnitArea(before?['area']);
     if (before != null &&
-        areaValue?.toLowerCase() != beforeArea?.toLowerCase()) {
+        unitAreaKey(areaValue) != unitAreaKey(beforeArea)) {
       final conflict = await unitNumberWriteConflict(
         facilityId,
         number,

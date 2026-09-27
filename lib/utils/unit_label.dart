@@ -153,10 +153,10 @@ String tenantListUnitLine(
   final labelArea = tenantLabelArea(tenant, fallbackArea: labelUnitArea);
   final label = tenantUnitLabel(tenant,
       includeArea: true, fallbackArea: labelUnitArea);
-  final labelKey = label.isEmpty ? null : labelArea?.toLowerCase();
+  final labelKey = label.isEmpty ? null : unitAreaKey(labelArea);
   final others = [
     for (final a in areas)
-      if (a.trim().toLowerCase() != labelKey) a,
+      if (unitAreaKey(a) != labelKey) a,
   ];
   return others.isEmpty
       ? 'Unit: $label'

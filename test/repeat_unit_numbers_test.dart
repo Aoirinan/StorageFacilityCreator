@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/models/transfer_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/providers/auth_provider.dart';
 import 'package:sfcapp/providers/unit_label_provider.dart';
@@ -15,10 +16,13 @@ import 'package:sfcapp/screens/facility_edit_screen.dart';
 import 'package:sfcapp/screens/move_in_wizard_screen.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:sfcapp/services/move_in_service.dart';
+import 'package:sfcapp/services/move_out_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
+import 'package:sfcapp/services/transfer_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/bulk_action.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 import 'package:sfcapp/widgets/unit_numbers_repeat_setting.dart';
@@ -167,6 +171,29 @@ void main() {
               'Use a different number or area.')),
         );
         expect(unitWrites(), isEmpty);
+      });
+
+      test('areas compare with inner whitespace collapsed, and are saved that way', () async {
+        // "Complex  2" printed as "Complex 2" on a label but was a second area.
+        serve([live('u1', '12', area: 'Complex 2')], repeat: true);
+        await expectLater(create('12', area: 'complex   2'),
+            throwsA(isA<DuplicateUnitNumberException>()));
+        await create('14', area: '  Complex \t 3 ');
+        expect(unitWrites().single.$3['area'], 'Complex 3');
+        expect(unitAreaKey(' Complex \t 2 '), 'complex 2');
+        expect(unitAreaKey('  '), isNull);
+        expect(canonicalUnitArea('complex    2', ['Complex 2']), 'Complex 2');
+        expect(distinctUnitAreas([
+          _unit('a', '1', area: 'Complex 2'),
+          _unit('b', '2', area: 'Complex  2'),
+        ]), ['Complex 2']);
+      });
+
+      test('a whitespace-only area change is not a move into another area', () async {
+        serve([live('u1', '12', area: 'Complex 2'), live('u2', '12', area: 'Complex 3')],
+            repeat: true);
+        await UnitService.setUnitArea(facilityId: 'f1', unitId: 'u2', area: 'Complex   3');
+        expect(db.data('units', 'u2')!['area'], 'Complex 3');
       });
 
       test('a repeated number with no area on the new unit is refused', () async {
@@ -425,30 +452,213 @@ void main() {
     });
   });
 
+  group("number lookups use the tenant's unitId first", () {
+    TenantModel tenant(String number, {String? unitId}) => TenantModel(
+          id: 't1',
+          facilityId: 'f1',
+          name: 'Ada Park',
+          email: '',
+          phone: '',
+          unitNumber: number,
+          unitId: unitId,
+          monthlyRate: 200,
+          createdAt: _day,
+        );
+    UnitModel held(String id, String number, String area) =>
+        _unit(id, number, area: area, status: UnitStatus.occupied)
+            .copyWith(tenantId: 't1');
+    // Ada rents unit 12 in both complexes.
+    final both = [held('c2-12', '12', 'Complex 2'), held('c3-12', '12', 'Complex 3')];
+
+    test('move-out with no unit in the link: their primary unit', () {
+      expect(unitToVacate(units: both, tenant: tenant('12', unitId: 'c3-12'))?.id, 'c3-12');
+      // Without unitId the number names both: the owner chooses.
+      expect(unitToVacate(units: both, tenant: tenant('12')), isNull);
+      // A unitId they no longer hold is not taken.
+      expect(unitToVacate(units: both, tenant: tenant('12', unitId: 'gone')), isNull);
+    });
+
+    test('transfer: the unit moved out of is their primary unit', () {
+      final byId = TransferService.transferFromUnit(tenant('12', unitId: 'c2-12'), both);
+      expect(byId.unit?.id, 'c2-12');
+      expect(byId.choices, hasLength(2));
+      expect(TransferService.transferFromUnit(tenant('12'), both).unit, isNull);
+    });
+
+    group('transfer: whether their label moves', () {
+      TransferModel transfer({String from = 'c3-12', String fromNumber = '12'}) =>
+          TransferModel(
+            id: 'x1',
+            facilityId: 'f1',
+            tenantId: 't1',
+            fromUnitId: from,
+            toUnitId: 'u20',
+            fromUnitNumber: fromNumber,
+            toUnitNumber: '20',
+            status: TransferStatus.pending,
+            transferDate: _day,
+            fromUnitProratedRent: 0,
+            toUnitProratedRent: 0,
+            fromUnitRate: 100,
+            toUnitRate: 100,
+            netAmount: 0,
+            ledgerEntryIds: const [],
+            createdAt: _day,
+            createdBy: 'owner',
+          );
+
+      test('by id: their primary unit left, the label follows it', () {
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 200,
+          currentUnitNumber: '12',
+          currentUnitId: 'c3-12',
+          otherUnits: [both.first],
+        );
+        expect(after.unitNumber, '20');
+        expect(after.unitId, 'u20');
+      });
+
+      test('by id: another unit left, the label stays, though its number is the same', () {
+        // By number, "12" named the unit left (the transfer's copy) and
+        // the kept "12" alike.
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 200,
+          currentUnitNumber: '12',
+          currentUnitId: 'c2-12',
+          otherUnits: [both.first],
+        );
+        expect(after.unitNumber, isNull);
+        expect(after.unitId, isNull);
+      });
+
+      test('by id even when the transfer copied an older number', () {
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(fromNumber: 'C3-12'),
+          currentRate: 200,
+          currentUnitNumber: '12',
+          currentUnitId: 'c3-12',
+          otherUnits: [both.first],
+        );
+        expect(after.unitId, 'u20');
+      });
+
+      test('no unitId: by number, as before', () {
+        final after = TransferService.tenantAfterTransfer(
+          transfer: transfer(),
+          currentRate: 200,
+          currentUnitNumber: '7',
+          otherUnits: [_unit('u7', '7').copyWith(tenantId: 't1')],
+        );
+        expect(after.unitNumber, isNull);
+      });
+
+      test('completeTransfer passes their unitId', () {
+        final source = File('lib/services/transfer_service.dart').readAsStringSync();
+        expect(source, contains('currentUnitId: tenant.unitId,'));
+      });
+    });
+
+    test('Tenants list / area index: a repeated number on a tenant without unitId names the unit they occupy', () {
+      final index = TenantUnitAreaIndex([
+        held('c2-12', '12', 'Complex 2'),
+        _unit('c3-12', '12', area: 'Complex 3'),
+      ]);
+      // An online move-in writes no unitId.
+      expect(index.namedUnit(tenant('12'))?.id, 'c2-12');
+      expect(index.areasFor(tenant('12')), ['Complex 2']);
+      // Holding both, the number still names neither.
+      expect(TenantUnitAreaIndex(both).namedUnit(tenant('12')), isNull);
+      // Somebody else's tenant with that number: none of theirs.
+      final other = TenantModel(
+        id: 't2',
+        facilityId: 'f1',
+        name: 'Bo',
+        email: '',
+        phone: '',
+        unitNumber: '12',
+        monthlyRate: 0,
+        createdAt: _day,
+      );
+      expect(index.namedUnit(other), isNull);
+    });
+
+    test('legacy numbers: unitForLegacyNumber picks the tenant\'s among several', () {
+      UnitModel legacy(String id, String legacyNumber, {String? tenantId}) => UnitModel(
+            id: id,
+            facilityId: 'f1',
+            unitNumber: '12',
+            unitType: 'standard',
+            status: UnitStatus.available,
+            tenantId: tenantId,
+            monthlyRate: 1,
+            createdAt: _day,
+            updatedAt: _day,
+            createdBy: 'owner',
+            legacyUnitNumber: legacyNumber,
+          );
+      final units = [legacy('a', 'C2-12'), legacy('b', 'c2-12', tenantId: 't1')];
+      expect(TenantService.unitForLegacyNumber(units, 'C2-12', tenantId: 't1')?.id, 'b');
+      expect(TenantService.unitForLegacyNumber(units, 'C2-12', tenantId: 't9', currentUnitId: 'a')?.id,
+          'a');
+      expect(() => TenantService.unitForLegacyNumber(units, 'C2-12', tenantId: 't9'),
+          throwsA(isA<AmbiguousLegacyUnitNumberException>()));
+      expect(TenantService.unitForLegacyNumber(units, 'C3-12', tenantId: 't1'), isNull);
+    });
+
+    test('UnitModel reads legacyUnitNumber and keeps it', () {
+      final unit = _unit('a', '12').copyWith(area: 'Complex 2');
+      expect(unit.legacyUnitNumber, isNull);
+      final withLegacy = UnitModel(
+        id: 'a',
+        facilityId: 'f1',
+        unitNumber: '12',
+        unitType: 'standard',
+        status: UnitStatus.available,
+        monthlyRate: 1,
+        createdAt: _day,
+        updatedAt: _day,
+        createdBy: 'owner',
+        legacyUnitNumber: 'C2-12',
+      );
+      expect(withLegacy.copyWith(notes: 'x').legacyUnitNumber, 'C2-12');
+      expect(withLegacy.toFirestore()['legacyUnitNumber'], 'C2-12');
+      expect(unit.toFirestore().containsKey('legacyUnitNumber'), isFalse);
+    });
+  });
+
   group('typed numbers several units have', () {
-    test('the refusal names their areas and says to pick from the list', () {
-      expect(
-        () => TenantService.unitForNumber(
+    AmbiguousUnitNumberException refusal() {
+      try {
+        TenantService.unitForNumber(
           [_unit('c2', '12', area: 'Complex 2'), _unit('c3', '12', area: 'Complex 3')],
           '12',
           tenantId: 't1',
-        ),
-        throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.message, 'message',
-            'More than one unit is numbered 12 (in Complex 2, Complex 3). Nothing was saved. '
-            'Pick the unit from the list instead of typing its number: the list shows each '
-            "unit's area.")),
-      );
+        );
+      } on AmbiguousUnitNumberException catch (e) {
+        return e;
+      }
+      fail('not refused');
+    }
+
+    test('setting off: the refusal reads as it always did', () {
+      expect(refusal().message,
+          'More than one unit is numbered 12. Nothing was saved. Pick the unit from the list.');
+      expect(TenantService.ambiguousUnitNumberNotice(refusal(), 'Ada Park'),
+          'More than one unit is numbered 12, so none was linked to Ada Park. Pick their '
+          'unit from the list to link it.');
     });
 
-    test("an unchanged number's notice names them too", () {
-      expect(
-        TenantService.ambiguousUnitNumberNotice(
-            const AmbiguousUnitNumberException(
-                unitNumber: '12', count: 2, areas: ['Complex 2', 'Complex 3']),
-            'Ada Park'),
-        'More than one unit is numbered 12 (in Complex 2, Complex 3), so none was linked '
-        'to Ada Park. Pick their unit from the list to link it.',
-      );
+    test('setting on: it names their areas and says to pick from the list', () {
+      final on = refusal().withAreaAdvice();
+      expect(on.message,
+          'More than one unit is numbered 12 (in Complex 2, Complex 3). Nothing was saved. '
+          'Pick the unit from the list instead of typing its number: the list shows each '
+          "unit's area.");
+      expect(TenantService.ambiguousUnitNumberNotice(on, 'Ada Park'),
+          'More than one unit is numbered 12 (in Complex 2, Complex 3), so none was linked '
+          'to Ada Park. Pick their unit from the list to link it.');
     });
   });
 
@@ -474,11 +684,48 @@ void main() {
       expect(match(repeated, ' 12 ', ' complex 2 '), 'c2-12');
     });
 
-    test('setting on, a number one unit has: linked by number as before, area not needed', () {
+    test('setting on, no Area in the row and one unit with the number: by number, as before', () {
       expect(match(repeated, '14', null), isNull);
-      expect(match(repeated, '14', 'Somewhere else'), isNull);
-      expect(match(units, '12', null), isNull);
+      expect(match(units, '12', '  '), isNull);
       expect(match(repeated, '', 'Complex 2'), isNull);
+      // No unit with it: made by number, as before.
+      expect(match(repeated, '40', null), isNull);
+    });
+
+    test('setting on, an Area in the row: the one unit with the number must be in it', () {
+      // It linked the only 40, in another area, without a word.
+      final only40 = [_unit('c2-40', '40', area: 'Complex 2')];
+      expect(match(only40, '40', ' complex  2 '), 'c2-40');
+      expect(
+        () => match(only40, '40', 'Complex 3'),
+        throwsA(isA<CsvUnitAreaNotFoundException>().having((e) => e.message, 'message',
+            'No unit numbered 40 is in area Complex 3. It is in Complex 2. This tenant was '
+            'not imported. Fix the Area column, or add them with Add Tenant and pick their '
+            'unit from the list.')),
+      );
+      // Nor a new unit with no area for a number no unit has.
+      expect(() => match(only40, '41', 'Complex 3'), throwsA(isA<CsvUnitAreaNotFoundException>()));
+    });
+
+    test('setting on, an old number from before a renumbering, with its Area', () {
+      final renumbered = [
+        UnitModel(
+          id: 'c2-12',
+          facilityId: 'f1',
+          unitNumber: '12',
+          unitType: 'standard',
+          status: UnitStatus.available,
+          monthlyRate: 1,
+          createdAt: _day,
+          updatedAt: _day,
+          createdBy: 'owner',
+          area: 'Complex 2',
+          legacyUnitNumber: 'C2-12',
+        ),
+      ];
+      expect(match(renumbered, 'c2-12', 'Complex 2'), 'c2-12');
+      expect(() => match(renumbered, 'C2-12', 'Complex 3'),
+          throwsA(isA<CsvUnitAreaNotFoundException>()));
     });
 
     test('setting off: the area column is not used', () {

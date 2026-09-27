@@ -18,7 +18,20 @@ String? normalizeUnitArea(Object? raw) {
   return trimmed.isEmpty ? null : trimmed;
 }
 
-String _areaKey(String area) => area.trim().toLowerCase();
+final RegExp _areaSpaces = RegExp(r'\s+');
+
+/// [raw] as an area is saved: trimmed, each run of whitespace one space
+/// ("Complex  2" is "Complex 2", as its label prints it); null when blank
+/// or not a string.
+String? tidyUnitArea(Object? raw) =>
+    normalizeUnitArea(raw)?.replaceAll(_areaSpaces, ' ');
+
+/// How areas compare: [tidyUnitArea] ignoring case, so "complex  2" and
+/// "Complex 2" are one area. Null for no area. The same key as
+/// scripts/renumber-units-by-area.mjs `areaKey`.
+String? unitAreaKey(Object? raw) => tidyUnitArea(raw)?.toLowerCase();
+
+String _areaKey(String area) => unitAreaKey(area) ?? '';
 
 /// The facility's areas, one per name ignoring case (the first spelling
 /// seen), sorted A-Z ignoring case.
@@ -41,7 +54,7 @@ List<String> distinctUnitAreas(Iterable<UnitModel> units) {
 /// case, so "complex 2" joins "Complex 2" rather than making a second area.
 /// Null when blank.
 String? canonicalUnitArea(String? typed, Iterable<String> existingAreas) {
-  final area = normalizeUnitArea(typed);
+  final area = tidyUnitArea(typed);
   if (area == null) return null;
   final key = _areaKey(area);
   for (final existing in existingAreas) {
@@ -112,14 +125,27 @@ class TenantUnitAreaIndex {
   final Map<String, UnitModel> _byUniqueNumber = {};
 
   /// The unit [tenant]'s label names: their `unitId` when it is one of the
-  /// units, else the one unit with their number, else null.
+  /// units, else the one unit with their number, else the one unit with
+  /// their number that they occupy, else null.
+  ///
+  /// The last is for a number several units have (repeated across areas)
+  /// on a tenant with no `unitId`, such as one who moved in online.
   UnitModel? namedUnit(TenantModel tenant) {
     final id = tenant.unitId?.trim() ?? '';
     if (id.isNotEmpty) {
       final byId = _byId[id];
       if (byId != null) return byId;
     }
-    return _byUniqueNumber[unitNumberKey(tenant.unitNumber)];
+    final key = unitNumberKey(tenant.unitNumber);
+    if (key.isEmpty) return null;
+    final unique = _byUniqueNumber[key];
+    if (unique != null) return unique;
+    final heldNamed = [
+      for (final u in _byTenantId[tenant.id.trim()] ?? const <UnitModel>[])
+        if (u.status != UnitStatus.available && unitNumberKey(u.unitNumber) == key)
+          u
+    ];
+    return heldNamed.length == 1 ? heldNamed.single : null;
   }
 
   /// The units [tenant] holds or names, each once.

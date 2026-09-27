@@ -78,6 +78,14 @@ class TransferService {
           'Assign their unit first (Units > unit > Assign Tenant).');
     }
     if (held.length == 1) return (unit: held.single, choices: held);
+    // Their primary unit by id first: with unit numbers repeated across
+    // areas, their number can name two of the units they hold.
+    final primary = tenant.unitId?.trim() ?? '';
+    for (final u in held) {
+      if (primary.isNotEmpty && u.id == primary) {
+        return (unit: u, choices: held);
+      }
+    }
     final named = [
       for (final u in held)
         if (sameUnitNumber(u.unitNumber, tenant.unitNumber)) u
@@ -116,11 +124,18 @@ class TransferService {
   /// moved B to C for C alone, and labelled them C. [unitId] is the unit
   /// [unitNumber] names (the to-unit), null with it: updateTenant links it
   /// by id and makes it their primary unit (`unitId`, `unitArea`).
+  ///
+  /// Whether the label named the unit they left is decided by id when the
+  /// tenant has a primary unit ([currentUnitId], their `unitId`): the
+  /// transfer's from-number is a copy taken when it was created, and with
+  /// numbers repeated across areas "12" can be a unit they keep. By number
+  /// only for a tenant with no `unitId`.
   static ({double monthlyRate, String? unitNumber, String? unitId})
       tenantAfterTransfer({
     required TransferModel transfer,
     required double currentRate,
     required String currentUnitNumber,
+    String? currentUnitId,
     required List<UnitModel> otherUnits,
   }) {
     if (otherUnits.isEmpty) {
@@ -132,10 +147,17 @@ class TransferService {
     }
     final rate = currentRate - transfer.fromUnitRate + transfer.toUnitRate;
     final label = currentUnitNumber.trim();
-    // A label that names one of the units they keep stays.
-    final namesKept = otherUnits.any((u) => u.unitNumber.trim() == label);
-    final movesLabel = label.isEmpty ||
-        (!namesKept && sameUnitNumber(label, transfer.fromUnitNumber));
+    final primary = currentUnitId?.trim() ?? '';
+    final bool movesLabel;
+    if (label.isEmpty) {
+      movesLabel = true;
+    } else if (primary.isNotEmpty) {
+      movesLabel = primary == transfer.fromUnitId;
+    } else {
+      // A label that names one of the units they keep stays.
+      final namesKept = otherUnits.any((u) => u.unitNumber.trim() == label);
+      movesLabel = !namesKept && sameUnitNumber(label, transfer.fromUnitNumber);
+    }
     return (
       monthlyRate: rate <= 0 ? 0 : (rate * 100).round() / 100,
       unitNumber: movesLabel ? transfer.toUnitNumber : null,
@@ -348,6 +370,7 @@ class TransferService {
           transfer: transfer,
           currentRate: tenant.monthlyRate,
           currentUnitNumber: tenant.unitNumber,
+          currentUnitId: tenant.unitId,
           otherUnits: otherUnits,
         );
         await TenantService.updateTenant(
