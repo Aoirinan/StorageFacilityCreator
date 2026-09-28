@@ -171,6 +171,10 @@ class TenantModel {
   final String smsConsentStatus; // opted_in | opted_out | unknown
   final DateTime? smsConsentTimestamp;
   final String? smsConsentSource;
+  /// How the tenant agreed, when staff recorded it (see SmsConsentMethod).
+  final String? smsConsentMethod;
+  /// Staff's note on the consent, e.g. what "Other" means.
+  final String? smsConsentNote;
 
   // Autopay: OFF | REQUESTED | ON (synced facility + portal)
   final TenantAutopayModel autopay;
@@ -243,6 +247,8 @@ class TenantModel {
     this.smsConsentStatus = 'unknown',
     this.smsConsentTimestamp,
     this.smsConsentSource,
+    this.smsConsentMethod,
+    this.smsConsentNote,
     this.autopay = const TenantAutopayModel(),
     this.stripe = const TenantStripeModel(),
     this.overlockIsActive = false,
@@ -387,6 +393,8 @@ class TenantModel {
       smsConsentTimestamp:
           (data?['smsConsentTimestamp'] as Timestamp?)?.toDate(),
       smsConsentSource: data?['smsConsentSource'] as String?,
+      smsConsentMethod: data?['smsConsentMethod'] as String?,
+      smsConsentNote: data?['smsConsentNote'] as String?,
       autopay: data?['autopay'] != null
           ? TenantAutopayModel.fromMap(
               Map<String, dynamic>.from(data!['autopay'] as Map))
@@ -516,6 +524,10 @@ class TenantModel {
         'smsConsentTimestamp': Timestamp.fromDate(smsConsentTimestamp!),
       if (smsConsentSource != null && smsConsentSource!.isNotEmpty)
         'smsConsentSource': smsConsentSource,
+      if (smsConsentMethod != null && smsConsentMethod!.isNotEmpty)
+        'smsConsentMethod': smsConsentMethod,
+      if (smsConsentNote != null && smsConsentNote!.isNotEmpty)
+        'smsConsentNote': smsConsentNote,
       'autopay': autopay.toMap(),
       if (stripe.customerId != null || stripe.defaultPaymentMethodId != null)
         'stripe': stripe.toMap(),
@@ -588,6 +600,8 @@ class TenantModel {
     String? smsConsentStatus,
     DateTime? smsConsentTimestamp,
     String? smsConsentSource,
+    String? smsConsentMethod,
+    String? smsConsentNote,
     TenantAutopayModel? autopay,
     TenantStripeModel? stripe,
     bool? overlockIsActive,
@@ -655,6 +669,8 @@ class TenantModel {
       smsConsentStatus: smsConsentStatus ?? this.smsConsentStatus,
       smsConsentTimestamp: smsConsentTimestamp ?? this.smsConsentTimestamp,
       smsConsentSource: smsConsentSource ?? this.smsConsentSource,
+      smsConsentMethod: smsConsentMethod ?? this.smsConsentMethod,
+      smsConsentNote: smsConsentNote ?? this.smsConsentNote,
       autopay: autopay ?? this.autopay,
       stripe: stripe ?? this.stripe,
       overlockIsActive: overlockIsActive ?? this.overlockIsActive,

@@ -559,7 +559,33 @@ service cloud.firestore {
       // Sub-collections under facilities
       match /tenants/{tenantId} {
         allow read: if canReadFacilityCalendarAndLists(facilityId);
-        allow create, update: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow create: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+        allow update: if isSuperAdmin() ||
+          (isFacilityOwnerOrManager(facilityId) && keepsTenantsOwnSmsOptOut());
+
+        // A tenant's own SMS opt-out (texted STOP, declined texts at move-in,
+        // "opted out" on an imported sheet) is theirs alone to reverse, by texting
+        // START, which the server records with the Admin SDK (not subject to
+        // these rules). Staff may reverse only an opt-out they made
+        // themselves: smsConsentSource 'staff_removed'. Backstop for an app
+        // save made from a copy of the tenant read before the STOP arrived.
+        function tenantOwnsSmsOptOut(d) {
+          return (d.get('smsOptOut', false) == true ||
+                  d.get('smsConsentStatus', '') == 'opted_out') &&
+            d.get('smsConsentSource', '') != 'staff_removed';
+        }
+        function keepsTenantsOwnSmsOptOut() {
+          let before = resource.data;
+          let after = request.resource.data;
+          return !tenantOwnsSmsOptOut(before) || (
+            (before.get('smsOptOut', false) != true || after.get('smsOptOut', false) == true) &&
+            (before.get('smsConsentStatus', '') != 'opted_out' ||
+              after.get('smsConsentStatus', '') == 'opted_out') &&
+            (after.get('smsConsentStatus', '') != 'opted_in' ||
+              before.get('smsConsentStatus', '') == 'opted_in') &&
+            after.get('smsConsentSource', '') == before.get('smsConsentSource', '')
+          );
+        }
         // Owners and managers delete through the deleteTenantsPermanently
         // callable, which refuses tenants with billing or legal history or a
         // unit. A direct delete (an old app tab, the API) skipped that check

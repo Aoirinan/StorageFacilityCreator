@@ -15,6 +15,22 @@ import 'package:sfcapp/services/texting_onboarding_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
+/// Why "Reserve number & submit" is locked: Twilio's pre-check flagged the
+/// business details (the facility's a2pBundleReady is not true, or it has
+/// a2pBundleIssues).
+const reserveNumberBlockedMessage =
+    "Twilio's pre-check flagged your business details — fix them above (or "
+    'contact support) before reserving a number.';
+
+/// Why it is locked when the pre-check has not passed but flagged nothing:
+/// it has not run for these details. Always the case on a Twilio dry-run
+/// setup, where the pre-check is skipped and a2pBundleReady is never set.
+const reserveNumberNotCheckedMessage =
+    "Twilio's pre-check has not passed for these business details yet, so "
+    'reserving a number is locked. Save the business details again (Edit, '
+    'above) to run it, or contact support. On a Twilio test (dry-run) setup '
+    'the pre-check never runs, so this stays locked there.';
+
 class TextingSetupScreen extends ConsumerStatefulWidget {
   final String? facilityId;
   final TextingOnboardingRepository? repository;
@@ -703,6 +719,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Widget _buildReviewStage() {
+    final snapshot = _controller.snapshot;
+    final canReserve = snapshot?.readyToReserveNumber == true;
+    final bundleIssues = snapshot?.bundleIssues?.trim();
     return Form(
       key: _reviewFormKey,
       child: Column(
@@ -772,12 +791,25 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             message:
                 'Your number is reserved immediately. Texting stays disabled until carrier approval and a final SFC platform review are both complete.',
           ),
+          if (!canReserve) ...[
+            const SizedBox(height: 14),
+            _InfoCallout(
+              key: const Key('reserve-blocked'),
+              icon: Icons.error_outline_rounded,
+              title: 'Reserving a number is locked',
+              message: bundleIssues == null || bundleIssues.isEmpty
+                  ? reserveNumberNotCheckedMessage
+                  : '$reserveNumberBlockedMessage\n\nFlagged: $bundleIssues',
+            ),
+          ],
           const SizedBox(height: 28),
           _StageActions(
             busy: _controller.isWorking,
             primaryLabel: 'Reserve number & submit',
             onBack: () => _controller.goToStep(1),
-            onPrimary: _submit,
+            // Locked until Twilio's pre-check passes: the number is bought
+            // before the brand step, which refuses a flagged bundle.
+            onPrimary: canReserve ? _submit : null,
           ),
         ],
       ),
@@ -955,6 +987,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Future<void> _submit() async {
+    if (_controller.snapshot?.readyToReserveNumber != true) return;
     if (_reviewFormKey.currentState?.validate() != true) return;
     if (!_consent) {
       setState(() {});
@@ -1314,7 +1347,8 @@ class _StageHeading extends StatelessWidget {
 class _StageActions extends StatelessWidget {
   final bool busy;
   final String primaryLabel;
-  final VoidCallback onPrimary;
+  /// Null disables the button.
+  final VoidCallback? onPrimary;
   final VoidCallback? onBack;
 
   const _StageActions({
@@ -1358,6 +1392,7 @@ class _InfoCallout extends StatelessWidget {
   final String message;
 
   const _InfoCallout({
+    super.key,
     required this.icon,
     required this.title,
     required this.message,

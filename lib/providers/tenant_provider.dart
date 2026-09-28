@@ -13,6 +13,7 @@ import '../providers/auth_provider.dart';
 import '../providers/unit_provider.dart';
 import '../models/unit_model.dart';
 import '../utils/unit_areas.dart';
+import '../utils/sms_consent.dart';
 import 'package:sfcapp/utils/unit_number_sort.dart';
 
 // Provider for all tenants across all facilities
@@ -382,7 +383,7 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
     String? portalWelcomeMessage,
     DateTime? portalLastAccessAt,
     bool resetPortalStats = false,
-    DateTime? smsOptInDate,
+    SmsConsentUpdate? smsConsent,
     ConfirmFreeUnit? confirmFreeOldUnit,
   }) {
     return _run(() => TenantService.updateTenant(
@@ -412,7 +413,7 @@ class TenantOperationsNotifier extends StateNotifier<AsyncValue<void>> {
           portalWelcomeMessage: portalWelcomeMessage,
           portalLastAccessAt: portalLastAccessAt,
           resetPortalStats: resetPortalStats,
-          smsOptInDate: smsOptInDate,
+          smsConsent: smsConsent,
           confirmFreeOldUnit: confirmFreeOldUnit,
         ));
   }
