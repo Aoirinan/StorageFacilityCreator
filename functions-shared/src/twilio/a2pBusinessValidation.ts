@@ -20,8 +20,6 @@ export interface A2PBusinessData {
    * must carry — only the last four are ever persisted.
    */
   ein?: unknown;
-  /** Last four, as persisted on the facility after a submission. */
-  einLast4?: unknown;
   representativeFirstName?: unknown;
   representativeLastName?: unknown;
   /** Sole-proprietor OTP mobile; required only when businessType is sole prop. */
@@ -100,11 +98,26 @@ export function isValidWebsite(value: unknown): boolean {
   }
 }
 
+export interface A2PBusinessValidationOptions {
+  /**
+   * Whether a full EIN must be present. True for every submission that will
+   * write the business information end user. The only exception is a rebuild
+   * of the A2P trust product while the customer profile (which alone carries
+   * the EIN) is already with Twilio: nothing EIN-bearing is written then, and
+   * the EIN is not persisted anywhere it could be re-read from.
+   */
+  requireEin?: boolean;
+}
+
 /**
  * Validate everything carrier vetting will look at.
  * Returns every problem at once so the operator fixes the form in one pass.
  */
-export function validateA2PBusinessData(data: A2PBusinessData): A2PValidationIssue[] {
+export function validateA2PBusinessData(
+  data: A2PBusinessData,
+  options: A2PBusinessValidationOptions = {},
+): A2PValidationIssue[] {
+  const requireEin = options.requireEin !== false;
   const issues: A2PValidationIssue[] = [];
   const add = (field: string, message: string) => issues.push({ field, message });
 
@@ -127,14 +140,11 @@ export function validateA2PBusinessData(data: A2PBusinessData): A2PValidationIss
       add('mobilePhone', "Enter the owner's mobile number — Twilio texts a verification code to it. A 10-digit US number, not a landline or a Twilio number.");
     }
   } else {
-    // The submission form sends the full EIN; a facility that has already been
-    // saved carries only the last four. Accept whichever is present, because
-    // requiring `einLast4` alone rejected every submission the form could make.
-    if (data.ein !== undefined && data.ein !== null && str(data.ein) !== '') {
-      if (!isValidFullEin(data.ein)) {
-        add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
-      }
-    } else if (!isValidEinLast4(data.einLast4)) {
+    // Carrier vetting matches all nine digits against IRS records. The stored
+    // last four is not a substitute: accepting it used to let a save through
+    // with no EIN at all, which then went to Twilio as an empty
+    // business_registration_number.
+    if (requireEin && !isValidFullEin(data.ein)) {
       add('ein', 'Enter the 9-digit business EIN, for example 12-3456789.');
     }
   }

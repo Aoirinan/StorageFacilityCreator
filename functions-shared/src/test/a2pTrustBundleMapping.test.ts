@@ -15,18 +15,18 @@ import {
 } from '../twilio/a2pTrustBundleMapping';
 
 const input = (over: Partial<TrustBundleInput> = {}): TrustBundleInput => ({
-  legalBusinessName: 'Keepsake Self Storage LLC',
+  legalBusinessName: 'Example Storage LLC',
   businessType: 'LLC',
   ein: '12-3456789',
-  addressLine1: '4180 US HWY 82 East',
-  city: 'Gainesville',
+  addressLine1: '100 Example Road',
+  city: 'Austin',
   state: 'tx',
-  postalCode: '76240',
-  website: 'keepsakestorage.com',
-  supportEmail: 'owner@keepsakestorage.com',
+  postalCode: '78701',
+  website: 'example.com',
+  supportEmail: 'owner@example.com',
   supportPhone: '(940) 555-0147',
-  representativeFirstName: 'Russell',
-  representativeLastName: 'Forsyth',
+  representativeFirstName: 'Jane',
+  representativeLastName: 'Doe',
   ...over,
 });
 
@@ -48,7 +48,7 @@ test('toE164UsPhone handles 10-digit, 11-digit and junk', () => {
 });
 
 test('normalizeWebsiteUrl forces an absolute URL', () => {
-  assert.equal(normalizeWebsiteUrl('keepsakestorage.com'), 'https://keepsakestorage.com');
+  assert.equal(normalizeWebsiteUrl('example.com'), 'https://example.com');
   assert.equal(normalizeWebsiteUrl('http://a.com'), 'http://a.com');
   assert.equal(normalizeWebsiteUrl('https://a.com'), 'https://a.com');
   assert.equal(normalizeWebsiteUrl('  '), '');
@@ -103,7 +103,7 @@ test('buildBusinessInformationAttributes emits the policy field names', () => {
   assert.equal(attrs.business_registration_number, '123456789');
   assert.equal(attrs.business_registration_identifier, 'EIN');
   assert.equal(attrs.business_type, 'Limited Liability Corporation');
-  assert.equal(attrs.website_url, 'https://keepsakestorage.com');
+  assert.equal(attrs.website_url, 'https://example.com');
 });
 
 test('buildBusinessInformationAttributes throws on an unmapped business type', () => {
@@ -115,8 +115,8 @@ test('buildBusinessInformationAttributes throws on an unmapped business type', (
 
 test('buildAuthorizedRepresentativeAttributes emits the policy field names', () => {
   const attrs = buildAuthorizedRepresentativeAttributes(input());
-  assert.equal(attrs.first_name, 'Russell');
-  assert.equal(attrs.last_name, 'Forsyth');
+  assert.equal(attrs.first_name, 'Jane');
+  assert.equal(attrs.last_name, 'Doe');
   assert.equal(attrs.phone_number, '+19405550147');
   assert.equal(attrs.business_title, 'Owner');
   assert.equal(attrs.job_position, 'Other');
@@ -134,7 +134,7 @@ test('buildAddressPayload upper-cases region and defaults country to US', () => 
   const addr = buildAddressPayload(input());
   assert.equal(addr.region, 'TX');
   assert.equal(addr.isoCountry, 'US');
-  assert.equal(addr.street, '4180 US HWY 82 East');
+  assert.equal(addr.street, '100 Example Road');
 });
 
 // --- evaluation summarizing -------------------------------------------------
@@ -177,6 +177,61 @@ test('summarizeEvaluation pulls out the specific failing fields', () => {
     },
   ]);
   assert.match(formatEvaluationFailures(summary), /Business Registration Number: Value is required/);
+});
+
+test('summarizeEvaluation reads the invalid[] shape Twilio actually returns', () => {
+  const summary = summarizeEvaluation({
+    sid: 'ELaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    policySid: 'RNb0d4771c2c98518d916a3d4cd70a8f8b',
+    status: 'noncompliant',
+    results: [
+      {
+        passed: false,
+        requirement_friendly_name: 'A2P Messaging Profile Information',
+        requirement_name: 'us_a2p_messaging_profile_information',
+        friendly_name: 'Messaging Profile',
+        valid: [{ friendly_name: 'Company Type', object_field: 'company_type' }],
+        invalid: [
+          {
+            friendly_name: 'Brand Contact Email',
+            object_field: 'brand_contact_email',
+            failure_reason: 'The email is invalid.',
+          },
+        ],
+      },
+      {
+        passed: false,
+        requirement_name: 'customer_profile',
+        failure_reason: 'The customer profile must be in review.',
+        invalid: [],
+      },
+    ],
+  });
+  assert.equal(summary.compliant, false);
+  assert.equal(summary.evaluationSid, 'ELaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(summary.policySid, 'RNb0d4771c2c98518d916a3d4cd70a8f8b');
+  assert.deepEqual(summary.failures, [
+    {
+      objectType: 'A2P Messaging Profile Information',
+      field: 'Brand Contact Email',
+      reason: 'The email is invalid.',
+    },
+    {
+      objectType: 'customer_profile',
+      field: 'missing',
+      reason: 'The customer profile must be in review.',
+    },
+  ]);
+  const text = formatEvaluationFailures(summary);
+  assert.match(text, /Brand Contact Email: The email is invalid/);
+  assert.match(text, /evaluation ELaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/);
+  assert.match(text, /policy RNb0d4771c2c98518d916a3d4cd70a8f8b/);
+});
+
+test('summarizeEvaluation accepts snake_case policy_sid', () => {
+  const summary = summarizeEvaluation({ status: 'noncompliant', policy_sid: 'RNx', results: [] });
+  assert.equal(summary.policySid, 'RNx');
+  assert.match(formatEvaluationFailures(summary), /noncompliant\. \(policy RNx\)/);
 });
 
 test('summarizeEvaluation still reports a requirement that fails with no field detail', () => {
@@ -230,11 +285,21 @@ test('isSoleProprietorBusinessType only for Sole Prop', () => {
 
 test('sole prop business info omits the EIN registration fields', () => {
   const attrs = buildBusinessInformationAttributes(
-    input({ businessType: 'Sole Prop', ein: undefined, legalBusinessName: 'Keepsake Self Storage' }),
+    input({ businessType: 'Sole Prop', ein: undefined, legalBusinessName: 'Example Storage' }),
   );
   assert.equal(attrs.business_type, 'Sole Proprietorship');
   assert.equal('business_registration_identifier' in attrs, false);
   assert.equal('business_registration_number' in attrs, false);
+});
+
+test('non-sole-prop business info refuses a missing or partial EIN', () => {
+  for (const ein of [undefined, '', '6789', '12-34567']) {
+    assert.throws(
+      () => buildBusinessInformationAttributes(input({ businessType: 'LLC', ein })),
+      /9-digit EIN/,
+      `EIN ${String(ein)} must not reach Twilio`,
+    );
+  }
 });
 
 test('non-sole-prop business info keeps the EIN', () => {
@@ -245,9 +310,9 @@ test('non-sole-prop business info keeps the EIN', () => {
 
 test('sole prop messaging profile carries the mobile OTP number in E.164', () => {
   const attrs = buildA2pMessagingProfileAttributes(
-    input({ businessType: 'Sole Prop', mobilePhone: '(903) 555-0175' }),
+    input({ businessType: 'Sole Prop', mobilePhone: '(512) 555-0175' }),
   );
-  assert.equal(attrs.mobile_phone_number, '+19035550175');
+  assert.equal(attrs.mobile_phone_number, '+15125550175');
 });
 
 test('non-sole-prop messaging profile has no mobile number field', () => {

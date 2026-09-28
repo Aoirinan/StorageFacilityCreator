@@ -8,10 +8,27 @@ import {
   ensureIdempotentResource,
   formatA2PValidationIssues,
   formatEvaluationFailures,
+  normalizeEin,
   validateA2PBusinessData,
   isSoleProprietorBusinessType,
 } from '@sfc/functions-shared';
-import { buildAndEvaluateTrustBundle } from './a2pTrustBundle';
+import {
+  assertTrustProductEditable,
+  buildAndEvaluateTrustBundle,
+  fetchTrustBundleState,
+  describeBusinessDetailsLock,
+  isBundleWithTwilio,
+  resolveA2PPolicySids,
+  type TrustBundleState,
+} from './a2pTrustBundle';
+import {
+  buildBrandRegistrationParams,
+  campaignFilingFields,
+  fetchUsAppToPersonCampaign,
+  fileCampaignWhenBrandApproved,
+  prepareCampaignSamples,
+  type CampaignFilingResult,
+} from './a2pCampaign';
 import { reservePlatformOutgoing, releasePlatformOutgoing } from './platformOutgoing';
 import { createOrUpdateMessageLog } from './messageLog';
 import { getTenantInfo } from './tenantInfo';
@@ -24,7 +41,7 @@ import {
   TWILIO_SECRETS,
   SENDGRID_SECRETS,
 } from './secrets';
-import { getTwilioClient, isTwilioDryRunEnabled } from './twilioClient';
+import { getA2PTwilioClient, getTwilioClient, isTwilioDryRunEnabled } from './twilioClient';
 import { sendFacilityEmailWithCompliance } from './facilityOutboundEmail';
 import { enforceRateLimit } from './rateLimit';
 import { enforceAppCheckOrThrow } from './appCheck';
@@ -33,6 +50,7 @@ import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkQuietHours, checkPerTenantRateLimit, addOptOutFooter } from './smsComplianceHelpers';
 import { SMSUsageState, checkAndIncrementSMSUsage } from './smsUsage';
 import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
+import type { A2PTwilioClient } from './a2pTwilioTypes';
 
 interface SMSRequest {
   to: string;
@@ -1300,50 +1318,19 @@ async function attachPhoneNumberToMessagingService(
   }
 }
 
-// From Twilio ISV A2P 10DLC API guide (template policies; override via env if your account differs).
-const TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID_DEFAULT = 'RNdfbf3fae0e1107f8aded0e7cead80bf5';
-const TWILIO_A2P_TRUST_PRODUCT_POLICY_SID_DEFAULT = 'RNb0d4771c2c98518d916a3d4cd70a8f8b';
+/** Stored business fields that only feed the campaign, never a TrustHub bundle. */
+const CAMPAIGN_ONLY_BUSINESS_FIELDS = ['dba'] as const;
 
-async function resolveTrustHubA2PPolicySids(twilio: any): Promise<{
-  customerProfilePolicySid: string;
-  trustProductPolicySid: string;
-}> {
-  const envCustomer = (process.env.TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID || '').trim();
-  const envTrustProduct = (
-    process.env.TWILIO_A2P_TRUST_PRODUCT_POLICY_SID ||
-    process.env.TWILIO_A2P_POLICY_SID ||
-    ''
-  ).trim();
-
-  const policies = await twilio.trusthub.v1.policies.list({ limit: 200 });
-  const list: any[] = Array.isArray(policies) ? policies : [];
-
-  let customerProfilePolicySid = envCustomer;
-  if (!customerProfilePolicySid) {
-    const hit = list.find((p: any) => {
-      const sid = (p?.sid || '').toString();
-      const fn = (p?.friendlyName || '').toString().toLowerCase();
-      return sid.startsWith('RN') && fn.includes('secondary') && fn.includes('customer');
-    });
-    customerProfilePolicySid = (hit?.sid as string) || TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID_DEFAULT;
-  }
-
-  let trustProductPolicySid = envTrustProduct;
-  if (!trustProductPolicySid) {
-    const hit = list.find((p: any) => {
-      const sid = (p?.sid || '').toString();
-      const fn = (p?.friendlyName || '').toString().toLowerCase();
-      return (
-        sid.startsWith('RN') &&
-        (fn.includes('a2p') || fn.includes('10dlc') || fn.includes('messaging trust'))
-      );
-    });
-    trustProductPolicySid = (hit?.sid as string) || TWILIO_A2P_TRUST_PRODUCT_POLICY_SID_DEFAULT;
-  }
-
-  return { customerProfilePolicySid, trustProductPolicySid };
-}
-
+/**
+ * Save the owner's business details and build/evaluate the TrustHub bundles.
+ *
+ * The customer profile and the A2P trust product are separate stages. When the
+ * profile is already with Twilio (in review or approved) its details cannot
+ * change, so the stored details are used as they are — only campaign-only
+ * fields (the DBA) are taken from the request — and the run goes on to
+ * rebuild, evaluate and submit the trust product. The EIN is needed, and
+ * required, only when the profile itself is written.
+ */
 async function createOrUpdateA2PProfileInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
@@ -1353,91 +1340,134 @@ async function createOrUpdateA2PProfileInternal(
   trustProductSid: string;
   bundleReady: boolean;
   bundleIssues: string;
+  profileStatus: string | null;
+  productStatus: string | null;
+  profileSkipped: boolean;
+  replacedProductSid: string | null;
 }> {
+  if (facilityData.twilioBrandSid) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      "This facility's brand has already been filed with the carriers, so its business " +
+        'details can no longer be changed here. If the registration is rejected, use ' +
+        '"Reset and review" on the Texting page first.',
+    );
+  }
+
+  const twilio: A2PTwilioClient | null = isTwilioDryRunEnabled() ? null : getA2PTwilioClient();
+  const state: TrustBundleState = twilio
+    ? await fetchTrustBundleState(twilio, facilityData)
+    : { profile: null, product: null };
+  assertTrustProductEditable(state);
+
+  const stored = (facilityData.textingBusinessData || {}) as Record<string, any>;
+  const profileLocked = Boolean(state.profile) && isBundleWithTwilio(state.profile?.status);
+  let effective: TextingBusinessData = businessData;
+  if (profileLocked && stored.legalBusinessName) {
+    // The profile under review is the source of truth; ignore edits to its
+    // fields rather than silently diverging from what Twilio is reviewing.
+    effective = { ...(stored as TextingBusinessData), ein: undefined };
+    for (const field of CAMPAIGN_ONLY_BUSINESS_FIELDS) {
+      if (typeof businessData[field] === 'string') effective[field] = businessData[field];
+    }
+  }
+
+  const validationIssues = validateA2PBusinessData(effective, { requireEin: !profileLocked });
+  if (validationIssues.length > 0) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `Business details cannot be submitted for carrier review yet. ${formatA2PValidationIssues(validationIssues)}`,
+      { validationIssues },
+    );
+  }
+
   let trustProfileSid: string;
   let trustProductSid: string;
   let bundleReady = false;
   let bundleIssues = '';
+  let profileStatus: string | null = null;
+  let productStatus: string | null = null;
+  let profileSkipped = false;
+  let replacedProductSid: string | null = null;
 
-  if (isTwilioDryRunEnabled()) {
+  if (!twilio) {
     trustProfileSid = buildTwilioDryRunSid('BU', facilityRef.id);
     trustProductSid = buildTwilioDryRunSid('TP', facilityRef.id);
     bundleReady = true;
   } else {
-    const twilio = getTwilioClient() as any;
-    const policySids = await resolveTrustHubA2PPolicySids(twilio);
+    const policySids = resolveA2PPolicySids();
 
     // Build the full bundle — business information, authorized representative
-    // and registered address — then evaluate it. Previously this created only
-    // the profile/product shells, which can never be approved. The full EIN is
-    // passed through here and never persisted below.
+    // and registered address — then evaluate it. The full EIN is passed through
+    // here and never persisted below.
     const result = await buildAndEvaluateTrustBundle(
       twilio,
       facilityRef,
       facilityData,
       {
-        legalBusinessName: businessData.legalBusinessName,
-        businessType: businessData.businessType,
-        ein: businessData.ein,
-        mobilePhone: businessData.mobilePhone,
-        addressLine1: businessData.addressLine1,
-        city: businessData.city,
-        state: businessData.state,
-        postalCode: businessData.postalCode,
-        country: businessData.country,
-        website: businessData.website,
-        supportEmail: businessData.supportEmail,
-        supportPhone: businessData.supportPhone,
-        representativeFirstName: businessData.representativeFirstName || '',
-        representativeLastName: businessData.representativeLastName || '',
-        representativeBusinessTitle: businessData.representativeBusinessTitle,
+        legalBusinessName: effective.legalBusinessName,
+        businessType: effective.businessType,
+        ein: effective.ein,
+        mobilePhone: effective.mobilePhone,
+        addressLine1: effective.addressLine1,
+        city: effective.city,
+        state: effective.state,
+        postalCode: effective.postalCode,
+        country: effective.country,
+        website: effective.website,
+        supportEmail: effective.supportEmail,
+        supportPhone: effective.supportPhone,
+        representativeFirstName: effective.representativeFirstName || '',
+        representativeLastName: effective.representativeLastName || '',
+        representativeBusinessTitle: effective.representativeBusinessTitle,
       },
       policySids,
+      state,
     );
 
     trustProfileSid = result.sids.trustProfileSid;
     trustProductSid = result.sids.trustProductSid;
     bundleReady = result.readyForBrand;
+    profileStatus = result.profileStatus;
+    productStatus = result.productStatus;
+    profileSkipped = result.profileSkipped;
+    replacedProductSid = result.replacedProductSid ?? null;
     bundleIssues = [
       formatEvaluationFailures(result.customerProfileEvaluation),
       formatEvaluationFailures(result.trustProductEvaluation),
     ]
       .filter(Boolean)
       .join(' | ');
-
-    functions.logger.info('A2P bundle built and evaluated', {
-      facilityId: facilityRef.id,
-      bundleReady,
-      profileStatus: result.customerProfileEvaluation.status,
-      productStatus: result.trustProductEvaluation.status,
-    });
   }
 
+  // Never store full tax IDs in Firestore. The last four is written only when
+  // a full EIN was actually sent; a save without one (a product-only rebuild)
+  // leaves the stored last four alone instead of nulling it.
+  const einDigits = profileLocked ? '' : normalizeEin(effective.ein);
   await facilityRef.set({
     twilioTrustProfileSid: trustProfileSid,
     twilioTrustProductSid: trustProductSid,
     textingBusinessData: {
-      legalBusinessName: businessData.legalBusinessName,
-      dba: businessData.dba || null,
-      businessType: businessData.businessType,
-      // Never store full tax IDs in Firestore
-      einLast4: businessData.ein ? businessData.ein.slice(-4) : null,
-      soleProprietorTaxIdLast4: businessData.soleProprietorTaxIdLast4 || null,
+      legalBusinessName: effective.legalBusinessName,
+      dba: effective.dba || null,
+      businessType: effective.businessType,
+      ...(einDigits.length === 9 ? { einLast4: einDigits.slice(-4) } : {}),
+      soleProprietorTaxIdLast4: effective.soleProprietorTaxIdLast4 || null,
       // A contact mobile, not a tax ID, so it is safe to persist; needed to
       // resend the sole-proprietor OTP and to show the owner which number
       // Twilio will text.
-      mobilePhone: businessData.mobilePhone || null,
-      addressLine1: businessData.addressLine1,
-      city: businessData.city,
-      state: businessData.state,
-      postalCode: businessData.postalCode,
-      country: businessData.country || 'US',
-      website: businessData.website,
-      supportEmail: businessData.supportEmail,
-      supportPhone: businessData.supportPhone,
-      representativeFirstName: businessData.representativeFirstName || null,
-      representativeLastName: businessData.representativeLastName || null,
-      representativeBusinessTitle: businessData.representativeBusinessTitle || null,
+      mobilePhone: effective.mobilePhone || null,
+      addressLine1: effective.addressLine1,
+      city: effective.city,
+      state: effective.state,
+      postalCode: effective.postalCode,
+      country: effective.country || 'US',
+      website: effective.website,
+      supportEmail: effective.supportEmail,
+      supportPhone: effective.supportPhone,
+      representativeFirstName: effective.representativeFirstName || null,
+      representativeLastName: effective.representativeLastName || null,
+      representativeBusinessTitle: effective.representativeBusinessTitle || null,
     },
     a2pStatus: 'draft',
     textingPlatformApproved: false,
@@ -1446,7 +1476,16 @@ async function createOrUpdateA2PProfileInternal(
     a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  return { trustProfileSid, trustProductSid, bundleReady, bundleIssues };
+  return {
+    trustProfileSid,
+    trustProductSid,
+    bundleReady,
+    bundleIssues,
+    profileStatus,
+    productStatus,
+    profileSkipped,
+    replacedProductSid,
+  };
 }
 
 /**
@@ -1460,7 +1499,7 @@ async function createOrUpdateA2PProfileInternal(
  * can come back rejected. Both cases must block the paid step.
  */
 async function assertTrustBundleReadyForBrand(
-  twilio: any,
+  twilio: A2PTwilioClient,
   trustProfileSid: string | undefined,
   trustProductSid: string | undefined,
 ): Promise<void> {
@@ -1517,31 +1556,20 @@ async function submitBrandRegistrationInternal(
   if (isTwilioDryRunEnabled()) {
     sid = buildTwilioDryRunSid('BN', facilityRef.id);
   } else {
-    const twilio = getTwilioClient() as any;
+    const twilio = getA2PTwilioClient();
 
     // Brand registration costs a non-refundable fee per attempt and is vetted
-    // against public records, so refuse to submit a bundle that Twilio has not
-    // approved yet. createOrUpdateA2PProfileInternal only creates the customer
-    // profile and trust product shells (friendlyName + email); the business
-    // information end-user, supporting documents and profile evaluation are not
-    // wired up, so an un-approved bundle here means a guaranteed rejection.
+    // against public records, so refuse to submit unless Twilio has approved
+    // both the customer profile and the A2P trust product.
     await assertTrustBundleReadyForBrand(
       twilio,
       facilityData.twilioTrustProfileSid as string | undefined,
       facilityData.twilioTrustProductSid as string | undefined,
     );
 
-    // Sole proprietors (no EIN) register on Twilio's separate SOLE_PROPRIETOR
-    // brand path; everyone else is STANDARD. The business type was validated
-    // and stored when the bundle was built.
-    const brandBusinessType = (facilityData.textingBusinessData?.businessType) as string | undefined;
-    const brandType = isSoleProprietorBusinessType(brandBusinessType) ? 'SOLE_PROPRIETOR' : 'STANDARD';
-
-    const brand = await twilio.messaging.v1.brandRegistrations.create({
-      customerProfileBundleSid: facilityData.twilioTrustProfileSid,
-      a2pProfileBundleSid: facilityData.twilioTrustProductSid,
-      brandType,
-    });
+    const brand = await twilio.messaging.v1.brandRegistrations.create(
+      buildBrandRegistrationParams(facilityData),
+    );
     sid = brand.sid;
   }
 
@@ -1557,57 +1585,6 @@ async function submitBrandRegistrationInternal(
   return sid;
 }
 
-/**
- * A2P 10DLC campaign copy. The `messageFlow` (a.k.a. Call-to-Action / opt-in
- * description) is the field carriers read to verify consent. It must describe
- * every opt-in path, the exact consent language shown to tenants, the required
- * disclosures (frequency, "message and data rates may apply", STOP/HELP), and a
- * publicly accessible URL. A vague value here is the #1 cause of 30909
- * rejections ("CTA / message flow could not be verified").
- */
-const A2P_CAMPAIGN_DESCRIPTION =
-  'Per-facility account notifications sent by self-storage operators to their own tenants: payment and past-due reminders, gate/access code information, move-in and move-out confirmations, and other operational account notices. Recipients are existing tenants who provided their mobile number and expressly opted in to text messages.';
-
-/**
- * The campaign description, named to the facility under review.
- *
- * Evidence from the two campaigns in the SFC Twilio account: the Hochatown
- * Saloon campaign (CMa93db02b..., approved the same day it was filed) opens by
- * naming the registered business and what it is. The Storage Facility Creator
- * campaign (CM762f51..., rejected 30909) described a *class* of businesses
- * texting on other companies' behalf and never named the brand under review,
- * so there was nothing about the registrant for a reviewer to verify. A
- * facility's brand is its own legal entity, so the description must read as
- * that facility describing itself, not as the platform describing its
- * customers. Falls back to the generic copy when business details are absent.
- */
-function buildCampaignDescription(facilityData: Record<string, any>): string {
-  const business = (facilityData.textingBusinessData || {}) as Record<string, any>;
-  const legalName = String(business.legalBusinessName || '').trim();
-  if (!legalName) return A2P_CAMPAIGN_DESCRIPTION;
-
-  const dba = String(business.dba || '').trim();
-  const city = String(business.city || '').trim();
-  const state = String(business.state || '').trim();
-  const website = String(business.website || '').trim();
-
-  const named = dba && dba !== legalName ? `${legalName}, doing business as ${dba},` : legalName;
-  const place = [city, state].filter(Boolean).join(', ');
-
-  return (
-    `${named} is a self-storage facility${place ? ` in ${place}` : ''}` +
-    `${website ? ` (${website})` : ''}. This campaign sends account notifications ` +
-    'from the facility to its own tenants: payment and past-due reminders, gate/access code ' +
-    'information, move-in and move-out confirmations, and other operational account notices. ' +
-    'Recipients are existing tenants of this facility who provided their mobile number and ' +
-    'expressly opted in to text messages. No marketing or promotional messages are sent, and ' +
-    'no numbers are purchased, rented or imported.'
-  );
-}
-
-const A2P_CAMPAIGN_MESSAGE_FLOW =
-  'Tenants opt in to SMS by checking an unchecked (opt-in) consent checkbox presented during tenant onboarding/move-in — in the operator\u2019s tenant management portal at https://app.storagefacilitycreator.com and on the public move-in/rental form the operator sends to the tenant. The consent checkbox reads: "I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help." The box is unchecked by default and consent is not a condition of renting a unit or of any purchase. Because the live form is behind a login, a publicly accessible reproduction of the exact opt-in screen is hosted at https://www.storagefacilitycreator.com/sms-consent-demo for reviewer verification. The opt-in language and full program terms are publicly published at https://www.storagefacilitycreator.com/sms-terms . Messages are account notifications only (payment reminders, past-due notices, access codes, move-in/move-out confirmations). Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.';
-
 async function submitCampaignInternal(
   facilityRef: admin.firestore.DocumentReference,
   facilityData: Record<string, any>,
@@ -1621,42 +1598,27 @@ async function submitCampaignInternal(
     );
   }
 
-  let sid: string;
-  if (isTwilioDryRunEnabled()) {
-    sid = buildTwilioDryRunSid('CP', facilityRef.id);
-  } else {
-    const twilio = getTwilioClient() as any;
-    // A sole-proprietor brand only accepts the SOLE_PROPRIETOR use case, one
-    // campaign per brand. Everyone else uses LOW_VOLUME (Low Volume Mixed).
-    //
-    // This was ACCOUNT_NOTIFICATION until 2026-09-21. Both describe what a
-    // facility sends, but ACCOUNT_NOTIFICATION draws the manual call-to-action
-    // review that rejected SFC's own campaign on 30909, and costs ~$10/mo
-    // against Low Volume Mixed's ~$1.50. LOW_VOLUME is the tier that was
-    // approved same-day in this account (the Hochatown Saloon campaign). Its
-    // ceiling is roughly 2,000 message segments/day to T-Mobile, far above
-    // what one self-storage facility sends to its own tenants. A facility that
-    // ever outgrows it moves to ACCOUNT_NOTIFICATION as a deliberate upgrade.
-    const campaignBusinessType = (facilityData.textingBusinessData?.businessType) as string | undefined;
-    const usecase = isSoleProprietorBusinessType(campaignBusinessType) ? 'SOLE_PROPRIETOR' : 'LOW_VOLUME';
-    const campaign = await twilio.messaging.v1.campaigns.create({
-      brandRegistrationSid: facilityData.twilioBrandSid,
-      usecase,
-      description: buildCampaignDescription(facilityData),
-      messageFlow: A2P_CAMPAIGN_MESSAGE_FLOW,
-      sampleMessages: campaignData.sampleMessages,
-      hasEmbeddedLinks: false,
-      hasEmbeddedPhone: true,
-    });
-    sid = campaign.sid;
-  }
+  // Validated before anything is filed: Twilio needs 2-5 samples of 20+
+  // characters, and each opens with the facility's name.
+  const sampleMessages = prepareCampaignSamples(facilityData, campaignData?.sampleMessages);
+
+  const dryRun = isTwilioDryRunEnabled();
+  const filing: CampaignFilingResult = dryRun
+    ? {
+        filed: true,
+        brandStatus: 'APPROVED',
+        sid: buildTwilioDryRunSid('QE', facilityRef.id),
+        campaignId: buildTwilioDryRunSid('CM', facilityRef.id),
+        campaignStatus: 'VERIFIED',
+      }
+    : await fileCampaignWhenBrandApproved(getA2PTwilioClient(), facilityData, sampleMessages);
 
   await facilityRef.set({
-    twilioCampaignSid: sid,
+    ...campaignFilingFields(filing),
     textingUseCases: campaignData.useCases,
-    textingSampleMessages: campaignData.sampleMessages,
+    textingSampleMessages: sampleMessages,
     textingConsentConfirmedAt: campaignData.consentConfirmed ? admin.firestore.FieldValue.serverTimestamp() : null,
-    a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+    a2pStatus: dryRun ? 'approved' : filing.filed ? 'pending' : 'submitted',
     textingPlatformApproved: false,
     textingPlatformApprovedAt: null,
     textingPlatformApprovedBy: null,
@@ -1664,35 +1626,14 @@ async function submitCampaignInternal(
     ...(isTwilioDryRunEnabled() ? { a2pApprovedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
   }, { merge: true });
 
-  if (!isTwilioDryRunEnabled()) {
+  if (!dryRun) {
     await attachPhoneNumberToMessagingService(
       facilityData.twilioMessagingServiceSid as string,
       facilityData.twilioPhoneNumberSid as string,
     );
   }
 
-  return sid;
-}
-
-/**
- * Whether the owner may still edit their business details.
- *
- * The UI used to lock the form as soon as a trust profile SID existed, on the
- * assumption that the profile was immutable once created. It is not: end users
- * are updated in place and a draft bundle can be rebuilt freely. That
- * assumption stranded Keepsake — it had a profile SID holding an empty shell
- * and placeholder details, so the owner was locked out of fixing the very data
- * that was blocking registration, with no route forward but support.
- *
- * Editing is only genuinely unsafe once the bundle is with Twilio or the brand
- * has been filed, so lock on that instead.
- */
-function areBusinessDetailsLocked(facilityData: Record<string, any>): boolean {
-  const bundleStatus = String(facilityData.a2pBundleProfileStatus || '').toLowerCase();
-  if (bundleStatus === 'pending-review' || bundleStatus === 'in-review') return true;
-  if (facilityData.twilioBrandSid) return true;
-  const a2pStatus = String(facilityData.a2pStatus || 'draft').toLowerCase();
-  return a2pStatus === 'approved' || a2pStatus === 'submitted' || a2pStatus === 'pending';
+  return filing.sid ?? '';
 }
 
 function getTextingOnboardingState(facilityData: Record<string, any>): TextingOnboardingState {
@@ -1756,10 +1697,13 @@ export const getTextingOnboardingStatus = functions.https.onCall(async (data: { 
     useCases: Array.isArray(facilityData.textingUseCases) ? facilityData.textingUseCases : [],
     sampleMessages: Array.isArray(facilityData.textingSampleMessages) ? facilityData.textingSampleMessages : [],
     hasTrustProfile: Boolean(facilityData.twilioTrustProfileSid && facilityData.twilioTrustProductSid),
-    businessDetailsLocked: areBusinessDetailsLocked(facilityData),
+    ...describeBusinessDetailsLock(facilityData),
     bundleReady: facilityData.a2pBundleReady === true,
+    bundleApproved: facilityData.a2pBundleApproved === true,
     bundleIssues: facilityData.a2pBundleIssues || null,
     bundleProfileStatus: facilityData.a2pBundleProfileStatus || null,
+    bundleProductStatus: facilityData.a2pBundleProductStatus || null,
+    twilioCampaignId: facilityData.twilioCampaignId || null,
     hasPhoneNumber: Boolean(facilityData.twilioPhoneNumberSid && facilityData.twilioPhoneNumberE164),
     submittedAt: facilityData.a2pSubmittedAt || null,
     approvedAt: facilityData.a2pApprovedAt || null,
@@ -1775,18 +1719,11 @@ export const saveTextingBusinessInfo = functions.runWith({ secrets: TWILIO_SECRE
     if (!facilityId || !businessData?.legalBusinessName) {
       throw new functions.https.HttpsError('invalid-argument', 'facilityId and businessData are required');
     }
-    // Carrier brand vetting checks these against public records, and a failed
-    // brand costs real money and days of turnaround before the owner can send
-    // anything. Enforce server-side: client validation alone let a live
-    // facility through with postal code "959595" and support phone "99999".
-    const validationIssues = validateA2PBusinessData(businessData);
-    if (validationIssues.length > 0) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        `Business details cannot be submitted for carrier review yet. ${formatA2PValidationIssues(validationIssues)}`,
-        { validationIssues },
-      );
-    }
+    // Carrier brand vetting checks the details against public records, and a
+    // failed brand costs real money and days of turnaround. They are validated
+    // server-side in createOrUpdateA2PProfileInternal (client validation alone
+    // let a live facility through with postal code "959595"), once the live
+    // bundle state is known, because a profile already in review needs no EIN.
     await assertTextingOnboardingEnabled(facilityId);
     const { ref, data: facilityData } = await getFacilityForTextingMutation(facilityId, context.auth.uid);
     await createOrUpdateA2PProfileInternal(ref, facilityData, businessData);
@@ -1925,6 +1862,9 @@ export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRE
       if (!baseState.twilioTrustProfileSid || !baseState.twilioTrustProductSid) {
         throw new functions.https.HttpsError('failed-precondition', 'Business profile is incomplete. Save business info first.');
       }
+      // Check the samples before anything paid (number, brand) happens; the
+      // campaign step would otherwise reject them after the fees are spent.
+      prepareCampaignSamples(facilityData, campaignData.sampleMessages);
       const ms = await ensureMessagingServiceForFacility(ref, facilityData, requestId);
       const pn = await provisionFacilityPhoneNumber(ref, facilityData, undefined, requestId);
       await attachPhoneNumberToMessagingService(ms.messagingServiceSid, pn.phoneNumberSid);
@@ -1942,9 +1882,11 @@ export const submitTextingOnboarding = functions.runWith({ secrets: TWILIO_SECRE
       return {
         success: true,
         requestId,
-        a2pStatus: isTwilioDryRunEnabled() ? 'approved' : 'pending',
+        // Without a campaign SID the brand is still in review and the hourly
+        // poll files the campaign once it clears.
+        a2pStatus: isTwilioDryRunEnabled() ? 'approved' : campaignSid ? 'pending' : 'submitted',
         twilioBrandSid: brandSid,
-        twilioCampaignSid: campaignSid,
+        twilioCampaignSid: campaignSid || null,
         twilioMessagingServiceSid: ms.messagingServiceSid,
         twilioPhoneNumberSid: pn.phoneNumberSid,
         twilioPhoneNumberE164: pn.phoneNumberE164,
@@ -2069,12 +2011,24 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
         return { success: true, a2pStatus: next };
       }
 
-      const twilio = getTwilioClient() as any;
+      const twilio = getA2PTwilioClient();
       let brandStatus: string | undefined;
       let campaignStatus: string | undefined;
       let brandErrors: unknown;
       let brandFailureReason: unknown;
       let campaignErrors: unknown;
+      const bundleUpdate: Record<string, unknown> = {};
+      if (!facilityData.twilioBrandSid && facilityData.twilioTrustProfileSid) {
+        // Before a brand exists the bundles are what is under review; read them
+        // so the page (and the form lock) shows the real state.
+        const bundles = await fetchTrustBundleState(twilio, facilityData);
+        bundleUpdate.a2pBundleProfileStatus = bundles.profile?.status ?? null;
+        bundleUpdate.a2pBundleProductStatus = bundles.product?.status ?? null;
+        bundleUpdate.a2pBundleApproved =
+          bundles.profile?.status === 'twilio-approved' && bundles.product?.status === 'twilio-approved';
+        if (bundles.product?.policySid) bundleUpdate.a2pBundleProductPolicySid = bundles.product.policySid;
+        bundleUpdate.a2pBundleStatusUpdatedAt = admin.firestore.FieldValue.serverTimestamp();
+      }
       if (facilityData.twilioBrandSid) {
         const brand = await twilio.messaging.v1.brandRegistrations(facilityData.twilioBrandSid).fetch();
         brandStatus = brand.status;
@@ -2083,14 +2037,20 @@ export const refreshTextingOnboardingStatus = functions.runWith({ secrets: TWILI
         brandErrors = brand.errors;
         brandFailureReason = brand.failureReason;
       }
-      if (facilityData.twilioCampaignSid) {
-        const campaign = await twilio.messaging.v1.campaigns(facilityData.twilioCampaignSid).fetch();
-        campaignStatus = campaign.status;
-        campaignErrors = campaign.errors;
+      if (facilityData.twilioCampaignSid && facilityData.twilioMessagingServiceSid) {
+        const campaign = await fetchUsAppToPersonCampaign(
+          twilio,
+          String(facilityData.twilioMessagingServiceSid),
+          String(facilityData.twilioCampaignSid),
+        );
+        campaignStatus = campaign?.campaignStatus;
+        campaignErrors = campaign?.errors;
       }
       const current = ((facilityData.a2pStatus as string) || 'draft') as A2PStatus;
       const next = computeA2PStatus(current, brandStatus, campaignStatus);
       const update: Record<string, any> = {
+        ...bundleUpdate,
+        ...(campaignStatus ? { a2pCampaignStatus: campaignStatus } : {}),
         a2pStatus: next,
         a2pLastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
         a2pLastError: null,
@@ -2130,6 +2090,8 @@ export const resubmitTextingOnboarding = functions.runWith({ secrets: TWILIO_SEC
       await ref.set({
         twilioBrandSid: admin.firestore.FieldValue.delete(),
         twilioCampaignSid: admin.firestore.FieldValue.delete(),
+        twilioCampaignId: admin.firestore.FieldValue.delete(),
+        a2pCampaignStatus: admin.firestore.FieldValue.delete(),
         a2pStatus: 'draft',
         textingPlatformApproved: false,
         textingPlatformApprovedAt: null,

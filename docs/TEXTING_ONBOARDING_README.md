@@ -14,13 +14,14 @@ self-service Sole Proprietor A2P registration through this API flow.
 ## Campaign rejection (30909) — resubmission checklist
 
 A campaign rejected with error 30909 means carriers could not verify the Call-to-Action / opt-in
-flow. The `messageFlow` and `description` submitted with every campaign are defined as
-`A2P_CAMPAIGN_MESSAGE_FLOW` / `A2P_CAMPAIGN_DESCRIPTION` in
-`functions-messaging-twilio/src/twilioCallables.ts` and must always include:
+flow. The `messageFlow` and `description` submitted with every campaign are built per facility by
+`buildCampaignMessageFlow` / `buildCampaignDescription` in
+`functions-messaging-twilio/src/a2pCampaign.ts` and must always include:
 
-1. Every opt-in path the facility actually uses (portal checkbox, public move-in form) with the
-   exact consent checkbox language, which must match `/sms-terms` on the marketing site. Do not
-   describe opt-in paths (e.g., in-person/paper) that a facility does not really offer.
+1. Every opt-in path the facility actually uses, named to the facility (DBA or legal name): the
+   written consent the tenant gives at rental (online rental form checkbox, or the signed rental
+   agreement / move-in form in the office), recorded by staff in the software before any text,
+   and the START keyword. The quoted checkbox language must match `/sms-terms`.
 2. The disclosures: unchecked-by-default, consent not a condition of service, message frequency
    varies, "message and data rates may apply", STOP/HELP.
 3. Publicly reviewable URLs (the live opt-in form is behind login, so reviewers need these):
@@ -49,6 +50,21 @@ one facility sends its own tenants. A facility that outgrows it moves to
 case; the `textingUseCases` the owner ticks in the wizard are the facility's own
 message categories and are unrelated.
 
+As of 2026-09-27 (branch `fix/a2p-registration-pipeline`) the campaign also
+carries `optInKeywords: ['START']` with an opt-in message naming the facility,
+`privacyPolicyUrl` / `termsAndConditionsUrl`, and `hasEmbeddedLinks` /
+`hasEmbeddedPhone` computed from the samples. Samples are validated server-side
+(2-5, each at least 20 characters) and prefixed with the facility's name.
+Campaigns are filed with `messaging.v1.services(MG).usAppToPerson.create`; the
+`QE...` resource SID is stored as `twilioCampaignSid` and the carrier `CM...` id
+as `twilioCampaignId`. If the brand is not yet `APPROVED` when the owner
+submits, nothing is filed: `a2pCampaignPending` is set and the hourly
+`pollA2PRegistrationStatus` files the campaign once the brand clears.
+
+Follow-up: the terms/privacy URLs are the platform's pages. A per-facility
+public SMS terms page would match the brand better, but the facility public
+site (`/w/<slug>`) has no sub-page that could host it yet.
+
 Before resubmitting:
 
 - Deploy the marketing site so both URLs above resolve publicly.
@@ -63,7 +79,8 @@ Consent-text sources that must stay in sync:
 - `marketing/src/config/site.ts` → `SMS_CONSENT_CHECKBOX_TEXT` (used by `/sms-terms` and
   `/sms-consent-demo`)
 - Flutter tenant creation / public move-in consent checkbox copy
-- `A2P_CAMPAIGN_MESSAGE_FLOW` quoted checkbox text
+- `TENANT_CONSENT_TEXT` in `functions-messaging-twilio/src/a2pCampaign.ts` (quoted in the
+  campaign message flow)
 
 ## Facility phone numbers and A2P compliance (timing)
 
@@ -135,14 +152,31 @@ Stored in `facilities/{facilityId}`:
 - `a2pSubmittedAt`, `a2pApprovedAt`, `a2pRejectedAt`, `a2pLastUpdatedAt`
 - `twilioMessagingServiceSid`
 - `twilioTrustProfileSid`, `twilioTrustProductSid`
-- `twilioBrandSid`, `twilioCampaignSid`
+- `a2pBundleProfileStatus`, `a2pBundleProductStatus` (TrustHub status of each bundle, written on
+  every save, refresh and hourly poll), `a2pBundleProfilePolicySid`, `a2pBundleProductPolicySid`
+- `a2pBundleReady` (both bundles passed evaluation and are with Twilio), `a2pBundleApproved`
+  (both `twilio-approved`), `a2pBundleIssues` (failing fields plus evaluation and policy SIDs),
+  `a2pAbandonedBundleSids` (wrong-policy bundles replaced by a fresh one, never deleted)
+- `twilioBrandSid`, `twilioCampaignSid` (`QE...`), `twilioCampaignId` (`CM...`),
+  `a2pCampaignStatus`, `a2pCampaignPending`, `a2pBrandStatus`
 - `twilioPhoneNumberSid`, `twilioPhoneNumberE164`
 - `textingPlatformApproved` (bool), `textingPlatformApprovedAt`, `textingPlatformApprovedBy` (superadmin gate for sending when onboarding is enabled)
 - `textingBusinessData` (safe resumable profile; only `einLast4`, never a full EIN)
 - `textingUseCases`, `textingSampleMessages`, `textingConsentConfirmedAt`
 
 `getTextingOnboardingStatus` returns these safe saved values plus completion
-signals so the Flutter flow can resume at the first incomplete stage. Pending,
+signals so the Flutter flow can resume at the first incomplete stage. The form
+lock comes from `describeBusinessDetailsLock` (`a2pTrustBundle.ts`):
+`businessDetailsLocked` (nothing can be saved: brand filed, trust product in
+review, or both bundles approved), `profileDetailsLocked` (customer profile is
+with Twilio, so its fields are read-only but saving rebuilds and resubmits the
+trust product; only the DBA can change) and `lockReason`.
+
+TrustHub policies are pinned to Twilio's ISV policies (secondary customer
+profile `RNdfbf3fae0e1107f8aded0e7cead80bf5`, A2P trust product
+`RNb0d4771c2c98518d916a3d4cd70a8f8b`); the env overrides
+`TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID` / `TWILIO_A2P_TRUST_PRODUCT_POLICY_SID`
+are honoured only when they match `^RN[0-9a-f]{32}$`. Pending,
 approved, rejected, and live registrations go directly to the status
 dashboard. The app polls only while status is `submitted` or `pending`.
 

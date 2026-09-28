@@ -10,19 +10,19 @@ import {
 } from '../twilio/a2pBusinessValidation';
 
 const VALID = {
-  legalBusinessName: 'Keepsake Self Storage LLC',
+  legalBusinessName: 'Example Storage LLC',
   businessType: 'LLC',
-  ein: '12-3456565',
-  addressLine1: '4180 US HWY 82 East',
-  city: 'Paris',
+  ein: '12-3456789',
+  addressLine1: '100 Example Road',
+  city: 'Austin',
   state: 'TX',
-  postalCode: '75460',
+  postalCode: '78701',
   country: 'US',
-  supportEmail: 'support@keepsakeselfstorage.com',
-  supportPhone: '903-715-7504',
-  website: 'https://keepsakeselfstorage.com',
-  representativeFirstName: 'Russell',
-  representativeLastName: 'Forsyth',
+  supportEmail: 'support@example.com',
+  supportPhone: '512-555-0147',
+  website: 'https://example.com',
+  representativeFirstName: 'Jane',
+  representativeLastName: 'Doe',
 };
 
 test('validateA2PBusinessData accepts a complete, real submission', () => {
@@ -66,13 +66,24 @@ test('validateA2PBusinessData reports every problem at once', () => {
 test('validateA2PBusinessData accepts the full EIN the submission form sends', () => {
   // Regression: the validator only read `einLast4`, but the form posts `ein`,
   // so every business-info save was rejected with "enter the last 4 digits".
-  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '123456565' }), []);
-  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '12-3456565' }), []);
+  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '123456789' }), []);
+  assert.deepEqual(validateA2PBusinessData({ ...VALID, ein: '12-3456789' }), []);
 });
 
-test('validateA2PBusinessData falls back to a stored einLast4', () => {
+test('validateA2PBusinessData does not accept a stored einLast4 in place of the EIN', () => {
+  // Regression: the stored last four used to satisfy validation, so a save with
+  // no EIN reached Twilio with an empty business_registration_number.
   const { ein, ...withoutEin } = VALID;
-  assert.deepEqual(validateA2PBusinessData({ ...withoutEin, einLast4: '6565' }), []);
+  const fields = validateA2PBusinessData({ ...withoutEin, einLast4: '6789' } as any).map(
+    (i) => i.field,
+  );
+  assert.ok(fields.includes('ein'));
+  assert.ok(validateA2PBusinessData({ ...VALID, ein: '' }).some((i) => i.field === 'ein'));
+});
+
+test('validateA2PBusinessData can skip the EIN for a product-only rebuild', () => {
+  const { ein, ...withoutEin } = VALID;
+  assert.deepEqual(validateA2PBusinessData(withoutEin, { requireEin: false }), []);
 });
 
 test('validateA2PBusinessData rejects a malformed or placeholder EIN', () => {
@@ -105,13 +116,13 @@ test('validateA2PBusinessData requires a named authorized representative', () =>
 // --- phone ------------------------------------------------------------------
 
 test('isValidUsPhone accepts real formats', () => {
-  for (const p of ['9037157504', '903-715-7504', '(903) 715-7504', '+1 903 715 7504']) {
+  for (const p of ['5125550147', '512-555-0147', '(512) 555-0147', '+1 512 555 0147']) {
     assert.equal(isValidUsPhone(p), true, `${p} should be valid`);
   }
 });
 
 test('isValidUsPhone rejects placeholders and malformed numbers', () => {
-  for (const p of ['99999', '000-000-0000', '5555555555', '123', '', '103-715-7504']) {
+  for (const p of ['99999', '000-000-0000', '5555555555', '123', '', '103-555-0147']) {
     assert.equal(isValidUsPhone(p), false, `${p} should be invalid`);
   }
 });
@@ -119,7 +130,7 @@ test('isValidUsPhone rejects placeholders and malformed numbers', () => {
 // --- ZIP / state ------------------------------------------------------------
 
 test('validateA2PBusinessData accepts ZIP+4 and rejects malformed ZIPs', () => {
-  assert.deepEqual(validateA2PBusinessData({ ...VALID, postalCode: '75460-1234' }), []);
+  assert.deepEqual(validateA2PBusinessData({ ...VALID, postalCode: '78701-1234' }), []);
   for (const zip of ['959595', '7546', 'ABCDE', '']) {
     const issues = validateA2PBusinessData({ ...VALID, postalCode: zip });
     assert.ok(issues.some((i) => i.field === 'postalCode'), `${zip} should be rejected`);
@@ -175,20 +186,20 @@ test('formatA2PValidationIssues produces a readable single-line summary', () => 
 // --- sole proprietor -------------------------------------------------------
 
 const SOLE_PROP_VALID = {
-  legalBusinessName: 'Keepsake Self Storage',
+  legalBusinessName: 'Example Storage',
   businessType: 'Sole Prop',
   // no EIN
-  addressLine1: '4180 US HWY 82 East',
-  city: 'Paris',
+  addressLine1: '100 Example Road',
+  city: 'Austin',
   state: 'TX',
-  postalCode: '75460',
+  postalCode: '78701',
   country: 'US',
-  supportEmail: 'russell@keepsakeselfstorage.com',
-  supportPhone: '903-715-7504',
-  website: 'https://keepsakeselfstorage.com',
-  representativeFirstName: 'Russell',
-  representativeLastName: 'Forsyth',
-  mobilePhone: '903-555-0175',
+  supportEmail: 'owner@example.com',
+  supportPhone: '512-555-0147',
+  website: 'https://example.com',
+  representativeFirstName: 'Jane',
+  representativeLastName: 'Doe',
+  mobilePhone: '512-555-0175',
 };
 
 test('sole proprietor: valid with a mobile and no EIN', () => {

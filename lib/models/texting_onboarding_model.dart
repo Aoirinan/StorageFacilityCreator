@@ -111,10 +111,24 @@ class TextingOnboardingSnapshot {
   /// be rebuilt, and locking on the profile's existence stranded owners whose
   /// saved details were wrong.
   final bool businessDetailsLocked;
-  /// Set once the bundle passes evaluation and goes to Twilio for review.
+  /// The customer profile is with Twilio (in review or approved), so the
+  /// fields it carries are read-only. Saving can still rebuild the A2P
+  /// messaging registration (trust product) unless [businessDetailsLocked].
+  final bool profileDetailsLocked;
+  /// Why the form is (partly) locked, written by the server.
+  final String? lockReason;
+  /// Set once both the business profile and the A2P messaging registration
+  /// have passed evaluation and are with Twilio (submitted or approved).
   final bool bundleReady;
+  /// Both bundles approved by Twilio.
+  final bool bundleApproved;
   /// Which carrier-policy fields failed, when the bundle is not ready.
   final String? bundleIssues;
+  /// Twilio's status for the business profile (draft, pending-review,
+  /// in-review, twilio-approved, twilio-rejected), when one exists.
+  final String? bundleProfileStatus;
+  /// Twilio's status for the A2P messaging registration (trust product).
+  final String? bundleProductStatus;
 
   const TextingOnboardingSnapshot({
     required this.status,
@@ -130,8 +144,13 @@ class TextingOnboardingSnapshot {
     this.rejectedAt,
     required this.hasTrustProfile,
     this.businessDetailsLocked = false,
+    this.profileDetailsLocked = false,
+    this.lockReason,
     this.bundleReady = false,
+    this.bundleApproved = false,
     this.bundleIssues,
+    this.bundleProfileStatus,
+    this.bundleProductStatus,
   });
 
   bool get isUnderReview =>
@@ -173,11 +192,36 @@ class TextingOnboardingSnapshot {
       hasTrustProfile: map['hasTrustProfile'] == true ||
           (map['twilioTrustProfileSid'] as String?)?.isNotEmpty == true,
       businessDetailsLocked: map['businessDetailsLocked'] == true,
+      // Older servers only sent businessDetailsLocked; treat that as locking
+      // the profile fields too.
+      profileDetailsLocked: map['profileDetailsLocked'] == true ||
+          map['businessDetailsLocked'] == true,
+      lockReason: _nonEmpty(map['lockReason']),
       bundleReady: map['bundleReady'] == true,
-      bundleIssues: (map['bundleIssues'] as String?)?.isEmpty == true
-          ? null
-          : map['bundleIssues'] as String?,
+      bundleApproved: map['bundleApproved'] == true,
+      bundleIssues: _nonEmpty(map['bundleIssues']),
+      bundleProfileStatus: _nonEmpty(map['bundleProfileStatus']),
+      bundleProductStatus: _nonEmpty(map['bundleProductStatus']),
     );
+  }
+
+  static String? _nonEmpty(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// Owner-facing wording for a TrustHub bundle status.
+  static String describeBundleStatus(String? status) {
+    return switch (status) {
+      null => 'Not started',
+      'draft' => 'Not submitted',
+      'pending-review' => 'Submitted to Twilio',
+      'in-review' => 'In review at Twilio',
+      'twilio-approved' => 'Approved',
+      'twilio-rejected' => 'Rejected by Twilio',
+      _ => status,
+    };
   }
 
   static List<String> _stringList(Object? value) {

@@ -13,6 +13,7 @@ class _FakeRepository implements TextingOnboardingRepository {
   final Map<String, TextingOnboardingSnapshot> snapshots;
   int refreshCount = 0;
   int resetCount = 0;
+  List<String>? submittedSamples;
 
   _FakeRepository(this.snapshots);
 
@@ -69,20 +70,21 @@ class _FakeRepository implements TextingOnboardingRepository {
     required List<String> useCases,
     required List<String> sampleMessages,
   }) async {
+    submittedSamples = sampleMessages;
     return snapshots[facilityId]!;
   }
 }
 
 const _business = TextingBusinessDetails(
-  legalBusinessName: 'Keepsake Storage LLC',
+  legalBusinessName: 'Example Storage LLC',
   businessType: 'LLC',
   einLast4: '6789',
   addressLine1: '100 Main Street',
   city: 'Austin',
   state: 'TX',
   postalCode: '78701',
-  website: 'https://keepsake.example',
-  supportEmail: 'help@keepsake.example',
+  website: 'https://storage.example',
+  supportEmail: 'help@storage.example',
   supportPhone: '5125550100',
   // Carrier vetting requires a named authorized representative, so business
   // details are not complete without one.
@@ -121,19 +123,19 @@ const _approvedSnapshot = TextingOnboardingSnapshot(
   hasTrustProfile: true,
 );
 
-/// Keepsake's actual situation: a trust profile exists, but the saved details
-/// predate the authorized-representative fields, so they are incomplete.
+/// A facility whose trust profile exists but whose saved details predate the
+/// authorized-representative fields, so they are incomplete.
 const _businessMissingRep = TextingBusinessDetails(
-  legalBusinessName: 'Keepsake',
+  legalBusinessName: 'Example Storage',
   businessType: 'LLC',
-  einLast4: '6565',
-  addressLine1: '4180 US HWY 82 East',
-  city: 'Paris',
+  einLast4: '6789',
+  addressLine1: '100 Main Street',
+  city: 'Austin',
   state: 'TX',
-  postalCode: '75460',
-  website: 'https://keepsake.example',
-  supportEmail: 'help@keepsake.example',
-  supportPhone: '9037157504',
+  postalCode: '78701',
+  website: 'https://storage.example',
+  supportEmail: 'help@storage.example',
+  supportPhone: '5125550100',
 );
 
 const _profileWithIncompleteDetails = TextingOnboardingSnapshot(
@@ -150,6 +152,29 @@ const _lockedSnapshot = TextingOnboardingSnapshot(
   businessDetails: _businessMissingRep,
   hasTrustProfile: true,
   businessDetailsLocked: true,
+);
+
+/// Profile passed and is in review; the A2P trust product failed evaluation.
+/// The product can be rebuilt, the profile's own fields cannot change.
+const _profileInReviewSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  hasTrustProfile: true,
+  profileDetailsLocked: true,
+  lockReason: 'Your business profile is with Twilio for review.',
+  bundleProfileStatus: 'in-review',
+  bundleProductStatus: 'draft',
+  bundleIssues: 'A2P Messaging Profile Information - Company Type: invalid',
+);
+
+/// Saved details and a single message type chosen: resumes at review.
+const _oneUseCaseSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.draft,
+  platformApproved: false,
+  businessDetails: _business,
+  useCases: ['Payment reminders'],
+  hasTrustProfile: true,
 );
 
 const _rejectedSnapshot = TextingOnboardingSnapshot(
@@ -258,6 +283,73 @@ void main() {
       expect(find.text('Business profile submitted'), findsOneWidget);
     });
 
+    testWidgets(
+        'profile in review: profile fields locked, product can be resubmitted',
+        (tester) async {
+      await _pumpScreen(
+          tester,
+          _FakeRepository({
+            'facility-1': _profileInReviewSnapshot,
+          }));
+      // Resume step is 1 for complete details; go back to business details.
+      await tester.tap(find.text('Business details').first);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('profile-locked-callout')), findsOneWidget);
+      expect(find.text('Your business profile is with Twilio for review.'),
+          findsOneWidget);
+      expect(
+        tester
+            .widget<TextFormField>(find.byKey(const Key('legal-business-name')))
+            .enabled,
+        isFalse,
+      );
+      expect(
+        tester.widget<TextFormField>(find.byKey(const Key('ein'))).enabled,
+        isFalse,
+      );
+      expect(
+        tester.widget<TextFormField>(find.byKey(const Key('dba'))).enabled,
+        isNot(false),
+      );
+      expect(find.text('Resubmit A2P registration'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('bundle-profile-status')))
+            .data,
+        'In review at Twilio',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('bundle-product-status')))
+            .data,
+        'Not submitted',
+      );
+      expect(find.text('Carrier profile needs corrections'), findsOneWidget);
+    });
+
+    testWidgets('always submits at least two sample messages', (tester) async {
+      final repository = _FakeRepository({'facility-1': _oneUseCaseSnapshot});
+      await _pumpScreen(tester, repository);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('review-stage')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('consent-confirmation')));
+      await tester.pump();
+      tester
+          .widget<FilledButton>(find.byKey(const Key('primary-stage-action')))
+          .onPressed!();
+      await tester.pumpAndSettle();
+
+      final samples = repository.submittedSamples!;
+      expect(samples.length, greaterThanOrEqualTo(2));
+      expect(samples.toSet().length, samples.length);
+      for (final sample in samples) {
+        expect(sample, startsWith('Example Storage LLC:'));
+        expect(sample.length, greaterThanOrEqualTo(20));
+      }
+    });
+
     testWidgets('requires a named authorized representative', (tester) async {
       // The carrier customer-profile policy will not approve a bundle without
       // authorized_representative_1, so the form has to collect it.
@@ -331,7 +423,7 @@ Future<void> _pumpScreen(
   final user = MockUser(uid: 'user-1', email: 'owner@example.com');
   final facility = FacilityModel(
     id: 'facility-1',
-    name: 'Keepsake Self Storage',
+    name: 'Example Self Storage',
     ownerUid: user.uid,
     createdAt: DateTime(2025),
   );

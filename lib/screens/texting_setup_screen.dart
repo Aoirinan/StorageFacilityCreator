@@ -349,9 +349,19 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
     // Locked only once the bundle is actually with Twilio or the brand is
     // filed. Locking merely because a profile SID exists left owners unable to
     // correct the details that were blocking their own registration.
+    //
+    // Two levels: `fullyLocked` means nothing can be saved (brand filed, or
+    // the A2P messaging registration itself is in review). `locked` covers the
+    // business profile's own fields, which Twilio may be reviewing while the
+    // A2P messaging registration can still be rebuilt by saving again.
     final snapshot = _controller.snapshot;
-    final locked = snapshot?.businessDetailsLocked == true;
+    final fullyLocked = snapshot?.businessDetailsLocked == true;
+    final locked = fullyLocked || snapshot?.profileDetailsLocked == true;
     final bundleIssues = snapshot?.bundleIssues;
+    final lockReason = snapshot?.lockReason;
+    final showBundleStatus = snapshot != null &&
+        (snapshot.bundleProfileStatus != null ||
+            snapshot.bundleProductStatus != null);
     return Form(
       key: _businessFormKey,
       child: Column(
@@ -363,18 +373,33 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             description:
                 'Carriers verify these details against public and tax records. Enter the legal information exactly as registered.',
           ),
-          if (locked) ...[
+          if (showBundleStatus) ...[
             const SizedBox(height: 20),
-            const _InfoCallout(
+            _BundleStatusCard(snapshot: snapshot),
+          ],
+          if (fullyLocked) ...[
+            const SizedBox(height: 20),
+            _InfoCallout(
               icon: Icons.lock_outline_rounded,
               title: 'Business profile submitted',
-              message:
+              message: lockReason ??
                   'These details are locked while the carrier reviews them. '
-                  'Editing now would restart the review. Contact SFC support if '
-                  'something is wrong.',
+                      'Editing now would restart the review. Contact SFC support if '
+                      'something is wrong.',
+            ),
+          ] else if (locked) ...[
+            const SizedBox(height: 20),
+            _InfoCallout(
+              key: const Key('profile-locked-callout'),
+              icon: Icons.lock_outline_rounded,
+              title: 'Business profile with Twilio',
+              message: lockReason ??
+                  'Your business profile is with Twilio, so its details are '
+                      'locked. Saving again rebuilds only the A2P messaging '
+                      'registration.',
             ),
           ],
-          if (!locked && bundleIssues != null) ...[
+          if (!fullyLocked && bundleIssues != null) ...[
             const SizedBox(height: 20),
             _InfoCallout(
               icon: Icons.error_outline_rounded,
@@ -408,10 +433,13 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             autofillHints: const [AutofillHints.organizationName],
           ),
           const SizedBox(height: 12),
+          // The DBA only feeds the campaign copy, not the business profile, so
+          // it stays editable while the profile is with Twilio.
           _field(
+            key: const Key('dba'),
             controller: _dba,
             label: 'Doing business as (optional)',
-            enabled: !locked,
+            enabled: !fullyLocked,
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -625,8 +653,13 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           const SizedBox(height: 28),
           _StageActions(
             busy: _controller.isWorking,
-            primaryLabel: locked ? 'Continue' : 'Save and continue',
-            onPrimary: locked ? () => _controller.goToStep(1) : _saveBusiness,
+            primaryLabel: fullyLocked
+                ? 'Continue'
+                : locked
+                    ? 'Resubmit A2P registration'
+                    : 'Save and continue',
+            onPrimary:
+                fullyLocked ? () => _controller.goToStep(1) : _saveBusiness,
           ),
         ],
       ),
@@ -932,6 +965,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
 
   Future<void> _saveBusiness() async {
     if (_businessFormKey.currentState?.validate() != true) return;
+    // With the business profile at Twilio the server ignores the profile
+    // fields sent here, rebuilds only the A2P messaging registration from the
+    // details it already holds (plus the DBA), and needs no EIN.
     await _controller.saveBusinessInfo({
       'legalBusinessName': _legalName.text.trim(),
       'dba': _emptyToNull(_dba.text),
@@ -1045,9 +1081,20 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       'Operational notices':
           '$brand: Important facility notice — office hours have changed this week. Reply STOP to opt out, HELP for help.',
     };
-    return _selectedUseCases()
+    final samples = _selectedUseCases()
         .map((useCase) => templates[useCase]!)
-        .toList(growable: false);
+        .toList(growable: true);
+    // Carriers require at least two distinct samples. With a single message
+    // type selected, add a receipt, which every facility sends and which is
+    // an account notification like the rest.
+    for (final extra in [
+      '$brand: Thanks, we received your rent payment and your storage account is up to date. Reply STOP to opt out, HELP for help.',
+      templates['Payment reminders']!,
+    ]) {
+      if (samples.length >= 2) break;
+      if (!samples.contains(extra)) samples.add(extra);
+    }
+    return List.unmodifiable(samples);
   }
 
   static String? Function(String?) _required(String message) {
@@ -1352,12 +1399,60 @@ class _StageActions extends StatelessWidget {
   }
 }
 
+/// Twilio's review state for the two registration bundles, read from the
+/// server's bundleProfileStatus / bundleProductStatus.
+class _BundleStatusCard extends StatelessWidget {
+  final TextingOnboardingSnapshot snapshot;
+
+  const _BundleStatusCard({required this.snapshot});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget row(String label, String? status, Key key) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+            Text(
+              TextingOnboardingSnapshot.describeBundleStatus(status),
+              key: key,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      key: const Key('bundle-status'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          row('Business profile', snapshot.bundleProfileStatus,
+              const Key('bundle-profile-status')),
+          row('A2P messaging registration', snapshot.bundleProductStatus,
+              const Key('bundle-product-status')),
+        ],
+      ),
+    );
+  }
+}
+
 class _InfoCallout extends StatelessWidget {
   final IconData icon;
   final String title;
   final String message;
 
   const _InfoCallout({
+    super.key,
     required this.icon,
     required this.title,
     required this.message,
