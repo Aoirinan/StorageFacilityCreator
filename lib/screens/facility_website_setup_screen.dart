@@ -917,6 +917,10 @@ class _FacilityWebsiteSetupScreenState
         },
       };
 
+      // Before the save, so a slug another facility holds is not kept in
+      // the settings that rent links are built from.
+      await FacilityMapV2Service.ensurePublicSlugAvailable(
+          facilityId: widget.facilityId, slug: slug);
       await saveThenPublish(
         save: () => FacilityPublicService.updatePublicSettings(
           facilityId: widget.facilityId,

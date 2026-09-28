@@ -225,6 +225,19 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       _isSavingPublicSettings = true;
       _publicSettingsError = null;
     });
+    // Before the save, so a slug another facility holds is not kept in the
+    // settings that rent links are built from.
+    try {
+      await FacilityMapV2Service.ensurePublicSlugAvailable(
+          facilityId: widget.facility.id, slug: slug);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSavingPublicSettings = false;
+        _publicSettingsError = ErrorMessageHelper.getUserFriendlyMessage(e);
+      });
+      return;
+    }
 
     try {
       await FacilityPublicService.updatePublicSettings(

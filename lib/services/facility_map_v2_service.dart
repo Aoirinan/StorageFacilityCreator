@@ -348,15 +348,11 @@ class FacilityMapV2Service {
     if (user == null) {
       throw Exception('Not signed in');
     }
-    final normalized = _slugify(slug);
+    final normalized =
+        await ensurePublicSlugAvailable(facilityId: facilityId, slug: slug);
     final maps = _collection(_publicMapsCollection);
     final metaRef = _metaRef(facilityId);
-
     final newRef = maps.doc(normalized);
-    final newSnap = await newRef.get();
-    if (newSnap.exists && newSnap.data()?['facilityId'] != facilityId) {
-      throw PublicSlugTakenException(normalized);
-    }
 
     final storedSlug = (await metaRef.get()).data()?['publicSlug'];
     final oldSlug = storedSlug is String ? storedSlug.trim() : '';
@@ -406,6 +402,27 @@ class FacilityMapV2Service {
       });
     }
     await batch.commit();
+    return normalized;
+  }
+
+  /// [slug], normalized as [setPublicSlug] stores it, when no public map doc
+  /// holds it or this facility's does (its live map or one of its pointers).
+  /// Throws [PublicSlugTakenException] when another facility's does.
+  ///
+  /// The settings screens call this before saving publicRentalSlug. They
+  /// saved it first, and [setPublicSlug] refused a taken slug only after:
+  /// the settings kept it, and rent links built from them opened the other
+  /// facility's storefront.
+  static Future<String> ensurePublicSlugAvailable({
+    required String facilityId,
+    required String slug,
+  }) async {
+    final normalized = _slugify(slug);
+    final snap =
+        await _collection(_publicMapsCollection).doc(normalized).get();
+    if (snap.exists && snap.data()?['facilityId'] != facilityId) {
+      throw PublicSlugTakenException(normalized);
+    }
     return normalized;
   }
 
