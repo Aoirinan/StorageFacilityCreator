@@ -21,6 +21,7 @@ import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkAndIncrementSMSUsage } from './smsUsage';
 import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
 import { isFeatureFlagEnabled } from './featureFlags';
+import { decideTenantRecipientConsent, findFacilityTenantsForNumber } from './tenantSmsConsent';
 import {
   buildRentReminderMessage,
   claimActionFor,
@@ -131,6 +132,20 @@ async function sendReminderSms(params: {
 
   const blockList = ((facilityData?.smsSettings ?? {}).blockList ?? []) as string[];
   if (Array.isArray(blockList) && blockList.includes(phoneNumber)) return 'blocked';
+
+  // Same rule as sendSMS: if any record at this facility with this number
+  // (matched on digits) is opted out, the number said STOP and is not texted,
+  // even though this tenancy's own record still shows consent.
+  const numberTenants = await findFacilityTenantsForNumber(facilityId, phoneNumber, tenantId);
+  const numberConsent = decideTenantRecipientConsent(numberTenants, tenantId);
+  if (!numberConsent.allowed) {
+    functions.logger.info('[rentReminderSms] held: number opted out or without consent at this facility', {
+      facilityId,
+      tenantId,
+      refusal: numberConsent.refusal,
+    });
+    return 'blocked';
+  }
 
   const quietHoursEnabled = await isSMSComplianceFeatureEnabled('quietHours', facilityId);
   if (quietHoursEnabled) {

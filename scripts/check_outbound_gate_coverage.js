@@ -103,7 +103,7 @@ const GATE_PATTERNS = GATE_NAMES.map(
 // of the file. Prefer the narrow form.
 const ALLOWLIST = new Map([
   [
-    'functions-messaging-twilio/src/incomingSmsWebhook.ts::handleIncomingSMS',
+    'functions-messaging-twilio/src/keywordReplySender.ts::sendKeywordReply',
     'Replies to the STOP, START and HELP keywords, sent only to the number that ' +
       'just texted us. Carriers require these answers whatever our launch state, ' +
       'and withholding a STOP confirmation is the non-compliant outcome.',

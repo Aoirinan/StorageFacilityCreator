@@ -52,6 +52,16 @@ test('the targeted tenant decides consent when it has the number', () => {
   assert.equal(decideTenantRecipientConsent([consented, noConsent]).allowed, true);
 });
 
+// N5: the rent reminder job applies the same rule before texting a tenant.
+test('a consenting tenant is not reminded when another record with the number said STOP', () => {
+  const target = { id: 't1', phone: '903-555-0100', smsOptInDate: new Date(2026, 8, 1), smsOptOut: false };
+  const sibling = { id: 't2', phone: '(903) 555-0100', smsOptOut: true, smsConsentStatus: 'opted_out' };
+  const d = decideTenantRecipientConsent([target, sibling], 't1');
+  assert.equal(d.allowed, false);
+  assert.equal(d.refusal, 'opted_out');
+  assert.equal(decideTenantRecipientConsent([target], 't1').allowed, true);
+});
+
 test('field readers', () => {
   assert.equal(tenantOptedOut({ id: 'x', smsConsentStatus: 'OPTED_OUT' }), true);
   assert.equal(tenantHasSmsConsent({ id: 'x', smsOptInDate: new Date(), smsOptOut: true }), false);

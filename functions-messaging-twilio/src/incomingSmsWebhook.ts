@@ -8,15 +8,20 @@ import {
 } from '@sfc/functions-shared';
 import { isHelpKeyword, isStartKeyword, isStopKeyword } from '@sfc/functions-shared';
 import {
-  TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER,
   TWILIO_SECRETS,
 } from './secrets';
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { verifyTwilioWebhookSignature } from './twilioWebhookSignature';
 import { findTenantsByPhoneNumber, TenantPhoneMatch } from './tenantPhoneLookup';
-import { buildHelpReply, buildStartReply, KeywordReplyFacility } from './inboundKeywordReplies';
+import {
+  buildHelpReply,
+  buildStartReply,
+  helpFacilityIds,
+  KeywordReplyFacility,
+  startRestorableMatches,
+} from './inboundKeywordReplies';
+import { sendKeywordReply } from './keywordReplySender';
 
 /**
  * Phase 12: Two-Way SMS Messaging — inbound Twilio webhook.
@@ -67,34 +72,8 @@ export const handleIncomingSMS = functions.runWith({
       inboundFacilityId: inboundFacilityId || null,
     });
 
-    async function sendComplianceResponse(message: string) {
-      try {
-        const twilioAccountSid = TWILIO_ACCOUNT_SID.value().trim();
-        const twilioAuthToken = TWILIO_AUTH_TOKEN.value().trim();
-        const defaultTwilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
-        const fromNumber = to || defaultTwilioPhoneNumber;
-        const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-        const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-        const formData = new URLSearchParams();
-        formData.append('To', from);
-        formData.append('From', fromNumber);
-        formData.append('Body', message);
-        await fetch(twilioUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${auth}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: formData.toString(),
-        });
-      } catch (twilioError: unknown) {
-        const msg = twilioError instanceof Error ? twilioError.message : String(twilioError);
-        functions.logger.error('Error sending compliance response', {
-          requestId,
-          error: msg,
-        });
-      }
-    }
+    const sendComplianceResponse = (message: string) =>
+      sendKeywordReply({ replyTo: from, inboundTo: to, message, requestId });
 
     if (isStopKeyword(body)) {
       const confirmationMessage = await handleSMSOptOut(from, inboundFacilityId);
@@ -126,11 +105,9 @@ export const handleIncomingSMS = functions.runWith({
           functions.logger.error(`Error finding tenant for HELP: ${msg}`);
         }
       }
-      // Texted on a facility's own line: that facility answers.
-      if (inboundFacilityId && matches.some((m) => m.facilityId === inboundFacilityId)) {
-        matches = matches.filter((m) => m.facilityId === inboundFacilityId);
-      }
-      const facilities = await loadKeywordFacilities(matches.map((m) => m.facilityId));
+      // Only active tenancies are named (and on a facility's own line, only
+      // that facility), so HELP never reveals where a number used to rent.
+      const facilities = await loadKeywordFacilities(helpFacilityIds(matches, inboundFacilityId));
       await sendComplianceResponse(buildHelpReply(facilities));
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
@@ -415,13 +392,18 @@ async function handleSMSOptIn(
     const normalizedPhone = formatPhoneNumber(phoneNumber);
     if (!normalizedPhone) return [];
 
-    // START on a facility's own number re-subscribes that facility's tenancy
-    // only; START on the shared number re-subscribes every tenancy that the
-    // shared number's STOP would have covered.
+    // START only undoes this person's own STOP on active tenancies (and on a
+    // facility's own line, only that facility's). It never writes consent
+    // onto a record that had none, or onto a former tenancy; those get the
+    // generic confirmation and nothing is recorded. See isStartRestorable.
     const allMatches = await findTenantsByPhoneNumber(normalizedPhone, facilityIdHint);
-    const matches = facilityIdHint
-      ? allMatches.filter((t) => t.facilityId === facilityIdHint)
-      : allMatches;
+    const matches = startRestorableMatches(allMatches, facilityIdHint);
+    if (matches.length < allMatches.length) {
+      functions.logger.info('START not applied to tenancies without a prior inbound STOP', {
+        restored: matches.length,
+        skipped: allMatches.length - matches.length,
+      });
+    }
     for (const tenant of matches) {
       await optInTenant(tenant, normalizedPhone);
     }

@@ -21,6 +21,20 @@ export interface TenantPhoneMatch {
   id: string;
   phone: string;
   isActive: boolean;
+  /** Consent fields, read so START and HELP can decide without a second read. */
+  smsOptOut?: boolean;
+  smsConsentStatus?: string | null;
+  smsConsentSource?: string | null;
+}
+
+function consentFields(doc: { get(field: string): unknown }) {
+  const status = doc.get('smsConsentStatus');
+  const source = doc.get('smsConsentSource');
+  return {
+    smsOptOut: doc.get('smsOptOut') === true,
+    smsConsentStatus: typeof status === 'string' ? status : null,
+    smsConsentSource: typeof source === 'string' ? source : null,
+  };
 }
 
 /** The last ten digits of a US number, or null. */
@@ -117,7 +131,7 @@ export const firestoreTenantPhoneStore: TenantPhoneStore = {
     for (const doc of snap.docs) {
       const facilityId = doc.ref.parent.parent?.id;
       if (!facilityId) continue;
-      out.push({ facilityId, id: doc.id, phone: String(doc.get('phone') ?? ''), isActive });
+      out.push({ facilityId, id: doc.id, phone: String(doc.get('phone') ?? ''), isActive, ...consentFields(doc) });
     }
     return out;
   },
@@ -127,13 +141,14 @@ export const firestoreTenantPhoneStore: TenantPhoneStore = {
       .collection('facilities')
       .doc(facilityId)
       .collection('tenants')
-      .select('phone', 'isActive')
+      .select('phone', 'isActive', 'smsOptOut', 'smsConsentStatus', 'smsConsentSource')
       .get();
     return snap.docs.map((doc) => ({
       facilityId,
       id: doc.id,
       phone: String(doc.get('phone') ?? ''),
       isActive: doc.get('isActive') === true,
+      ...consentFields(doc),
     }));
   },
 };

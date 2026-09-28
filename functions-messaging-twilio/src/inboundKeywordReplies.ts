@@ -11,7 +11,44 @@
  * a compliant reply under the platform's own name.
  */
 
+import type { TenantPhoneMatch } from './tenantPhoneLookup';
+
 export const PLATFORM_SENDER_NAME = 'Storage Facility Creator';
+
+/**
+ * Which tenancies a START may opt back in.
+ *
+ * START only undoes the person's own STOP: an active tenancy whose record says
+ * it was opted out by an inbound STOP. It must not create consent that was
+ * never given, so a record with no consent history, one opted out some other
+ * way (the operator, a form), or a former tenancy is left as it is. A START on
+ * a facility's own line is limited to that facility.
+ */
+export function isStartRestorable(match: TenantPhoneMatch): boolean {
+  if (match.isActive !== true) return false;
+  if (String(match.smsConsentSource ?? '') !== 'inbound_stop') return false;
+  return match.smsOptOut === true || String(match.smsConsentStatus ?? '').toLowerCase() === 'opted_out';
+}
+
+export function startRestorableMatches(
+  matches: TenantPhoneMatch[],
+  facilityIdHint?: string | null,
+): TenantPhoneMatch[] {
+  return matches
+    .filter((m) => !facilityIdHint || m.facilityId === facilityIdHint)
+    .filter(isStartRestorable);
+}
+
+/**
+ * Facilities a HELP reply may name. Only active tenancies, so a HELP never
+ * tells anyone where a number used to rent; on a facility's own line, only that
+ * facility. Empty means the generic platform reply.
+ */
+export function helpFacilityIds(matches: TenantPhoneMatch[], facilityIdHint?: string | null): string[] {
+  const active = matches.filter((m) => m.isActive === true);
+  const scoped = facilityIdHint ? active.filter((m) => m.facilityId === facilityIdHint) : active;
+  return Array.from(new Set(scoped.map((m) => m.facilityId)));
+}
 
 export interface KeywordReplyFacility {
   name?: string | null;
