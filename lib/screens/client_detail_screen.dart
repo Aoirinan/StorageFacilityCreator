@@ -24,6 +24,11 @@ import '../models/gate_access_model.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/paid_through.dart';
+import 'package:sfcapp/utils/payment_month_status.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
 import '../theme/app_theme.dart';
 import '../models/tenant_autopay_model.dart';
@@ -37,7 +42,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
+import 'package:sfcapp/widgets/move_out_action.dart';
+import 'package:sfcapp/widgets/payment_history_summary.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -57,7 +66,6 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   bool _dnrOverride = false;
   GateAccessModel? _gateAccess;
   bool _isLoadingGateAccess = false;
-  TenantModel? _tenantOverride; // Local override after month status edit
   bool _isSavingMonthStatus = false;
   bool _isAutopayLoading = false;
 
@@ -821,6 +829,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       },
       orElse: () => widget.tenant,
     );
+    // "12", or "12 (Complex 2)" once the facility numbers units per area.
+    final unitLabel = tenantUnitLabel(
+      tenant,
+      includeArea: ref
+              .watch(unitLabelsIncludeAreaProvider(tenant.facilityId))
+              .value ??
+          false,
+    );
 
     return SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -972,7 +988,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Unit ${tenant.unitNumber}',
+                              'Unit $unitLabel',
                               style: TextStyle(
                                 fontSize: 16,
                                 color: AppTheme.textSecondary,
@@ -996,6 +1012,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           ],
                         ),
                       ),
+                      // Previous / next tenant, without going back to the list.
+                      TenantPrevNextControls(tenant: tenant, page: TenantPage.detail),
                     ],
                   ),
                 ),
@@ -1051,6 +1069,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                             icon: const Icon(Icons.point_of_sale_outlined, size: 20),
                             label: const Text('Store sale'),
                           ),
+                          TenantMoveOutButton(
+                            facilityId: tenant.facilityId,
+                            tenantId: tenant.id,
+                            onMovedOut: () {
+                              ref.invalidate(facilityTenantsProvider(tenant.facilityId));
+                              _loadGateAccess();
+                            },
+                          ),
                         ],
                       ),
                     ],
@@ -1068,12 +1094,21 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                       _buildInfoItem(context, icon: Icons.person_outlined, label: 'Name', value: _valueOrPlaceholder(tenant.name)),
                       _buildInfoItem(context, icon: Icons.email_outlined, label: 'Email', value: _valueOrPlaceholder(tenant.email)),
                       _buildInfoItem(context, icon: Icons.phone_outlined, label: 'Phone', value: _valueOrPlaceholder(tenant.phone)),
-                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(tenant.unitNumber, fallback: 'No unit assigned')),
+                      _buildInfoItem(context, icon: Icons.home_work_outlined, label: 'Unit', value: _valueOrPlaceholder(unitLabel, fallback: 'No unit assigned')),
                       _buildInfoItem(context, icon: Icons.attach_money, label: 'Monthly Rate', value: _formatCurrency(tenant.monthlyRate)),
-                      if (tenant.smsOptOut)
-                        _buildInfoItem(context, icon: Icons.sms_failed_outlined, label: 'SMS', value: 'Opted out', valueColor: AppTheme.error)
-                      else if (tenant.smsOptInDate != null)
-                        _buildInfoItem(context, icon: Icons.sms_outlined, label: 'SMS', value: 'Opted in'),
+                      // Always shown, so the owner can see who cannot be
+                      // texted yet (Edit Contact Information records it).
+                      _buildInfoItem(
+                        context,
+                        icon: canReceiveTexts(tenant) ? Icons.sms_outlined : Icons.sms_failed_outlined,
+                        label: 'SMS',
+                        value: smsConsentSummary(tenant),
+                        valueColor: smsConsentState(tenant) == SmsConsentState.optedOut
+                            ? AppTheme.error
+                            : canReceiveTexts(tenant)
+                                ? null
+                                : AppTheme.textSecondary,
+                      ),
                     ],
                   ),
                 ),
@@ -1219,7 +1254,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         value: tenant.isLate ? 'Late (${tenant.daysLate} days)' : 'Current',
                       ),
                       const SizedBox(height: 16),
-                      _buildPaymentHistorySummary(_tenantOverride ?? tenant),
+                      _buildPaymentHistorySummary(tenant),
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
@@ -1235,6 +1270,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppTheme.primaryBlue,
                             foregroundColor: AppTheme.textOnDark,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // Rent and payments from before the app (a paper
+                      // ledger), saved with their real dates.
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => showTenantPastHistoryDialog(context, tenant),
+                          icon: const Icon(Icons.history_edu_outlined),
+                          label: const Text('Enter past history'),
+                          style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                         ),
@@ -1355,6 +1404,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 16),
+              _buildContactLogSection(context, tenant),
               const SizedBox(height: 16),
               _buildContractsSection(context, tenant),
               const SizedBox(height: 16),
@@ -1486,15 +1537,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Mark ${tenant.name} as paid through the end of this month?'),
+            Text('Record a cash payment of ${_formatCurrency(tenant.monthlyRate)} from ${tenant.name}, received today?'),
             const SizedBox(height: 16),
             const Text(
               'This will:',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            const Text('• Create a payment record'),
-            const Text('• Update paidThrough date'),
-            const Text('• Clear the late status'),
+            const Text('• Record the payment and a ledger line'),
+            const Text('• Move paid-through on by the months it covers'),
           ],
         ),
         actions: [
@@ -1534,14 +1584,10 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       ref.invalidate(paymentListProvider(tenant.facilityId));
       ref.invalidate(paymentStatsProvider(tenant.facilityId));
 
-      // Calculate end of month for display
-      final now = DateTime.now();
-      final endOfMonth = DateTime(now.year, now.month + 1, 0);
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tenant.name} marked as paid through ${endOfMonth.month}/${endOfMonth.year}'),
+            content: Text('Payment recorded for ${tenant.name}'),
             backgroundColor: AppTheme.success,
           ),
         );
@@ -1559,8 +1605,15 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   }
 
   Future<void> _showEditPaidThroughDialog(TenantModel tenant) async {
-    DateTime tempDate = tenant.paidThrough ?? DateTime.now();
-    
+    // The month and year picked. What is saved is the last day of that
+    // month (paidThroughMonthEnd): "paid through July" is paid to July 31,
+    // as a payment records it. The 1st used to be saved, a month short.
+    final start = tenant.paidThrough ?? DateTime.now();
+    var year = start.year;
+    var month = start.month;
+    final thisYear = DateTime.now().year;
+    final years = {for (var i = 0; i < 5; i++) thisYear - 1 + i, year}.toList()..sort();
+
     final result = await showDialog<DateTime?>(
       context: context,
       builder: (dialogContext) {
@@ -1573,13 +1626,13 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Set the month through which rent is paid:'),
+                    const Text('Rent is paid up to and including the end of this month:'),
                     const SizedBox(height: 16),
                     Row(
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: tempDate.month,
+                            value: month,
                             decoration: const InputDecoration(
                               labelText: 'Month',
                               border: OutlineInputBorder(),
@@ -1591,9 +1644,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                setDialogState(() {
-                                  tempDate = DateTime(tempDate.year, value, 1);
-                                });
+                                setDialogState(() => month = value);
                               }
                             },
                           ),
@@ -1601,24 +1652,28 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: tempDate.year,
+                            value: year,
                             decoration: const InputDecoration(
                               labelText: 'Year',
                               border: OutlineInputBorder(),
                             ),
-                            items: List.generate(5, (i) => DateTime.now().year - 1 + i)
-                                .map((year) => DropdownMenuItem(value: year, child: Text('$year')))
+                            items: years
+                                .map((y) => DropdownMenuItem(value: y, child: Text('$y')))
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                setDialogState(() {
-                                  tempDate = DateTime(value, tempDate.month, 1);
-                                });
+                                setDialogState(() => year = value);
                               }
                             },
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      paidThroughEndLabel(year, month),
+                      key: const Key('paid-through-label'),
+                      style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),
@@ -1633,7 +1688,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                   child: const Text('Clear (Not Paid)'),
                 ),
                 ElevatedButton(
-                  onPressed: () => Navigator.pop(dialogContext, tempDate),
+                  onPressed: () => Navigator.pop(dialogContext, paidThroughMonthEnd(year, month)),
                   child: const Text('Save'),
                 ),
               ],
@@ -1659,7 +1714,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         // Refresh tenant list
         ref.invalidate(facilityTenantsProvider(tenant.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(dateToSet == null ? 'Paid Through cleared' : 'Paid Through updated'), backgroundColor: AppTheme.success),
+          SnackBar(content: Text(dateToSet == null ? 'Paid Through cleared' : 'Saved: ${paidThroughEndLabel(dateToSet.year, dateToSet.month)}'), backgroundColor: AppTheme.success),
         );
       }
     } catch (e) {
@@ -1929,46 +1984,21 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     }
   }
 
-  String _getMonthStatus(TenantModel tenant, DateTime month) {
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
-    final override = tenant.monthStatusOverrides[yyyyMM];
-    if (override != null && override.isNotEmpty) return override;
-    final pt = tenant.paidThrough;
-    if (pt == null) return 'late';
-    final isPaid = month.year < pt.year || (month.year == pt.year && month.month <= pt.month);
-    return isPaid ? 'paid' : 'late';
-  }
-
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'paid': return AppTheme.success;
-      case 'late': return AppTheme.error;
-      case 'moved_out': return AppTheme.warning;
-      default: return AppTheme.textSecondary;
-    }
-  }
-
   Future<void> _setMonthStatus(TenantModel tenant, DateTime month, String? status) async {
     if (_isSavingMonthStatus) return;
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
     setState(() => _isSavingMonthStatus = true);
     try {
+      // The tenant list is a live stream, so the grid picks the change up
+      // from Firestore. It used to keep a copy of the tenant here instead,
+      // which then hid every later change (paidThrough, move-in date) until
+      // the page was reopened.
       await TenantService.updateTenantMonthStatus(
         facilityId: tenant.facilityId,
         tenantId: tenant.id,
-        yearMonth: yyyyMM,
+        yearMonth: paymentMonthKey(month),
         status: status,
       );
-      final newOverrides = Map<String, String>.from(tenant.monthStatusOverrides);
-      if (status != null) {
-        newOverrides[yyyyMM] = status;
-      } else {
-        newOverrides.remove(yyyyMM);
-      }
-      if (mounted) setState(() {
-        _tenantOverride = tenant.copyWith(monthStatusOverrides: newOverrides);
-        _isSavingMonthStatus = false;
-      });
+      if (mounted) setState(() => _isSavingMonthStatus = false);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1982,9 +2012,9 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     }
   }
 
-  void _showMonthStatusPicker(TenantModel tenant, DateTime month) {
-    final currentStatus = _getMonthStatus(tenant, month);
+  void _showMonthStatusPicker(TenantModel tenant, DateTime month, PaymentMonthStatus currentStatus) {
     final monthLabel = DateFormat('MMMM yyyy').format(month);
+    final hasOverride = tenant.monthStatusOverrides.containsKey(paymentMonthKey(month));
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1999,11 +2029,11 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 style: Theme.of(ctx).textTheme.titleMedium,
               ),
               const SizedBox(height: 16),
-              _monthStatusOption(ctx, tenant, month, 'paid', 'Paid', Icons.check_circle, AppTheme.success, currentStatus),
-              _monthStatusOption(ctx, tenant, month, 'late', 'Late', Icons.warning, AppTheme.error, currentStatus),
-              _monthStatusOption(ctx, tenant, month, 'moved_out', 'Moved Out', Icons.exit_to_app, AppTheme.warning, currentStatus),
-              if (tenant.monthStatusOverrides.containsKey('${month.year}-${month.month.toString().padLeft(2, '0')}'))
-                _monthStatusOption(ctx, tenant, month, null, 'Clear override (use auto)', Icons.refresh, AppTheme.textSecondary, currentStatus),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.paid, Icons.check_circle, currentStatus, hasOverride),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.late, Icons.warning, currentStatus, hasOverride),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.movedOut, Icons.exit_to_app, currentStatus, hasOverride),
+              if (hasOverride)
+                _monthStatusOption(ctx, tenant, month, null, Icons.refresh, currentStatus, hasOverride),
             ],
           ),
         ),
@@ -2011,17 +2041,19 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     );
   }
 
-  Widget _monthStatusOption(BuildContext ctx, TenantModel tenant, DateTime month, String? status, String label, IconData icon, Color color, String currentStatus) {
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
-    final isOverride = tenant.monthStatusOverrides.containsKey(yyyyMM);
-    final isSelected = status == null ? !isOverride : (status == currentStatus);
+  /// One choice in the month picker; a null [status] clears the override.
+  Widget _monthStatusOption(BuildContext ctx, TenantModel tenant, DateTime month, PaymentMonthStatus? status, IconData icon, PaymentMonthStatus currentStatus, bool hasOverride) {
+    final isSelected = status == null ? !hasOverride : status == currentStatus;
     return ListTile(
-      leading: Icon(icon, color: color),
-      title: Text(label),
+      leading: Icon(
+        icon,
+        color: status == null ? AppTheme.textSecondary : PaymentHistorySummary.statusColor(status),
+      ),
+      title: Text(status == null ? 'Clear override (use auto)' : PaymentHistorySummary.statusLabel(status)),
       trailing: isSelected ? const Icon(Icons.check) : null,
       onTap: () async {
         Navigator.pop(ctx);
-        await _setMonthStatus(tenant, month, status);
+        await _setMonthStatus(tenant, month, status?.storedValue);
       },
     );
   }
@@ -2029,128 +2061,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   Widget _buildPaymentHistorySummary(TenantModel tenant) {
     final ledgerParams = LedgerParams(tenantId: tenant.id!, facilityId: tenant.facilityId);
     final ledgerAsync = ref.watch(ledgerStreamProvider(ledgerParams));
-    final now = DateTime.now();
-    final months = List<DateTime>.generate(12, (i) {
-      final d = DateTime(now.year, now.month - (11 - i), 1);
-      return d;
-    });
     return ledgerAsync.when(
-      data: (entries) {
-        final paymentEntries = entries.where((e) =>
-          e.status != LedgerEntryStatus.voided &&
-          (e.type == LedgerEntryType.payment ||
-           e.type == LedgerEntryType.credit ||
-           e.type == LedgerEntryType.refund)).toList();
-        final paymentCount = paymentEntries.length;
-        var paidMonths = 0;
-        var lateMonths = 0;
-        var movedOutMonths = 0;
-        for (final m in months) {
-          final s = _getMonthStatus(tenant, m);
-          if (s == 'paid') paidMonths++;
-          else if (s == 'late') lateMonths++;
-          else if (s == 'moved_out') movedOutMonths++;
-        }
-        return Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppTheme.backgroundSecondary,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: AppTheme.borderLight),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.payment_outlined, size: 18, color: AppTheme.primaryBlue),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Payment History',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 16,
-                runSpacing: 8,
-                children: [
-                  _summaryChip('Payments made', '$paymentCount', Icons.check_circle_outline, AppTheme.success),
-                  _summaryChip('Paid', '$paidMonths', Icons.calendar_today, AppTheme.success),
-                  _summaryChip('Late', '$lateMonths', Icons.calendar_today, lateMonths > 0 ? AppTheme.error : AppTheme.textSecondary),
-                  _summaryChip('Moved out', '$movedOutMonths', Icons.exit_to_app, movedOutMonths > 0 ? AppTheme.warning : AppTheme.textSecondary),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Click a month to set status (${DateFormat('MMM yyyy').format(months.first)} – ${DateFormat('MMM yyyy').format(months.last)}):',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppTheme.textSecondary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: months.map((m) {
-                  final status = _getMonthStatus(tenant, m);
-                  final color = _statusColor(status);
-                  return Material(
-                    color: color.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(20),
-                    child: InkWell(
-                      onTap: _isSavingMonthStatus ? null : () => _showMonthStatusPicker(tenant, m),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Text(
-                          DateFormat('MMM yy').format(m),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: color,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-        );
-      },
+      data: (entries) => PaymentHistorySummary(
+        tenant: tenant,
+        entries: entries,
+        today: DateTime.now(),
+        onMonthTap: _isSavingMonthStatus
+            ? null
+            : (month, status) => _showMonthStatusPicker(tenant, month, status),
+      ),
       loading: () => const Padding(
         padding: EdgeInsets.symmetric(vertical: 8),
         child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
       ),
       error: (_, __) => const SizedBox.shrink(),
-    );
-  }
-
-  Widget _summaryChip(String label, String value, IconData icon, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 6),
-        Text(
-          '$label: ',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
-        ),
-        Text(
-          value,
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
     );
   }
 
@@ -2556,6 +2480,35 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         ),
       );
     }
+  }
+
+  /// Calls, texts, emails, letters and notes recorded for this tenant. The
+  /// contact log screen was only reachable by typing its URL.
+  Widget _buildContactLogSection(BuildContext context, TenantModel tenant) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildSectionHeader(context, Icons.forum_outlined, 'Contact log'),
+            const SizedBox(height: 8),
+            const Text(
+              'Record calls, texts, emails, in-person visits and letters, '
+              'such as a final notice you mailed, with the date they happened.',
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('tenant-contact-log'),
+              icon: const Icon(Icons.history),
+              label: const Text('Open contact log'),
+              onPressed: () => context.push(AppRoute.contactLogsFor(
+                  tenantId: tenant.id, facilityId: tenant.facilityId)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSectionHeader(BuildContext context, IconData icon, String title, {VoidCallback? onEdit}) {

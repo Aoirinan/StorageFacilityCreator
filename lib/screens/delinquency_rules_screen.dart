@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/facility_model.dart';
 import '../providers/facility_provider.dart';
 import '../services/facility_service.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../services/modern_navigation_service.dart';
@@ -33,8 +34,12 @@ class _DelinquencyRulesScreenState extends ConsumerState<DelinquencyRulesScreen>
   late TextEditingController _lienDaysController;
   late TextEditingController _lockoutDaysController;
 
-  bool _enableAutoLateFees = true;
-  bool _enableAutoNotices = true;
+  // Off until the operator switches it on, as the server reads a missing
+  // field (autoLateFeesEnabled in functions-automation).
+  bool _enableAutoLateFees = false;
+  // Off until the operator switches it on; the server reads an unset value
+  // the same way (functions-automation/src/delinquencyNoticePolicy.ts).
+  bool _enableAutoNotices = false;
   bool _enableAutoLockout = false;
 
   @override
@@ -80,8 +85,8 @@ class _DelinquencyRulesScreenState extends ConsumerState<DelinquencyRulesScreen>
           _finalNoticeDaysController.text = (settings['finalNoticeDays'] ?? 14).toString();
           _lienDaysController.text = (settings['lienDays'] ?? 30).toString();
           _lockoutDaysController.text = (settings['lockoutDays'] ?? 45).toString();
-          _enableAutoLateFees = settings['enableAutoLateFees'] ?? true;
-          _enableAutoNotices = settings['enableAutoNotices'] ?? true;
+          _enableAutoLateFees = LateFeeRules.autoLateFeesEnabled(settings);
+          _enableAutoNotices = settings['enableAutoNotices'] ?? false;
           _enableAutoLockout = settings['enableAutoLockout'] ?? false;
         });
       }

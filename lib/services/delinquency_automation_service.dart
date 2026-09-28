@@ -8,6 +8,7 @@ import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/services/email_service.dart';
 import 'package:sfcapp/services/facility_service.dart';
 import 'package:sfcapp/services/gate_access_service.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/sms_service.dart';
 import 'package:sfcapp/services/tenant_service.dart';
@@ -145,8 +146,9 @@ class DelinquencyAutomationService {
       finalNoticeDays: billingSettings['finalNoticeDays'] ?? 14,
       lienDays: billingSettings['lienDays'] ?? 30,
       lockoutDays: billingSettings['lockoutDays'] ?? 45,
-      enableAutoLateFees: billingSettings['enableAutoLateFees'] ?? true,
-      enableAutoNotices: billingSettings['enableAutoNotices'] ?? true,
+      // Off unless switched on, as the server reads it.
+      enableAutoLateFees: LateFeeRules.autoLateFeesEnabled(billingSettings),
+      enableAutoNotices: billingSettings['enableAutoNotices'] ?? false,
       enableAutoLockout: billingSettings['enableAutoLockout'] ?? false,
     );
   }
@@ -652,8 +654,8 @@ class DelinquencyRules {
     this.finalNoticeDays = 14,
     this.lienDays = 30,
     this.lockoutDays = 45,
-    this.enableAutoLateFees = true,
-    this.enableAutoNotices = true,
+    this.enableAutoLateFees = false,
+    this.enableAutoNotices = false,
     this.enableAutoLockout = false,
   });
 }

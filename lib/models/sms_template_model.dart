@@ -131,7 +131,12 @@ class SMSTemplateVariables {
   static const String facilityName = 'facilityName';
   static const String amount = 'amount';
   static const String dueDate = 'dueDate';
+  /// The unit's label: "12", or "12 (Complex 2)" when the facility numbers
+  /// units per area (`unitNumbersRepeatAcrossAreas`).
   static const String unitNumber = 'unitNumber';
+
+  /// The area of the tenant's unit alone ('' when it has none).
+  static const String unitArea = 'unitArea';
   static const String balance = 'balance';
   static const String gateCode = 'gateCode';
   static const String paymentDate = 'paymentDate';
@@ -144,6 +149,7 @@ class SMSTemplateVariables {
       amount,
       dueDate,
       unitNumber,
+      unitArea,
       balance,
       gateCode,
       paymentDate,
@@ -158,6 +164,7 @@ class SMSTemplateVariables {
       amount: 'Amount',
       dueDate: 'Due Date',
       unitNumber: 'Unit Number',
+      unitArea: 'Unit Area',
       balance: 'Balance',
       gateCode: 'Gate Code',
       paymentDate: 'Payment Date',

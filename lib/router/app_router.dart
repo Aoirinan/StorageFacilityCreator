@@ -15,6 +15,7 @@ import 'route_guards.dart';
 import 'route_helpers.dart';
 import 'facility_edit_route.dart';
 import 'package:sfcapp/router/detail_routes.dart';
+import 'package:sfcapp/router/stays_routes.dart';
 import 'public_auth_entry_routes.dart';
 import 'public_commerce_routes.dart';
 import '../services/modern_navigation_service.dart';
@@ -498,16 +499,9 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             name: 'payment-create',
             builder: (context, state) {
               final facilityId = state.uri.queryParameters['facilityId'] ?? '';
-              // The calendar links here with ?date=<iso day>; it used to be
-              // read by nobody, so "add a payment due on this date" always
-              // opened thirty days out instead.
-              final rawDate = state.uri.queryParameters['date'];
-              final dueDate =
-                  rawDate == null ? null : DateTime.tryParse(rawDate);
-              return PaymentCreationScreen(
-                facilityId: facilityId,
-                initialDueDate: dueDate,
-              );
+              // Records a payment received today; earlier dates go through
+              // Enter past history, so there is no date to pass in.
+              return PaymentCreationScreen(facilityId: facilityId);
             },
           ),
           GoRoute(
@@ -1174,6 +1168,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return MoveOutScreen(
                 contractId: contractId,
                 facilityId: facilityId,
+                unitId: state.uri.queryParameters['unitId'],
               );
             },
           ),
@@ -1313,6 +1308,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               return NotFoundPage(state: state);
             },
           ),
+          // Stays (short-term rentals), behind the shortTermRentals flag.
+          ...staysShellRoutes(),
         ],
       ),
       // Outside ShellRoute so it renders without the facility owner sidebar.

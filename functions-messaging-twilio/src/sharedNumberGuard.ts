@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
-import { isFeatureFlagEnabled } from './featureFlags';
 import {
   decideSharedNumberSend,
+  SharedNumberAccountStanding,
   SharedNumberDecision,
 } from './sharedNumberPolicy';
 
@@ -57,7 +57,8 @@ export async function evaluateSharedNumberSend(params: {
   }
 
   const accountId = facilityData?.facilityCreatorAccountId as string | undefined;
-  let inTrial = false;
+  const facilityExempt = facilityData?.billingExempt === true;
+  let account: SharedNumberAccountStanding | null = null;
   if (accountId) {
     try {
       const accountDoc = await admin
@@ -65,19 +66,22 @@ export async function evaluateSharedNumberSend(params: {
         .collection('facilityCreatorAccounts')
         .doc(accountId)
         .get();
-      const status = String(accountDoc.data()?.subscriptionStatus ?? '').toLowerCase();
-      inTrial = status === 'trialing';
+      if (accountDoc.exists) {
+        const data = accountDoc.data() ?? {};
+        account = {
+          subscriptionStatus: typeof data.subscriptionStatus === 'string' ? data.subscriptionStatus : '',
+          billingExempt: data.billingExempt === true || facilityExempt,
+          suspended: data.suspended === true,
+        };
+      }
     } catch {
-      // An account we cannot read is treated as in trial: refusing to send
-      // because of our own read failure would be the worse mistake.
-      inTrial = true;
+      // An account we cannot read is treated as in good standing: refusing to
+      // send because of our own read failure would be the worse mistake.
+      account = null;
     }
-  } else {
-    inTrial = true;
   }
 
-  const [registrationAvailable, sharedMonthlyCap, usageDoc] = await Promise.all([
-    isFeatureFlagEnabled('TEXTING_ONBOARDING_V1'),
+  const [sharedMonthlyCap, usageDoc] = await Promise.all([
     readSharedMonthlyCap(),
     sharedUsageRef(facilityId, now).get(),
   ]);
@@ -86,9 +90,7 @@ export async function evaluateSharedNumberSend(params: {
 
   return decideSharedNumberSend({
     usesOwnNumber: false,
-    a2pStatus: facilityData?.a2pStatus as string | undefined,
-    registrationAvailable,
-    inTrial,
+    account,
     sharedSendsThisMonth,
     sharedMonthlyCap,
   });

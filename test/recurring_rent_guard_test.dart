@@ -64,6 +64,27 @@ void main() {
       );
     });
 
+    test('a server charge dated 00:00 UTC on the 1st counts in US time zones',
+        () {
+      // The scheduled job dated September's charge 2026-09-01T00:00Z. In
+      // Central time that is 7 PM on August 31, which is what the app reads
+      // back. It is still September's charge, and must stop a second one.
+      final posted = entry(
+        entryDate: DateTime(2026, 8, 31, 19),
+        metadata: {
+          'recurringCharge': true,
+          'chargeType': 'monthlyRent',
+          'month': 9,
+          'year': 2026,
+        },
+      );
+      expect(
+        RecurringChargesService.hasPostedRecurringRentCharge(
+            [posted], september),
+        isTrue,
+      );
+    });
+
     test('a different month does not count', () {
       expect(
         RecurringChargesService.hasPostedRecurringRentCharge(

@@ -25,9 +25,11 @@ import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/email_send_feedback.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/tenant_contact_validation.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 import 'package:sfcapp/widgets/modern_page_wrapper.dart';
+import 'package:sfcapp/widgets/sms_consent_checkbox.dart';
 import 'package:sfcapp/widgets/tenant_facility_unit_picker.dart';
 
 class TenantCreationScreen extends ConsumerStatefulWidget {
@@ -59,6 +61,8 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   final _portalWelcomeController = TextEditingController();
   
   String _selectedFacilityId = '';
+  // The unit picked from the list, linked by id; null when typed.
+  String? _pickedUnitId;
   String _selectedIdType = 'none';
   String? _selectedIdState;
   String? _selectedIdCountry;
@@ -72,6 +76,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
   bool _dnrOverride = false;
   List<DNRModel>? _dnrMatches;
   bool _smsConsent = false; // SMS consent checkbox state
+  SmsConsentMethod? _smsConsentMethod;
 
   final Random _random = Random.secure();
 
@@ -981,6 +986,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
         unitNumber: _unitController.text.trim(),
+        unitId: _pickedUnitId,
         monthlyRate: double.parse(_rateController.text.trim()),
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         governmentIdType: idType,
@@ -996,6 +1002,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
         portalWelcomeMessage: portalWelcomeMessage,
         leadSource: _selectedLeadSource,
         smsOptInDate: _smsConsent ? DateTime.now() : null,
+        smsConsentMethod: _smsConsent ? _smsConsentMethod : null,
       );
       
       if (kDebugMode) {
@@ -1271,6 +1278,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                     _selectedFacilityId = value ?? '';
                     _unitController.clear();
                     _rateController.clear();
+                    _pickedUnitId = null;
                   });
                 },
                 validator: (value) {
@@ -1341,74 +1349,15 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 Consumer(
                   builder: (context, ref, child) {
                     final facilityAsync = ref.watch(facilityProvider(_selectedFacilityId));
-                    final facilityName = facilityAsync.value?.name ?? 'this facility';
-                    
-                    return Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.backgroundSecondary,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppTheme.borderLight),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Checkbox(
-                                value: _smsConsent,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _smsConsent = value ?? false;
-                                  });
-                                },
-                              ),
-                              Expanded(
-                                child: GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _smsConsent = !_smsConsent;
-                                    });
-                                  },
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(top: 12),
-                                    child: RichText(
-                                      text: TextSpan(
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          color: AppTheme.textPrimary,
-                                          height: 1.4,
-                                        ),
-                                        children: [
-                                          const TextSpan(
-                                            text: 'I consent to receive SMS notifications regarding my storage account. Message frequency varies. Message & data rates may apply. Reply STOP to opt out, HELP for help. ',
-                                            style: TextStyle(fontWeight: FontWeight.w500),
-                                          ),
-                                          WidgetSpan(
-                                            child: GestureDetector(
-                                              onTap: () {
-                                                context.go('/sms-policy');
-                                              },
-                                              child: const Text(
-                                                'See SMS Terms',
-                                                style: TextStyle(
-                                                  color: AppTheme.primaryBlue,
-                                                  decoration: TextDecoration.underline,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
+                    final facilityName = facilityAsync.value?.name ?? 'This facility';
+                    return SmsConsentCheckbox(
+                      facilityName: facilityName,
+                      startNumber: textingStartNumber(facilityAsync.value),
+                      savedState: null,
+                      value: _smsConsent,
+                      onChanged: (v) => setState(() => _smsConsent = v),
+                      method: _smsConsentMethod,
+                      onMethodChanged: (m) => setState(() => _smsConsentMethod = m),
                     );
                   },
                 ),
@@ -1420,6 +1369,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                 facilityId: _selectedFacilityId,
                 unitNumberController: _unitController,
                 monthlyRateController: _rateController,
+                onUnitIdChanged: (id) => _pickedUnitId = id,
               ),
               const SizedBox(height: 16),
               

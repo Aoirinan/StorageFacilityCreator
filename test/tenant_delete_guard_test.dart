@@ -11,10 +11,13 @@ import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/unit_model.dart';
 import 'package:sfcapp/screens/unit_detail_screen.dart';
 import 'package:sfcapp/services/move_out_service.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:sfcapp/services/tenant_service.dart';
 import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
+import 'package:sfcapp/utils/error_message_helper.dart';
+import 'package:sfcapp/utils/unit_number.dart';
 
 import 'support/fake_facility_collection.dart';
 import 'support/fake_facility_firestore.dart';
@@ -145,7 +148,23 @@ class _FakeRecords implements TenantRecordsStore {
       'unitsNumbered',
       () => [
             for (final u in facilityUnits)
-              if (u.unitNumber == unitNumber) u
+              if (unitNumberKey(u.unitNumber) == unitNumberKey(unitNumber)) u
+          ]);
+
+  /// "Unit numbers repeat across areas".
+  bool repeatAcrossAreas = false;
+
+  @override
+  Future<bool> repeatsUnitNumbersAcrossAreas() async => repeatAcrossAreas;
+
+  @override
+  Future<List<UnitModel>> unitsWithLegacyNumber(String unitNumber) => _read(
+      'unitsWithLegacyNumber',
+      () => [
+            for (final u in facilityUnits)
+              if (u.legacyUnitNumber != null &&
+                  unitNumberKey(u.legacyUnitNumber!) == unitNumberKey(unitNumber))
+                u
           ]);
 
   @override
@@ -1745,6 +1764,72 @@ void main() {
       expect(db.data('tenants', 't1')!['monthlyRate'], 330);
       expect(notice, r'Monthly rent is now $330.00 for units 101, 102 and 103.');
     });
+
+    test('unitsNumbered matches trimmed and ignoring case, live units before archived ones', () async {
+      final units = db.sub('units');
+      await units.doc('u104').set({'unitNumber': ' 104A', 'status': 'available'});
+      // Archived as UnitService.archiveUnit writes it: switched off too.
+      await units.doc('u105old').set({'unitNumber': '105', 'archived': true, 'isActive': false});
+      await units.doc('u105').set({'unitNumber': '105', 'status': 'available'});
+      await units.doc('u106').set({'unitNumber': '106', 'archived': true, 'isActive': false});
+      // An archived flag with no isActive (older docs): found only when no
+      // live unit has the number, as the exact query found it before.
+      await units.doc('u108old').set({'unitNumber': '108', 'archived': true});
+      await units.doc('u108').set({'unitNumber': '108', 'status': 'available'});
+      await units.doc('u109').set({'unitNumber': '109', 'archived': true});
+      final store = TenantService.recordsFor('f1');
+      List<String> ids(List<UnitModel> units) => [for (final u in units) u.id];
+      expect(ids(await store.unitsNumbered('104a')), ['u104']);
+      expect(ids(await store.unitsNumbered('105')), ['u105']);
+      expect(await store.unitsNumbered('106'), isEmpty);
+      // An archived unit with the number no longer makes it ambiguous.
+      expect(ids(await store.unitsNumbered('108')), ['u108']);
+      expect(ids(await store.unitsNumbered('109')), ['u109']);
+    });
+
+    group('createTenant', () {
+      setUp(() {
+        TenantService.authForTesting =
+            MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+        FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+      });
+      tearDown(() {
+        TenantService.authForTesting = null;
+        FacilitySubcollections.overrideForTesting(null);
+      });
+
+      Future<String> create(String unitNumber) => TenantService.createTenant(
+            facilityId: 'f1',
+            name: 'Bo Diaz',
+            email: '',
+            phone: '',
+            unitNumber: unitNumber,
+            monthlyRate: 60,
+          );
+
+      test("a number an archived unit keeps is refused before the tenant is saved", () async {
+        // The unit was made after the tenant was saved, so the refusal said
+        // "Nothing was saved" over a saved tenant, and a retry (or the CSV
+        // import's next run) saved them twice.
+        await db.sub('units').doc('u12').set(
+            {'unitNumber': '12', 'archived': true, 'isActive': false, 'status': 'available'});
+        final tenantsBefore = db.sub('tenants').stored.length;
+        await expectLater(
+          create('12'),
+          throwsA(isA<DuplicateUnitNumberException>().having((e) => e.message, 'message',
+              startsWith('Unit number 12 belongs to an archived unit. Nothing was saved.'))),
+        );
+        expect(db.sub('tenants').stored, hasLength(tenantsBefore));
+        expect(db.sub('units').log.writes.map((w) => w.$2), ['u12']);
+      });
+
+      test('a number no unit has makes the unit and links it', () async {
+        final id = await create('14');
+        final made = db.sub('units').stored.where((d) => d.data()['unitNumber'] == '14').single;
+        expect(made.data()['tenantId'], id);
+        expect(db.data('tenants', id)!['unitNumber'], '14');
+      });
+    });
   });
 
   group('move-in of an additional unit', () {
@@ -1881,6 +1966,455 @@ void main() {
       await expectLater(
           moveIn(store, '102', 35), throwsA(isA<UnitHeldByAnotherTenantException>()));
       expect(store.allWrites, isEmpty);
+    });
+  });
+
+  group('units linked by id, and unit numbers that more than one unit has', () {
+    // Two units numbered 12 (Complex 2 and Complex 3). By number alone the
+    // link took whichever came first.
+    UnitModel unitAt(String id, String number, UnitStatus status, String? tenantId,
+            {double rate = 100, String? area}) =>
+        UnitModel(
+          id: id,
+          facilityId: 'f1',
+          unitNumber: number,
+          unitType: 'standard',
+          status: status,
+          tenantId: tenantId,
+          monthlyRate: rate,
+          createdAt: day,
+          updatedAt: day,
+          createdBy: 'owner',
+          area: area,
+        );
+
+    _FakeRecords tenantWith({String label = '', List<UnitModel> held = const []}) {
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {'name': 'Ada Park', 'isActive': true, 'unitNumber': label, 'monthlyRate': 100}
+        ..units = held;
+      return store;
+    }
+
+    Future<String?> update(_FakeRecords store,
+            {String? unitNumber, String? unitId, String? phone, bool? isActive, ConfirmFreeUnit? confirmFree}) =>
+        TenantService.updateTenant(
+          facilityId: 'f1',
+          tenantId: 't1',
+          unitNumber: unitNumber,
+          unitId: unitId,
+          phone: phone,
+          isActive: isActive,
+          confirmFreeOldUnit: confirmFree,
+          records: store,
+          effects: _FakeEffects(),
+          actingUid: 'owner',
+        );
+
+    Future<String?> moveIn(_FakeRecords store, {required String unitNumber, String? unitId, double rate = 35}) =>
+        TenantService.recordMoveInUnit(
+          facilityId: 'f1',
+          tenantId: 't1',
+          unitNumber: unitNumber,
+          unitId: unitId,
+          monthlyRate: rate,
+          records: store,
+          effects: _FakeEffects(),
+          actingUid: 'owner',
+        );
+
+    test('Edit Tenant: the unit picked from the list is the one linked', () async {
+      final store = tenantWith();
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null, area: 'Complex 2'),
+        unitAt('c3-12', '12', UnitStatus.available, null, area: 'Complex 3'),
+      ]);
+      await update(store, unitNumber: '12', unitId: 'c3-12');
+      expect(store.writtenPaths, ['update units/c3-12', 'update tenants/t1']);
+      expect(store['t1'].doc!['unitNumber'], '12');
+    });
+
+    test('the number comes from the picked unit, not the typed field', () async {
+      final store = tenantWith();
+      store.facilityUnits.add(unitAt('c3-12', '12', UnitStatus.available, null));
+      await update(store, unitNumber: 'stale text', unitId: 'c3-12');
+      expect(store['t1'].doc!['unitNumber'], '12');
+      expect(store.allWrites, ['update units/c3-12', 'update tenants/t1']);
+    });
+
+    test('by number alone, a number two units have is refused before anything is written', () async {
+      final store = tenantWith();
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      await expectLater(
+        update(store, unitNumber: '12'),
+        throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.message, 'message',
+            'More than one unit is numbered 12. Nothing was saved. Pick the unit from the list.')),
+      );
+      expect(store.allWrites, isEmpty);
+      // The screens show it as written, not as a generic error.
+      expect(
+          ErrorMessageHelper.getUserFriendlyMessage(
+              const AmbiguousUnitNumberException(unitNumber: '12', count: 2)),
+          startsWith('More than one unit is numbered 12.'));
+    });
+
+    test('by number alone, with the setting on: the refusal names the areas', () async {
+      final store = tenantWith()..repeatAcrossAreas = true;
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null, area: 'Complex 2'),
+        unitAt('c3-12', '12', UnitStatus.available, null, area: 'Complex 3'),
+      ]);
+      await expectLater(
+        update(store, unitNumber: '12'),
+        throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.message, 'message',
+            'More than one unit is numbered 12 (in Complex 2, Complex 3). Nothing was saved. '
+            'Pick the unit from the list instead of typing its number: the list shows each '
+            "unit's area.")),
+      );
+      expect(store.allWrites, isEmpty);
+    });
+
+    group('a number from before a renumbering (legacyUnitNumber)', () {
+      UnitModel renumbered(String id, String number, String legacy, String area,
+              {String? tenantId, UnitStatus status = UnitStatus.available}) =>
+          UnitModel(
+            id: id,
+            facilityId: 'f1',
+            unitNumber: number,
+            unitType: 'standard',
+            status: status,
+            tenantId: tenantId,
+            monthlyRate: 100,
+            createdAt: day,
+            updatedAt: day,
+            createdBy: 'owner',
+            area: area,
+            legacyUnitNumber: legacy,
+          );
+
+      test('links the renumbered unit instead of making a phantom "C2-12"', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('c2-12', '12', 'C2-12', 'Complex 2'),
+          renumbered('c3-12', '12', 'C3-12', 'Complex 3'),
+        ]);
+        await update(store, unitNumber: ' c2-12 ');
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store.allWrites, contains('update units/c2-12'));
+        // Their label becomes the unit's number now, linked by id.
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c2-12');
+      });
+
+      test('a move-in typing the old number moves into the renumbered unit', () async {
+        final store = tenantWith();
+        store.facilityUnits.add(renumbered('c3-12', '12', 'C3-12', 'Complex 3'));
+        await moveIn(store, unitNumber: 'C3-12');
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+      });
+
+      test('an old number two units had is refused, nothing written', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('a', '12', 'C2-12', 'Complex 2'),
+          renumbered('b', '14', 'c2-12', 'Complex 3'),
+        ]);
+        await expectLater(
+          update(store, unitNumber: 'C2-12'),
+          throwsA(isA<AmbiguousLegacyUnitNumberException>().having((e) => e.message, 'message',
+              'Unit C2-12 was renumbered, and more than one unit used to be numbered C2-12 '
+              '(now 12 (Complex 2), 14 (Complex 3)). Nothing was saved. Pick the unit from the list.')),
+        );
+        expect(store.allWrites, isEmpty);
+      });
+
+      test('a number that is a unit\'s number now wins over another\'s old number', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          renumbered('old', '12', 'C2-12', 'Complex 2'),
+          unitAt('now', 'C2-12', UnitStatus.available, null),
+        ]);
+        await update(store, unitNumber: 'C2-12');
+        expect(store['t1'].doc!['unitId'], 'now');
+      });
+
+      test('reactivating a tenant whose label is the old number links the renumbered unit', () async {
+        final store = tenantWith(label: 'C2-12');
+        store['t1'].doc = {...store['t1'].doc!, 'isActive': false};
+        store.facilityUnits.addAll([
+          renumbered('c2-12', '12', 'C2-12', 'Complex 2'),
+          renumbered('c3-12', '12', 'C3-12', 'Complex 3'),
+        ]);
+        // Edit Tenant sends the Unit Number field (the stale label) with
+        // Active switched back on.
+        await update(store, unitNumber: 'C2-12', isActive: true);
+        expect(store.allWrites, isNot(contains(startsWith('create units/'))));
+        expect(store.allWrites, contains('update units/c2-12'));
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c2-12');
+        expect(store['t1'].doc!['isActive'], isTrue);
+      });
+
+      test('a number no unit has, now or before, still makes a unit', () async {
+        final store = tenantWith();
+        store.facilityUnits.add(renumbered('c2-12', '12', 'C2-12', 'Complex 2'));
+        await update(store, unitNumber: 'C9-1');
+        expect(store.allWrites, contains('create units/new-C9-1'));
+      });
+    });
+
+    test('by number, the one of them the tenant holds is theirs: saving other fields still works', () async {
+      final c2 = unitAt('c2-12', '12', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12', held: [c2]);
+      store.facilityUnits.addAll([c2, unitAt('c3-12', '12', UnitStatus.available, null)]);
+      store.unitHolders['c2-12'] = 't1';
+      await update(store, unitNumber: '12', phone: '555-0100');
+      expect(store.allWrites, ['update tenants/t1']);
+      expect(store['t1'].doc!['phone'], '555-0100');
+    });
+
+    test('by number, case and spaces do not matter: an existing unit is linked, not a second one made', () async {
+      final store = tenantWith();
+      store.facilityUnits.add(unitAt('u12A', '12A', UnitStatus.available, null));
+      await update(store, unitNumber: ' 12a ');
+      expect(store.allWrites, ['update units/u12A', 'update tenants/t1']);
+      expect(store['t1'].doc!['unitNumber'], '12A');
+    });
+
+    test('by number, a unit spelled exactly as typed wins over one that differs only in case', () async {
+      // Facilities may already have both: the duplicate check was exact.
+      final store = tenantWith();
+      store.facilityUnits.addAll([
+        unitAt('u12a', '12a', UnitStatus.available, null),
+        unitAt('u12A', '12A', UnitStatus.available, null),
+      ]);
+      await update(store, unitNumber: '12A');
+      expect(store.writtenPaths, ['update units/u12A', 'update tenants/t1']);
+    });
+
+    test('a picked unit that is gone is refused before anything is written', () async {
+      final store = tenantWith();
+      await expectLater(update(store, unitNumber: '12', unitId: 'gone'),
+          throwsA(isA<PickedUnitNotFoundException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test('a picked unit in another facility is refused', () async {
+      final store = tenantWith();
+      store.facilityUnits.add(UnitModel(
+        id: 'x12',
+        facilityId: 'f2',
+        unitNumber: '12',
+        unitType: 'standard',
+        status: UnitStatus.available,
+        monthlyRate: 100,
+        createdAt: day,
+        updatedAt: day,
+        createdBy: 'owner',
+      ));
+      await expectLater(update(store, unitNumber: '12', unitId: 'x12'),
+          throwsA(isA<PickedUnitNotFoundException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test('a picked unit another tenant holds is refused even when the number is unchanged', () async {
+      // By number, an unchanged number someone else holds saves the rest
+      // with a notice; a unit picked from the list is a choice, and refused.
+      final store = tenantWith(label: '12');
+      store.facilityUnits.add(unitAt('c3-12', '12', UnitStatus.occupied, 't2'));
+      await expectLater(update(store, unitNumber: '12', unitId: 'c3-12'),
+          throwsA(isA<UnitHeldByAnotherTenantException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test('picking the other unit with the number they hold is a change of unit: the rent follows', () async {
+      final c2 = unitAt('c2-12', '12', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12', held: [c2, unitAt('u7', '7', UnitStatus.occupied, 't1', rate: 50)]);
+      store['t1'].doc!['monthlyRate'] = 150;
+      store.facilityUnits.addAll([c2, unitAt('c3-12', '12', UnitStatus.available, null, rate: 80)]);
+      store.unitHolders['c2-12'] = 't1';
+      final notice = await update(store, unitNumber: '12', unitId: 'c3-12');
+      // No one said to free Complex 2's 12, so both are kept and the new
+      // one's rate is added to theirs.
+      expect(store.writtenPaths, ['update units/c3-12', 'update tenants/t1']);
+      expect(store['t1'].doc!['monthlyRate'], 230);
+      expect(notice, contains(r'$230.00'));
+    });
+
+    test('move-in by id: a second unit numbered like the one they hold is linked and billed', () async {
+      // The held-units filter compared numbers, so this read as already
+      // theirs: nothing was linked and nothing billed.
+      final c2 = unitAt('c2-12', '12', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12', held: [c2]);
+      store.facilityUnits.addAll([c2, unitAt('c3-12', '12', UnitStatus.available, null, rate: 150)]);
+      final notice = await moveIn(store, unitNumber: '12', unitId: 'c3-12');
+      expect(store.writtenPaths, ['update units/c3-12', 'update tenants/t1']);
+      expect(store['t1'].doc!['monthlyRate'], 250);
+      expect(notice, contains(r'$250.00'));
+    });
+
+    test('move-in by id when they already hold another unit adds it, as by number', () async {
+      final held = unitAt('u101', '101', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '101', held: [held]);
+      store.facilityUnits.addAll([held, unitAt('u102', '102', UnitStatus.available, null, rate: 150)]);
+      final notice = await moveIn(store, unitNumber: '102', unitId: 'u102');
+      expect(store.writtenPaths, ['update units/u102', 'update tenants/t1']);
+      expect(store['t1'].doc!['unitNumber'], '101');
+      expect(notice, r'Monthly rent is now $250.00 for units 101 and 102.');
+    });
+
+    test('move-in by number into a number two units have is refused', () async {
+      final held = unitAt('u101', '101', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '101', held: [held]);
+      store.facilityUnits.addAll([
+        held,
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      await expectLater(moveIn(store, unitNumber: '12'),
+          throwsA(isA<AmbiguousUnitNumberException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test("typing \"12A\" over \"12a\" names 12A: another tenant's 12A is refused, not saved with a notice", () async {
+      // Compared ignoring case, the number read as unchanged, so the
+      // refusal became "not linked" and the label moved to 12A anyway.
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.addAll([
+        mine,
+        unitAt('u12A', '12A', UnitStatus.occupied, 't2'),
+      ]);
+      await expectLater(update(store, unitNumber: '12A'),
+          throwsA(isA<UnitHeldByAnotherTenantException>()));
+      expect(store.allWrites, isEmpty);
+      expect(store['t1'].doc!['unitNumber'], '12a');
+    });
+
+    test('typing "12A" over "12a" when 12A is free is a change of unit: asked, and the rent follows', () async {
+      // It linked 12A with no question and no rent change: they held both
+      // and were billed for one.
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.addAll([
+        mine,
+        unitAt('u12A', '12A', UnitStatus.available, null, rate: 80),
+      ]);
+      String? asked;
+      final notice = await update(store, unitNumber: '12A', confirmFree: (n) async {
+        asked = n;
+        return false;
+      });
+      expect(asked, '12a');
+      expect(store.writtenPaths, ['update units/u12A', 'update tenants/t1']);
+      expect(store['t1'].doc!['monthlyRate'], 180);
+      expect(store['t1'].doc!['unitNumber'], '12A');
+      expect(notice, contains(r'$180.00'));
+    });
+
+    test('a case-only change of the number of the unit they hold changes nothing else', () async {
+      final mine = unitAt('u12a', '12a', UnitStatus.occupied, 't1');
+      final store = tenantWith(label: '12a', held: [mine]);
+      store.facilityUnits.add(mine);
+      store.unitHolders['u12a'] = 't1';
+      String? asked;
+      await update(store, unitNumber: '12A', confirmFree: (n) async {
+        asked = n;
+        return true;
+      });
+      expect(asked, isNull);
+      expect(store.allWrites, ['update tenants/t1']);
+      // The unit's own spelling.
+      expect(store['t1'].doc!['unitNumber'], '12a');
+    });
+
+    test('an unchanged number several units have: other fields are saved, with a notice', () async {
+      // Edit Tenant and the contact dialog always send the number, so a
+      // phone change was refused for a tenant whose number two units have.
+      final store = tenantWith(label: '12');
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      final notice = await update(store, unitNumber: '12', phone: '555-0100');
+      expect(store.allWrites, ['update tenants/t1']);
+      expect(store['t1'].doc!['phone'], '555-0100');
+      expect(notice,
+          'More than one unit is numbered 12, so none was linked to Ada Park. Pick their unit from the list to link it.');
+    });
+
+    test('reactivating onto a number several units have is still refused', () async {
+      final store = tenantWith(label: '12');
+      store['t1'].doc!['isActive'] = false;
+      store.facilityUnits.addAll([
+        unitAt('c2-12', '12', UnitStatus.available, null),
+        unitAt('c3-12', '12', UnitStatus.available, null),
+      ]);
+      await expectLater(update(store, unitNumber: '12', isActive: true),
+          throwsA(isA<AmbiguousUnitNumberException>()));
+      expect(store.allWrites, isEmpty);
+    });
+
+    test("the CSV import's row line says how to add a tenant whose number several units have", () {
+      expect(
+        TenantService.csvImportRowError(
+            4, const AmbiguousUnitNumberException(unitNumber: '12', count: 2)),
+        'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
+        'Add them with Add Tenant and pick their unit from the list.',
+      );
+      // Setting off, areas known or not: as it always read.
+      expect(
+        TenantService.csvImportRowError(
+            4,
+            const AmbiguousUnitNumberException(
+                unitNumber: '12', count: 2, areas: ['Complex 2', 'Complex 3'])),
+        'Row 4: More than one unit is numbered 12, so this tenant was not imported. '
+        'Add them with Add Tenant and pick their unit from the list.',
+      );
+      // Setting on: it names the areas and suggests an Area column.
+      expect(
+        TenantService.csvImportRowError(
+            4,
+            const AmbiguousUnitNumberException(
+                unitNumber: '12',
+                count: 2,
+                areas: ['Complex 2', 'Complex 3'],
+                repeatAcrossAreas: true)),
+        'Row 4: More than one unit is numbered 12 (in Complex 2, Complex 3), so this '
+        "tenant was not imported. Put the unit's area in an Area column, or add them "
+        'with Add Tenant and pick their unit from the list.',
+      );
+      expect(
+        TenantService.csvImportRowError(5, const DuplicateUnitNumberException(
+            unitNumber: '9', existingNumber: '9', archived: true)),
+        startsWith('Row 5: Unit number 9 belongs to an archived unit.'),
+      );
+      expect(TenantService.csvImportRowError(6, Exception('x')), 'Row 6: Exception: x');
+    });
+
+    group('unitForNumber', () {
+      UnitModel? pick(List<UnitModel> units, String number) =>
+          TenantService.unitForNumber(units, number, tenantId: 't1');
+
+      test('none, one, trimmed and ignoring case', () {
+        final a = unitAt('a', '12A', UnitStatus.available, null);
+        expect(pick([], '12'), isNull);
+        expect(pick([a], '12'), isNull);
+        expect(pick([a], ' 12a '), same(a));
+        expect(pick([a], ''), isNull);
+      });
+
+      test("several: the tenant's, else refused", () {
+        final a = unitAt('a', '12', UnitStatus.available, null);
+        final b = unitAt('b', '12', UnitStatus.occupied, 't1');
+        expect(pick([a, b], '12'), same(b));
+        expect(() => pick([a, unitAt('c', '12', UnitStatus.available, null)], '12'),
+            throwsA(isA<AmbiguousUnitNumberException>().having((e) => e.count, 'count', 2)));
+      });
     });
   });
 
@@ -2210,5 +2744,569 @@ void main() {
     );
     expect(results, ids);
     expect(peak, lessThanOrEqualTo(4));
+  });
+
+  group("the tenant's primary unit by id (unitId, unitArea)", () {
+    // Every write of tenant.unitNumber also names the unit by id and copies
+    // its area, or deletes both when the number is cleared, so unit numbers
+    // can later repeat across areas.
+    final deleted = FieldValue.delete();
+
+    UnitModel unitAt(String id, String number, UnitStatus status, String? tenantId,
+            {double rate = 100, String? area}) =>
+        UnitModel(
+          id: id,
+          facilityId: 'f1',
+          unitNumber: number,
+          unitType: 'standard',
+          status: status,
+          tenantId: tenantId,
+          monthlyRate: rate,
+          createdAt: day,
+          updatedAt: day,
+          createdBy: 'owner',
+          area: area,
+        );
+
+    _FakeRecords tenantWith({
+      String label = '',
+      List<UnitModel> held = const [],
+      double rate = 100,
+      bool isActive = true,
+      Map<String, dynamic> extra = const {},
+    }) {
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {
+          'name': 'Ada Park',
+          'isActive': isActive,
+          'unitNumber': label,
+          'monthlyRate': rate,
+          ...extra,
+        }
+        ..units = held;
+      for (final u in held) {
+        store.unitHolders[u.id] = u.tenantId;
+      }
+      return store;
+    }
+
+    Future<String?> update(_FakeRecords store,
+            {String? unitNumber, String? unitId, String? phone, bool? isActive}) =>
+        TenantService.updateTenant(
+          facilityId: 'f1',
+          tenantId: 't1',
+          unitNumber: unitNumber,
+          unitId: unitId,
+          phone: phone,
+          isActive: isActive,
+          records: store,
+          effects: _FakeEffects(),
+          actingUid: 'owner',
+        );
+
+    Map<String, dynamic> tenantDoc(_FakeRecords store) => store['t1'].doc!;
+
+    group('Edit Tenant (updateTenant)', () {
+      test('a unit picked from the list is their unitId, and its area their unitArea', () async {
+        final store = tenantWith();
+        store.facilityUnits.addAll([
+          unitAt('c2-12', 'C2-12', UnitStatus.available, null, area: 'Complex 2'),
+          unitAt('c3-14', 'C3-14', UnitStatus.available, null, area: ' Complex 3 '),
+        ]);
+        await update(store, unitNumber: 'C3-14', unitId: 'c3-14');
+        expect(tenantDoc(store)['unitNumber'], 'C3-14');
+        expect(tenantDoc(store)['unitId'], 'c3-14');
+        expect(tenantDoc(store)['unitArea'], 'Complex 3');
+      });
+
+      test('a unit found by number is linked by id too; a unit with no area deletes unitArea', () async {
+        final store = tenantWith(extra: {'unitArea': 'Old area'});
+        store.facilityUnits.add(unitAt('u14', '14', UnitStatus.available, null));
+        await update(store, unitNumber: '14');
+        expect(tenantDoc(store)['unitId'], 'u14');
+        expect(tenantDoc(store)['unitArea'], deleted);
+      });
+
+      test('a number no unit has: the unit made for it is their unitId', () async {
+        final store = tenantWith();
+        await update(store, unitNumber: '14');
+        expect(store.directWrites.map((w) => '$w'), ['create units/new-14']);
+        expect(tenantDoc(store)['unitNumber'], '14');
+        expect(tenantDoc(store)['unitId'], 'new-14');
+        expect(tenantDoc(store)['unitArea'], deleted);
+      });
+
+      test('an edit of other fields writes the unitId of the unit they hold (a tenant from before it was kept)', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1', area: 'Complex 2');
+        final store = tenantWith(label: '12', held: [u12]);
+        store.facilityUnits.add(u12);
+        await update(store, unitNumber: '12', phone: '555-0100');
+        expect(store.allWrites, ['update tenants/t1']);
+        expect(tenantDoc(store)['unitId'], 'u12');
+        expect(tenantDoc(store)['unitArea'], 'Complex 2');
+      });
+
+      test('clearing the unit number deletes unitId and unitArea', () async {
+        final store = tenantWith(label: '12', extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        await update(store, unitNumber: '');
+        final fields = store.directWrites.single.fields!;
+        expect(fields['unitNumber'], '');
+        expect(fields['unitId'], deleted);
+        expect(fields['unitArea'], deleted);
+      });
+
+      test("an inactive tenant's new number names no unit by id: the old unitId goes", () async {
+        final store = tenantWith(
+            label: '12', isActive: false, extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        await update(store, unitNumber: '14');
+        final fields = store.directWrites.single.fields!;
+        expect(fields['unitNumber'], '14');
+        expect(fields['unitId'], deleted);
+        expect(fields['unitArea'], deleted);
+      });
+
+      test("an inactive tenant's unchanged number keeps its unitId", () async {
+        final store = tenantWith(
+            label: '12', isActive: false, extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        await update(store, unitNumber: '12', phone: '555-0100');
+        final fields = store.directWrites.single.fields!;
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields.containsKey('unitArea'), isFalse);
+      });
+
+      test('no unit number in the call leaves unitId alone', () async {
+        final store = tenantWith(label: '12', extra: {'unitId': 'u12'});
+        await update(store, phone: '555-0100');
+        final fields = store.directWrites.single.fields!;
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields.containsKey('unitArea'), isFalse);
+      });
+
+      test('switching off with the unit number cleared deletes them with it', () async {
+        final store = tenantWith(label: '', extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        await update(store, unitNumber: '', isActive: false);
+        final fields = store.transactions.single.first.fields!;
+        expect(fields['isActive'], isFalse);
+        expect(fields['unitId'], deleted);
+        expect(fields['unitArea'], deleted);
+      });
+
+      test('a changed unit that keeps the old one: the new unit is the primary one', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1', area: 'Complex 2');
+        final store = tenantWith(label: '12', held: [u12], extra: {'unitId': 'u12'});
+        store.facilityUnits.addAll([u12, unitAt('u14', '14', UnitStatus.available, null, area: 'Complex 3')]);
+        await update(store, unitNumber: '14');
+        expect(store.writtenPaths, ['update units/u14', 'update tenants/t1']);
+        final fields = store.transactions.single.last.fields!;
+        expect(fields['unitNumber'], '14');
+        expect(fields['unitId'], 'u14');
+        expect(fields['unitArea'], 'Complex 3');
+      });
+    });
+
+    group('move-in (recordMoveInUnit)', () {
+      Future<String?> moveIn(_FakeRecords store, {required String unitNumber, String? unitId}) =>
+          TenantService.recordMoveInUnit(
+            facilityId: 'f1',
+            tenantId: 't1',
+            unitNumber: unitNumber,
+            unitId: unitId,
+            monthlyRate: 35,
+            records: store,
+            effects: _FakeEffects(),
+            actingUid: 'owner',
+          );
+
+      test('a first unit is their unitId and unitArea', () async {
+        final store = tenantWith(isActive: false, rate: 0);
+        store.facilityUnits.add(unitAt('c3-14', '14', UnitStatus.available, null, area: 'Complex 3'));
+        await moveIn(store, unitNumber: '14', unitId: 'c3-14');
+        expect(tenantDoc(store)['unitNumber'], '14');
+        expect(tenantDoc(store)['unitId'], 'c3-14');
+        expect(tenantDoc(store)['unitArea'], 'Complex 3');
+      });
+
+      test('another unit leaves unitId on the unit their label names', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1', area: 'Complex 2');
+        final store = tenantWith(label: '12', held: [u12], extra: {'unitId': 'u12'});
+        store.facilityUnits.addAll([u12, unitAt('u14', '14', UnitStatus.available, null, area: 'Complex 3')]);
+        await moveIn(store, unitNumber: '14', unitId: 'u14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitNumber'), isFalse);
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(tenantDoc(store)['unitId'], 'u12');
+      });
+
+      test('another unit, when the label names none they hold: the label and unitId move to it', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1');
+        final store = tenantWith(label: 'stale', held: [u12]);
+        store.facilityUnits.addAll([u12, unitAt('u14', '14', UnitStatus.available, null, area: 'Complex 3')]);
+        await moveIn(store, unitNumber: '14', unitId: 'u14');
+        expect(tenantDoc(store)['unitNumber'], '14');
+        expect(tenantDoc(store)['unitId'], 'u14');
+        expect(tenantDoc(store)['unitArea'], 'Complex 3');
+      });
+
+      test('another unit made for its number: its new id', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1');
+        final store = tenantWith(label: '', held: [u12]);
+        store.facilityUnits.add(u12);
+        await moveIn(store, unitNumber: '14');
+        expect(tenantDoc(store)['unitNumber'], '14');
+        expect(tenantDoc(store)['unitId'], 'new-14');
+        expect(tenantDoc(store)['unitArea'], deleted);
+      });
+    });
+
+    group('Units > Assign Tenant (assignUnit)', () {
+      Future<String?> assign(_FakeRecords store, String unitId) => TenantService.assignUnit(
+            store,
+            facilityId: 'f1',
+            unitId: unitId,
+            tenantId: 't1',
+            uid: 'owner',
+            effects: _FakeEffects(),
+          );
+
+      test('a first unit sets unitNumber, unitId and unitArea together', () async {
+        final store = tenantWith(rate: 0);
+        store.facilityUnits.add(unitAt('c3-14', '14', UnitStatus.available, null, area: 'Complex 3'));
+        await assign(store, 'c3-14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields['unitNumber'], '14');
+        expect(fields['unitId'], 'c3-14');
+        expect(fields['unitArea'], 'Complex 3');
+      });
+
+      test('a second unit leaves their unitId alone', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1');
+        final store = tenantWith(label: '12', held: [u12], extra: {'unitId': 'u12'});
+        store.facilityUnits.addAll([u12, unitAt('u14', '14', UnitStatus.available, null)]);
+        await assign(store, 'u14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitNumber'), isFalse);
+        expect(fields.containsKey('unitId'), isFalse);
+      });
+    });
+
+    group('Unassign Tenant (unassignUnit)', () {
+      Future<String?> unassign(_FakeRecords store, String unitId) =>
+          TenantService.unassignUnit(store, unitId: unitId, uid: 'owner');
+
+      _FakeRecords holdingTwo() {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1', area: 'Complex 2');
+        final u14 = unitAt('u14', '14', UnitStatus.occupied, 't1', rate: 150, area: 'Complex 3');
+        final store = tenantWith(label: '12', held: [u12, u14], rate: 250,
+            extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        store.facilityUnits.addAll([u12, u14]);
+        return store;
+      }
+
+      test('the label moves to the unit they keep, and unitId and unitArea with it', () async {
+        final store = holdingTwo();
+        await unassign(store, 'u12');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields['unitNumber'], '14');
+        expect(fields['unitId'], 'u14');
+        expect(fields['unitArea'], 'Complex 3');
+      });
+
+      test('another unit freed leaves unitId alone', () async {
+        final store = holdingTwo();
+        await unassign(store, 'u14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields.containsKey('unitArea'), isFalse);
+      });
+
+      test('their last unit clears unitNumber, unitId and unitArea', () async {
+        final u12 = unitAt('u12', '12', UnitStatus.occupied, 't1', area: 'Complex 2');
+        final store = tenantWith(label: '12', held: [u12], extra: {'unitId': 'u12'});
+        store.facilityUnits.add(u12);
+        await unassign(store, 'u12');
+        final fields = store.transactions.single[1].fields!;
+        expect(fields['unitNumber'], '');
+        expect(fields['unitId'], deleted);
+        expect(fields['unitArea'], deleted);
+      });
+    });
+
+    group('move-out (recordMoveOut)', () {
+      Future<String?> settle(_FakeRecords store, String unitId) => TenantService.recordMoveOut(
+            facilityId: 'f1',
+            tenantId: 't1',
+            movedOutUnitId: unitId,
+            records: store,
+            effects: _FakeEffects(),
+            actingUid: 'owner',
+          );
+
+      test('the label moves to the unit they keep, linked by id', () async {
+        final u14 = unitAt('u14', '14', UnitStatus.occupied, 't1', area: 'Complex 3');
+        final store = tenantWith(label: '12', held: [u14], extra: {'unitId': 'u12'});
+        store.facilityUnits.addAll([u14, unitAt('u12', '12', UnitStatus.available, null)]);
+        await settle(store, 'u12');
+        expect(tenantDoc(store)['unitNumber'], '14');
+        expect(tenantDoc(store)['unitId'], 'u14');
+        expect(tenantDoc(store)['unitArea'], 'Complex 3');
+      });
+
+      test('their last unit deletes unitId and unitArea', () async {
+        final store = tenantWith(label: '12', extra: {'unitId': 'u12', 'unitArea': 'Complex 2'});
+        await settle(store, 'u12');
+        final fields = store.transactions.single.first.fields!;
+        expect(fields['unitNumber'], '');
+        expect(fields['isActive'], isFalse);
+        expect(fields['unitId'], deleted);
+        expect(fields['unitArea'], deleted);
+      });
+    });
+
+    group('createTenant', () {
+      late FakeFacilityFirestore db;
+
+      setUp(() {
+        db = FakeFacilityFirestore('f1', {
+          'tenants': <FakeDoc>[],
+          'units': [
+            FakeDoc('c3-14', {'unitNumber': '14', 'status': 'available', 'monthlyRate': 80, 'area': 'Complex 3'}),
+            FakeDoc('u15', {'unitNumber': '15', 'status': 'available', 'monthlyRate': 80}),
+          ],
+        });
+        TenantService.firestoreForTesting = db;
+        TenantService.authForTesting =
+            MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+        UnitService.authForTesting =
+            MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+        FacilitySubcollections.overrideForTesting((facilityId, name) => db.sub(name));
+      });
+      tearDown(() {
+        TenantService.firestoreForTesting = null;
+        TenantService.authForTesting = null;
+        UnitService.authForTesting = null;
+        FacilitySubcollections.overrideForTesting(null);
+      });
+
+      Future<String> create(String unitNumber, {String? unitId}) => TenantService.createTenant(
+            facilityId: 'f1',
+            name: 'Bo Diaz',
+            email: '',
+            phone: '',
+            unitNumber: unitNumber,
+            unitId: unitId,
+            monthlyRate: 80,
+          );
+
+      test('a picked unit is saved with the tenant as unitId and unitArea', () async {
+        final id = await create('', unitId: 'c3-14');
+        final saved = db.sub('tenants').log.writes.firstWhere((w) => w.$2 == id);
+        expect(saved.$1, 'set');
+        expect(saved.$3['unitNumber'], '14');
+        expect(saved.$3['unitId'], 'c3-14');
+        expect(saved.$3['unitArea'], 'Complex 3');
+      });
+
+      test('a unit found by number with no area: unitId only (a set has nothing to delete)', () async {
+        final id = await create('15');
+        final saved = db.sub('tenants').log.writes.firstWhere((w) => w.$2 == id);
+        expect(saved.$3['unitId'], 'u15');
+        expect(saved.$3.containsKey('unitArea'), isFalse);
+      });
+
+      test('a unit made for the number is their unitId once it exists', () async {
+        final id = await create('16');
+        final made = db.sub('units').stored.where((d) => d.data()['unitNumber'] == '16').single;
+        expect(db.data('tenants', id)!['unitId'], made.id);
+        expect(db.data('tenants', id)!['unitNumber'], '16');
+      });
+
+      test('no unit number: no unitId', () async {
+        final id = await create('');
+        expect(db.data('tenants', id)!.containsKey('unitId'), isFalse);
+      });
+    });
+  });
+
+  group('a tenant holding two units with the same number keeps the primary one', () {
+    // Not possible while unit numbers are unique per facility, but what
+    // later phases allow: "12" in Complex 2 (c2-12) and in Complex 3
+    // (c3-12), both held by t1. Their unitId says which is the primary one.
+    final deleted = FieldValue.delete();
+
+    UnitModel unitAt(String id, String number, {String? area, double rate = 100}) => UnitModel(
+          id: id,
+          facilityId: 'f1',
+          unitNumber: number,
+          unitType: 'standard',
+          status: UnitStatus.occupied,
+          tenantId: 't1',
+          monthlyRate: rate,
+          createdAt: day,
+          updatedAt: day,
+          createdBy: 'owner',
+          area: area,
+        );
+
+    final c2 = unitAt('c2-12', '12', area: 'Complex 2');
+    final c3 = unitAt('c3-12', '12', area: 'Complex 3', rate: 150);
+    final u14 = unitAt('u14', '14', area: 'Outdoor', rate: 50);
+
+    _FakeRecords holding(List<UnitModel> held, {required String primary, double rate = 250}) {
+      final store = _FakeRecords();
+      store['t1']
+        ..doc = {
+          'name': 'Ada Park',
+          'isActive': true,
+          'unitNumber': '12',
+          'unitId': primary,
+          'monthlyRate': rate,
+        }
+        ..units = held;
+      store.facilityUnits.addAll(held);
+      for (final u in held) {
+        store.unitHolders[u.id] = 't1';
+      }
+      return store;
+    }
+
+    test('saving other fields keeps unitId on their primary unit, not the first match', () async {
+      // unitForNumber took the first held unit numbered 12, so a phone
+      // change flipped unitId to c2-12.
+      final store = holding([c2, c3], primary: 'c3-12');
+      await TenantService.updateTenant(
+        facilityId: 'f1',
+        tenantId: 't1',
+        unitNumber: '12',
+        phone: '555-0100',
+        records: store,
+        effects: _FakeEffects(),
+        actingUid: 'owner',
+      );
+      expect(store.allWrites, ['update tenants/t1']);
+      expect(store['t1'].doc!['unitId'], 'c3-12');
+      expect(store['t1'].doc!['unitArea'], 'Complex 3');
+    });
+
+    test('unitForNumber: their primary unit first among the ones they hold', () {
+      expect(
+          TenantService.unitForNumber([c2, c3], '12', tenantId: 't1', currentUnitId: 'c3-12')?.id,
+          'c3-12');
+      expect(TenantService.unitForNumber([c2, c3], '12', tenantId: 't1')?.id, 'c2-12');
+      // A unitId they don't hold is no reason to pick it.
+      final other = UnitModel.fromFirestore(FakeDoc('x-12', {'unitNumber': '12', 'tenantId': 't2', 'status': 'occupied'}));
+      expect(
+          TenantService.unitForNumber([c2, other], '12', tenantId: 't1', currentUnitId: 'x-12')?.id,
+          'c2-12');
+    });
+
+    group('move-out (recordMoveOut)', () {
+      Future<String?> settle(_FakeRecords store, String unitId) => TenantService.recordMoveOut(
+            facilityId: 'f1',
+            tenantId: 't1',
+            movedOutUnitId: unitId,
+            records: store,
+            effects: _FakeEffects(),
+            actingUid: 'owner',
+          );
+
+      test('leaving their primary unit moves unitId and unitArea to the kept unit numbered alike', () async {
+        // The label still named a kept unit ("12"), so nothing was written
+        // and unitId stayed on the freed unit; processMoveOut moved it.
+        final store = holding([u14, c3], primary: 'c2-12');
+        store.facilityUnits.add(c2);
+        await settle(store, 'c2-12');
+        expect(store['t1'].doc!['unitNumber'], '12');
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+        expect(store['t1'].doc!['unitArea'], 'Complex 3');
+      });
+
+      test('leaving the other unit numbered alike leaves the primary alone', () async {
+        final store = holding([u14, c3], primary: 'c3-12', rate: 35);
+        store.facilityUnits.add(c2);
+        await settle(store, 'c2-12');
+        expect(store['t1'].doc!['unitId'], 'c3-12');
+        for (final w in store.directWrites) {
+          expect(w.fields!.containsKey('unitId'), isFalse);
+          expect(w.fields!.containsKey('unitNumber'), isFalse);
+        }
+      });
+    });
+
+    group('Unassign Tenant (unassignUnit)', () {
+      Future<String?> unassign(_FakeRecords store, String unitId) =>
+          TenantService.unassignUnit(store, unitId: unitId, uid: 'owner');
+
+      test('freeing the other unit numbered alike leaves the primary alone', () async {
+        // The label named the freed unit's number, so it moved to
+        // others.first (unit 14) and took unitId with it.
+        final store = holding([c2, u14, c3], primary: 'c3-12', rate: 300);
+        await unassign(store, 'c2-12');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitNumber'), isFalse);
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields.containsKey('unitArea'), isFalse);
+      });
+
+      test('freeing the primary moves it to the kept unit numbered alike before any other', () async {
+        final store = holding([c2, u14, c3], primary: 'c2-12', rate: 300);
+        await unassign(store, 'c2-12');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields['unitNumber'], '12');
+        expect(fields['unitId'], 'c3-12');
+        expect(fields['unitArea'], 'Complex 3');
+      });
+
+      test('freeing a unit that is not the primary, with a different number, changes nothing', () async {
+        final store = holding([c2, u14], primary: 'c2-12', rate: 150);
+        await unassign(store, 'u14');
+        final fields = store.transactions.single.last.fields!;
+        expect(fields.containsKey('unitId'), isFalse);
+        expect(fields['unitArea'], isNot(deleted));
+      });
+    });
+  });
+
+  test('primaryMovesOnRelease and primaryUnitAfterRelease match the table processMoveOut runs', () {
+    final fixture = jsonDecode(File(
+            'functions-tenant-lifecycle/src/test/fixtures/primaryUnitAfterRelease.json')
+        .readAsStringSync()) as Map<String, dynamic>;
+    final cases = (fixture['cases'] as List).cast<Map<String, dynamic>>();
+    expect(cases.length, greaterThan(5));
+    for (final c in cases) {
+      final stillHeld = [
+        for (final row in (c['stillHeld'] as List).cast<List<dynamic>>())
+          UnitModel(
+            id: row[0] as String,
+            facilityId: 'f1',
+            unitNumber: row[1] as String,
+            unitType: 'standard',
+            status: UnitStatus.occupied,
+            tenantId: 't1',
+            monthlyRate: 100,
+            createdAt: day,
+            updatedAt: day,
+            createdBy: 'owner',
+          ),
+      ];
+      final vacated = (c['vacated'] as List).cast<String>();
+      final moves = TenantService.primaryMovesOnRelease(
+        label: c['label'] as String,
+        unitId: c['unitId'] as String?,
+        vacatedId: vacated[0],
+        vacatedNumber: vacated[1],
+        stillHeld: stillHeld,
+      );
+      final name = c['name'] as String;
+      expect(moves, c['moves'], reason: name);
+      final to = moves
+          ? TenantService.primaryUnitAfterRelease(
+              label: c['label'] as String,
+              unitId: c['unitId'] as String?,
+              stillHeld: stillHeld,
+            )
+          : null;
+      expect(to?.id, c['to'], reason: name);
+    }
   });
 }

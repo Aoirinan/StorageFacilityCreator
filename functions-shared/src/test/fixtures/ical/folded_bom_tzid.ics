@@ -1,0 +1,53 @@
+﻿BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Stays test//Folded BOM TZID//EN
+BEGIN:VEVENT
+UID:folded-1@stays.test
+DTSTART;TZID=America/New_York:20261003T150000
+DTEND;TZID=America/New_York:20261006T020000
+SUMMARY:A long summary that is folded acro
+ ss two lines
+DESCRIPTION:Line one\nLine two\, with comma\; and semicolon \\ backslash
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:An alarm description that is not the event's
+TRIGGER:-PT15M
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:no-end@stays.test
+DTSTART;VALUE=DATE:20261012
+SUMMARY:One night with no DTEND
+END:VEVENT
+BEGIN:VEVENT
+UID:quoted-tz@stays.test
+DTSTART;TZID="America/Los_Angeles":20261014T230000
+DTEND;TZID="America/Los_Angeles":20261016T090000
+SUMMARY:Quoted TZID
+END:VEVENT
+BEGIN:VEVENT
+UID:windows-tz@stays.test
+DTSTART;TZID=Mountain Standard Time:20261018T150000
+DTEND;TZID=Mountain Standard Time:20261019T110000
+SUMMARY:Windows zone name
+END:VEVENT
+BEGIN:VEVENT
+UID:inverted@stays.test
+DTSTART;VALUE=DATE:20261025
+DTEND;VALUE=DATE:20261025
+SUMMARY:Zero nights
+END:VEVENT
+BEGIN:VEVENT
+UID:recurring-override@stays.test
+RECURRENCE-ID;VALUE=DATE:20261101
+DTSTART;VALUE=DATE:20261101
+DTEND;VALUE=DATE:20261102
+SUMMARY:Override of a repeating event
+END:VEVENT
+BEGIN:VEVENT
+UID:duration@stays.test
+DTSTART;VALUE=DATE:20261120
+DURATION:P3D
+SUMMARY:Three nights by duration
+END:VEVENT
+END:VCALENDAR

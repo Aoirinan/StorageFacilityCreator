@@ -69,23 +69,62 @@ class Address {
     };
   }
 
-  String get formattedAddress {
-    final parts = <String>[
-      street1,
-      if (street2 != null && street2!.isNotEmpty) street2!,
-      '$city, $state $zipCode',
-      if (country != null && country!.isNotEmpty) country!,
+  /// The printable lines of this address, from the parts that are filled in:
+  /// street1, street2, then "City, ST 12345" built only from the city, state
+  /// and ZIP that are present, then the country when it is not the US
+  /// (online move-ins store "US" on every address). Never an empty line, a
+  /// lone comma or a double space; empty when nothing is filled in.
+  List<String> get addressLines {
+    final s1 = _tidy(street1);
+    final s2 = _tidy(street2);
+    final c = _tidy(country);
+    return [
+      if (s1.isNotEmpty) s1,
+      if (s2.isNotEmpty) s2,
+      if (localityLine.isNotEmpty) localityLine,
+      if (c.isNotEmpty && !_isUnitedStates(c)) c,
     ];
-    return parts.join('\n');
   }
 
+  /// "City, ST 12345" from whichever of city, state and ZIP are present:
+  /// "City, ST", "City 12345", "ST 12345", or "" when all three are blank.
+  String get localityLine {
+    final c = _tidy(city);
+    final s = _tidy(state);
+    final z = _tidy(zipCode);
+    var line = c;
+    if (s.isNotEmpty) line = line.isEmpty ? s : '$line, $s';
+    if (z.isNotEmpty) line = line.isEmpty ? z : '$line $z';
+    return line;
+  }
+
+  /// [addressLines] one per line, for printed documents. Empty when the
+  /// address has nothing filled in.
+  String get formattedAddress => addressLines.join('\n');
+
+  /// Street, street2 and "City, ST 12345" on one line, comma separated
+  /// (no country). Empty when the address has nothing filled in.
   String get singleLineAddress {
-    final parts = <String>[
-      street1,
-      if (street2 != null && street2!.isNotEmpty) street2!,
-      '$city, $state $zipCode',
-    ];
-    return parts.join(', ');
+    final s1 = _tidy(street1);
+    final s2 = _tidy(street2);
+    return [
+      if (s1.isNotEmpty) s1,
+      if (s2.isNotEmpty) s2,
+      if (localityLine.isNotEmpty) localityLine,
+    ].join(', ');
+  }
+
+  /// Trims [s] and collapses runs of whitespace (including line breaks) to a
+  /// single space.
+  static String _tidy(String? s) =>
+      (s ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+
+  static bool _isUnitedStates(String country) {
+    final c = country.toUpperCase().replaceAll('.', '').replaceAll(' ', '');
+    return c == 'US' ||
+        c == 'USA' ||
+        c == 'UNITEDSTATES' ||
+        c == 'UNITEDSTATESOFAMERICA';
   }
 
   Address copyWith({

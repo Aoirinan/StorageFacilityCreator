@@ -4,8 +4,10 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
+import 'package:sfcapp/services/unit_service.dart';
 import 'package:sfcapp/utils/callable_failure.dart';
 import '../models/facility_model.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import '../models/facility_creator_account_model.dart';
 import 'permission_service.dart';
 import 'facility_creator_account_service.dart';
@@ -918,6 +920,7 @@ class FacilityService {
     String? address,
     String? mailingAddress, // '' clears it
     String? statementMessage, // '' clears it
+    DocumentLogoLayout? documentLogo,
     String? phone,
     String? email,
     String? timeZone,
@@ -927,6 +930,9 @@ class FacilityService {
     Map<String, dynamic>? insuranceSettings,
     String? paymentProcessor, // 'stripe' | 'square'
     int? totalUnits, // Physical capacity - when provided, updates facility capacity
+    // "Unit numbers repeat across areas"; null leaves it as it is. Pass it
+    // only when the owner changed it.
+    bool? unitNumbersRepeatAcrossAreas,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -961,6 +967,9 @@ class FacilityService {
         updateData['statementMessage'] =
             statementMessage.isEmpty ? FieldValue.delete() : statementMessage;
       }
+      if (documentLogo != null) {
+        updateData['documentLogo'] = documentLogo.toMap();
+      }
       if (phone != null) updateData['phone'] = phone;
       if (email != null) updateData['email'] = email;
       if (timeZone != null) updateData['timeZone'] = timeZone;
@@ -982,6 +991,15 @@ class FacilityService {
           );
         }
         updateData['totalUnits'] = totalUnits;
+      }
+      if (unitNumbersRepeatAcrossAreas != null) {
+        // Off again only once every live unit number is used once: the
+        // facility goes back to one unit per number.
+        if (!unitNumbersRepeatAcrossAreas) {
+          await UnitService.checkCanStopRepeatingUnitNumbers(facilityId);
+        }
+        updateData['unitNumbersRepeatAcrossAreas'] =
+            unitNumbersRepeatAcrossAreas;
       }
 
       await _firestore.collection('facilities').doc(facilityId).update(updateData);

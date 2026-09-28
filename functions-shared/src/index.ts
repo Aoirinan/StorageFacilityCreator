@@ -61,11 +61,21 @@ export { sendFacilityEmailWithCompliance, isFacilityEmailSuppressed } from './em
 export {
   isCustomerRecipientAllowed,
   isCustomerEmailAllowed,
+  isCustomerContactAllowed,
+  decideCustomerRecipient,
+  parseOutboundGateConfig,
+  parseOutboundGateConfigWithProblems,
   getOutboundGateConfig,
   resetOutboundGateCache,
   DEFAULT_OUTBOUND_GATE,
 } from './email/customerOutboundGate';
-export type { OutboundGateConfig } from './email/customerOutboundGate';
+export type {
+  OutboundGateConfig,
+  OutboundChannel,
+  OutboundTarget,
+  OutboundGateDecision,
+  OutboundGateReason,
+} from './email/customerOutboundGate';
 export {
   isOwnerOnboardingRecipientAllowed,
   isOwnerOnboardingEmailAllowed,
@@ -182,6 +192,7 @@ export {
 } from './twilio/a2pBusinessValidation';
 export type {
   A2PBusinessData,
+  A2PBusinessValidationOptions,
   A2PValidationIssue,
 } from './twilio/a2pBusinessValidation';
 export {
@@ -313,3 +324,6 @@ export {
   isUnlistedUnit,
   unitNotOfferedOnlineReason,
 } from './units/onlineRental';
+
+export type { UnitLabelOptions, UnitLabelStyle } from './units/unitLabel';
+export { formatUnitLabel, tenantUnitLabel, unitLabelsIncludeArea } from './units/unitLabel';

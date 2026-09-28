@@ -8,6 +8,8 @@ import 'package:printing/printing.dart';
 import '../models/ledger_entry_model.dart';
 import '../models/tenant_model.dart';
 import '../providers/ledger_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../services/ledger_service.dart';
 import '../services/statement_service.dart';
 import '../services/facility_service.dart';
@@ -17,7 +19,12 @@ import 'package:sfcapp/router/back_navigation.dart';
 import 'ledger_entry_creation_dialog.dart';
 import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
+import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
+import 'package:sfcapp/utils/past_history_math.dart';
+import 'package:sfcapp/services/past_history_service.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
 /// so back pops to that page. It used to push a second tenant page on top of
@@ -32,6 +39,11 @@ void backToTenantFromLedger(BuildContext context, TenantModel tenant) {
     ),
   );
 }
+
+/// The ledger header's width from which the name and the buttons share one
+/// row. The buttons and back arrow take about 670px, so this leaves the name
+/// (and previous / next under it) a good 200px.
+const double _ledgerHeaderOneRowWidth = 900;
 
 class LedgerScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -57,6 +69,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   // (neither run saw the other's) or sent the statement twice.
   bool _generatingInvoice = false;
   bool _sendingStatement = false;
+  bool _undoingHistory = false;
 
   @override
   Widget build(BuildContext context) {
@@ -168,14 +181,25 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
             filteredEntries = filteredEntries.where((e) => e.entryDate.isBefore(_endDate!) || e.entryDate.isAtSameMomentAs(_endDate!)).toList();
           }
 
+          final unitLabel = tenantUnitLabel(
+            widget.tenant,
+            includeArea: ref
+                    .watch(unitLabelsIncludeAreaProvider(
+                        widget.tenant.facilityId))
+                    .value ??
+                false,
+          );
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Page header with back button and tenant name
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: Row(
-                  children: [
+                child: LayoutBuilder(builder: (context, constraints) {
+                  final title = Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                     IconButton(
                       icon: const Icon(Icons.arrow_back),
                       onPressed: () => backToTenantFromLedger(context, widget.tenant),
@@ -192,16 +216,26 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
-                          if (widget.tenant.unitNumber != null && widget.tenant.unitNumber!.isNotEmpty)
+                          if (widget.tenant.unitNumber.isNotEmpty)
                             Text(
-                              'Unit ${widget.tenant.unitNumber}',
+                              'Unit $unitLabel',
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 color: AppTheme.textTertiary,
                               ),
                             ),
+                          // Previous / next tenant's ledger, to post
+                          // payments down the list without going back to
+                          // it. On its own line: in the row of buttons it
+                          // squeezed the tenant's name to nothing.
+                          TenantPrevNextControls(
+                            tenant: widget.tenant,
+                            page: TenantPage.ledger,
+                          ),
                         ],
                       ),
                     ),
+                  ]);
+                  final actions = <Widget>[
                     IconButton(
                       icon: const Icon(Icons.filter_alt),
                       onPressed: () => _showFiltersDialog(context),
@@ -260,7 +294,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                             contentPadding: EdgeInsets.zero,
                             leading: Icon(Icons.tune),
                             title: Text('Customize statement'),
-                            subtitle: Text('Logo, mailing address, message'),
+                            subtitle: Text('Logo and its layout, mailing address, message'),
                           ),
                         ),
                       ],
@@ -281,8 +315,32 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                       label: const Text('Add entry'),
                       onPressed: () => _showCreateEntryDialog(context),
                     ),
-                  ],
-                ),
+                  ];
+                  // One row when there is room for the name beside the
+                  // buttons; below that the buttons go on their own line
+                  // (and wrap), or the name was squeezed out and Add entry
+                  // clipped.
+                  if (constraints.maxWidth >= _ledgerHeaderOneRowWidth) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [Expanded(child: title), ...actions],
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      title,
+                      const SizedBox(height: 8),
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: actions,
+                      ),
+                    ],
+                  );
+                }),
               ),
               const SizedBox(height: 16),
               Expanded(
@@ -338,7 +396,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
+                _buildPastHistorySection(context, entries),
+                const SizedBox(height: 8),
 
                 // Filters Summary
                 if (_hasActiveFilters())
@@ -419,6 +479,100 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           );
         },
       );
+  }
+
+  /// Enter past history, and each history entry still on the ledger with
+  /// its undo.
+  Widget _buildPastHistorySection(BuildContext context, List<LedgerEntry> entries) {
+    final batches = postedHistoryBatches(entries);
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final b in batches)
+          Card(
+            color: AppTheme.primaryBlueLight.withOpacity(0.08),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.history_edu_outlined, size: 20, color: AppTheme.primaryBlue),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Past history entered ${DateFormat('M/d/yyyy').format(b.savedAt)}: '
+                      '${b.charges} rent charge${b.charges == 1 ? '' : 's'} '
+                      '(\$${b.totalCharges.toStringAsFixed(2)}), '
+                      '${b.payments} payment${b.payments == 1 ? '' : 's'} '
+                      '(\$${b.totalPayments.toStringAsFixed(2)})',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _undoingHistory ? null : () => _undoHistory(context, b),
+                    child: const Text('Undo this history entry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        TextButton.icon(
+          onPressed: () => showTenantPastHistoryDialog(context, widget.tenant, fromLedger: true),
+          icon: const Icon(Icons.history_edu_outlined, size: 18),
+          label: const Text('Enter past history'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _undoHistory(BuildContext context, HistoryBatchSummary batch) async {
+    if (_undoingHistory) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Undo this history entry?'),
+        content: Text(
+          'Voids the ${batch.charges} rent charge${batch.charges == 1 ? '' : 's'} and '
+          '${batch.payments} payment${batch.payments == 1 ? '' : 's'} it added, and puts the '
+          'paid-through date back to what it was. You can then enter the history again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Undo'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _undoingHistory = true);
+    try {
+      final warnings = await PastHistoryService.undo(
+        facilityId: widget.tenant.facilityId,
+        tenantId: widget.tenant.id,
+        requestId: batch.requestId,
+      );
+      ref.invalidate(facilityTenantsProvider(widget.tenant.facilityId));
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(warnings.isEmpty ? 'History entry undone' : 'History entry undone. ${warnings.join(' ')}'),
+          duration: Duration(seconds: warnings.isEmpty ? 4 : 10),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Could not undo: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _undoingHistory = false);
+    }
   }
 
   bool _hasActiveFilters() {

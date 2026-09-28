@@ -101,8 +101,26 @@ class TenantModel {
   final String email;
   final String phone;
   final String unitNumber;
+
+  /// The unit [unitNumber] names (its doc id), when the writer knew it: the
+  /// tenant's primary (label) unit. Null for tenants written before it was
+  /// kept, and for online move-ins until their next edit or the backfill
+  /// (scripts/backfill-tenant-unit-id.mjs). Which units a tenant holds is
+  /// still `units/{id}.tenantId`; this only says which one the label is, and
+  /// does not by itself mean they hold it.
+  final String? unitId;
+
+  /// The area of the [unitId] unit, copied from it (trimmed, null when the
+  /// unit has none). UnitService keeps it in step when the unit's area
+  /// changes.
+  final String? unitArea;
   final double monthlyRate;
   final DateTime? paidThrough;
+
+  /// The day the tenant moved in, when one was saved (Enter past history
+  /// sets it). Null for most tenants: the Payment History grid then starts
+  /// from [createdAt].
+  final DateTime? moveInDate;
   final DateTime createdAt;
   final DateTime? updatedAt;
   /// See [isActiveField].
@@ -158,6 +176,10 @@ class TenantModel {
   final String smsConsentStatus; // opted_in | opted_out | unknown
   final DateTime? smsConsentTimestamp;
   final String? smsConsentSource;
+  /// How the tenant agreed, when staff recorded it (see SmsConsentMethod).
+  final String? smsConsentMethod;
+  /// Staff's note on the consent, e.g. what "Other" means.
+  final String? smsConsentNote;
 
   // Autopay: OFF | REQUESTED | ON (synced facility + portal)
   final TenantAutopayModel autopay;
@@ -177,8 +199,11 @@ class TenantModel {
     required this.email,
     required this.phone,
     required this.unitNumber,
+    this.unitId,
+    this.unitArea,
     required this.monthlyRate,
     this.paidThrough,
+    this.moveInDate,
     required this.createdAt,
     this.updatedAt,
     this.isActive = true,
@@ -228,6 +253,8 @@ class TenantModel {
     this.smsConsentStatus = 'unknown',
     this.smsConsentTimestamp,
     this.smsConsentSource,
+    this.smsConsentMethod,
+    this.smsConsentNote,
     this.autopay = const TenantAutopayModel(),
     this.stripe = const TenantStripeModel(),
     this.overlockIsActive = false,
@@ -245,6 +272,44 @@ class TenantModel {
   /// tenant writer (createTenant, the online move-in) sets the field.
   static bool isActiveField(Object? value) => value == true;
 
+  /// A tenant doc's `unitId` or `unitArea`: trimmed, null when it is not a
+  /// string or is blank.
+  static String? textField(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// The update fields that make [unitId] (area [unitArea]) the tenant's
+  /// primary unit, written with every change of `unitNumber`: both deleted
+  /// when [unitId] is null or blank (no unit, or one not known), the area
+  /// deleted when the unit has none.
+  static Map<String, dynamic> primaryUnitUpdate({
+    String? unitId,
+    String? unitArea,
+  }) {
+    final id = textField(unitId);
+    final area = id == null ? null : textField(unitArea);
+    return {
+      'unitId': id ?? FieldValue.delete(),
+      'unitArea': area ?? FieldValue.delete(),
+    };
+  }
+
+  /// [primaryUnitUpdate] for a new tenant doc (a `set`): only the fields
+  /// that have a value.
+  static Map<String, dynamic> primaryUnitCreate({
+    String? unitId,
+    String? unitArea,
+  }) {
+    final id = textField(unitId);
+    final area = id == null ? null : textField(unitArea);
+    return {
+      if (id != null) 'unitId': id,
+      if (area != null) 'unitArea': area,
+    };
+  }
+
   // Create TenantModel from Firestore document
   factory TenantModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>?;
@@ -256,8 +321,13 @@ class TenantModel {
       email: data?['email'] ?? '',
       phone: data?['phone'] ?? '',
       unitNumber: data?['unitNumber'] ?? '',
+      unitId: textField(data?['unitId']),
+      unitArea: textField(data?['unitArea']),
       monthlyRate: (data?['monthlyRate'] ?? 0.0).toDouble(),
       paidThrough: (data?['paidThrough'] as Timestamp?)?.toDate(),
+      moveInDate: data?['moveInDate'] is Timestamp
+          ? (data!['moveInDate'] as Timestamp).toDate()
+          : null,
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate(),
       isActive: isActiveField(data?['isActive']),
@@ -332,6 +402,8 @@ class TenantModel {
       smsConsentTimestamp:
           (data?['smsConsentTimestamp'] as Timestamp?)?.toDate(),
       smsConsentSource: data?['smsConsentSource'] as String?,
+      smsConsentMethod: data?['smsConsentMethod'] as String?,
+      smsConsentNote: data?['smsConsentNote'] as String?,
       autopay: data?['autopay'] != null
           ? TenantAutopayModel.fromMap(
               Map<String, dynamic>.from(data!['autopay'] as Map))
@@ -377,9 +449,11 @@ class TenantModel {
       'email': email,
       'phone': phone,
       'unitNumber': unitNumber,
+      ...primaryUnitCreate(unitId: unitId, unitArea: unitArea),
       'monthlyRate': monthlyRate,
       'paidThrough':
           paidThrough != null ? Timestamp.fromDate(paidThrough!) : null,
+      if (moveInDate != null) 'moveInDate': Timestamp.fromDate(moveInDate!),
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': updatedAt != null
           ? Timestamp.fromDate(updatedAt!)
@@ -460,6 +534,10 @@ class TenantModel {
         'smsConsentTimestamp': Timestamp.fromDate(smsConsentTimestamp!),
       if (smsConsentSource != null && smsConsentSource!.isNotEmpty)
         'smsConsentSource': smsConsentSource,
+      if (smsConsentMethod != null && smsConsentMethod!.isNotEmpty)
+        'smsConsentMethod': smsConsentMethod,
+      if (smsConsentNote != null && smsConsentNote!.isNotEmpty)
+        'smsConsentNote': smsConsentNote,
       'autopay': autopay.toMap(),
       if (stripe.customerId != null || stripe.defaultPaymentMethodId != null)
         'stripe': stripe.toMap(),
@@ -477,8 +555,13 @@ class TenantModel {
     String? email,
     String? phone,
     String? unitNumber,
+    String? unitId,
+    bool clearUnitId = false,
+    String? unitArea,
+    bool clearUnitArea = false,
     double? monthlyRate,
     DateTime? paidThrough,
+    DateTime? moveInDate,
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? isActive,
@@ -528,6 +611,8 @@ class TenantModel {
     String? smsConsentStatus,
     DateTime? smsConsentTimestamp,
     String? smsConsentSource,
+    String? smsConsentMethod,
+    String? smsConsentNote,
     TenantAutopayModel? autopay,
     TenantStripeModel? stripe,
     bool? overlockIsActive,
@@ -540,8 +625,11 @@ class TenantModel {
       email: email ?? this.email,
       phone: phone ?? this.phone,
       unitNumber: unitNumber ?? this.unitNumber,
+      unitId: clearUnitId ? null : (unitId ?? this.unitId),
+      unitArea: clearUnitArea ? null : (unitArea ?? this.unitArea),
       monthlyRate: monthlyRate ?? this.monthlyRate,
       paidThrough: paidThrough ?? this.paidThrough,
+      moveInDate: moveInDate ?? this.moveInDate,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       isActive: isActive ?? this.isActive,
@@ -593,6 +681,8 @@ class TenantModel {
       smsConsentStatus: smsConsentStatus ?? this.smsConsentStatus,
       smsConsentTimestamp: smsConsentTimestamp ?? this.smsConsentTimestamp,
       smsConsentSource: smsConsentSource ?? this.smsConsentSource,
+      smsConsentMethod: smsConsentMethod ?? this.smsConsentMethod,
+      smsConsentNote: smsConsentNote ?? this.smsConsentNote,
       autopay: autopay ?? this.autopay,
       stripe: stripe ?? this.stripe,
       overlockIsActive: overlockIsActive ?? this.overlockIsActive,

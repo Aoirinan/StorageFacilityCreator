@@ -222,6 +222,17 @@ class LienService {
     }
   }
 
+  /// The lien notice PDF for [tenant], without uploading it. For tests.
+  @visibleForTesting
+  static Future<Uint8List> generateLienNoticePDFForTest({
+    required LienModel lien,
+    required TenantModel tenant,
+    required FacilityModel facility,
+    required UnitModel unit,
+  }) =>
+      _generateLienNoticePDF(
+          lien: lien, tenant: tenant, facility: facility, unit: unit);
+
   /// Generate lien notice PDF
   static Future<Uint8List> _generateLienNoticePDF({
     required LienModel lien,
@@ -230,6 +241,10 @@ class LienService {
     required UnitModel unit,
   }) async {
     final pdf = pw.Document();
+    final addressBlocks = tenant.addresses
+        .map((a) => a.formattedAddress)
+        .where((text) => text.isNotEmpty)
+        .toList();
 
     pdf.addPage(
       pw.MultiPage(
@@ -278,12 +293,14 @@ class LienService {
                 fontWeight: pw.FontWeight.bold,
               ),
             ),
-            if (tenant.addresses.isNotEmpty) ...[
+            // Every address on file, formatted (Address has no toString:
+            // this used to print "Instance of 'Address'").
+            if (addressBlocks.isNotEmpty) ...[
               pw.SizedBox(height: 8),
-              ...tenant.addresses.map((addr) => pw.Text(
-                    addr.toString(),
-                    style: const pw.TextStyle(fontSize: 12),
-                  )),
+              for (final (i, block) in addressBlocks.indexed) ...[
+                if (i > 0) pw.SizedBox(height: 6),
+                pw.Text(block, style: const pw.TextStyle(fontSize: 12)),
+              ],
             ],
             pw.SizedBox(height: 20),
 

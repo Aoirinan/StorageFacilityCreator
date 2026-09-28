@@ -19,10 +19,14 @@ class MoveOutScreen extends ConsumerStatefulWidget {
   final String contractId;
   final String facilityId;
 
+  /// The unit being vacated, when the link names it (the unit's own menu).
+  final String? unitId;
+
   const MoveOutScreen({
     super.key,
     required this.contractId,
     required this.facilityId,
+    this.unitId,
   });
 
   @override
@@ -38,6 +42,9 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   ContractModel? _contract;
   TenantModel? _tenant;
   UnitModel? _unit;
+
+  /// The tenant's units, when they hold several and the link named none.
+  List<UnitModel> _unitChoices = const [];
   MoveOutCalculation? _calculation;
 
   DateTime _moveOutDate = DateTime.now();
@@ -45,7 +52,11 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
   final _damageFeeController = TextEditingController();
   final _otherFeesController = TextEditingController();
   final _notesController = TextEditingController();
-  bool _prorateRent = true;
+  // Off until the owner ticks it. The prorated line counts days from the
+  // 1st of the month whatever the tenancy: it charged a tenant whose tenancy
+  // starts on 1 Oct for 24 September days, and for days already covered by
+  // rent posted and paid at move-in.
+  bool _prorateRent = false;
   bool _processRefund = false;
   String? _refundMethod;
   final _refundReferenceController = TextEditingController();
@@ -84,18 +95,24 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
       );
 
       UnitModel? unit;
-      if (tenant != null && tenant.unitNumber.isNotEmpty) {
+      var unitChoices = const <UnitModel>[];
+      final unitId = widget.unitId;
+      if (unitId != null && unitId.isNotEmpty) {
+        unit = await UnitService.getUnit(widget.facilityId, unitId);
+      } else if (tenant != null) {
         final units = await UnitService.getUnitsForFacility(widget.facilityId);
-        unit = units.firstWhere(
-          (u) => u.unitNumber == tenant.unitNumber,
-          orElse: () => units.first,
-        );
+        unit = unitToVacate(units: units, tenant: tenant);
+        if (unit == null) {
+          unitChoices = units.where((u) => u.tenantId == tenant.id).toList();
+        }
       }
 
+      if (!mounted) return;
       setState(() {
         _contract = contract;
         _tenant = tenant;
         _unit = unit;
+        _unitChoices = unitChoices;
         _isLoading = false;
       });
     } catch (e) {
@@ -167,7 +184,19 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
     // button, would run the move-out (and its refund) twice.
     if (_isProcessing) return;
     if (!_formKey.currentState!.validate()) return;
-    if (_calculation == null || _contract == null || _tenant == null || _unit == null) {
+    if (_unit == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_unitChoices.isNotEmpty
+              ? 'Choose the unit the tenant is moving out of.'
+              : "Couldn't tell which unit this tenant rents. Start the "
+                  "move-out from the unit's page: Units > unit > Move out."),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
+      return;
+    }
+    if (_calculation == null || _contract == null || _tenant == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please calculate charges first'),
@@ -319,10 +348,24 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
                           color: AppTheme.textSecondary,
                         ),
                       ),
-                      Text(
-                        _tenant?.unitNumber ?? 'N/A',
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
+                      if (_unitChoices.isNotEmpty)
+                        DropdownButton<UnitModel>(
+                          value: _unit,
+                          hint: const Text('Choose the unit'),
+                          items: [
+                            for (final u in _unitChoices)
+                              DropdownMenuItem(
+                                value: u,
+                                child: Text(u.unitNumber),
+                              ),
+                          ],
+                          onChanged: (u) => setState(() => _unit = u),
+                        )
+                      else
+                        Text(
+                          _unit?.unitNumber ?? _tenant?.unitNumber ?? 'N/A',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
                     ],
                   ),
                 ),
@@ -385,7 +428,7 @@ class _MoveOutScreenState extends ConsumerState<MoveOutScreen> {
               value: _prorateRent,
               onChanged: (value) {
                 setState(() {
-                  _prorateRent = value ?? true;
+                  _prorateRent = value ?? false;
                 });
               },
             ),

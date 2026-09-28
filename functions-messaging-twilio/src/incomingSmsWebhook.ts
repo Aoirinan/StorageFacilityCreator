@@ -8,13 +8,20 @@ import {
 } from '@sfc/functions-shared';
 import { isHelpKeyword, isStartKeyword, isStopKeyword } from '@sfc/functions-shared';
 import {
-  TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER,
   TWILIO_SECRETS,
 } from './secrets';
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { verifyTwilioWebhookSignature } from './twilioWebhookSignature';
+import { findTenantsByPhoneNumber, TenantPhoneMatch } from './tenantPhoneLookup';
+import {
+  buildHelpReply,
+  buildStartReply,
+  helpFacilityIds,
+  KeywordReplyFacility,
+  startRestorableMatches,
+} from './inboundKeywordReplies';
+import { sendKeywordReply } from './keywordReplySender';
 
 /**
  * Phase 12: Two-Way SMS Messaging — inbound Twilio webhook.
@@ -65,34 +72,8 @@ export const handleIncomingSMS = functions.runWith({
       inboundFacilityId: inboundFacilityId || null,
     });
 
-    async function sendComplianceResponse(message: string) {
-      try {
-        const twilioAccountSid = TWILIO_ACCOUNT_SID.value().trim();
-        const twilioAuthToken = TWILIO_AUTH_TOKEN.value().trim();
-        const defaultTwilioPhoneNumber = TWILIO_PHONE_NUMBER.value().trim();
-        const fromNumber = to || defaultTwilioPhoneNumber;
-        const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-        const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-        const formData = new URLSearchParams();
-        formData.append('To', from);
-        formData.append('From', fromNumber);
-        formData.append('Body', message);
-        await fetch(twilioUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${auth}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: formData.toString(),
-        });
-      } catch (twilioError: unknown) {
-        const msg = twilioError instanceof Error ? twilioError.message : String(twilioError);
-        functions.logger.error('Error sending compliance response', {
-          requestId,
-          error: msg,
-        });
-      }
-    }
+    const sendComplianceResponse = (message: string) =>
+      sendKeywordReply({ replyTo: from, inboundTo: to, message, requestId });
 
     if (isStopKeyword(body)) {
       const confirmationMessage = await handleSMSOptOut(from, inboundFacilityId);
@@ -104,31 +85,30 @@ export const handleIncomingSMS = functions.runWith({
     }
 
     if (isStartKeyword(body)) {
-      await handleSMSOptIn(from, inboundFacilityId);
-      await sendComplianceResponse('You have been subscribed to SMS messages. Reply STOP to opt out.');
+      const optedIn = await handleSMSOptIn(from, inboundFacilityId);
+      const facilities = await loadKeywordFacilities(optedIn.map((t) => t.facilityId));
+      await sendComplianceResponse(buildStartReply(facilities));
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
     }
 
     if (isHelpKeyword(body)) {
+      // HELP always gets an answer, naming the facility (and its phone) when
+      // the number belongs to a tenant, and the platform otherwise.
       const normalizedFrom = formatPhoneNumber(from);
+      let matches: TenantPhoneMatch[] = [];
       if (normalizedFrom) {
-        const tenant = await findTenantByPhoneNumber(normalizedFrom, inboundFacilityId);
-        if (tenant) {
-          const facilityDoc = await admin.firestore()
-            .collection('facilities')
-            .doc(tenant.facilityId)
-            .get();
-          const facilityData = facilityDoc.data() as Record<string, unknown> | undefined;
-          const smsSettings = facilityData?.smsSettings as Record<string, unknown> | undefined;
-          const helpMessage = smsSettings?.helpMessage as string | undefined;
-
-          const message = helpMessage ||
-            'Reply STOP to opt out of SMS messages. Reply START to opt back in. For support, contact your facility directly.';
-
-          await sendComplianceResponse(message);
+        try {
+          matches = await findTenantsByPhoneNumber(normalizedFrom, inboundFacilityId);
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error);
+          functions.logger.error(`Error finding tenant for HELP: ${msg}`);
         }
       }
+      // Only active tenancies are named (and on a facility's own line, only
+      // that facility), so HELP never reveals where a number used to rent.
+      const facilities = await loadKeywordFacilities(helpFacilityIds(matches, inboundFacilityId));
+      await sendComplianceResponse(buildHelpReply(facilities));
       res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
     }
@@ -140,7 +120,17 @@ export const handleIncomingSMS = functions.runWith({
       return;
     }
 
-    const tenant = await findTenantByPhoneNumber(normalizedFrom, inboundFacilityId);
+    let tenant: TenantPhoneMatch | null = null;
+    try {
+      tenant = (await findTenantsByPhoneNumber(normalizedFrom, inboundFacilityId))[0] ?? null;
+    } catch (error: unknown) {
+      // A lookup failure must not turn a tenant's reply into a sales lead
+      // with the lead auto-reply. Acknowledge and drop it instead.
+      const msg = error instanceof Error ? error.message : String(error);
+      functions.logger.error(`Error finding tenant by phone: ${msg}`);
+      res.status(200).contentType('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      return;
+    }
 
     if (!tenant) {
       // Not a compliance keyword and not a known tenant. If it arrived on the
@@ -171,6 +161,29 @@ export const handleIncomingSMS = functions.runWith({
   }
 });
 
+/** Name, phone and HELP wording of each facility, in the order given, once each. */
+async function loadKeywordFacilities(facilityIds: string[]): Promise<KeywordReplyFacility[]> {
+  const unique = Array.from(new Set(facilityIds)).slice(0, 5);
+  const out: KeywordReplyFacility[] = [];
+  for (const facilityId of unique) {
+    try {
+      const doc = await admin.firestore().collection('facilities').doc(facilityId).get();
+      const data = doc.data() as Record<string, unknown> | undefined;
+      if (!data) continue;
+      const smsSettings = data.smsSettings as Record<string, unknown> | undefined;
+      out.push({
+        name: (data.name as string | undefined) ?? null,
+        phone: (data.phone as string | undefined) ?? null,
+        helpMessage: (smsSettings?.helpMessage as string | undefined) ?? null,
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      functions.logger.warn('Could not read facility for keyword reply', { facilityId, error: msg });
+    }
+  }
+  return out;
+}
+
 async function findFacilityIdByInboundNumber(toPhoneNumber: string): Promise<string | null> {
   try {
     const normalized = formatPhoneNumber(toPhoneNumber);
@@ -187,71 +200,6 @@ async function findFacilityIdByInboundNumber(toPhoneNumber: string): Promise<str
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     functions.logger.warn('Failed to resolve inbound facility by number', { error: msg });
-    return null;
-  }
-}
-
-async function findTenantByPhoneNumber(
-  phoneNumber: string,
-  facilityIdHint?: string | null,
-): Promise<{ facilityId: string; id: string; phone: string } | null> {
-  try {
-    const phoneVariations = [
-      phoneNumber,
-      phoneNumber.replace('+', ''),
-      phoneNumber.replace(/^\+1/, ''),
-      phoneNumber.replace(/^\+1/, '1'),
-    ];
-
-    if (facilityIdHint) {
-      for (const phoneVar of phoneVariations) {
-        const scopedQuery = await admin.firestore()
-          .collection('facilities')
-          .doc(facilityIdHint)
-          .collection('tenants')
-          .where('phone', '==', phoneVar)
-          .where('isActive', '==', true)
-          .limit(1)
-          .get();
-        if (!scopedQuery.empty) {
-          const tenantDoc = scopedQuery.docs[0];
-          const tenantData = tenantDoc.data() as Record<string, unknown>;
-          return {
-            facilityId: facilityIdHint,
-            id: tenantDoc.id,
-            phone: tenantData.phone as string,
-          };
-        }
-      }
-    }
-
-    for (const phoneVar of phoneVariations) {
-      const tenantsQuery = await admin.firestore()
-        .collectionGroup('tenants')
-        .where('phone', '==', phoneVar)
-        .where('isActive', '==', true)
-        .limit(1)
-        .get();
-
-      if (!tenantsQuery.empty) {
-        const tenantDoc = tenantsQuery.docs[0];
-        const tenantData = tenantDoc.data();
-        const facilityId = tenantDoc.ref.parent.parent?.id;
-
-        if (facilityId) {
-          return {
-            facilityId,
-            id: tenantDoc.id,
-            phone: tenantData.phone as string,
-          };
-        }
-      }
-    }
-
-    return null;
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    functions.logger.error(`Error finding tenant by phone: ${msg}`, error);
     return null;
   }
 }
@@ -373,32 +321,41 @@ async function createContactLogForSMSReply(
   }
 }
 
+/**
+ * Records a STOP on every tenant with this number, at every facility and
+ * whether or not they are still active. One person may rent at several
+ * facilities that all text from the shared number; an opt-out is theirs, not
+ * one tenancy's, and over-honouring STOP is the safe direction.
+ */
 async function handleSMSOptOut(phoneNumber: string, facilityIdHint?: string | null): Promise<string | null> {
   try {
     const normalizedPhone = formatPhoneNumber(phoneNumber);
     if (!normalizedPhone) return null;
 
-    const tenant = await findTenantByPhoneNumber(normalizedPhone, facilityIdHint);
-    if (!tenant) return null;
+    const tenants = await findTenantsByPhoneNumber(normalizedPhone, facilityIdHint);
+    if (tenants.length === 0) return null;
 
-    const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', tenant.facilityId);
+    for (const tenant of tenants) {
+      await admin.firestore()
+        .collection('facilities')
+        .doc(tenant.facilityId)
+        .collection('tenants')
+        .doc(tenant.id)
+        .update({
+          smsOptOut: true,
+          smsConsentStatus: 'opted_out',
+          smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+          smsConsentSource: 'inbound_stop',
+          smsOptOutDate: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
 
-    await admin.firestore()
-      .collection('facilities')
-      .doc(tenant.facilityId)
-      .collection('tenants')
-      .doc(tenant.id)
-      .update({
-        smsOptOut: true,
-        smsConsentStatus: 'opted_out',
-        smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
-        smsConsentSource: 'inbound_stop',
-        smsOptOutDate: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-    if (complianceEnabled) {
-      const facilityRef = admin.firestore().collection('facilities').doc(tenant.facilityId);
+    const facilityIds = Array.from(new Set(tenants.map((t) => t.facilityId)));
+    for (const facilityId of facilityIds) {
+      const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', facilityId);
+      if (!complianceEnabled) continue;
+      const facilityRef = admin.firestore().collection('facilities').doc(facilityId);
       const facilityDoc = await facilityRef.get();
       const facilityData = facilityDoc.data() as Record<string, unknown> | undefined;
 
@@ -414,7 +371,10 @@ async function handleSMSOptOut(phoneNumber: string, facilityIdHint?: string | nu
       }
     }
 
-    functions.logger.info(`Tenant ${tenant.id} opted out of SMS`);
+    functions.logger.info('Inbound STOP recorded', {
+      tenants: tenants.length,
+      facilities: facilityIds.length,
+    });
 
     return 'You have been unsubscribed from SMS messages. Reply START to opt back in.';
   } catch (error: unknown) {
@@ -424,51 +384,71 @@ async function handleSMSOptOut(phoneNumber: string, facilityIdHint?: string | nu
   }
 }
 
-async function handleSMSOptIn(phoneNumber: string, facilityIdHint?: string | null): Promise<void> {
+async function handleSMSOptIn(
+  phoneNumber: string,
+  facilityIdHint?: string | null,
+): Promise<TenantPhoneMatch[]> {
   try {
     const normalizedPhone = formatPhoneNumber(phoneNumber);
-    if (!normalizedPhone) return;
+    if (!normalizedPhone) return [];
 
-    const tenant = await findTenantByPhoneNumber(normalizedPhone, facilityIdHint);
-    if (!tenant) return;
-
-    const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', tenant.facilityId);
-
-    const updateData: Record<string, unknown> = {
-      smsOptOut: false,
-      smsConsentStatus: 'opted_in',
-      smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
-      smsConsentSource: 'inbound_start',
-      smsOptInDate: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-
-    if (complianceEnabled) {
-      const facilityRef = admin.firestore().collection('facilities').doc(tenant.facilityId);
-      const facilityDoc = await facilityRef.get();
-      const facilityData = facilityDoc.data() as Record<string, unknown> | undefined;
-      const smsSettings = facilityData?.smsSettings as { blockList?: string[] } | undefined;
-
-      if (smsSettings?.blockList?.length) {
-        const updatedBlockList = smsSettings.blockList.filter((phone) => phone !== normalizedPhone);
-
-        await facilityRef.update({
-          'smsSettings.blockList': updatedBlockList,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
+    // START only undoes this person's own STOP on active tenancies (and on a
+    // facility's own line, only that facility's). It never writes consent
+    // onto a record that had none, or onto a former tenancy; those get the
+    // generic confirmation and nothing is recorded. See isStartRestorable.
+    const allMatches = await findTenantsByPhoneNumber(normalizedPhone, facilityIdHint);
+    const matches = startRestorableMatches(allMatches, facilityIdHint);
+    if (matches.length < allMatches.length) {
+      functions.logger.info('START not applied to tenancies without a prior inbound STOP', {
+        restored: matches.length,
+        skipped: allMatches.length - matches.length,
+      });
     }
-
-    await admin.firestore()
-      .collection('facilities')
-      .doc(tenant.facilityId)
-      .collection('tenants')
-      .doc(tenant.id)
-      .update(updateData);
-
-    functions.logger.info(`Tenant ${tenant.id} opted in to SMS`);
+    for (const tenant of matches) {
+      await optInTenant(tenant, normalizedPhone);
+    }
+    return matches;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     functions.logger.error(`Error handling SMS opt-in: ${msg}`, error);
+    return [];
   }
+}
+
+async function optInTenant(tenant: TenantPhoneMatch, normalizedPhone: string): Promise<void> {
+  const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', tenant.facilityId);
+
+  const updateData: Record<string, unknown> = {
+    smsOptOut: false,
+    smsConsentStatus: 'opted_in',
+    smsConsentTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+    smsConsentSource: 'inbound_start',
+    smsOptInDate: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (complianceEnabled) {
+    const facilityRef = admin.firestore().collection('facilities').doc(tenant.facilityId);
+    const facilityDoc = await facilityRef.get();
+    const facilityData = facilityDoc.data() as Record<string, unknown> | undefined;
+    const smsSettings = facilityData?.smsSettings as { blockList?: string[] } | undefined;
+
+    if (smsSettings?.blockList?.length) {
+      const updatedBlockList = smsSettings.blockList.filter((phone) => phone !== normalizedPhone);
+
+      await facilityRef.update({
+        'smsSettings.blockList': updatedBlockList,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  }
+
+  await admin.firestore()
+    .collection('facilities')
+    .doc(tenant.facilityId)
+    .collection('tenants')
+    .doc(tenant.id)
+    .update(updateData);
+
+  functions.logger.info(`Tenant ${tenant.id} opted in to SMS`);
 }

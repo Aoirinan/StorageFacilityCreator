@@ -1,4 +1,6 @@
+import type { Twilio } from 'twilio';
 import { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_DRY_RUN } from './secrets';
+import type { A2PTwilioClient } from './a2pTwilioTypes';
 
 let twilioClient: any = null;
 
@@ -14,4 +16,14 @@ export function getTwilioClient(): any {
     twilioClient = twilioFactory(accountSid, authToken);
   }
   return twilioClient;
+}
+
+/**
+ * The same client, typed for the A2P registration flow. Assigning the SDK's
+ * `Twilio` type to `A2PTwilioClient` here is the compile-time check that every
+ * method and parameter name the registration code uses exists on the real SDK.
+ */
+export function getA2PTwilioClient(): A2PTwilioClient {
+  const client: Twilio = getTwilioClient();
+  return client;
 }

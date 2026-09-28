@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' show min;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -13,7 +14,24 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/texting_onboarding_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/sms_privacy_wording.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
+
+/// Why "Reserve number & submit" is locked: Twilio's pre-check flagged the
+/// business details (the facility's a2pBundleReady is not true, or it has
+/// a2pBundleIssues).
+const reserveNumberBlockedMessage =
+    "Twilio's pre-check flagged your business details — fix them above (or "
+    'contact support) before reserving a number.';
+
+/// Why it is locked when the pre-check has not passed but flagged nothing:
+/// it has not run for these details. Always the case on a Twilio dry-run
+/// setup, where the pre-check is skipped and a2pBundleReady is never set.
+const reserveNumberNotCheckedMessage =
+    "Twilio's pre-check has not passed for these business details yet, so "
+    'reserving a number is locked. Save the business details again (Edit, '
+    'above) to run it, or contact support. On a Twilio test (dry-run) setup '
+    'the pre-check never runs, so this stays locked there.';
 
 class TextingSetupScreen extends ConsumerStatefulWidget {
   final String? facilityId;
@@ -69,6 +87,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   bool _consent = false;
 
   bool get _isSoleProp => _businessType == 'Sole Prop';
+
+  // How tenants agree to texts. Only these are described to the carriers, so
+  // nothing is preselected: the owner must say what the facility really does.
+  final Set<String> _consentMethods = <String>{};
 
   final Map<String, bool> _useCases = {
     'Payment reminders': true,
@@ -159,6 +181,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       _repLastName.text = details.representativeLastName ?? '';
       _repTitle.text = details.representativeBusinessTitle ?? '';
     }
+    _consentMethods
+      ..clear()
+      ..addAll(snapshot.consentMethods
+          .where(TextingConsentMethod.labels.containsKey));
     if (snapshot.useCases.isNotEmpty) {
       final savedUseCases = snapshot.useCases.map((useCase) {
         return switch (useCase) {
@@ -283,6 +309,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                     _buildStatusDashboard()
                   else
                     _buildGuidedSetup(),
+                  const SizedBox(height: 18),
+                  _WebsiteWordingCard(
+                    wording: _websiteWording(facilities),
+                  ),
                 ],
               ),
             ),
@@ -349,9 +379,19 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
     // Locked only once the bundle is actually with Twilio or the brand is
     // filed. Locking merely because a profile SID exists left owners unable to
     // correct the details that were blocking their own registration.
+    //
+    // Two levels: `fullyLocked` means nothing can be saved (brand filed, or
+    // the A2P messaging registration itself is in review). `locked` covers the
+    // business profile's own fields, which Twilio may be reviewing while the
+    // A2P messaging registration can still be rebuilt by saving again.
     final snapshot = _controller.snapshot;
-    final locked = snapshot?.businessDetailsLocked == true;
+    final fullyLocked = snapshot?.businessDetailsLocked == true;
+    final locked = fullyLocked || snapshot?.profileDetailsLocked == true;
     final bundleIssues = snapshot?.bundleIssues;
+    final lockReason = snapshot?.lockReason;
+    final showBundleStatus = snapshot != null &&
+        (snapshot.bundleProfileStatus != null ||
+            snapshot.bundleProductStatus != null);
     return Form(
       key: _businessFormKey,
       child: Column(
@@ -363,18 +403,33 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             description:
                 'Carriers verify these details against public and tax records. Enter the legal information exactly as registered.',
           ),
-          if (locked) ...[
+          if (showBundleStatus) ...[
             const SizedBox(height: 20),
-            const _InfoCallout(
+            _BundleStatusCard(snapshot: snapshot),
+          ],
+          if (fullyLocked) ...[
+            const SizedBox(height: 20),
+            _InfoCallout(
               icon: Icons.lock_outline_rounded,
               title: 'Business profile submitted',
-              message:
+              message: lockReason ??
                   'These details are locked while the carrier reviews them. '
-                  'Editing now would restart the review. Contact SFC support if '
-                  'something is wrong.',
+                      'Editing now would restart the review. Contact SFC support if '
+                      'something is wrong.',
+            ),
+          ] else if (locked) ...[
+            const SizedBox(height: 20),
+            _InfoCallout(
+              key: const Key('profile-locked-callout'),
+              icon: Icons.lock_outline_rounded,
+              title: 'Business profile with Twilio',
+              message: lockReason ??
+                  'Your business profile is with Twilio, so its details are '
+                      'locked. Saving again rebuilds only the A2P messaging '
+                      'registration.',
             ),
           ],
-          if (!locked && bundleIssues != null) ...[
+          if (!fullyLocked && bundleIssues != null) ...[
             const SizedBox(height: 20),
             _InfoCallout(
               icon: Icons.error_outline_rounded,
@@ -408,10 +463,13 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             autofillHints: const [AutofillHints.organizationName],
           ),
           const SizedBox(height: 12),
+          // The DBA only feeds the campaign copy, not the business profile, so
+          // it stays editable while the profile is with Twilio.
           _field(
+            key: const Key('dba'),
             controller: _dba,
             label: 'Doing business as (optional)',
-            enabled: !locked,
+            enabled: !fullyLocked,
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -625,8 +683,13 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           const SizedBox(height: 28),
           _StageActions(
             busy: _controller.isWorking,
-            primaryLabel: locked ? 'Continue' : 'Save and continue',
-            onPrimary: locked ? () => _controller.goToStep(1) : _saveBusiness,
+            primaryLabel: fullyLocked
+                ? 'Continue'
+                : locked
+                    ? 'Resubmit A2P registration'
+                    : 'Save and continue',
+            onPrimary:
+                fullyLocked ? () => _controller.goToStep(1) : _saveBusiness,
           ),
         ],
       ),
@@ -670,6 +733,45 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           ),
         ],
         const SizedBox(height: 20),
+        _SectionLabel('How your tenants agree to texts'),
+        const SizedBox(height: 4),
+        Text(
+          'Tick every way this facility really collects consent. Carriers '
+          'check this against what tenants experience, so do not tick a '
+          'method you do not use.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        ...TextingConsentMethod.labels.entries.map(
+          (entry) => CheckboxListTile(
+            key: Key('consent-method-${entry.key}'),
+            value: _consentMethods.contains(entry.key),
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(entry.value),
+            onChanged: _controller.isWorking
+                ? null
+                : (value) => setState(() {
+                      if (value == true) {
+                        _consentMethods.add(entry.key);
+                      } else {
+                        _consentMethods.remove(entry.key);
+                      }
+                    }),
+          ),
+        ),
+        if (_consentMethods.isEmpty) ...[
+          const SizedBox(height: 2),
+          Text(
+            'Choose at least one way tenants agree to texts.',
+            key: const Key('consent-method-error'),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+              fontSize: 12,
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
         _SectionLabel('Carrier message previews'),
         const SizedBox(height: 10),
         ...samples.map(
@@ -691,7 +793,7 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
           primaryLabel: 'Continue to review',
           onBack: () => _controller.goToStep(0),
           onPrimary: () {
-            if (!_useCases.containsValue(true)) {
+            if (!_useCases.containsValue(true) || _consentMethods.isEmpty) {
               setState(() {});
               return;
             }
@@ -703,6 +805,16 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Widget _buildReviewStage() {
+    // Two locks, one button. Twilio's pre-check must have passed with nothing
+    // flagged (readyToReserveNumber), and Twilio must have approved both the
+    // business profile and the A2P messaging registration (bundleApproved):
+    // the server refuses to buy anything before that, so the button says so
+    // up front instead of failing.
+    final snapshot = _controller.snapshot;
+    final preCheckPassed = snapshot?.readyToReserveNumber == true;
+    final bundlesApproved = snapshot?.bundleApproved == true;
+    final canReserve = preCheckPassed && bundlesApproved;
+    final bundleIssues = snapshot?.bundleIssues?.trim();
     return Form(
       key: _reviewFormKey,
       child: Column(
@@ -731,6 +843,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             title: 'Messaging plan',
             rows: {
               'Use cases': _selectedUseCases().join(', '),
+              'Tenant consent': _consentMethods
+                  .map((m) => TextingConsentMethod.labels[m] ?? m)
+                  .join('; '),
               'Review time': 'Typically 10–15 business days',
             },
             onEdit: () => _controller.goToStep(1),
@@ -765,6 +880,20 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                 ? const Text('Required before registration can be submitted.')
                 : null,
           ),
+          if (preCheckPassed && !bundlesApproved) ...[
+            const SizedBox(height: 10),
+            _InfoCallout(
+              key: const Key('awaiting-bundle-approval'),
+              icon: Icons.hourglass_top_rounded,
+              title: 'Waiting for Twilio to approve your business profile',
+              message:
+                  'Business profile: ${TextingOnboardingSnapshot.describeBundleStatus(snapshot?.bundleProfileStatus)}. '
+                  'A2P messaging registration: ${TextingOnboardingSnapshot.describeBundleStatus(snapshot?.bundleProductStatus)}. '
+                  'You can reserve your number and submit once both are '
+                  'approved, usually about a business day after they are '
+                  'submitted. Nothing is bought or charged until then.',
+            ),
+          ],
           const SizedBox(height: 10),
           const _InfoCallout(
             icon: Icons.schedule_outlined,
@@ -772,12 +901,25 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
             message:
                 'Your number is reserved immediately. Texting stays disabled until carrier approval and a final SFC platform review are both complete.',
           ),
+          if (!preCheckPassed) ...[
+            const SizedBox(height: 14),
+            _InfoCallout(
+              key: const Key('reserve-blocked'),
+              icon: Icons.error_outline_rounded,
+              title: 'Reserving a number is locked',
+              message: bundleIssues == null || bundleIssues.isEmpty
+                  ? reserveNumberNotCheckedMessage
+                  : '$reserveNumberBlockedMessage\n\nFlagged: $bundleIssues',
+            ),
+          ],
           const SizedBox(height: 28),
           _StageActions(
             busy: _controller.isWorking,
             primaryLabel: 'Reserve number & submit',
             onBack: () => _controller.goToStep(1),
-            onPrimary: _submit,
+            // Locked until Twilio's pre-check passes and both bundles are
+            // approved; the server enforces the same before any purchase.
+            onPrimary: canReserve ? _submit : null,
           ),
         ],
       ),
@@ -932,6 +1074,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
 
   Future<void> _saveBusiness() async {
     if (_businessFormKey.currentState?.validate() != true) return;
+    // With the business profile at Twilio the server ignores the profile
+    // fields sent here, rebuilds only the A2P messaging registration from the
+    // details it already holds (plus the DBA), and needs no EIN.
     await _controller.saveBusinessInfo({
       'legalBusinessName': _legalName.text.trim(),
       'dba': _emptyToNull(_dba.text),
@@ -955,15 +1100,27 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
   }
 
   Future<void> _submit() async {
+    final snapshot = _controller.snapshot;
+    if (snapshot?.readyToReserveNumber != true ||
+        snapshot?.bundleApproved != true) {
+      return;
+    }
     if (_reviewFormKey.currentState?.validate() != true) return;
     if (!_consent) {
       setState(() {});
+      return;
+    }
+    if (_consentMethods.isEmpty) {
+      _controller.goToStep(1);
       return;
     }
     await _controller.provisionAndSubmit(
       areaCode: _emptyToNull(_digits(_areaCode.text)),
       useCases: _selectedUseCases(),
       sampleMessages: _sampleMessages(),
+      consentMethods: TextingConsentMethod.labels.keys
+          .where(_consentMethods.contains)
+          .toList(growable: false),
     );
   }
 
@@ -973,7 +1130,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Review registration details?'),
         content: const Text(
-          'This resets the carrier brand and campaign submission so you can review the messaging plan before submitting again.',
+          'This clears the part of the registration the carrier rejected so you can fix it and submit again. '
+          'An approved brand is kept, a rejected campaign is withdrawn first, and a rejected brand is '
+          'resubmitted rather than registered again.',
         ),
         actions: [
           TextButton(
@@ -1027,7 +1186,31 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
         .toList(growable: false);
   }
 
+  /// The SMS privacy wording for the owner's website, from the saved
+  /// business details. Consent methods come from the plan on screen: it is
+  /// loaded from the saved ones and is what gets filed with the carriers.
+  String _websiteWording(List<FacilityModel> facilities) {
+    final facilityId = _controller.facilityId;
+    FacilityModel? facility;
+    for (final f in facilities) {
+      if (f.id == facilityId) facility = f;
+    }
+    final details = _controller.snapshot?.businessDetails;
+    return buildSmsPrivacyWording(
+      dba: details?.dba,
+      facilityName: facility?.name ?? '',
+      supportPhone: details?.supportPhone,
+      supportEmail: details?.supportEmail,
+      facilityEmail: facility?.email,
+      consentMethods: _consentMethods,
+    );
+  }
+
   String _brandName() {
+    // The server's sender name is what live texts open with; samples must
+    // match it.
+    final senderName = _controller.snapshot?.senderName;
+    if (senderName != null && senderName.isNotEmpty) return senderName;
     if (_dba.text.trim().isNotEmpty) return _dba.text.trim();
     if (_legalName.text.trim().isNotEmpty) return _legalName.text.trim();
     return 'Your storage facility';
@@ -1045,9 +1228,20 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
       'Operational notices':
           '$brand: Important facility notice — office hours have changed this week. Reply STOP to opt out, HELP for help.',
     };
-    return _selectedUseCases()
+    final samples = _selectedUseCases()
         .map((useCase) => templates[useCase]!)
-        .toList(growable: false);
+        .toList(growable: true);
+    // Carriers require at least two distinct samples. With a single message
+    // type selected, add a receipt, which every facility sends and which is
+    // an account notification like the rest.
+    for (final extra in [
+      '$brand: Thanks, we received your rent payment and your storage account is up to date. Reply STOP to opt out, HELP for help.',
+      templates['Payment reminders']!,
+    ]) {
+      if (samples.length >= 2) break;
+      if (!samples.contains(extra)) samples.add(extra);
+    }
+    return List.unmodifiable(samples);
   }
 
   static String? Function(String?) _required(String message) {
@@ -1314,7 +1508,8 @@ class _StageHeading extends StatelessWidget {
 class _StageActions extends StatelessWidget {
   final bool busy;
   final String primaryLabel;
-  final VoidCallback onPrimary;
+  /// Null disables the button.
+  final VoidCallback? onPrimary;
   final VoidCallback? onBack;
 
   const _StageActions({
@@ -1352,12 +1547,60 @@ class _StageActions extends StatelessWidget {
   }
 }
 
+/// Twilio's review state for the two registration bundles, read from the
+/// server's bundleProfileStatus / bundleProductStatus.
+class _BundleStatusCard extends StatelessWidget {
+  final TextingOnboardingSnapshot snapshot;
+
+  const _BundleStatusCard({required this.snapshot});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget row(String label, String? status, Key key) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+            Text(
+              TextingOnboardingSnapshot.describeBundleStatus(status),
+              key: key,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      key: const Key('bundle-status'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          row('Business profile', snapshot.bundleProfileStatus,
+              const Key('bundle-profile-status')),
+          row('A2P messaging registration', snapshot.bundleProductStatus,
+              const Key('bundle-product-status')),
+        ],
+      ),
+    );
+  }
+}
+
 class _InfoCallout extends StatelessWidget {
   final IconData icon;
   final String title;
   final String message;
 
   const _InfoCallout({
+    super.key,
     required this.icon,
     required this.title,
     required this.message,
@@ -1752,6 +1995,74 @@ class _RegistrationDetails extends StatelessWidget {
                 value:
                     DateFormat.yMMMd().format(snapshot.approvedAt!.toLocal()),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// SMS privacy wording the owner adds to their own website; carriers check
+/// for it when reviewing the facility's registration.
+class _WebsiteWordingCard extends StatelessWidget {
+  final String wording;
+
+  const _WebsiteWordingCard({required this.wording});
+
+  Future<void> _copy(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: wording));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Website wording copied')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Card(
+      key: const Key('website-wording-card'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(child: _SectionLabel('Wording for your website')),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  key: const Key('website-wording-copy'),
+                  onPressed: () => _copy(context),
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('Copy'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Ask whoever manages your website to add this to your privacy '
+              'policy, or post it as its own page linked from the footer. '
+              'Twilio checks for it.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: cs.outlineVariant),
+              ),
+              child: SelectableText(
+                wording,
+                key: const Key('website-wording-text'),
+                style: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
+              ),
+            ),
           ],
         ),
       ),

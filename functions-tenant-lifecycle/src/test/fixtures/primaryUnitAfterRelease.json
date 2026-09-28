@@ -1,0 +1,71 @@
+{
+  "description": "Where a tenant's primary unit (unitNumber label, unitId, unitArea) goes when one of their units is freed. Run by functions-tenant-lifecycle/src/test/moveOutTenantFields.test.ts (primaryMovesOnRelease, primaryUnitAfterRelease) and test/tenant_unit_id_test.dart (TenantService.primaryMovesOnRelease, primaryUnitAfterRelease). 'to' is the unit it moves to, null when it does not move or no kept unit has a number.",
+  "cases": [
+    {
+      "name": "label names the freed unit, no unitId: first kept unit with a number",
+      "label": "12", "unitId": null, "vacated": ["u12", "12"],
+      "stillHeld": [["u14", "14"], ["u7", "7"]],
+      "moves": true, "to": "u14"
+    },
+    {
+      "name": "label names the freed unit, no unitId: a kept unit with the same number first",
+      "label": "12", "unitId": null, "vacated": ["c2-12", "12"],
+      "stillHeld": [["u14", "14"], ["c3-12", "12"]],
+      "moves": true, "to": "c3-12"
+    },
+    {
+      "name": "unitId is the freed unit: moves to the kept unit with the same number",
+      "label": "12", "unitId": "c2-12", "vacated": ["c2-12", "12"],
+      "stillHeld": [["u14", "14"], ["c3-12", "12"]],
+      "moves": true, "to": "c3-12"
+    },
+    {
+      "name": "unitId is a kept unit numbered like the freed one: it stays",
+      "label": "12", "unitId": "c3-12", "vacated": ["c2-12", "12"],
+      "stillHeld": [["u14", "14"], ["c3-12", "12"]],
+      "moves": false, "to": null
+    },
+    {
+      "name": "unitId is a kept unit, another unit freed: it stays",
+      "label": "14", "unitId": "u14", "vacated": ["u12", "12"],
+      "stillHeld": [["u7", "7"], ["u14", "14"]],
+      "moves": false, "to": null
+    },
+    {
+      "name": "no unitId, label names a kept unit: it stays",
+      "label": "14", "unitId": null, "vacated": ["u12", "12"],
+      "stillHeld": [["u14", "14"]],
+      "moves": false, "to": null
+    },
+    {
+      "name": "unitId names a unit they no longer hold, label names the freed unit: moves",
+      "label": "12", "unitId": "gone", "vacated": ["u12", "12"],
+      "stillHeld": [["u14", "14"]],
+      "moves": true, "to": "u14"
+    },
+    {
+      "name": "unitId is the freed unit, label names another number: first kept unit with a number",
+      "label": "9", "unitId": "u12", "vacated": ["u12", "12"],
+      "stillHeld": [["u0", " "], ["u14", "14"], ["u7", "7"]],
+      "moves": true, "to": "u14"
+    },
+    {
+      "name": "labels compare trimmed",
+      "label": " 12 ", "unitId": " ", "vacated": ["u12", "12"],
+      "stillHeld": [["u14", "14"], ["c3-12", " 12"]],
+      "moves": true, "to": "c3-12"
+    },
+    {
+      "name": "no label and no unitId: nothing moves",
+      "label": "", "unitId": null, "vacated": ["u12", "12"],
+      "stillHeld": [["u14", "14"]],
+      "moves": false, "to": null
+    },
+    {
+      "name": "kept units without numbers: moves, to none",
+      "label": "12", "unitId": "u12", "vacated": ["u12", "12"],
+      "stillHeld": [["u0", ""]],
+      "moves": true, "to": null
+    }
+  ]
+}

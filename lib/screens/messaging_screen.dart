@@ -21,6 +21,8 @@ import '../services/debug_logger.dart';
 import '../services/tenant_message_history_service.dart';
 import '../models/tenant_message_history_model.dart';
 import '../providers/tenant_provider.dart';
+import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../providers/active_facility_provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
@@ -2831,18 +2833,6 @@ const List<_QuickSmsTemplate> _kQuickSmsTemplates = [
   ),
 ];
 
-String _interpolateSmsTemplate(String template, TenantModel t) {
-  final n = t.name.trim();
-  final first = n.isEmpty ? 'there' : n.split(RegExp(r'\s+')).first;
-  return template
-      .replaceAll('{{tenant_name}}', t.name)
-      .replaceAll('{{name}}', t.name)
-      .replaceAll('{{first_name}}', first)
-      .replaceAll('{{unit}}', t.unitNumber)
-      .replaceAll('{{email}}', t.email)
-      .replaceAll('{{phone}}', t.phone);
-}
-
 String _personalizeRenterGreeting(String body, TenantModel tenant) {
   final n = tenant.name.trim();
   final first = n.isEmpty ? 'there' : n.split(RegExp(r'\s+')).first;
@@ -2951,7 +2941,7 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
     });
   }
 
-  void _applyQuickSmsTemplate(_QuickSmsTemplate template) {
+  Future<void> _applyQuickSmsTemplate(_QuickSmsTemplate template) async {
     if (_selectedTenantId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -2981,8 +2971,16 @@ class _SendSMSDialogState extends ConsumerState<_SendSMSDialog> {
     }
 
     final resolved = tenant;
+    // {{unit}} names the area too once the tenant's facility numbers units
+    // per area.
+    final includeUnitArea = await readUnitLabelsIncludeArea(
+      ref,
+      resolved.facilityId.isNotEmpty ? resolved.facilityId : widget.facilityId,
+    );
+    if (!mounted) return;
     setState(() {
-      _messageController.text = _interpolateSmsTemplate(template.body, resolved);
+      _messageController.text = fillTenantQuickMessage(template.body, resolved,
+          includeArea: includeUnitArea);
     });
   }
 

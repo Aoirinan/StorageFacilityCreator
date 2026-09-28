@@ -251,11 +251,11 @@ class _CalendarContentState extends State<_CalendarContent> {
               ),
               ListTile(
                 leading: Icon(Icons.payment_outlined, color: theme.colorScheme.primary),
-                title: const Text('Payment due'),
-                subtitle: const Text('Add a payment due on this date'),
+                title: const Text('Payment received'),
+                subtitle: const Text('Record a payment received today'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  context.go('${AppRoute.paymentCreate}?facilityId=$facilityId&date=$q');
+                  context.go('${AppRoute.paymentCreate}?facilityId=$facilityId');
                 },
               ),
               ListTile(

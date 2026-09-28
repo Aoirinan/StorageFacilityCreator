@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import 'package:sfcapp/models/owner_account_standing.dart';
 import 'package:sfcapp/models/stripe_connect_status_model.dart';
 
@@ -26,6 +27,10 @@ class FacilityModel {
   /// The owner's own closing note on account statements. Null keeps the
   /// default wording.
   final String? statementMessage;
+
+  /// Size and position of [logoUrl] on printed statements, invoices and
+  /// receipts. Defaults when the facility has never set it.
+  final DocumentLogoLayout documentLogo;
   final String? phone;
   final String? email;
   final String? description;
@@ -80,6 +85,15 @@ class FacilityModel {
   /// it does not cancel anything in Stripe.
   final bool billingExempt;
 
+  /// Whether the facility numbers units per area, so two areas can each have
+  /// a unit 12: documents and messages then name a unit with its area,
+  /// "12 (Complex 2)" (lib/utils/unit_label.dart). Only an exact true is on;
+  /// missing is off, which every facility is until its owner turns it on.
+  /// Owner-writable under the facility rules (it is not an entitlement key),
+  /// but not in [toFirestore]: nothing in the app sets it yet, and a save of
+  /// an older copy of the facility must not turn it back off.
+  final bool unitNumbersRepeatAcrossAreas;
+
   /// The owner's account standing, copied here by the backend so invited
   /// staff (who cannot read the account) are let in only while the owner's
   /// billing covers them. Null when there is no copy. Read-only: never
@@ -132,6 +146,7 @@ class FacilityModel {
     this.address,
     this.mailingAddress,
     this.statementMessage,
+    this.documentLogo = DocumentLogoLayout.defaults,
     this.phone,
     this.email,
     this.description,
@@ -156,6 +171,7 @@ class FacilityModel {
     this.platformSubscriptionTrialEnd,
     this.platformSubscriptionCancelAtPeriodEnd = false,
     this.billingExempt = false,
+    this.unitNumbersRepeatAcrossAreas = false,
     this.ownerAccountStanding,
     this.stripeWebsiteSubscriptionId,
     this.websiteSubscriptionStatus,
@@ -202,6 +218,7 @@ class FacilityModel {
       address: data?['address'],
       mailingAddress: data?['mailingAddress'] as String?,
       statementMessage: data?['statementMessage'] as String?,
+      documentLogo: DocumentLogoLayout.fromMap(data?['documentLogo']),
       phone: data?['phone'],
       email: data?['email'],
       description: data?['description'],
@@ -237,6 +254,8 @@ class FacilityModel {
       platformSubscriptionStatus:
           data?['platformSubscriptionStatus'] as String?,
       billingExempt: data?['billingExempt'] == true,
+      unitNumbersRepeatAcrossAreas:
+          data?['unitNumbersRepeatAcrossAreas'] == true,
       ownerAccountStanding:
           OwnerAccountStanding.fromFirestore(data?['ownerAccountStanding']),
       platformSubscriptionCurrentPeriodEnd:
@@ -322,6 +341,8 @@ class FacilityModel {
       'address': address,
       if (mailingAddress != null) 'mailingAddress': mailingAddress,
       if (statementMessage != null) 'statementMessage': statementMessage,
+      if (documentLogo != DocumentLogoLayout.defaults)
+        'documentLogo': documentLogo.toMap(),
       'phone': phone,
       'email': email,
       'description': description,
@@ -388,6 +409,7 @@ class FacilityModel {
     String? address,
     String? mailingAddress,
     String? statementMessage,
+    DocumentLogoLayout? documentLogo,
     String? phone,
     String? email,
     String? description,
@@ -412,6 +434,7 @@ class FacilityModel {
     DateTime? platformSubscriptionTrialEnd,
     bool? platformSubscriptionCancelAtPeriodEnd,
     bool? billingExempt,
+    bool? unitNumbersRepeatAcrossAreas,
     OwnerAccountStanding? ownerAccountStanding,
     String? stripeWebsiteSubscriptionId,
     String? websiteSubscriptionStatus,
@@ -455,6 +478,7 @@ class FacilityModel {
       address: address ?? this.address,
       mailingAddress: mailingAddress ?? this.mailingAddress,
       statementMessage: statementMessage ?? this.statementMessage,
+      documentLogo: documentLogo ?? this.documentLogo,
       phone: phone ?? this.phone,
       email: email ?? this.email,
       description: description ?? this.description,
@@ -491,6 +515,8 @@ class FacilityModel {
       // not with copyWith) came out not exempt, and an exempt facility never
       // let anyone in.
       billingExempt: billingExempt ?? this.billingExempt,
+      unitNumbersRepeatAcrossAreas:
+          unitNumbersRepeatAcrossAreas ?? this.unitNumbersRepeatAcrossAreas,
       ownerAccountStanding: ownerAccountStanding ?? this.ownerAccountStanding,
       stripeWebsiteSubscriptionId:
           stripeWebsiteSubscriptionId ?? this.stripeWebsiteSubscriptionId,

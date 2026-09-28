@@ -16,6 +16,8 @@ import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../widgets/modern_page_wrapper.dart';
 import 'package:sfcapp/utils/bulk_action.dart';
+import 'package:sfcapp/utils/unit_areas.dart';
+import 'package:sfcapp/widgets/unit_area_field.dart';
 
 /// "72 / 78 units occupied (2 internal-use not counted)".
 ///
@@ -52,6 +54,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
   String _searchQuery = '';
   Set<UnitStatus> _statusFilters = UnitStatus.values.toSet();
   final Set<String> _selectedUnitIds = {};
+
+  /// The Area filter: null for All areas, [noUnitAreaFilter], or an area.
+  String? _areaFilter;
 
   @override
   void initState() {
@@ -95,6 +100,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         setState(() {
           _selectedFacilityId = nextId;
           _selectedUnitIds.clear();
+          _areaFilter = null;
         });
       }
     });
@@ -186,6 +192,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                           setState(() {
                             _selectedFacilityId = value;
                             _selectedUnitIds.clear();
+                            _areaFilter = null;
                           });
                           ref
                               .read(activeFacilityIdProvider.notifier)
@@ -235,7 +242,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         border:
             Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+      Row(
         children: [
           Expanded(
             child: TextField(
@@ -322,7 +333,60 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
         ],
       ),
+          // On its own row under the search box: beside it, the toolbar
+          // overflowed on a narrow window.
+          ..._buildAreaFilter(),
+        ],
+      ),
     );
+  }
+
+  /// The Area dropdown, or nothing when no unit in the facility has an area.
+  List<Widget> _buildAreaFilter() {
+    final fid = _selectedFacilityId;
+    if (fid == null) return const [];
+    final units = ref.watch(facilityUnitsProvider(fid)).value ??
+        const <UnitModel>[];
+    final options = unitAreaFilterOptions(units);
+    if (options.isEmpty) return const [];
+    final selected = effectiveUnitAreaFilter(_areaFilter, options);
+    return [
+      const SizedBox(height: 12),
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 320),
+        child: DropdownButtonFormField<String?>(
+          key: const ValueKey('unit-area-filter'),
+          value: selected,
+          isExpanded: true,
+          decoration: InputDecoration(
+            labelText: 'Area',
+            prefixIcon: const Icon(Icons.place_outlined),
+            isDense: true,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            filled: true,
+            fillColor: Theme.of(context).colorScheme.surface,
+          ),
+          items: [
+            const DropdownMenuItem<String?>(
+              value: null,
+              child: Text('All areas', overflow: TextOverflow.ellipsis),
+            ),
+            for (final option in options)
+              DropdownMenuItem<String?>(
+                value: option,
+                child: Text(unitAreaFilterLabel(option),
+                    overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          // Bulk actions act on the selected units shown, so start over, as
+          // the Tenants list does.
+          onChanged: (value) => setState(() {
+            _areaFilter = value;
+            _selectedUnitIds.clear();
+          }),
+        ),
+      ),
+    ];
   }
 
   Widget _buildSelectionBar(int selectedCount, List<UnitModel> filteredUnits,
@@ -337,6 +401,11 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         .map((u) => u.id)
         .toList();
     final skipCount = selectedCount - canDeleteIds.length;
+    // Like Archive: only selected units the filters still show.
+    final setAreaIds = filteredUnits
+        .where((u) => _selectedUnitIds.contains(u.id))
+        .map((u) => u.id)
+        .toList();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
@@ -344,7 +413,10 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         border:
             Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
       ),
-      child: Row(
+      // Scrolls sideways rather than overflowing on a narrow window.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
         children: [
           Text(
             '$selectedCount selected',
@@ -358,6 +430,14 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             onPressed: () => setState(() => _selectedUnitIds.clear()),
             icon: const Icon(Icons.close, size: 18),
             label: const Text('Clear selection'),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: setAreaIds.isEmpty
+                ? null
+                : () => _handleBulkSetArea(setAreaIds),
+            icon: const Icon(Icons.place_outlined, size: 18),
+            label: const Text('Set area'),
           ),
           const SizedBox(width: 8),
           if (canDeleteIds.isNotEmpty) ...[
@@ -391,6 +471,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             ),
         ],
       ),
+      ),
     );
   }
 
@@ -418,8 +499,12 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
         }
 
         final unitsWithoutGhosts = units.where((u) => !isGhostUnit(u)).toList();
+        final areaOptions = unitAreaFilterOptions(units);
+        final areaFilter = effectiveUnitAreaFilter(_areaFilter, areaOptions);
+        final showArea = areaOptions.isNotEmpty;
         final filteredUnits = unitsWithoutGhosts.where((unit) {
           if (!_statusFilters.contains(unit.status)) return false;
+          if (!unitMatchesAreaFilter(unit, areaFilter)) return false;
           if (_searchQuery.isNotEmpty) {
             return unit.unitNumber.toLowerCase().contains(_searchQuery) ||
                 (tenantDisplayName(unit).toLowerCase().contains(_searchQuery));
@@ -440,9 +525,9 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _searchQuery.isEmpty
+                  unitsWithoutGhosts.isEmpty
                       ? 'Create your first unit to get started'
-                      : 'No units match your search',
+                      : 'No units match your search or filters',
                   style: TextStyle(color: AppTheme.textSecondary),
                 ),
               ],
@@ -517,6 +602,10 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                       const DataColumn(
                           label: Text('Unit #',
                               style: TextStyle(fontWeight: FontWeight.bold))),
+                      if (showArea)
+                        const DataColumn(
+                            label: Text('Area',
+                                style: TextStyle(fontWeight: FontWeight.bold))),
                       const DataColumn(
                           label: Text('Type',
                               style: TextStyle(fontWeight: FontWeight.bold))),
@@ -537,7 +626,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
                               style: TextStyle(fontWeight: FontWeight.bold))),
                     ],
                     rows: filteredUnits
-                        .map((unit) => _buildUnitRow(unit, tenantMap))
+                        .map((unit) => _buildUnitRow(unit, tenantMap,
+                            showArea: showArea))
                         .toList(),
                   ),
                 ),
@@ -562,7 +652,8 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
     );
   }
 
-  DataRow _buildUnitRow(UnitModel unit, Map<String, TenantModel> tenantMap) {
+  DataRow _buildUnitRow(UnitModel unit, Map<String, TenantModel> tenantMap,
+      {bool showArea = false}) {
     final tenantName = unit.tenantId != null
         ? (tenantMap[unit.tenantId]?.name ?? unit.tenantName ?? '—')
         : (unit.tenantName ?? '—');
@@ -589,6 +680,7 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
+        if (showArea) DataCell(Text(unit.area ?? '—')),
         DataCell(Text(unit.unitType)),
         DataCell(
           Row(
@@ -682,6 +774,43 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// Units > select units > Set area: gives every selected unit the area
+  /// typed, or removes it when left blank.
+  Future<void> _handleBulkSetArea(List<String> unitIds) async {
+    final facilityId = _selectedFacilityId;
+    if (facilityId == null || unitIds.isEmpty) return;
+    final units = ref.read(facilityUnitsProvider(facilityId)).value ??
+        const <UnitModel>[];
+    final existingAreas = distinctUnitAreas(units);
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _SetAreaDialog(
+        unitCount: unitIds.length,
+        existingAreas: existingAreas,
+      ),
+    );
+    if (typed == null || !mounted) return;
+    // Spelled as an area other units keep; the units being set do not hold
+    // a spelling, so "complex 2" on all of them can become "Complex 2".
+    final selected = unitIds.toSet();
+    final area = canonicalUnitArea(
+      typed,
+      distinctUnitAreas(units.where((u) => !selected.contains(u.id))),
+    );
+    final result = await runBulkAction(
+      unitIds,
+      (id) => UnitService.setUnitArea(
+          facilityId: facilityId, unitId: id, area: area),
+    );
+    _showBulkResult(
+      result,
+      verb: area == null ? 'Removed the area from' : 'Set the area on',
+      allDone: area == null
+          ? 'Area removed from ${unitIds.length} unit(s)'
+          : 'Area set to $area on ${unitIds.length} unit(s)',
     );
   }
 
@@ -1147,6 +1276,58 @@ class _UnitListScreenState extends ConsumerState<UnitListScreen> {
           fontWeight: FontWeight.w600,
         ),
       ),
+    );
+  }
+}
+
+/// Asks for the area to give the selected units. Pops the text typed (blank
+/// removes the area), or null on Cancel.
+class _SetAreaDialog extends StatefulWidget {
+  const _SetAreaDialog({required this.unitCount, required this.existingAreas});
+
+  final int unitCount;
+  final List<String> existingAreas;
+
+  @override
+  State<_SetAreaDialog> createState() => _SetAreaDialogState();
+}
+
+class _SetAreaDialogState extends State<_SetAreaDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() => Navigator.of(context).pop(_controller.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Set area for ${widget.unitCount} unit(s)'),
+      content: SizedBox(
+        width: 400,
+        child: UnitAreaField(
+          controller: _controller,
+          existingAreas: widget.existingAreas,
+          autofocus: true,
+          helperText: 'Pick an existing area or type a new one. '
+              'Leave blank to remove the area from these units.',
+          onSubmitted: _save,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

@@ -12,21 +12,23 @@ import 'fake_facility_collection.dart';
 /// gateAccess, ...) as [FakeCollection]s, with transactions: reads come
 /// before writes, and the writes land only when the handler returns.
 class FakeFacilityFirestore extends Fake implements FirebaseFirestore {
-  FakeFacilityFirestore(this.facilityId, Map<String, List<FakeDoc>> docs)
-      : subcollections = {
-          for (final e in docs.entries) e.key: FakeCollection(e.value, log: FakeQueryLog()),
-        };
+  FakeFacilityFirestore(this.facilityId, Map<String, List<FakeDoc>> docs) {
+    for (final e in docs.entries) {
+      subcollections[e.key] =
+          FakeCollection(e.value, log: FakeQueryLog(), firestore: this);
+    }
+  }
 
   final String facilityId;
 
   /// The facility's subcollections by name; each logs its own writes.
-  final Map<String, FakeCollection> subcollections;
+  final Map<String, FakeCollection> subcollections = {};
 
   /// Transactions that committed.
   var commits = 0;
 
   FakeCollection sub(String name) => subcollections.putIfAbsent(
-      name, () => FakeCollection(<FakeDoc>[], log: FakeQueryLog()));
+      name, () => FakeCollection(<FakeDoc>[], log: FakeQueryLog(), firestore: this));
 
   /// The stored data of [collection]/[id], or null.
   Map<String, dynamic>? data(String collection, String id) {

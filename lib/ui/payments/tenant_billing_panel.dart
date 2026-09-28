@@ -12,6 +12,8 @@ import '../../models/tenant_billing_model.dart';
 import '../../models/tenant_stripe_payment_model.dart';
 import '../../models/saved_payment_method_model.dart';
 import '../../models/payment_model.dart';
+import 'package:sfcapp/models/facility_model.dart';
+import 'package:sfcapp/services/facility_service.dart';
 import '../../services/stripe_connect_service.dart';
 import '../../services/stripe_payments_service.dart';
 import '../../services/stripe_service.dart';
@@ -214,6 +216,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
         await showDialog<void>(
           context: context,
           builder: (ctx) => _PaymentReceiptDialog(
+            facilityId: widget.facilityId,
             tenantName: widget.tenantName,
             amount: amount,
             transactionId: paymentIntentId,
@@ -228,10 +231,10 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
   }
 
   Future<void> _recordManualPayment() async {
-    // The "Record cash/check" button beside Refresh Status stayed live while
+    // The "Record payment" button beside Refresh Status stayed live while
     // a payment was being recorded, so a second tap recorded it twice.
     if (_isLoading) return;
-    final result = await showDialog<({double amount, PaymentMethod method, String? notes})>(
+    final result = await showDialog<ManualPaymentEntry>(
       context: context,
       builder: (ctx) => _ManualPaymentDialog(tenantName: widget.tenantName),
     );
@@ -247,6 +250,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
         amount: result.amount,
         method: result.method,
         notes: result.notes?.isEmpty == true ? null : result.notes,
+        reference: result.reference,
       );
       if (mounted) {
         ref.invalidate(facilityTenantsProvider(widget.facilityId));
@@ -255,6 +259,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
         await showDialog<void>(
           context: context,
           builder: (ctx) => _PaymentReceiptDialog(
+            facilityId: widget.facilityId,
             tenantName: widget.tenantName,
             amount: result.amount,
             transactionId: null,
@@ -417,12 +422,22 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
                             OutlinedButton.icon(
                               onPressed: _isLoading ? null : _recordManualPayment,
                               icon: const Icon(Icons.payments_outlined, size: 18),
-                              label: const Text('Record cash/check'),
+                              label: const Text('Record payment'),
                             ),
                           ],
                         ),
                       ],
                     ),
+                  ),
+                ] else if (_connectStatus == null) ...[
+                  // Stripe status could not be read. Cash, check and Venmo
+                  // have nothing to do with Stripe, so recording them must
+                  // not disappear with it.
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _isLoading ? null : _recordManualPayment,
+                    icon: const Icon(Icons.payments_outlined, size: 18),
+                    label: const Text('Record payment'),
                   ),
                 ],
                 if (_error != null) ...[
@@ -479,7 +494,7 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
                         OutlinedButton.icon(
                           onPressed: _recordManualPayment,
                           icon: const Icon(Icons.payments_outlined),
-                          label: const Text('Record cash/check'),
+                          label: const Text('Record payment'),
                         ),
                       ],
                     ),
@@ -544,11 +559,13 @@ class _TenantBillingPanelState extends ConsumerState<TenantBillingPanel> {
 
 /// Receipt dialog shown after a successful one-time payment (card on file).
 class _PaymentReceiptDialog extends StatelessWidget {
+  final String facilityId;
   final String tenantName;
   final double amount;
   final String? transactionId;
 
   const _PaymentReceiptDialog({
+    required this.facilityId,
     required this.tenantName,
     required this.amount,
     this.transactionId,
@@ -586,12 +603,29 @@ class _PaymentReceiptDialog extends StatelessWidget {
       actions: [
         if (kIsWeb)
           OutlinedButton.icon(
-            onPressed: () {
+            onPressed: () async {
+              // The receipt goes to the tenant, so it carries the facility's
+              // letterhead (logo, name, addresses) like its statements and
+              // invoices do. Without the facility it still prints, under the
+              // platform name as before.
+              FacilityModel? facility;
+              try {
+                facility = await FacilityService.getFacility(facilityId);
+              } catch (_) {
+                facility = null;
+              }
               printPaymentReceipt(
                 tenantName: tenantName,
                 amountFormatted: '\$${amount.toStringAsFixed(2)}',
                 dateFormatted: _formatDate(DateTime.now()),
                 transactionId: transactionId,
+                businessName: facility?.name,
+                businessAddress: facility?.address,
+                businessMailingAddress: facility?.mailingAddress,
+                businessPhone: facility?.phone,
+                businessEmail: facility?.email,
+                logoUrl: facility?.logoUrl,
+                logoLayout: facility?.documentLogo,
               );
             },
             icon: const Icon(Icons.print, size: 18),
@@ -632,6 +666,14 @@ class _ReceiptRow extends StatelessWidget {
   }
 }
 
+/// What the Record payment dialog returns.
+typedef ManualPaymentEntry = ({
+  double amount,
+  PaymentMethod method,
+  String? notes,
+  String? reference,
+});
+
 class _ManualPaymentDialog extends StatefulWidget {
   final String tenantName;
 
@@ -643,69 +685,96 @@ class _ManualPaymentDialog extends StatefulWidget {
 
 class _ManualPaymentDialogState extends State<_ManualPaymentDialog> {
   final _amountController = TextEditingController();
+  final _referenceController = TextEditingController();
   final _notesController = TextEditingController();
   PaymentMethod _method = PaymentMethod.cash;
-
-  static const _manualMethods = [
-    PaymentMethod.cash,
-    PaymentMethod.check,
-    PaymentMethod.bankTransfer,
-  ];
 
   @override
   void dispose() {
     _amountController.dispose();
+    _referenceController.dispose();
     _notesController.dispose();
     super.dispose();
+  }
+
+  String? _trimmed(TextEditingController c) {
+    final v = c.text.trim();
+    return v.isEmpty ? null : v;
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Record payment (cash, check, etc.)'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _amountController,
-            decoration: const InputDecoration(
-              labelText: 'Amount (\$)',
-              prefixText: '\$ ',
-              border: OutlineInputBorder(),
+      title: const Text('Record payment'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _amountController,
+              decoration: const InputDecoration(
+                labelText: 'Amount (\$)',
+                prefixText: '\$ ',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              autofocus: true,
             ),
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            autofocus: true,
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<PaymentMethod>(
-            value: _method,
-            decoration: const InputDecoration(
-              labelText: 'Payment method',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<PaymentMethod>(
+              initialValue: _method,
+              decoration: const InputDecoration(
+                labelText: 'Payment method',
+                border: OutlineInputBorder(),
+              ),
+              items: manualPaymentMethods
+                  .map((m) => DropdownMenuItem(value: m, child: Text(m.displayName)))
+                  .toList(),
+              onChanged: (v) => setState(() => _method = v ?? PaymentMethod.cash),
             ),
-            items: _manualMethods
-                .map((m) => DropdownMenuItem(value: m, child: Text(m.displayName)))
-                .toList(),
-            onChanged: (v) => setState(() => _method = v ?? PaymentMethod.cash),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _notesController,
-            decoration: const InputDecoration(
-              labelText: 'Notes (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _referenceController,
+              decoration: const InputDecoration(
+                labelText: 'Check # / reference (optional)',
+                border: OutlineInputBorder(),
+              ),
+              maxLength: 100,
             ),
-            maxLines: 2,
-          ),
-        ],
+            const SizedBox(height: 8),
+            TextField(
+              controller: _notesController,
+              decoration: const InputDecoration(
+                labelText: 'Notes (optional)',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Recorded as received today. For payments received on earlier '
+              'dates, use Enter past history on the tenant\'s page.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: AppTheme.textTertiary),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         ElevatedButton(
           onPressed: () {
-            final amount = double.tryParse(_amountController.text);
+            final amount = double.tryParse(_amountController.text.trim());
             if (amount != null && amount >= 0.01) {
-              Navigator.pop(context, (amount: amount, method: _method, notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim()));
+              Navigator.pop<ManualPaymentEntry>(context, (
+                amount: amount,
+                method: _method,
+                notes: _trimmed(_notesController),
+                reference: _trimmed(_referenceController),
+              ));
             }
           },
           child: const Text('Record payment'),

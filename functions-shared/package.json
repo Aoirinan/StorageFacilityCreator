@@ -65,6 +65,14 @@
     "./referral/*": {
       "types": "./lib/referral/*.d.ts",
       "default": "./lib/referral/*.js"
+    },
+    "./stays/*": {
+      "types": "./lib/stays/*.d.ts",
+      "default": "./lib/stays/*.js"
+    },
+    "./net/*": {
+      "types": "./lib/net/*.d.ts",
+      "default": "./lib/net/*.js"
     }
   },
   "engines": {

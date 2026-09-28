@@ -174,6 +174,243 @@ test('facility staff can create valid manual tenant payment rows only', async ()
   );
 });
 
+/** The facility payment PaymentService.recordManualPayment writes (Record payment dialog, Create Payment screen). */
+function receivedPayment(uid, extra = {}) {
+  return {
+    tenantId: TENANT_ID,
+    facilityId: FACILITY_ID,
+    contractId: '',
+    tenantName: 'Test Tenant',
+    unitNumber: 'A1',
+    amount: 80,
+    status: 'completed',
+    method: 'venmo',
+    paidAt: serverTimestamp(),
+    paidDate: serverTimestamp(),
+    dueDate: serverTimestamp(),
+    notes: 'June rent',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: uid,
+    isActive: true,
+    ...extra,
+  };
+}
+
+test('an owner records a received payment by Venmo, Zelle or Other, with a check # / reference', async () => {
+  await seedFacility();
+  const payments = testEnv
+    .authenticatedContext(OWNER_UID)
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('payments');
+
+  await assertSucceeds(payments.doc('p-venmo').set(receivedPayment(OWNER_UID, { reference: 'VEN-3345' })));
+  await assertSucceeds(payments.doc('p-zelle').set(receivedPayment(OWNER_UID, { method: 'zelle' })));
+  await assertSucceeds(payments.doc('p-other').set(receivedPayment(OWNER_UID, { method: 'other' })));
+  await assertSucceeds(
+    payments.doc('p-check').set(receivedPayment(OWNER_UID, { method: 'check', reference: '1234' })),
+  );
+  // No tenant name or unit, no contract (imported tenants have none), no notes.
+  const bare = receivedPayment(OWNER_UID, { method: 'cash' });
+  delete bare.tenantName;
+  delete bare.unitNumber;
+  delete bare.notes;
+  await assertSucceeds(payments.doc('p-bare').set(bare));
+
+  await assertFails(payments.doc('p-bad-method').set(receivedPayment(OWNER_UID, { method: 'bitcoin' })));
+  await assertFails(payments.doc('p-long-ref').set(receivedPayment(OWNER_UID, { reference: 'x'.repeat(101) })));
+  await assertFails(payments.doc('p-num-ref').set(receivedPayment(OWNER_UID, { reference: 1234 })));
+  // Received money is dated now; past dates go through recordTenantPastHistory.
+  await assertFails(
+    payments.doc('p-backdated').set(receivedPayment(OWNER_UID, { paidAt: new Date('2026-02-10T12:00:00Z') })),
+  );
+});
+
+test('the old Create Payment "payment request" payload is refused, which is why the screen now records a received payment', async () => {
+  await seedFacility();
+  const now = new Date();
+  await assertFails(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('payments')
+      .doc('p-request')
+      .set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        contractId: '',
+        tenantName: 'Test Tenant',
+        amount: 80,
+        status: 'pending',
+        method: 'cash',
+        dueDate: now,
+        paidAt: null,
+        notes: null,
+        metadata: null,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: OWNER_UID,
+        isActive: true,
+      }),
+  );
+});
+
+test('the old Mark Paid (markTenantAsPaid) payload is refused for an owner, which is why it now records a received payment', async () => {
+  await seedFacility();
+  const now = new Date();
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  await assertFails(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('payments')
+      .doc('p-mark-paid')
+      .set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        tenantName: 'Test Tenant',
+        unitNumber: 'A1',
+        amount: 80,
+        status: 'paid',
+        paidAt: serverTimestamp(),
+        paidDate: serverTimestamp(),
+        dueDate: endOfMonth,
+        method: 'cash',
+        notes: 'Marked as paid manually',
+        contractId: '',
+        createdByUid: OWNER_UID,
+        createdBy: OWNER_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        isActive: true,
+      }),
+  );
+});
+
+test('every other client write to a facility payment works for an owner and a manager', async () => {
+  await seedFacility();
+  const MANAGER = 'manager-user';
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).update({ [`roles.${MANAGER}`]: 'manager' });
+    for (const id of ['p-pending', 'p-pending-2', 'p-done', 'p-done-2']) {
+      await db.collection('facilities').doc(FACILITY_ID).collection('payments').doc(id).set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        contractId: '',
+        amount: 80,
+        status: id.startsWith('p-pending') ? 'pending' : 'completed',
+        method: 'venmo',
+        isActive: true,
+      });
+    }
+  });
+  const payments = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('facilities').doc(FACILITY_ID).collection('payments');
+  const markPaid = (uid) => ({
+    status: 'paid',
+    method: 'venmo',
+    transactionId: null,
+    paidDate: new Date(),
+    paidAt: new Date(),
+    paidBy: uid,
+    notes: null,
+    updatedAt: new Date(),
+  });
+
+  // Process (markPaymentAsPaid, from the payment list and detail pages).
+  await assertSucceeds(payments(OWNER_UID).doc('p-pending').update(markPaid(OWNER_UID)));
+  await assertSucceeds(payments(MANAGER).doc('p-pending-2').update(markPaid(MANAGER)));
+  // Edit Payment (updatePayment), link to a deposit, archive, delete.
+  await assertSucceeds(payments(OWNER_UID).doc('p-done').update({ amount: 85, method: 'zelle', notes: 'x', updatedAt: serverTimestamp() }));
+  await assertSucceeds(payments(MANAGER).doc('p-done').update({ depositId: 'dep-1', updatedAt: serverTimestamp() }));
+  await assertSucceeds(
+    payments(OWNER_UID).doc('p-done').update({ isActive: false, archivedAt: new Date(), archivedByUid: OWNER_UID, updatedAt: new Date() }),
+  );
+  await assertSucceeds(payments(MANAGER).doc('p-done-2').delete());
+  // Record payment (recordManualPayment) as a manager.
+  await assertSucceeds(payments(MANAGER).doc('p-mgr').set(receivedPayment(MANAGER, { reference: '77' })));
+  // Employees record payments but may not process, edit or delete them.
+  await assertSucceeds(payments(STAFF_UID).doc('p-emp').set(receivedPayment(STAFF_UID)));
+  await assertFails(payments(STAFF_UID).doc('p-emp').update(markPaid(STAFF_UID)));
+});
+
+test('the ledger line and tenant payment row Record payment writes are allowed', async () => {
+  await seedFacility();
+  const db = testEnv.authenticatedContext(OWNER_UID).firestore();
+  await assertSucceeds(
+    db.collection('facilities').doc(FACILITY_ID).collection('ledgers').doc('l-pay').set({
+      tenantId: TENANT_ID,
+      facilityId: FACILITY_ID,
+      type: 'payment',
+      amount: -80,
+      description: 'Payment - Venmo #VEN-1',
+      referenceId: 'p-venmo',
+      entryDate: new Date(),
+      status: 'posted',
+      metadata: { paymentMethod: 'venmo', paymentId: 'p-venmo', reference: 'VEN-1' },
+      createdAt: new Date(),
+      createdBy: OWNER_UID,
+    }),
+  );
+  await assertSucceeds(
+    db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).collection('payments').doc('tp-1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      type: 'manual',
+      amountCents: 8000,
+      currency: 'usd',
+      chargeType: 'manual_venmo',
+      status: 'succeeded',
+      description: 'Venmo payment #VEN-1',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: OWNER_UID,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: 'p-venmo',
+    }),
+  );
+  await assertFails(
+    db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).collection('payments').doc('tp-2').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      type: 'manual',
+      amountCents: 8000,
+      currency: 'usd',
+      chargeType: 'manual_cash',
+      status: 'succeeded',
+      description: 'Cash payment',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: OWNER_UID,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: 42,
+    }),
+  );
+});
+
+test('past-history batches are server-only', async () => {
+  await seedFacility();
+  const ref = (uid) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('tenantPastHistory')
+      .doc('req-00000001');
+  await assertFails(ref(OWNER_UID).set({ tenantId: TENANT_ID, status: 'applied' }));
+  await assertFails(ref(OWNER_UID).get());
+});
+
 test('outsider cannot create manual tenant payments', async () => {
   await seedFacility();
   const outsider = testEnv.authenticatedContext(OUTSIDER_UID);
@@ -240,6 +477,96 @@ test('tenant docs: only a super admin deletes directly; owners and managers use 
   );
 });
 
+async function seedTenantSms(fields) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      roles: { [OWNER_UID]: 'owner', [STAFF_UID]: 'employee' },
+    });
+    await db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).set({
+      facilityId: FACILITY_ID,
+      name: 'Test Tenant',
+      isActive: true,
+      ...fields,
+    });
+  });
+}
+
+const ownerTenant = () =>
+  testEnv
+    .authenticatedContext(OWNER_UID)
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('tenants')
+    .doc(TENANT_ID);
+
+// What the app writes when staff record consent (SmsConsentUpdate.grant).
+const staffGrant = {
+  smsOptOut: false,
+  smsOptOutDate: deleteField(),
+  smsOptInDate: new Date(),
+  smsConsentStatus: 'opted_in',
+  smsConsentSource: 'staff_recorded',
+};
+
+test("tenant SMS: staff cannot reverse a tenant's own opt-out", async () => {
+  // A save built from a copy of the tenant read before their STOP arrived
+  // must not opt them back in. The server's START handler uses the Admin SDK.
+  const tenantOptOuts = [
+    { smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop' },
+    // An online move-in that declined texts: no source, no status.
+    { smsOptOut: true },
+    { smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'csv_opt_out' },
+    { smsOptOut: false, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop' },
+  ];
+  for (const stored of tenantOptOuts) {
+    await testEnv.clearFirestore();
+    await seedTenantSms(stored);
+    await assertFails(ownerTenant().update(staffGrant));
+    if (stored.smsOptOut) await assertFails(ownerTenant().update({ smsOptOut: false }));
+    if (stored.smsConsentStatus === 'opted_out') {
+      await assertFails(ownerTenant().update({ smsConsentStatus: deleteField() }));
+    }
+    await assertFails(ownerTenant().update({ smsConsentStatus: 'opted_in' }));
+    await assertFails(ownerTenant().update({ smsConsentSource: 'staff_removed' }));
+    if (stored.smsOptOut) await assertFails(ownerTenant().update({ smsOptOut: deleteField() }));
+    // Other edits to the tenant still save.
+    await assertSucceeds(ownerTenant().update({ name: 'Renamed', phone: '9035550100' }));
+  }
+
+  // A super admin can.
+  await testEnv.clearFirestore();
+  await seedTenantSms(tenantOptOuts[0]);
+  await assertSucceeds(
+    testEnv
+      .authenticatedContext('admin-user', { superadmin: true })
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('tenants')
+      .doc(TENANT_ID)
+      .update(staffGrant),
+  );
+});
+
+test('tenant SMS: staff can record consent, remove it, and record it again', async () => {
+  await seedTenantSms({});
+  await assertSucceeds(ownerTenant().update(staffGrant));
+  // Staff removal (SmsConsentUpdate.remove).
+  await assertSucceeds(
+    ownerTenant().update({
+      smsOptOut: true,
+      smsOptOutDate: new Date(),
+      smsConsentStatus: 'opted_out',
+      smsConsentSource: 'staff_removed',
+    }),
+  );
+  // Their own removal is theirs to reverse.
+  await assertSucceeds(ownerTenant().update(staffGrant));
+});
+
 test('facility docs: only a super admin deletes directly; owners use the callable', async () => {
   // The app's own facility delete skipped subcollections it couldn't delete
   // (tenants, now super-admin only) and then deleted the facility doc,
@@ -257,6 +584,26 @@ test('facility docs: only a super admin deletes directly; owners use the callabl
   await assertSucceeds(
     facilityAs(testEnv.authenticatedContext('admin-user', { superadmin: true })).delete(),
   );
+});
+
+test('facility owners save their printed-document branding (logo and its layout)', async () => {
+  // Edit Facility → Statements & Invoices writes these with Update Facility.
+  // The facility rule is a deny-list (facilityEntitlementWriteForbiddenKeys),
+  // so they need no rule of their own; this keeps it that way.
+  await seedFacility();
+  const facilityAs = (context) => context.firestore().collection('facilities').doc(FACILITY_ID);
+  const branding = {
+    logoUrl: 'https://firebasestorage.googleapis.com/v0/b/x/o/logo.png?alt=media',
+    documentLogo: { height: 120, position: 'center', showName: false },
+    updatedAt: serverTimestamp(),
+  };
+
+  await assertSucceeds(facilityAs(testEnv.authenticatedContext(OWNER_UID)).update(branding));
+  await assertSucceeds(
+    facilityAs(testEnv.authenticatedContext(OWNER_UID)).update({ documentLogo: deleteField() }),
+  );
+  await assertFails(facilityAs(testEnv.authenticatedContext(STAFF_UID)).update(branding));
+  await assertFails(facilityAs(testEnv.authenticatedContext(OUTSIDER_UID)).update(branding));
 });
 
 test('unmatched collections like stripeWebhookEvents deny client access', async () => {
@@ -393,6 +740,40 @@ test('facility owners cannot forge A2P texting approval state', async () => {
   await assertFails(facilityRef.update({ twilioTrustProfileSid: 'BU_forged' }));
   await assertFails(
     facilityRef.update({ textingPlatformApprovedBy: 'owner@example.com' }),
+  );
+});
+
+test('facility owners cannot write A2P paid-step state or the filed campaign inputs', async () => {
+  // a2pSubmitLease serialises number purchases and campaign filing; the
+  // pending flag makes the hourly poll file a campaign; the E164 number is
+  // what sendSMS sends from and inbound replies route by; the consent methods
+  // and samples are what the poll files with the carriers. All server-written.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection('facilities').doc(FACILITY_ID).set({
+      ownerUid: OWNER_UID,
+      roles: { [OWNER_UID]: 'owner' },
+      name: 'Example Self Storage',
+      twilioPhoneNumberE164: '+15125550100',
+      textingConsentMethods: ['online_form'],
+    });
+  });
+  const owner = testEnv.authenticatedContext(OWNER_UID);
+  const facilityRef = owner.firestore().collection('facilities').doc(FACILITY_ID);
+
+  await assertFails(facilityRef.update({ a2pSubmitLease: null }));
+  await assertFails(facilityRef.update({ a2pSubmitLease: { holder: 'me', expiresAtMs: 1 } }));
+  await assertFails(facilityRef.update({ twilioPhoneNumberE164: '+15125550199' }));
+  await assertFails(facilityRef.update({ a2pCampaignPending: true }));
+  await assertFails(facilityRef.update({ a2pRejectedAt: null }));
+  await assertFails(facilityRef.update({ a2pBrandResubmitRequired: true }));
+  await assertFails(facilityRef.update({ textingConsentMethods: ['lease_clause'] }));
+  await assertFails(facilityRef.update({ textingSampleMessages: ['a', 'b'] }));
+  await assertFails(facilityRef.update({ twilioCampaignId: 'CM_forged' }));
+
+  // Re-saving the unchanged number with an ordinary edit (what the app's
+  // facility form does) is still allowed.
+  await assertSucceeds(
+    facilityRef.update({ name: 'Example Self Storage East', twilioPhoneNumberE164: '+15125550100' }),
   );
 });
 

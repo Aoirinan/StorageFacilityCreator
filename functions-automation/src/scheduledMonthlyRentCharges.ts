@@ -1,5 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import {
+  buildRentChargeDescription,
+  hasRentChargeForMonth,
+  rentChargeDateFor,
+  rentChargeMonthAt,
+} from './rentChargeHelpers';
 
 /**
  * Scheduled function: Generate monthly rent charges on the 1st of each month at 12:00 AM UTC
@@ -31,8 +37,10 @@ const _supersededGenerateMonthlyRentCharges = functions
       functions.logger.info(`Found ${facilitiesSnapshot.size} active facilities`);
 
       const results = [];
-      const targetDate = new Date();
-      targetDate.setDate(1); // First day of current month
+      // Same month and charge date as the live job (noon UTC on the 1st), so
+      // a comparison against it is like for like.
+      const { year: targetYear, month: targetMonth } = rentChargeMonthAt(new Date());
+      const targetDate = rentChargeDateFor(targetYear, targetMonth);
 
       for (const facilityDoc of facilitiesSnapshot.docs) {
         const facilityId = facilityDoc.id;
@@ -57,9 +65,6 @@ const _supersededGenerateMonthlyRentCharges = functions
           let skippedCount = 0;
           let errorCount = 0;
 
-          const targetMonth = targetDate.getMonth() + 1;
-          const targetYear = targetDate.getFullYear();
-
           for (const tenantDoc of activeTenants) {
             try {
               const tenantData = tenantDoc.data();
@@ -81,22 +86,11 @@ const _supersededGenerateMonthlyRentCharges = functions
                 .where('status', '==', 'posted')
                 .get();
 
-              const existingCharge = ledgerSnapshot.docs.some(doc => {
-                const entryData = doc.data();
-                const entryDate = entryData.entryDate?.toDate();
-                if (!entryDate) return false;
-
-                const entryMonth = entryDate.getMonth() + 1;
-                const entryYear = entryDate.getFullYear();
-
-                if (entryMonth !== targetMonth || entryYear !== targetYear) return false;
-
-                const metadata = entryData.metadata || {};
-                return metadata.recurringCharge === true &&
-                       metadata.chargeType === 'monthlyRent' &&
-                       metadata.month === targetMonth &&
-                       metadata.year === targetYear;
-              });
+              const existingCharge = hasRentChargeForMonth(
+                ledgerSnapshot.docs.map((doc) => doc.data()),
+                targetMonth,
+                targetYear,
+              );
 
               if (existingCharge) {
                 skippedCount++;
@@ -104,9 +98,7 @@ const _supersededGenerateMonthlyRentCharges = functions
               }
 
               // Generate charge
-              const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                'July', 'August', 'September', 'October', 'November', 'December'];
-              const description = `Monthly Rent - ${monthNames[targetDate.getMonth()]} ${targetYear}`;
+              const description = buildRentChargeDescription(targetYear, targetMonth);
 
               const ledgerEntryRef = admin.firestore()
                 .collection('facilities')

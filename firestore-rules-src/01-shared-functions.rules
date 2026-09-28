@@ -85,11 +85,15 @@
           'updatedAt',
           'createdBy',
           'failureCode',
-          'failureMessage'
+          'failureMessage',
+          // The facility payment this row copies, so voiding one finds the other.
+          'facilityPaymentId'
         ]) &&
         request.resource.data.facilityId == facilityId &&
         request.resource.data.tenantId == tenantId &&
         request.resource.data.type == 'manual' &&
+        (!('facilityPaymentId' in request.resource.data) ||
+          (request.resource.data.facilityPaymentId is string && request.resource.data.facilityPaymentId.size() <= 128)) &&
         request.resource.data.amountCents is int &&
         request.resource.data.amountCents >= 1 &&
         request.resource.data.amountCents <= 1000000000 &&
@@ -231,7 +235,33 @@
       'twilioCampaignSid',
       'twilioMessagingServiceSid',
       'twilioPhoneNumber',
-      'twilioPhoneNumberSid'
+      'twilioPhoneNumberSid',
+      // The facility's own number: sendSMS sends From it once approved, and
+      // the inbound webhook routes replies by it. Written only when a callable
+      // buys the number (the app only ever re-saves the value it read).
+      'twilioPhoneNumberE164',
+      // Paid-step coordination (a2pSubmission.ts / a2pPaidSteps.ts). An owner
+      // who could clear the lease could run two purchases at once; one who
+      // could set a2pCampaignPending could make the poll file a campaign.
+      'a2pSubmitLease',
+      'a2pCampaignPending',
+      'a2pCampaignFilingFailures',
+      'a2pCampaignStatus',
+      'a2pBrandStatus',
+      'a2pBrandResubmitRequired',
+      'a2pBrandResubmissions',
+      'a2pLastResetOf',
+      'a2pBundleProfilePolicySid',
+      'a2pBundleProductPolicySid',
+      'a2pAbandonedBundleSids',
+      'twilioCampaignId',
+      // What the filed campaign claims (consent methods, samples). Set only by
+      // the submit callable after server-side validation; the poll refiles
+      // from these, so they must not be client-editable.
+      'textingConsentMethods',
+      'textingSampleMessages',
+      'textingUseCases',
+      'textingConsentConfirmedAt'
     ];
   }
 
@@ -253,7 +283,7 @@
       ]) &&
       !request.resource.data.keys().hasAny(facilityPaymentWriteForbiddenKeys()) &&
       request.resource.data.keys().size() >= 13 &&
-      request.resource.data.keys().size() <= 16 &&
+      request.resource.data.keys().size() <= 17 &&
       request.resource.data.facilityId == facilityId &&
       request.resource.data.tenantId is string &&
       request.resource.data.contractId is string &&
@@ -262,7 +292,7 @@
       request.resource.data.amount <= 10000000 &&
       request.resource.data.status == 'completed' &&
       request.resource.data.method is string &&
-      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe)$') &&
+      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe|venmo|zelle|other)$') &&
       request.resource.data.paidAt == request.time &&
       request.resource.data.paidDate == request.time &&
       request.resource.data.dueDate == request.time &&
@@ -272,7 +302,9 @@
       request.resource.data.isActive == true &&
       (!('tenantName' in request.resource.data) || request.resource.data.tenantName is string) &&
       (!('unitNumber' in request.resource.data) || request.resource.data.unitNumber is string) &&
-      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000));
+      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000)) &&
+      // Check number or Venmo/Zelle reference from the Record payment dialog.
+      (!('reference' in request.resource.data) || (request.resource.data.reference is string && request.resource.data.reference.size() <= 100));
   }
 
   function isLateFeeFacilityPaymentCreate(facilityId) {

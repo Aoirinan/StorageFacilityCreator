@@ -45,6 +45,7 @@ functions-automation/vendor/
 functions-facility-ops/vendor/
 functions-account-security/vendor/
 functions-outbound-email/vendor/
+functions-stays/vendor/
 
 # Firebase Cloud Functions compiled output (TypeScript source is under functions/src/)
 functions/lib/
@@ -54,6 +55,7 @@ functions-automation/lib/
 functions-facility-ops/lib/
 functions-account-security/lib/
 functions-outbound-email/lib/
+functions-stays/lib/
 functions-shared/lib/
 functions-shared/node_modules/
 
@@ -94,3 +96,6 @@ app.*.map.json
 # Cloud Functions (each package has its own node_modules; never commit)
 functions/node_modules/
 functions-*/node_modules/
+
+# Before/after records from scripts/backfill-*.mjs (tenant data; never commit)
+backfill-records/

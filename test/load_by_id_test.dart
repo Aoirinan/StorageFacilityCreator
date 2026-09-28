@@ -2,12 +2,14 @@ import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sfcapp/models/contract_model.dart';
 import 'package:sfcapp/models/lien_model.dart';
 import 'package:sfcapp/models/payment_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/router/detail_routes.dart';
 
@@ -176,7 +178,14 @@ void main() {
   Future<GoRouter> pumpApp(WidgetTester tester, String location) async {
     final router = _router(location);
     addTearDown(router.dispose);
-    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    // The tenant routes' previous / next tenant read the facility's tenants.
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        facilityTenantsProvider('f1')
+            .overrideWith((ref) => Stream.value(const <TenantModel>[])),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ));
     await tester.pumpAndSettle();
     return router;
   }
@@ -345,5 +354,32 @@ void main() {
     ]) {
       expect(router, isNot(contains(path)));
     }
+  });
+
+  // Stays pages opened by id load through loadByIdPage too, and live only in
+  // stays_routes.dart (test/stays_routes_test.dart runs them).
+  test('app_router takes the Stays routes from stays_routes.dart', () {
+    final router = File('lib/router/app_router.dart').readAsStringSync();
+    expect(router, contains('...staysShellRoutes()'));
+    for (final path in [
+      'AppRoute.stays,',
+      'AppRoute.stayDetail,',
+      'AppRoute.stayEdit,',
+      'AppRoute.turnoverDetail,',
+      "'/stays",
+    ]) {
+      expect(router, isNot(contains(path)));
+    }
+
+    final stays = File('lib/router/stays_routes.dart').readAsStringSync();
+    for (final route in ['AppRoute.stayDetail,', 'AppRoute.stayEdit,', 'AppRoute.turnoverDetail,']) {
+      final at = stays.indexOf(route);
+      expect(at, isNonNegative, reason: route);
+      // The page right after the path is built with loadByIdPage, not an inline FutureBuilder.
+      final next = stays.indexOf('page(', at);
+      final body = stays.substring(at, next < 0 ? stays.length : next);
+      expect(body, contains('loadByIdPage<'), reason: route);
+    }
+    expect(stays, isNot(contains('FutureBuilder')));
   });
 }

@@ -3,45 +3,164 @@ import * as functions from 'firebase-functions/v1';
 import { isSuperAdmin } from '../auth/superAdmin';
 
 /**
- * Pre-launch gate for anything that reaches a customer.
+ * Gate for anything that reaches a customer (tenant email and tenant texts).
  *
  * Rule from the owner (2026-09-14): no email or text goes to a customer, owner
  * or tenant, until the platform build is finished. Rather than remembering
- * that in sixteen call sites, the shared tenant-email helper asks this gate
- * before sending. Super-admin addresses always pass, so the team can keep
- * testing every flow against their own inboxes, and `allowedTestRecipients`
- * lets a specific test address or phone through.
+ * that in sixteen call sites, every send path asks this gate before sending.
+ * Super-admin addresses always pass, so the team can keep testing every flow
+ * against their own inboxes, and `allowedTestRecipients` lets a specific test
+ * address or phone through.
+ *
+ * Decision from the owner (2026-09-27): customer contact opens for every
+ * facility except the ones listed in `blockedFacilityIds` (his own facility,
+ * Keepsake, stays blocked until he says otherwise). So the gate is now
+ * facility-aware: every caller says which facility the message is for.
  *
  * Config lives in Firestore at appConfig/outbound so launch is a field flip,
  * not a deploy:
- *   customerEmailsEnabled: boolean   (default false)
+ *   customerEmailsEnabled: boolean   (default false; governs email AND sms)
  *   allowedTestRecipients: string[]  (emails or E.164 phones, default [])
+ *   blockedFacilityIds:    string[]  (facility ids that stay closed, default [])
+ *
+ * Order of the rules:
+ *   1. super admins and allowedTestRecipients always pass;
+ *   2. a facility in blockedFacilityIds is blocked;
+ *   3. a send with no facility id while blockedFacilityIds is non-empty is
+ *      blocked (fail closed: we cannot prove it is not for a blocked facility);
+ *   4. otherwise customerEmailsEnabled decides.
  */
 export interface OutboundGateConfig {
   customerEmailsEnabled: boolean;
   allowedTestRecipients: string[];
+  blockedFacilityIds: string[];
+}
+
+export type OutboundChannel = 'email' | 'sms';
+
+/** Who the message is from and how it travels. Every caller must say. */
+export interface OutboundTarget {
+  facilityId: string | null | undefined;
+  channel: OutboundChannel;
+}
+
+export type OutboundGateReason =
+  | 'test_recipient'
+  | 'facility_blocked'
+  | 'missing_facility'
+  | 'launch_flag_off'
+  | 'open';
+
+export interface OutboundGateDecision {
+  allowed: boolean;
+  reason: OutboundGateReason;
 }
 
 export const DEFAULT_OUTBOUND_GATE: OutboundGateConfig = {
   customerEmailsEnabled: false,
   allowedTestRecipients: [],
+  blockedFacilityIds: [],
 };
 
 function normalizeRecipient(value: string): string {
-  return value.trim().toLowerCase();
+  return String(value ?? '').trim().toLowerCase();
 }
 
-/** Pure decision: may this recipient be contacted under this config? */
+/** Pure decision, with the reason, for logs and tests. */
+export function decideCustomerRecipient(
+  recipient: string,
+  target: OutboundTarget,
+  config: OutboundGateConfig,
+  superAdminCheck: (email: string) => boolean = isSuperAdmin,
+): OutboundGateDecision {
+  const normalized = normalizeRecipient(recipient);
+  if (normalized) {
+    if (superAdminCheck(normalized)) return { allowed: true, reason: 'test_recipient' };
+    if (config.allowedTestRecipients.some((r) => normalizeRecipient(r) === normalized)) {
+      return { allowed: true, reason: 'test_recipient' };
+    }
+  }
+
+  const facilityId = String(target?.facilityId ?? '').trim();
+  const blocked = config.blockedFacilityIds ?? [];
+  if (facilityId && blocked.includes(facilityId)) {
+    return { allowed: false, reason: 'facility_blocked' };
+  }
+  if (!facilityId && blocked.length > 0) {
+    return { allowed: false, reason: 'missing_facility' };
+  }
+
+  if (config.customerEmailsEnabled) return { allowed: true, reason: 'open' };
+  return { allowed: false, reason: 'launch_flag_off' };
+}
+
+/** Pure decision: may this recipient be contacted for this facility under this config? */
 export function isCustomerRecipientAllowed(
   recipient: string,
+  target: OutboundTarget,
   config: OutboundGateConfig,
   superAdminCheck: (email: string) => boolean = isSuperAdmin,
 ): boolean {
-  if (config.customerEmailsEnabled) return true;
-  const normalized = normalizeRecipient(recipient);
-  if (!normalized) return false;
-  if (superAdminCheck(normalized)) return true;
-  return config.allowedTestRecipients.some((r) => normalizeRecipient(r) === normalized);
+  const decision = decideCustomerRecipient(recipient, target, config, superAdminCheck);
+  if (decision.reason === 'missing_facility') {
+    functions.logger.warn('Customer send with no facility id blocked (blockedFacilityIds is set; failing closed)', {
+      channel: target?.channel ?? null,
+    });
+  }
+  return decision.allowed;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x: unknown): x is string => typeof x === 'string');
+}
+
+/**
+ * Reads a raw appConfig/outbound document into a config, and says what was
+ * wrong with it.
+ *
+ * blockedFacilityIds is the one field whose damage opens the gate rather
+ * than closing it: read loosely, a string where the list should be (or a list
+ * with a number in it) became [] and, with customerEmailsEnabled on, every
+ * blocked facility could contact customers. So when the field is present but
+ * is not a list of non-empty strings, customer contact is switched off for
+ * everyone until it is fixed. Absent means "no facilities blocked".
+ */
+export function parseOutboundGateConfigWithProblems(
+  data: Record<string, unknown> | undefined,
+): { config: OutboundGateConfig; problems: string[] } {
+  const d = data ?? {};
+  const problems: string[] = [];
+  let blockedFacilityIds: string[] = [];
+  const rawBlocked = d.blockedFacilityIds;
+  if (rawBlocked !== undefined) {
+    const valid =
+      Array.isArray(rawBlocked) &&
+      rawBlocked.every((x: unknown) => typeof x === 'string' && x.trim().length > 0);
+    if (valid) {
+      blockedFacilityIds = (rawBlocked as string[]).map((id) => id.trim());
+    } else {
+      problems.push(
+        'blockedFacilityIds must be an array of non-empty strings; customer contact is off until it is fixed',
+      );
+      blockedFacilityIds = stringList(rawBlocked)
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+  }
+  return {
+    config: {
+      customerEmailsEnabled: problems.length === 0 && d.customerEmailsEnabled === true,
+      allowedTestRecipients: stringList(d.allowedTestRecipients),
+      blockedFacilityIds,
+    },
+    problems,
+  };
+}
+
+/** Reads a raw appConfig/outbound document into a config, defaulting closed. */
+export function parseOutboundGateConfig(data: Record<string, unknown> | undefined): OutboundGateConfig {
+  return parseOutboundGateConfigWithProblems(data).config;
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -54,12 +173,13 @@ export async function getOutboundGateConfig(): Promise<OutboundGateConfig> {
   try {
     const snap = await admin.firestore().collection('appConfig').doc('outbound').get();
     if (snap.exists) {
-      const data = snap.data() || {};
-      const list = Array.isArray(data.allowedTestRecipients) ? data.allowedTestRecipients : [];
-      config = {
-        customerEmailsEnabled: data.customerEmailsEnabled === true,
-        allowedTestRecipients: list.filter((x: unknown): x is string => typeof x === 'string'),
-      };
+      const parsed = parseOutboundGateConfigWithProblems(snap.data());
+      config = parsed.config;
+      if (parsed.problems.length > 0) {
+        functions.logger.error('appConfig/outbound is malformed; customer sends are off', {
+          problems: parsed.problems,
+        });
+      }
     }
   } catch (error) {
     // Fail closed: a config read error must not turn into customer email.
@@ -76,6 +196,18 @@ export function resetOutboundGateCache(): void {
   cached = null;
 }
 
-export async function isCustomerEmailAllowed(to: string): Promise<boolean> {
-  return isCustomerRecipientAllowed(to, await getOutboundGateConfig());
+/** Async form for any channel: reads the config, then decides. */
+export async function isCustomerContactAllowed(
+  recipient: string,
+  target: OutboundTarget,
+): Promise<boolean> {
+  return isCustomerRecipientAllowed(recipient, target, await getOutboundGateConfig());
+}
+
+/** Email form of [isCustomerContactAllowed]. */
+export async function isCustomerEmailAllowed(
+  to: string,
+  target: { facilityId: string | null | undefined },
+): Promise<boolean> {
+  return isCustomerContactAllowed(to, { facilityId: target?.facilityId, channel: 'email' });
 }

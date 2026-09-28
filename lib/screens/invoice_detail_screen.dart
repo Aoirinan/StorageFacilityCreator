@@ -15,7 +15,9 @@ import '../services/facility_service.dart';
 import '../models/tenant_model.dart';
 import 'package:sfcapp/utils/error_message_helper.dart';
 import 'package:sfcapp/utils/invoice_edit_rules.dart';
+import 'package:sfcapp/utils/print_documents.dart' show tenantPrintAddress;
 import 'package:sfcapp/utils/print_util.dart';
+import 'package:sfcapp/utils/unit_label.dart';
 import '../widgets/invoice_pdf_viewer.dart';
 
 class InvoiceDetailScreen extends ConsumerStatefulWidget {
@@ -644,18 +646,31 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
       final money = NumberFormat.currency(symbol: '\$');
       final date = DateFormat('MMM d, yyyy');
 
+      // The invoice doc stores only tenantId, so a tenant that has since been
+      // deleted leaves nothing to name them by; "Tenant" stays the fallback.
+      final tenantName = tenant?.name.trim() ?? '';
+
       printInvoice(
         facilityName: facility.name,
         facilityAddress: facility.address,
+        // Same letterhead as the statement and attached-PDF invoice
+        // (PdfLetterhead): logo and "Mail payments to" address.
+        facilityMailingAddress: facility.mailingAddress,
         facilityPhone: facility.phone,
         facilityEmail: facility.email,
-        tenantName: tenant?.name ?? 'Tenant',
-        tenantAddress: tenant?.addresses.isNotEmpty == true
-            ? tenant!.addresses.first.toString()
-            : null,
+        facilityLogoUrl: facility.logoUrl,
+        logoLayout: facility.documentLogo,
+        tenantName: tenantName.isNotEmpty ? tenantName : 'Tenant',
+        tenantAddress:
+            tenant == null ? null : tenantPrintAddress(tenant.addresses),
         tenantPhone: tenant?.phone,
         tenantEmail: tenant?.email,
-        unitNumber: tenant?.unitNumber,
+        unitNumber: tenant == null
+            ? null
+            : tenantUnitLabel(
+                tenant,
+                includeArea: unitLabelsIncludeArea(facility),
+              ),
         invoiceNumber: _invoice.invoiceNumber,
         issueDateFormatted: date.format(_invoice.issueDate),
         dueDateFormatted: date.format(_invoice.dueDate),

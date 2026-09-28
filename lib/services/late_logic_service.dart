@@ -21,6 +21,11 @@ class LateFeeRules {
   final double? lateFeeAmount;
   final double? maxLateFee;
 
+  /// Whether the delinquency job charges late fees at all
+  /// (`billingSettings.enableAutoLateFees`). Off unless switched on: a fee
+  /// the job will never post is not shown as owed.
+  final bool autoLateFees;
+
   const LateFeeRules({
     this.gracePeriodDays = LateLogicService.defaultGracePeriodDays,
     this.baseLateFee = LateLogicService.defaultBaseLateFee,
@@ -28,7 +33,16 @@ class LateFeeRules {
     this.lateFeeType,
     this.lateFeeAmount,
     this.maxLateFee,
+    this.autoLateFees = false,
   });
+
+  /// `billingSettings.enableAutoLateFees`, read the way the server reads it
+  /// (`autoLateFeesEnabled` in functions-automation/src/delinquencyAutomation.ts):
+  /// on only when it is `true`. A missing field is off. It used to read as
+  /// on, so a facility that set a late fee amount was charged automatically
+  /// without ever turning automatic fees on.
+  static bool autoLateFeesEnabled(Map<String, dynamic>? settings) =>
+      settings?['enableAutoLateFees'] == true;
 
   /// Read the rules out of `facility.billingSettings`.
   ///
@@ -68,6 +82,7 @@ class LateFeeRules {
       lateFeeType: (type == null || type.isEmpty) ? null : type,
       lateFeeAmount: asNullableDouble(settings['lateFeeAmount']),
       maxLateFee: asNullableDouble(settings['maxLateFee']),
+      autoLateFees: autoLateFeesEnabled(settings),
     );
   }
 }
@@ -495,6 +510,9 @@ class LateLogicService {
     final effective = rules ??
         LateFeeRules(
             gracePeriodDays: gracePeriodDays ?? defaultGracePeriodDays);
+    // The job posts no fee while automatic late fees are off, so none is
+    // shown or added to what the tenant owes.
+    if (!effective.autoLateFees) return 0.0;
     final daysOverdue = payment.daysOverdue;
     if (daysOverdue <= effective.gracePeriodDays) return 0.0;
 

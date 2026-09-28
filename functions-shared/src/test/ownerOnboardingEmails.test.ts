@@ -71,12 +71,12 @@ test('approved email never promises that balances import', () => {
 test('admin alert names the account and links to Platform Control', () => {
   const m = buildNewAccountAdminAlertEmail({
     ownerName: 'Alexa Rau',
-    ownerEmail: 'caprockstorage@gmail.com',
+    ownerEmail: 'test-owner@example.com',
     accountId: 'lWTHn3AYXiIVwv7nizPK',
     signedUpAt: new Date('2026-09-20T22:21:47Z'),
     superAdminUrl: 'https://app.storagefacilitycreator.com/#/super-admin',
   });
-  assert.equal(m.subject, 'New account pending approval: caprockstorage@gmail.com');
+  assert.equal(m.subject, 'New account pending approval: test-owner@example.com');
   assert.match(m.text, /Alexa Rau signed up at/);
   assert.match(m.text, /lWTHn3AYXiIVwv7nizPK/);
   assert.match(m.text, /super-admin/);

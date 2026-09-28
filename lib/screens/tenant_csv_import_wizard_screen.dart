@@ -4,9 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/sms_consent_import.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sfcapp/models/unit_model.dart';
+import 'package:sfcapp/services/facility_subcollections.dart';
 import '../services/tenant_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 import '../theme/app_theme.dart';
 import '../router/app_route.dart';
 import '../providers/tenant_provider.dart';
@@ -52,6 +56,9 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     {'key': 'email', 'label': 'Email', 'required': false, 'synonyms': ['email', 'email address', 'e-mail', 'e mail']},
     {'key': 'phone', 'label': 'Phone', 'required': false, 'synonyms': ['phone', 'phone number', 'telephone', 'mobile', 'cell']},
     {'key': 'unitNumber', 'label': 'Unit Number', 'required': false, 'synonyms': ['unit', 'unit number', 'unit #', 'unit id', 'storage unit']},
+    // Where the facility repeats unit numbers across areas, the area picks
+    // which of the units with the row's number is theirs.
+    {'key': 'area', 'label': 'Area', 'required': false, 'synonyms': ['area', 'unit area', 'complex', 'building', 'section', 'location']},
     {'key': 'monthlyRate', 'label': 'Monthly Rate', 'required': false, 'synonyms': ['rate', 'monthly rate', 'rent', 'rental rate', 'price', 'monthly rent']},
     {'key': 'notes', 'label': 'Notes', 'required': false, 'synonyms': ['notes', 'note', 'comments', 'remarks', 'description']},
     // Carriers require a per-tenant opt-in before we may text anyone. Without
@@ -251,6 +258,11 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     _checkDuplicates();
   }
 
+  /// Whether the facility repeats unit numbers across areas.
+  Future<bool> _repeatsUnitNumbers() async =>
+      UnitService.repeatsUnitNumbersAcrossAreas(
+          await FacilitySubcollections.facilityData(widget.facilityId));
+
   Future<void> _checkDuplicates() async {
     if (_parsedRows.isEmpty) return;
 
@@ -260,6 +272,10 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     try {
       // Get existing tenants for facility
       final existingTenants = await TenantService.getTenantsForFacility(widget.facilityId);
+      final repeatAcrossAreas = await _repeatsUnitNumbers();
+      String unitKey(String number, String? area) =>
+          TenantService.csvImportUnitKey(number,
+              area: area, repeatAcrossAreas: repeatAcrossAreas);
 
       // Rows already accepted from this file, so two rows sharing a unit are
       // caught as well. Existing tenants alone would miss them.
@@ -272,6 +288,12 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         final email = (row['email'] as String? ?? '').trim().toLowerCase();
         final phone = (row['phone'] as String? ?? '').replaceAll(RegExp(r'[^\d]'), '');
         final unitNumber = (row['unitNumber'] as String? ?? '').trim();
+        final unitArea = (row['area'] as String? ?? '').trim();
+        // With repeated numbers, "12" in two areas is two units.
+        final rowUnitKey = unitKey(unitNumber, unitArea);
+        final unitShown = unitArea.isEmpty || !repeatAcrossAreas
+            ? unitNumber
+            : '$unitNumber ($unitArea)';
         final name = (row['name'] as String? ?? '').trim();
 
         // Blank never counts as a match. Most of a small operator's rent roll
@@ -315,17 +337,17 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         if (unitNumber.isNotEmpty) {
           final unitMatch = existingTenants
               .where((t) =>
-                  t.unitNumber.trim().toLowerCase() == unitNumber.toLowerCase() && t.isActive)
+                  unitKey(t.unitNumber, t.unitArea) == rowUnitKey && t.isActive)
               .firstOrNull;
           if (unitMatch != null) {
             duplicateIndices.add(i);
-            duplicateReasons[i] = 'Unit "$unitNumber" is already occupied by ${unitMatch.name}';
+            duplicateReasons[i] = 'Unit "$unitShown" is already occupied by ${unitMatch.name}';
             continue;
           }
-          final earlierRow = seenUnits[unitNumber.toLowerCase()];
+          final earlierRow = seenUnits[rowUnitKey];
           if (earlierRow != null) {
             duplicateIndices.add(i);
-            duplicateReasons[i] = 'Unit "$unitNumber" is used twice in this file (row for $earlierRow)';
+            duplicateReasons[i] = 'Unit "$unitShown" is used twice in this file (row for $earlierRow)';
             continue;
           }
         }
@@ -333,7 +355,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         final label = name.isNotEmpty ? name : 'row ${i + 1}';
         if (email.isNotEmpty) seenEmails[email] = label;
         if (phone.isNotEmpty) seenPhones[phone] = label;
-        if (unitNumber.isNotEmpty) seenUnits[unitNumber.toLowerCase()] = label;
+        if (unitNumber.isNotEmpty) seenUnits[rowUnitKey] = label;
       }
     } catch (e) {
       if (mounted) {
@@ -362,11 +384,13 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
 
     var consented = 0;
     var consentedWithoutPhone = 0;
+    var refused = 0;
     for (final row in _parsedRows) {
       final consent = parseSmsConsent(
         consentValue: row['smsConsent'] as String?,
         consentDateValue: row['smsConsentDate'] as String?,
       );
+      if (consent.optedOut) refused++;
       if (!consent.optedIn) continue;
       consented++;
       if (!consentIsUsable(optedIn: true, phone: row['phone'] as String?)) {
@@ -377,7 +401,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
     final mappedConsent = (_columnMapping['smsConsent'] ?? '').isNotEmpty ||
         (_columnMapping['smsConsentDate'] ?? '').isNotEmpty;
 
-    final String message;
+    String message;
     if (!mappedConsent) {
       message = 'No SMS consent column mapped, so these tenants are imported as '
           'not opted in and automatic texts will not go to them. That is the '
@@ -388,11 +412,18 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
           'not go to them. Email reminders are unaffected.';
     } else {
       final phoneNote = consentedWithoutPhone > 0
-          ? ' $consentedWithoutPhone of them have no usable mobile number, so '
-              'those still cannot be texted.'
+          ? ' $consentedWithoutPhone of them have no phone number that can take '
+              'texts, so those still cannot be texted.'
           : '';
       message = '$consented of ${_parsedRows.length} tenants record SMS consent '
           'and can receive automatic texts.$phoneNote';
+    }
+    if (refused > 0) {
+      message += ' $refused ${refused == 1 ? 'row says' : 'rows say'} the tenant '
+          'opted out ("opted out", "stop", "declined", ...): imported as opted '
+          'out, and only the tenant can opt back in, by texting START. A plain '
+          '"no" or "N" is imported as not recorded, so consent can still be '
+          'recorded later.';
     }
 
     return Card(
@@ -427,8 +458,29 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
       _currentStep = 4; // Move to results step
     });
 
+    // Read once for the whole file: whether numbers repeat across areas,
+    // and the units a row's area picks between. Unread, rows link by number
+    // as before (a number several units have is then refused per row).
+    var repeatAcrossAreas = false;
+    var units = const <UnitModel>[];
+    try {
+      repeatAcrossAreas = await _repeatsUnitNumbers();
+      if (repeatAcrossAreas) {
+        units = await UnitService.getUnitsForFacility(widget.facilityId);
+      }
+    } catch (_) {}
+
     for (final row in rowsToImport) {
       try {
+        final unitNumber = (row['unitNumber'] as String? ?? '').trim();
+        // With repeated numbers, the row's Area picks which unit it is;
+        // refused (as the row's error) when it can't.
+        final unitId = TenantService.csvImportUnitId(
+          units,
+          unitNumber: unitNumber,
+          area: row['area'] as String?,
+          repeatAcrossAreas: repeatAcrossAreas,
+        );
         final consent = parseSmsConsent(
           consentValue: row['smsConsent'] as String?,
           consentDateValue: row['smsConsentDate'] as String?,
@@ -441,13 +493,16 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
           smsOptInDate: consent.optedIn
               ? (consent.consentedAt ?? DateTime.now())
               : null,
+          smsConsentSource: SmsConsentSources.csvImport,
+          smsRefused: consent.optedOut,
           // Missing contact details are stored as blank. Placeholders like
           // pending@example.com looked harmless but sent that tenant's
           // receipts to a real stranger's mailbox, and made every later
           // blank-email row read as a duplicate of the first.
           email: (row['email'] as String? ?? '').trim(),
           phone: (row['phone'] as String? ?? '').trim(),
-          unitNumber: (row['unitNumber'] as String? ?? '').trim(),
+          unitNumber: unitNumber,
+          unitId: unitId,
           monthlyRate: (row['monthlyRate'] as double? ?? 0.0),
           notes: (row['notes'] as String? ?? '').trim(),
         );
@@ -459,7 +514,7 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         final rowNum = row['_rowNumber'] as int? ?? 0;
         setState(() {
           _errorCount++;
-          _importErrors.add('Row $rowNum: $e');
+          _importErrors.add(TenantService.csvImportRowError(rowNum, e));
         });
       }
     }
@@ -816,6 +871,8 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
         return 'Examples: "(555) 123-4567", "5551234567"';
       case 'unitNumber':
         return 'Examples: "A-101", "Unit 5", "Storage 42"';
+      case 'area':
+        return 'Only needed where the same unit number is used in more than one area. Examples: "Complex 2", "Outdoor"';
       case 'monthlyRate':
         return 'Examples: "150", "89.99", "\$75.00"';
       case 'notes':
@@ -923,7 +980,8 @@ class _TenantCsvImportWizardScreenState extends ConsumerState<TenantCsvImportWiz
                       Text('Name: ${row['name']}', style: const TextStyle(fontWeight: FontWeight.bold)),
                       Text('Email: ${row['email']}'),
                       Text('Phone: ${row['phone']}'),
-                      Text('Unit: ${row['unitNumber']}'),
+                      Text('Unit: ${row['unitNumber']}'
+                          '${(row['area'] as String? ?? '').isEmpty ? '' : ' (${row['area']})'}'),
                       Text('Rate: \$${row['monthlyRate']}'),
                     ],
                   ),

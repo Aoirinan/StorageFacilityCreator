@@ -42,10 +42,16 @@ function moveOut(unitId: string, contractId: string, extra: Record<string, unkno
 async function seed(): Promise<void> {
   await fac().set({ name: 'Acme Storage', ownerUid: OWNER });
   // No email: the confirmation email step is skipped.
-  await fac().collection('tenants').doc('t1').set({ name: 'Ada Park', isActive: true, unitNumber: '101', monthlyRate: 250 });
+  await fac().collection('tenants').doc('t1').set({
+    name: 'Ada Park',
+    isActive: true,
+    unitNumber: '101',
+    unitId: 'u101',
+    monthlyRate: 250,
+  });
   const units = fac().collection('units');
   await units.doc('u101').set({ unitNumber: '101', status: 'occupied', tenantId: 't1', monthlyRate: 100 });
-  await units.doc('u102').set({ unitNumber: '102', status: 'lockout', tenantId: 't1', monthlyRate: 150 });
+  await units.doc('u102').set({ unitNumber: '102', status: 'lockout', tenantId: 't1', monthlyRate: 150, area: 'Complex 3' });
   const contracts = fac().collection('contracts');
   await contracts.doc('c101').set({ tenantId: 't1', unitId: 'u101', isActive: true, status: 'active' });
   await contracts.doc('c102').set({ tenantId: 't1', unitId: 'u102', isActive: true, status: 'active' });
@@ -75,6 +81,8 @@ test("one of two units: that unit's rent comes off, the unit number moves, still
   const t = await tenant();
   assert.equal(t.monthlyRate, 150);
   assert.equal(t.unitNumber, '102');
+  assert.equal(t.unitId, 'u102');
+  assert.equal(t.unitArea, 'Complex 3');
   assert.equal(t.isActive, true);
   const u101 = await unit('u101');
   assert.equal(u101.status, 'available');
@@ -87,6 +95,8 @@ test("one of two units: that unit's rent comes off, the unit number moves, still
   const after = await tenant();
   assert.equal(after.isActive, false);
   assert.equal(after.unitNumber, '');
+  assert.equal('unitId' in after, false);
+  assert.equal('unitArea' in after, false);
   assert.equal(after.monthlyRate, 150);
   const gate = (await fac().collection('gateAccess').doc('g1').get()).data()!;
   assert.equal(gate.isActive, false);

@@ -42,6 +42,53 @@ enum PaymentMethod {
   cash,
   square,
   stripe,
+  venmo,
+  zelle,
+  /// Money received some other way. Also what a stored method this app has
+  /// no name for reads as (see [paymentMethodFromStored]).
+  other,
+}
+
+/// The methods an operator can record for money taken outside the card
+/// flow: the Record payment dialog, the Create Payment screen and Enter past
+/// history. Kept in step with HISTORY_PAYMENT_METHODS in
+/// functions-automation/src/tenantPastHistory.ts and the method regex in
+/// firestore-rules-src/01-shared-functions.rules.
+const List<PaymentMethod> manualPaymentMethods = [
+  PaymentMethod.cash,
+  PaymentMethod.check,
+  PaymentMethod.venmo,
+  PaymentMethod.zelle,
+  PaymentMethod.bankTransfer,
+  PaymentMethod.other,
+];
+
+/// The method a payment stored with [stored] has.
+///
+/// A missing method still reads as cash, as it always has. A method this
+/// app has no name for (one added after this build) reads as
+/// [PaymentMethod.other] rather than cash: it used to read as cash, and
+/// processing such a payment then rewrote it to cash.
+PaymentMethod paymentMethodFromStored(Object? stored) {
+  if (stored == null || stored == '') return PaymentMethod.cash;
+  for (final method in PaymentMethod.values) {
+    if (method.name == stored) return method;
+  }
+  return PaymentMethod.other;
+}
+
+/// "Payment - Check #1234", "Payment - Venmo: June rent": the ledger line for
+/// money received. recordTenantPastHistory builds the same line.
+String receivedPaymentDescription(
+  PaymentMethod method, {
+  String? reference,
+  String? notes,
+}) {
+  final ref = reference?.trim() ?? '';
+  final note = notes?.trim() ?? '';
+  return 'Payment - ${method.displayName}'
+      '${ref.isNotEmpty ? ' #$ref' : ''}'
+      '${note.isNotEmpty ? ': $note' : ''}';
 }
 
 enum BillingCycle {
@@ -68,6 +115,8 @@ class PaymentModel {
   final String? transactionId;
   final String? externalPaymentId; // Square/Stripe transaction ID
   final String? notes;
+  /// Check number or Venmo/Zelle reference the operator typed in.
+  final String? reference;
   final String? receiptUrl;
   final String? depositId; // Link to deposit if included in a deposit
   final Map<String, dynamic>? metadata;
@@ -93,6 +142,7 @@ class PaymentModel {
     this.transactionId,
     this.externalPaymentId,
     this.notes,
+    this.reference,
     this.receiptUrl,
     this.depositId,
     this.metadata,
@@ -140,15 +190,13 @@ class PaymentModel {
       status: status,
       storedStatus:
           status == PaymentStatus.other ? '${data['status']}' : null,
-      method: PaymentMethod.values.firstWhere(
-        (e) => e.name == data['method'],
-        orElse: () => PaymentMethod.cash,
-      ),
+      method: paymentMethodFromStored(data['method']),
       dueDate: dueDateValue,
       paidDate: paidDateValue,
       transactionId: data['transactionId'],
       externalPaymentId: data['externalPaymentId'],
       notes: data['notes'],
+      reference: readTrimmed(data['reference']),
       receiptUrl: data['receiptUrl'],
       depositId: data['depositId'],
       metadata: data['metadata'] != null 
@@ -178,6 +226,8 @@ class PaymentModel {
       'transactionId': transactionId,
       'externalPaymentId': externalPaymentId,
       'notes': notes,
+      if (reference != null && reference!.trim().isNotEmpty)
+        'reference': reference!.trim(),
       'receiptUrl': receiptUrl,
       if (depositId != null && depositId!.isNotEmpty) 'depositId': depositId,
       'metadata': metadata,
@@ -206,6 +256,7 @@ class PaymentModel {
     String? transactionId,
     String? externalPaymentId,
     String? notes,
+    String? reference,
     String? receiptUrl,
     String? depositId,
     Map<String, dynamic>? metadata,
@@ -230,6 +281,7 @@ class PaymentModel {
       transactionId: transactionId ?? this.transactionId,
       externalPaymentId: externalPaymentId ?? this.externalPaymentId,
       notes: notes ?? this.notes,
+      reference: reference ?? this.reference,
       receiptUrl: receiptUrl ?? this.receiptUrl,
       depositId: depositId ?? this.depositId,
       metadata: metadata ?? this.metadata,
@@ -307,24 +359,7 @@ class PaymentModel {
     return words[0].toUpperCase() + words.substring(1);
   }
   
-  String get methodDisplayName {
-    switch (method) {
-      case PaymentMethod.creditCard:
-        return 'Credit Card';
-      case PaymentMethod.debitCard:
-        return 'Debit Card';
-      case PaymentMethod.bankTransfer:
-        return 'Bank Transfer';
-      case PaymentMethod.check:
-        return 'Check';
-      case PaymentMethod.cash:
-        return 'Cash';
-      case PaymentMethod.square:
-        return 'Square';
-      case PaymentMethod.stripe:
-        return 'Stripe';
-    }
-  }
+  String get methodDisplayName => method.displayName;
 }
 
 // Extension for enum display names
@@ -376,6 +411,12 @@ extension PaymentMethodExtension on PaymentMethod {
         return 'Square';
       case PaymentMethod.stripe:
         return 'Stripe';
+      case PaymentMethod.venmo:
+        return 'Venmo';
+      case PaymentMethod.zelle:
+        return 'Zelle';
+      case PaymentMethod.other:
+        return 'Other';
     }
   }
 }

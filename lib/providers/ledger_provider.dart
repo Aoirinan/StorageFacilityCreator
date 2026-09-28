@@ -3,7 +3,12 @@ import '../models/ledger_entry_model.dart';
 import '../services/ledger_service.dart';
 
 /// Provider for ledger entries stream (real-time)
-final ledgerStreamProvider = StreamProvider.family<List<LedgerEntry>, LedgerParams>((ref, params) {
+///
+/// autoDispose: previous / next on the ledger opens one tenant's ledger
+/// after another, and each kept its Firestore listener open for the rest of
+/// the session. Only the pages showing a ledger (the ledger, the tenant's
+/// page) keep it open now.
+final ledgerStreamProvider = StreamProvider.autoDispose.family<List<LedgerEntry>, LedgerParams>((ref, params) {
   return LedgerService.getLedgerStream(
     tenantId: params.tenantId,
     facilityId: params.facilityId,
@@ -27,7 +32,7 @@ final ledgerEntriesProvider = FutureProvider.family<List<LedgerEntry>, LedgerPar
 /// only charge was voided). The stream is uncapped for a tenant, so summing
 /// it gives the same answer as the server sum and moves with every change.
 final ledgerBalanceProvider =
-    Provider.family<AsyncValue<double>, LedgerParams>((ref, params) {
+    Provider.autoDispose.family<AsyncValue<double>, LedgerParams>((ref, params) {
   return ref
       .watch(ledgerStreamProvider(params))
       .whenData(sumPostedLedgerEntries);

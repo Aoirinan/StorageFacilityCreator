@@ -31,14 +31,14 @@ test('super admins always pass, so the flow can be tested before launch', () => 
 });
 
 test('one named address can be let through while the flag is still off', () => {
-  const c = config({ allowedTestRecipients: ['caprockstorage@gmail.com'] });
-  assert.equal(isOwnerOnboardingRecipientAllowed('caprockstorage@gmail.com', c, isAdmin), true);
+  const c = config({ allowedTestRecipients: ['test-owner@example.com'] });
+  assert.equal(isOwnerOnboardingRecipientAllowed('test-owner@example.com', c, isAdmin), true);
   assert.equal(isOwnerOnboardingRecipientAllowed('someone.else@gmail.com', c, isAdmin), false);
 });
 
 test('recipient matching ignores case and surrounding whitespace', () => {
-  const c = config({ allowedTestRecipients: ['  CapRockStorage@Gmail.com '] });
-  assert.equal(isOwnerOnboardingRecipientAllowed(' caprockstorage@GMAIL.com ', c, isAdmin), true);
+  const c = config({ allowedTestRecipients: ['  Test-Owner@Example.com '] });
+  assert.equal(isOwnerOnboardingRecipientAllowed(' test-owner@EXAMPLE.com ', c, isAdmin), true);
 });
 
 test('an empty recipient is never allowed, even with the flag on', () => {

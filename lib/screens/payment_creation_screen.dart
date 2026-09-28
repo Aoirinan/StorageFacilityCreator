@@ -5,45 +5,37 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:go_router/go_router.dart';
 import '../models/payment_model.dart';
+import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/providers/ledger_provider.dart';
 import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/facility_provider.dart';
 import '../models/provider_params.dart';
 import '../theme/app_theme.dart';
 import 'tenant_creation_screen.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 import '../router/app_route.dart';
 import 'package:sfcapp/router/back_navigation.dart';
 
-/// The range `showDatePicker` may open on for a due date.
+/// Record a payment received from a tenant (Payments -> Create Payment, and
+/// the calendar's "Payment received").
 ///
-/// The picker asserts that `initialDate` falls inside `[firstDate, lastDate]`
-/// and throws otherwise, so the bounds have to stretch to wherever the form
-/// currently sits rather than being fixed at today..today+365. The date can
-/// start outside that window: the calendar's "add a payment due on this date"
-/// hands in whichever day the operator tapped, which is often in the past.
-({DateTime first, DateTime last}) dueDatePickerBounds({
-  required DateTime selected,
-  required DateTime now,
-}) {
-  final defaultLast = now.add(const Duration(days: 365));
-  return (
-    first: selected.isBefore(now) ? selected : now,
-    last: selected.isAfter(defaultLast) ? selected : defaultLast,
-  );
-}
-
+/// This screen used to create a "payment request": a pending payment doc
+/// with a pending ledger entry that nothing ever posted, behind a required
+/// contract that tenants imported without one could not pick ("Select a
+/// tenant and contract first"). The rules refused that payload for owners
+/// anyway (a client may only create a payment that is completed and dated
+/// now), so the screen saved nothing. It now records money received today
+/// through the same path as the tenant page's Record payment dialog
+/// (PaymentService.recordManualPayment): a completed payment, a posted
+/// ledger line, and paidThrough moved on by the months it buys. Money
+/// received on earlier dates goes through Enter past history.
 class PaymentCreationScreen extends ConsumerStatefulWidget {
   final String facilityId;
-
-  /// Due date to open on. The calendar's "Add a payment due on this date"
-  /// action passes the day the operator tapped; it used to be dropped on the
-  /// floor and the form always opened thirty days out.
-  final DateTime? initialDueDate;
 
   const PaymentCreationScreen({
     super.key,
     required this.facilityId,
-    this.initialDueDate,
   });
 
   @override
@@ -53,30 +45,24 @@ class PaymentCreationScreen extends ConsumerStatefulWidget {
 class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
+  final _referenceController = TextEditingController();
   final _notesController = TextEditingController();
-  
-  String _selectedTenantId = '';
-  String _selectedContractId = '';
-  PaymentMethod _selectedMethod = PaymentMethod.square;
-  late DateTime _selectedDueDate;
-  bool _submitting = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _selectedDueDate =
-        widget.initialDueDate ?? DateTime.now().add(const Duration(days: 30));
-  }
+  TenantModel? _selectedTenant;
+  PaymentMethod _selectedMethod = PaymentMethod.cash;
+  bool _submitting = false;
 
   @override
   void dispose() {
     _amountController.dispose();
+    _referenceController.dispose();
     _notesController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final today = DateTime.now();
     return KeyboardScrollable(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -85,6 +71,11 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(
+                'Record a payment received',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 16),
               // Tenant selection
               Consumer(
                 builder: (context, ref, child) {
@@ -145,9 +136,10 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                           ),
                         );
                       }
-                      
+
+                      final selectedId = _selectedTenant?.id;
                       return DropdownButtonFormField<String>(
-                        value: _selectedTenantId.isEmpty ? null : _selectedTenantId,
+                        value: tenants.any((t) => t.id == selectedId) ? selectedId : null,
                         decoration: const InputDecoration(
                           labelText: 'Tenant *',
                           border: OutlineInputBorder(),
@@ -160,8 +152,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                         }).toList(),
                         onChanged: (value) {
                           setState(() {
-                            _selectedTenantId = value ?? '';
-                            _selectedContractId = ''; // Reset contract selection
+                            _selectedTenant = tenants.where((t) => t.id == value).firstOrNull;
                           });
                         },
                         validator: (value) {
@@ -178,68 +169,11 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                 },
               ),
               const SizedBox(height: 16),
-              
-              // Contract selection
-              if (_selectedTenantId.isNotEmpty)
-                Consumer(
-                  builder: (context, ref, child) {
-                    final params = FacilityTenantParams(
-                      facilityId: widget.facilityId,
-                      tenantId: _selectedTenantId,
-                    );
-                    return ref.watch(tenantContractsProvider(params)).when(
-                      data: (contracts) {
-                        if (contracts.isEmpty) {
-                          return const Card(
-                            child: Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Text('No contracts found for this tenant'),
-                            ),
-                          );
-                        }
-                        
-                        return DropdownButtonFormField<String>(
-                          value: _selectedContractId.isEmpty ? null : _selectedContractId,
-                          decoration: const InputDecoration(
-                            labelText: 'Contract *',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: contracts.map((contract) {
-                            final label = contract.title.trim().isNotEmpty
-                                ? contract.title
-                                : 'Contract ${contract.id.substring(0, 8)}...';
-                            return DropdownMenuItem(
-                              value: contract.id,
-                              child: Text(label),
-                            );
-                          }).toList(),
-                          onChanged: (value) {
-                            setState(() {
-                              _selectedContractId = value ?? '';
-                            });
-                          },
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please select a contract';
-                            }
-                            return null;
-                          },
-                        );
-                      },
-                      loading: () => const _InlineLoader(message: 'Loading contracts...'),
-                      error: (_, __) => const Card(
-                        child: Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text('Unable to load contracts for this tenant.'),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              const SizedBox(height: 16),
-              if (_selectedTenantId.isNotEmpty) _TenantSnapshot(facilityId: widget.facilityId, tenantId: _selectedTenantId),
-              const SizedBox(height: 16),
-              
+              if (_selectedTenant != null) ...[
+                _TenantSnapshot(facilityId: widget.facilityId, tenantId: _selectedTenant!.id),
+                const SizedBox(height: 16),
+              ],
+
               // Amount
               TextFormField(
                 controller: _amountController,
@@ -248,28 +182,30 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                   prefixText: '\$',
                   border: OutlineInputBorder(),
                 ),
-                keyboardType: TextInputType.number,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'Please enter an amount';
                   }
                   final amount = double.tryParse(value);
-                  if (amount == null || amount <= 0) {
+                  if (amount == null || amount < 0.01) {
                     return 'Please enter a valid amount';
                   }
                   return null;
                 },
               ),
               const SizedBox(height: 16),
-              
-              // Payment method
+
+              // Payment method: the ways money reaches an owner outside the
+              // card flow. Card payments go through the tenant page's Stripe
+              // buttons, which record themselves.
               DropdownButtonFormField<PaymentMethod>(
-                value: _selectedMethod,
+                initialValue: _selectedMethod,
                 decoration: const InputDecoration(
                   labelText: 'Payment Method *',
                   border: OutlineInputBorder(),
                 ),
-                items: PaymentMethod.values.map((method) {
+                items: manualPaymentMethods.map((method) {
                   return DropdownMenuItem(
                     value: method,
                     child: Text(method.displayName),
@@ -277,25 +213,53 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                 }).toList(),
                 onChanged: (value) {
                   setState(() {
-                    _selectedMethod = value ?? PaymentMethod.square;
+                    _selectedMethod = value ?? PaymentMethod.cash;
                   });
                 },
               ),
               const SizedBox(height: 16),
-              
-              // Due date
-              InkWell(
-                onTap: _selectDueDate,
-                child: InputDecorator(
-                  decoration: const InputDecoration(
-                    labelText: 'Due Date *',
-                    border: OutlineInputBorder(),
-                  ),
-                  child: Text(_formatDate(_selectedDueDate)),
+
+              TextFormField(
+                controller: _referenceController,
+                decoration: const InputDecoration(
+                  labelText: 'Check # / reference',
+                  border: OutlineInputBorder(),
+                ),
+                maxLength: 100,
+              ),
+              const SizedBox(height: 8),
+
+              // Date received: today. The rules date a client-recorded
+              // payment at the server's clock.
+              InputDecorator(
+                decoration: const InputDecoration(
+                  labelText: 'Date received',
+                  border: OutlineInputBorder(),
+                ),
+                child: Text('Today (${_formatDate(today)})'),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      'Received on an earlier date? ',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
+                    ),
+                    TextButton(
+                      onPressed: _selectedTenant == null
+                          ? null
+                          : () => showTenantPastHistoryDialog(context, _selectedTenant!),
+                      child: Text(_selectedTenant == null
+                          ? 'Pick a tenant, then use Enter past history'
+                          : 'Enter past history for ${_selectedTenant!.name}'),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 16),
-              
+
               // Notes
               TextFormField(
                 controller: _notesController,
@@ -307,9 +271,6 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
               ),
               const SizedBox(height: 24),
 
-              // The form had no submit control at all: _submitForm was written
-              // but never wired, so an operator could fill this in from the
-              // payments list or the calendar and had no way to save it.
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
@@ -321,7 +282,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.save),
-                  label: Text(_submitting ? 'Saving...' : 'Create Payment'),
+                  label: Text(_submitting ? 'Saving...' : 'Record payment'),
                 ),
               ),
               const SizedBox(height: 16),
@@ -332,25 +293,6 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
       );
   }
 
-  void _selectDueDate() async {
-    final bounds = dueDatePickerBounds(
-      selected: _selectedDueDate,
-      now: DateTime.now(),
-    );
-    final date = await showDatePicker(
-      context: context,
-      initialDate: _selectedDueDate,
-      firstDate: bounds.first,
-      lastDate: bounds.last,
-    );
-    
-    if (date != null) {
-      setState(() {
-        _selectedDueDate = date;
-      });
-    }
-  }
-
   String _formatDate(DateTime date) {
     return '${date.month}/${date.day}/${date.year}';
   }
@@ -358,33 +300,34 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
   void _submitForm() async {
     if (_submitting) return;
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedTenantId.isEmpty || _selectedContractId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a tenant and contract first')),
-      );
-      return;
-    }
+    final tenant = _selectedTenant;
+    if (tenant == null) return;
 
-    final amount = double.parse(_amountController.text);
+    final amount = double.parse(_amountController.text.trim());
+    String? trimmed(TextEditingController c) {
+      final v = c.text.trim();
+      return v.isEmpty ? null : v;
+    }
 
     setState(() => _submitting = true);
     try {
-      await ref.read(paymentOperationsProvider.notifier).createPayment(
-        tenantId: _selectedTenantId,
+      // The contract is not asked for: the payment stores the tenant's own
+      // contractId, or '' for a tenant without one, as the other writers do.
+      await ref.read(paymentOperationsProvider.notifier).recordManualPayment(
         facilityId: widget.facilityId,
-        contractId: _selectedContractId,
+        tenantId: tenant.id,
         amount: amount,
         method: _selectedMethod,
-        dueDate: _selectedDueDate,
-        notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+        notes: trimmed(_notesController),
+        reference: trimmed(_referenceController),
       );
-      
+
       if (mounted) {
-        // Invalidate providers to refresh payment lists
         ref.invalidate(paymentListProvider(widget.facilityId));
         ref.invalidate(paymentStatsProvider(widget.facilityId));
+        ref.invalidate(facilityTenantsProvider(widget.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Payment created successfully')),
+          const SnackBar(content: Text('Payment recorded')),
         );
         // The calendar reaches this screen with context.go, which leaves
         // nothing on the stack to pop, so fall back to the payments list
@@ -394,7 +337,7 @@ class _PaymentCreationScreenState extends ConsumerState<PaymentCreationScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error creating payment: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
+          SnackBar(content: Text('Error recording payment: ${ErrorMessageHelper.getUserFriendlyMessage(e)}')),
         );
       }
     } finally {
@@ -441,10 +384,24 @@ class _TenantSnapshot extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final params = FacilityTenantParams(facilityId: facilityId, tenantId: tenantId);
     final summaryAsync = ref.watch(tenantPaymentSummaryProvider(params));
+    // Outstanding Balance is the ledger's: the sum of posted entries, the
+    // Ledger screen's Current Balance. It summed unpaid payment docs, which
+    // leaves out every rent charge the monthly job raises, so the two
+    // screens disagreed about what a tenant owed.
+    final balanceAsync = ref.watch(ledgerBalanceProvider(
+      LedgerParams(tenantId: tenantId, facilityId: facilityId),
+    ));
 
     return summaryAsync.when(
       data: (summary) {
-        final outstanding = (summary['outstanding'] as double?) ?? 0.0;
+        final balance = balanceAsync.hasError ? null : balanceAsync.value;
+        final balanceText = balanceAsync.hasError
+            ? 'Unavailable'
+            : balance == null
+                ? '…'
+                : balance < 0
+                    ? '(\$${balance.abs().toStringAsFixed(2)}) credit'
+                    : '\$${balance.toStringAsFixed(2)}';
         final pendingCount = (summary['pendingCount'] as int?) ?? 0;
         final nextDueDate = summary['nextDueDate'] as DateTime?;
         final recentPending = (summary['recentPending'] as List<PaymentModel>? ?? const []);
@@ -472,8 +429,12 @@ class _TenantSnapshot extends ConsumerWidget {
                     Expanded(
                       child: _MetricTile(
                         label: 'Outstanding Balance',
-                        value: '\$${outstanding.toStringAsFixed(2)}',
-                        valueColor: outstanding > 0 ? AppTheme.error : AppTheme.success,
+                        value: balanceText,
+                        valueColor: balance == null
+                            ? null
+                            : balance > 0
+                                ? AppTheme.error
+                                : AppTheme.success,
                       ),
                     ),
                     const SizedBox(width: 12),

@@ -10,14 +10,19 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_service.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
+import 'package:sfcapp/models/document_logo_layout.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
 import 'package:sfcapp/models/facility_public_settings_model.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
+import 'package:sfcapp/services/unit_service.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
+import 'package:sfcapp/widgets/document_logo_layout_editor.dart';
+import 'package:sfcapp/widgets/unit_numbers_repeat_setting.dart';
 import '../constants/facility_capacity.dart';
 import 'package:sfcapp/utils/save_then_publish.dart';
 
@@ -81,11 +86,28 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   bool _isUploadingLogo = false;
   String? _logoError;
 
+  /// Logo size/position/name-text on printed documents; saved with Update
+  /// Facility like the logo itself.
+  late DocumentLogoLayout _documentLogo;
+
   String? _selectedTimeZone;
   String _lateFeeType = 'flat';
 
+  /// billingSettings.enableAutoLateFees. Off when the field is missing, as
+  /// the delinquency job reads it: the fee above is only charged
+  /// automatically once this is on.
+  late bool _autoLateFees;
+
   bool _isLoading = false;
   String? _errorMessage;
+
+  /// "Unit numbers repeat across areas", as the switch shows it. Saved only
+  /// when it differs from the facility's.
+  late bool _unitNumbersRepeat;
+
+  /// Why the switch could not be turned off (units still share a number).
+  String? _unitNumbersRepeatError;
+  bool _checkingUnitNumbersRepeat = false;
 
   bool _isLoadingPublicSettings = true;
   // The rental form shows defaults until the saved settings load, and saving
@@ -140,11 +162,13 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     _statementMessageController =
         TextEditingController(text: widget.facility.statementMessage ?? '');
     _logoUrl = widget.facility.logoUrl;
+    _documentLogo = widget.facility.documentLogo;
     _phoneController = TextEditingController(text: widget.facility.phone ?? '');
     _emailController = TextEditingController(text: widget.facility.email ?? '');
 
     // Initialize billing settings
     final billingSettings = widget.facility.billingSettings;
+    _autoLateFees = LateFeeRules.autoLateFeesEnabled(billingSettings);
     if (billingSettings != null) {
       _gracePeriodController = TextEditingController(
         text: (billingSettings['gracePeriodDays'] ?? 5).toString(),
@@ -165,6 +189,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     );
     _selectedTimeZone =
         widget.facility.timeZone ?? TimeZoneHelper.defaultTimeZoneId;
+    _unitNumbersRepeat = widget.facility.unitNumbersRepeatAcrossAreas;
     _loadPublicRentalSettings();
   }
 
@@ -495,7 +520,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         ),
         const SizedBox(height: 4),
         const Text(
-          'Printed at the top of statements and invoices. PNG or JPG, under 2 MB.',
+          'Printed at the top of statements, invoices and receipts. PNG or JPG, under 2 MB. Set its size and position below.',
           style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
         ),
         const SizedBox(height: 8),
@@ -552,6 +577,32 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     );
   }
 
+  /// Logo size, position and name toggle, with a live preview that follows
+  /// the name, address, mailing address, phone and email fields as they are
+  /// typed, so the owner sees the header before saving.
+  Widget _buildLogoLayoutEditor() {
+    final hasLogo = _logoUrl != null && _logoUrl!.isNotEmpty;
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        _nameController,
+        _addressController,
+        _mailingAddressController,
+        _phoneController,
+        _emailController,
+      ]),
+      builder: (context, _) => DocumentLogoLayoutEditor(
+        value: _documentLogo,
+        onChanged: (v) => setState(() => _documentLogo = v),
+        logo: hasLogo ? NetworkImage(_logoUrl!) : null,
+        facilityName: _nameController.text,
+        address: _addressController.text,
+        mailingAddress: _mailingAddressController.text,
+        phone: _phoneController.text,
+        email: _emailController.text,
+      ),
+    );
+  }
+
   Future<void> _copyToClipboard(String label, String value) async {
     await Clipboard.setData(ClipboardData(text: value));
     if (!mounted) return;
@@ -602,6 +653,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
           'gracePeriodDays': gracePeriod,
           'lateFeeType': _lateFeeType,
           'lateFeeAmount': lateFeeAmount,
+          'enableAutoLateFees': _autoLateFees,
         };
       } catch (e) {
         if (kDebugMode) {
@@ -620,6 +672,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         mailingAddress: _mailingAddressController.text.trim(),
         statementMessage: _statementMessageController.text.trim(),
         logoUrl: _logoUrl == widget.facility.logoUrl ? null : (_logoUrl ?? ''),
+        documentLogo: _documentLogo == widget.facility.documentLogo
+            ? null
+            : _documentLogo,
         phone: _phoneController.text.trim().isEmpty
             ? null
             : _phoneController.text.trim(),
@@ -629,6 +684,12 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         timeZone: _selectedTimeZone,
         billingSettings: billingSettings,
         totalUnits: totalUnits,
+        // Written only when changed; turning it off is refused there while
+        // two units share a number.
+        unitNumbersRepeatAcrossAreas: _unitNumbersRepeat ==
+                widget.facility.unitNumbersRepeatAcrossAreas
+            ? null
+            : _unitNumbersRepeat,
       );
 
       // No stats step on save. It used to await a client-side orphan heal
@@ -668,10 +729,51 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = e.toString();
+          _errorMessage =
+              e is UserFacingException ? e.message : e.toString();
         });
       }
     }
+  }
+
+  /// The "Unit numbers repeat across areas" switch. Turning it off checks
+  /// first that no two units share a number (the save checks again).
+  Future<void> _setUnitNumbersRepeat(bool on) async {
+    if (on || !widget.facility.unitNumbersRepeatAcrossAreas) {
+      setState(() {
+        _unitNumbersRepeat = on;
+        _unitNumbersRepeatError = null;
+      });
+      return;
+    }
+    setState(() {
+      _checkingUnitNumbersRepeat = true;
+      _unitNumbersRepeatError = null;
+    });
+    String? refusal;
+    try {
+      await UnitService.checkCanStopRepeatingUnitNumbers(widget.facility.id);
+    } on RepeatedUnitNumbersException catch (e) {
+      refusal = e.message;
+    } catch (_) {
+      // Could not check now: Update Facility checks again before saving.
+    }
+    if (!mounted) return;
+    setState(() {
+      _checkingUnitNumbersRepeat = false;
+      _unitNumbersRepeatError = refusal;
+      if (refusal == null) _unitNumbersRepeat = false;
+    });
+  }
+
+  Widget _buildUnitNumbersRepeatSetting() {
+    return UnitNumbersRepeatSetting(
+      value: _unitNumbersRepeat,
+      onChanged: _setUnitNumbersRepeat,
+      checking: _checkingUnitNumbersRepeat,
+      error: _unitNumbersRepeatError,
+      onlineRentalsEnabled: !_isLoadingPublicSettings && _publicRentalsEnabled,
+    );
   }
 
   Widget _sectionTitle(String title) {
@@ -798,6 +900,8 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                   const SizedBox(height: 16),
                   _buildLogoPicker(),
                   const SizedBox(height: 16),
+                  _buildLogoLayoutEditor(),
+                  const SizedBox(height: 16),
                   TextFormField(
                     controller: _statementMessageController,
                     decoration: const InputDecoration(
@@ -866,6 +970,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       });
                     },
                   ),
+                  const SizedBox(height: 16),
+
+                  _buildUnitNumbersRepeatSetting(),
                   const SizedBox(height: 24),
 
                   _sectionTitle('Billing Settings'),
@@ -941,6 +1048,23 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       }
                       return null;
                     },
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    key: const Key('facility-auto-late-fees'),
+                    contentPadding: EdgeInsets.zero,
+                    value: _autoLateFees,
+                    onChanged: (value) =>
+                        setState(() => _autoLateFees = value),
+                    title: const Text('Charge late fees automatically'),
+                    subtitle: Text(_autoLateFees
+                        ? 'Each night, tenants who owe a balance and are past '
+                            'the grace period get this late fee on their '
+                            'ledger, once a month. Only tenants with a '
+                            '"paid through" date set are charged.'
+                        : 'Off: no late fee is added to any tenant\'s ledger '
+                            'automatically. When on, fees only apply to '
+                            'tenants with a "paid through" date set.'),
                   ),
                   const SizedBox(height: 24),
 

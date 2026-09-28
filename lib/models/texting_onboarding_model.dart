@@ -15,6 +15,25 @@ enum TextingRegistrationStatus {
   }
 }
 
+/// How a facility's tenants agree to texts. Keys must match CONSENT_METHODS in
+/// functions-messaging-twilio/src/a2pCampaign.ts; the campaign filed with the
+/// carriers describes only the methods the owner selects here. Texting START
+/// is not offered: it only restores a tenant's own earlier STOP, so it is not
+/// a way for a new tenant to opt in.
+class TextingConsentMethod {
+  static const onlineForm = 'online_form';
+  static const leaseClause = 'lease_clause';
+  static const signedForm = 'signed_form';
+  static const verbalRecorded = 'verbal_recorded';
+
+  static const labels = <String, String>{
+    onlineForm: 'Checkbox on our online rental form',
+    leaseClause: 'Optional SMS clause in our written rental agreement',
+    signedForm: 'Separate SMS consent form signed at the office',
+    verbalRecorded: 'In person at the office, recorded by staff',
+  };
+}
+
 class TextingBusinessDetails {
   final String legalBusinessName;
   final String? dba;
@@ -111,10 +130,30 @@ class TextingOnboardingSnapshot {
   /// be rebuilt, and locking on the profile's existence stranded owners whose
   /// saved details were wrong.
   final bool businessDetailsLocked;
-  /// Set once the bundle passes evaluation and goes to Twilio for review.
+  /// The customer profile is with Twilio (in review or approved), so the
+  /// fields it carries are read-only. Saving can still rebuild the A2P
+  /// messaging registration (trust product) unless [businessDetailsLocked].
+  final bool profileDetailsLocked;
+  /// Why the form is (partly) locked, written by the server.
+  final String? lockReason;
+  /// Set once both the business profile and the A2P messaging registration
+  /// have passed evaluation and are with Twilio (submitted or approved).
   final bool bundleReady;
+  /// Both bundles approved by Twilio.
+  final bool bundleApproved;
   /// Which carrier-policy fields failed, when the bundle is not ready.
   final String? bundleIssues;
+  /// Twilio's status for the business profile (draft, pending-review,
+  /// in-review, twilio-approved, twilio-rejected), when one exists.
+  final String? bundleProfileStatus;
+  /// Twilio's status for the A2P messaging registration (trust product).
+  final String? bundleProductStatus;
+  /// How tenants agree to texts (keys in [TextingConsentMethod]).
+  final List<String> consentMethods;
+  /// The name every text and filed sample opens with, chosen by the server.
+  final String? senderName;
+  /// Registration filed but the campaign waits for the brand to be approved.
+  final bool campaignPending;
 
   const TextingOnboardingSnapshot({
     required this.status,
@@ -130,9 +169,23 @@ class TextingOnboardingSnapshot {
     this.rejectedAt,
     required this.hasTrustProfile,
     this.businessDetailsLocked = false,
+    this.profileDetailsLocked = false,
+    this.lockReason,
     this.bundleReady = false,
+    this.bundleApproved = false,
     this.bundleIssues,
+    this.bundleProfileStatus,
+    this.bundleProductStatus,
+    this.consentMethods = const [],
+    this.senderName,
+    this.campaignPending = false,
   });
+
+  /// Whether "Reserve number & submit" may run. It buys a phone number
+  /// before the brand step, and the brand step refuses a bundle Twilio's
+  /// pre-check flagged, so a flagged bundle would buy a number for nothing.
+  bool get readyToReserveNumber =>
+      bundleReady && (bundleIssues?.trim().isEmpty ?? true);
 
   bool get isUnderReview =>
       status == TextingRegistrationStatus.submitted ||
@@ -148,7 +201,7 @@ class TextingOnboardingSnapshot {
 
   int get resumeStep {
     if (!hasTrustProfile || businessDetails?.isComplete != true) return 0;
-    if (useCases.isEmpty) return 1;
+    if (useCases.isEmpty || consentMethods.isEmpty) return 1;
     return 2;
   }
 
@@ -173,11 +226,39 @@ class TextingOnboardingSnapshot {
       hasTrustProfile: map['hasTrustProfile'] == true ||
           (map['twilioTrustProfileSid'] as String?)?.isNotEmpty == true,
       businessDetailsLocked: map['businessDetailsLocked'] == true,
+      // Older servers only sent businessDetailsLocked; treat that as locking
+      // the profile fields too.
+      profileDetailsLocked: map['profileDetailsLocked'] == true ||
+          map['businessDetailsLocked'] == true,
+      lockReason: _nonEmpty(map['lockReason']),
       bundleReady: map['bundleReady'] == true,
-      bundleIssues: (map['bundleIssues'] as String?)?.isEmpty == true
-          ? null
-          : map['bundleIssues'] as String?,
+      bundleApproved: map['bundleApproved'] == true,
+      bundleIssues: _nonEmpty(map['bundleIssues']),
+      bundleProfileStatus: _nonEmpty(map['bundleProfileStatus']),
+      bundleProductStatus: _nonEmpty(map['bundleProductStatus']),
+      consentMethods: _stringList(map['consentMethods']),
+      senderName: _nonEmpty(map['senderName']),
+      campaignPending: map['campaignPending'] == true,
     );
+  }
+
+  static String? _nonEmpty(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// Owner-facing wording for a TrustHub bundle status.
+  static String describeBundleStatus(String? status) {
+    return switch (status) {
+      null => 'Not started',
+      'draft' => 'Not submitted',
+      'pending-review' => 'Submitted to Twilio',
+      'in-review' => 'In review at Twilio',
+      'twilio-approved' => 'Approved',
+      'twilio-rejected' => 'Rejected by Twilio',
+      _ => status,
+    };
   }
 
   static List<String> _stringList(Object? value) {

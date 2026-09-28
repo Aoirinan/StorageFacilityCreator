@@ -355,6 +355,9 @@ class MoveInService {
           tenantId: tenant.id,
           facilityId: facilityId,
           unitNumber: moveInData.unit.unitNumber,
+          // The unit picked in the wizard, by id: by number alone, two
+          // units with one number were a guess.
+          unitId: moveInData.unit.id,
           monthlyRate: monthlyRate > 0 ? monthlyRate : null,
         );
       } else {

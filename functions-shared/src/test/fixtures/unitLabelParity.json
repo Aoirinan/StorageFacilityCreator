@@ -1,0 +1,29 @@
+{
+  "_comment": "formatUnitLabel cases run by functions-shared/src/test/unitLabel.test.ts and test/unit_label_test.dart. Style is 'plain' or 'withPrefix'; a missing area key means no area was passed.",
+  "cases": [
+    { "number": "12", "area": "Complex 2", "includeArea": false, "style": "plain", "expected": "12" },
+    { "number": "12", "area": "Complex 2", "includeArea": true, "style": "plain", "expected": "12 (Complex 2)" },
+    { "number": "12", "area": "Complex 2", "includeArea": false, "style": "withPrefix", "expected": "Unit 12" },
+    { "number": "12", "area": "Complex 2", "includeArea": true, "style": "withPrefix", "expected": "Unit 12 (Complex 2)" },
+    { "number": "12", "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "12", "area": null, "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "12", "area": "", "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "12", "area": "   ", "includeArea": true, "style": "withPrefix", "expected": "Unit 12" },
+    { "number": "12", "area": "\t\n", "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "  12  ", "area": "  Complex 2  ", "includeArea": true, "style": "plain", "expected": "12 (Complex 2)" },
+    { "number": "A  12", "area": "Complex   2", "includeArea": true, "style": "plain", "expected": "A 12 (Complex 2)" },
+    { "number": "B-7", "area": "Outdoor\tstorage", "includeArea": true, "style": "withPrefix", "expected": "Unit B-7 (Outdoor storage)" },
+    { "number": "12", "area": "Boat & RV <North>", "includeArea": true, "style": "plain", "expected": "12 (Boat & RV <North>)" },
+    { "number": "12", "area": "Complex (old)", "includeArea": true, "style": "plain", "expected": "12 (Complex (old))" },
+    { "number": 12, "area": "Complex 2", "includeArea": true, "style": "plain", "expected": "12 (Complex 2)" },
+    { "number": 7, "includeArea": false, "style": "withPrefix", "expected": "Unit 7" },
+    { "number": 12, "area": 3, "includeArea": true, "style": "plain", "expected": "12 (3)" },
+    { "number": "", "area": "Complex 2", "includeArea": true, "style": "plain", "expected": "" },
+    { "number": "   ", "area": "Complex 2", "includeArea": true, "style": "withPrefix", "expected": "" },
+    { "number": null, "area": "Complex 2", "includeArea": true, "style": "plain", "expected": "" },
+    { "number": true, "area": "Complex 2", "includeArea": true, "style": "plain", "expected": "" },
+    { "number": "12", "area": true, "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "12", "area": ["Complex 2"], "includeArea": true, "style": "plain", "expected": "12" },
+    { "number": "Rental house", "area": "Rental house", "includeArea": true, "style": "plain", "expected": "Rental house (Rental house)" }
+  ]
+}
