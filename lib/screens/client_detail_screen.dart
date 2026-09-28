@@ -44,6 +44,7 @@ import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -1272,6 +1273,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           ),
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      // Rent and payments from before the app (a paper
+                      // ledger), saved with their real dates.
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => showTenantPastHistoryDialog(context, tenant),
+                          icon: const Icon(Icons.history_edu_outlined),
+                          label: const Text('Enter past history'),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1521,15 +1536,14 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Mark ${tenant.name} as paid through the end of this month?'),
+            Text('Record a cash payment of ${_formatCurrency(tenant.monthlyRate)} from ${tenant.name}, received today?'),
             const SizedBox(height: 16),
             const Text(
               'This will:',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            const Text('• Create a payment record'),
-            const Text('• Update paidThrough date'),
-            const Text('• Clear the late status'),
+            const Text('• Record the payment and a ledger line'),
+            const Text('• Move paid-through on by the months it covers'),
           ],
         ),
         actions: [
@@ -1569,14 +1583,10 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
       ref.invalidate(paymentListProvider(tenant.facilityId));
       ref.invalidate(paymentStatsProvider(tenant.facilityId));
 
-      // Calculate end of month for display
-      final now = DateTime.now();
-      final endOfMonth = DateTime(now.year, now.month + 1, 0);
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tenant.name} marked as paid through ${endOfMonth.month}/${endOfMonth.year}'),
+            content: Text('Payment recorded for ${tenant.name}'),
             backgroundColor: AppTheme.success,
           ),
         );

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -551,9 +553,16 @@ class PaymentService {
           final reason =
               paymentNotProcessableReason(stored.data()?['status']);
           if (reason != null) return reason;
+          // Keep the method the payment was stored with. The pages pass the
+          // method they parsed, and a method this build had no name for
+          // parsed as cash, so processing a Venmo payment on an older
+          // client rewrote it to cash.
+          final storedMethod = stored.data()?['method'];
           txn.update(paymentDoc, {
             'status': 'paid',
-            'method': method.name,
+            'method': storedMethod is String && storedMethod.isNotEmpty
+                ? storedMethod
+                : method.name,
             'transactionId': transactionId,
             'paidDate': nowTimestamp,
             'paidAt': nowTimestamp,
@@ -604,12 +613,19 @@ class PaymentService {
   /// late fee settled on its own — because paidThrough moves in whole months of
   /// rent, so a deposit equal to one month would otherwise buy a month the
   /// tenant has not paid for.
+  ///
+  /// [reference] is the check number or Venmo/Zelle reference; it is stored
+  /// on the payment and shown in the ledger line ("Payment - Check #1234").
+  /// The payment is dated now: past payments go through Enter past history
+  /// (the recordTenantPastHistory callable), which does not move paidThrough
+  /// from today.
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
     required double amount,
     required PaymentMethod method,
     String? notes,
+    String? reference,
     bool appliesToRent = true,
   }) async {
     try {
@@ -635,6 +651,12 @@ class PaymentService {
       final contractId = tenantData['contractId'] as String? ?? '';
       final snapshotName = (tenantData['name'] as String?)?.trim() ?? '';
       final snapshotUnit = (tenantData['unitNumber'] as String?)?.trim() ?? '';
+      final cleanReference = reference?.trim() ?? '';
+      final ledgerLine = receivedPaymentDescription(
+        method,
+        reference: cleanReference,
+        notes: notes,
+      );
 
       // 1. Create facility-level payment (shows in main Payments screen)
       final facilityPaymentRef = await _firestore
@@ -654,6 +676,7 @@ class PaymentService {
         'paidDate': FieldValue.serverTimestamp(),
         'dueDate': FieldValue.serverTimestamp(),
         if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+        if (cleanReference.isNotEmpty) 'reference': cleanReference,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
@@ -675,12 +698,17 @@ class PaymentService {
         'currency': 'usd',
         'chargeType': 'manual_${method.name}',
         'status': 'succeeded',
-        'description': notes ?? '${method.displayName} payment',
+        'description': notes ??
+            (cleanReference.isNotEmpty
+                ? '${method.displayName} payment #$cleanReference'
+                : '${method.displayName} payment'),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
         'failureCode': null,
         'failureMessage': null,
+        // Lets voiding the payment (Enter past history) find this copy.
+        'facilityPaymentId': facilityPaymentRef.id,
       });
 
       // 3. Ledger entry
@@ -690,13 +718,14 @@ class PaymentService {
           facilityId: facilityId,
           type: LedgerEntryType.payment,
           amount: -amount,
-          description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
+          description: ledgerLine,
           referenceId: facilityPaymentRef.id,
           entryDate: DateTime.now(),
           status: LedgerEntryStatus.posted,
           metadata: {
             'paymentMethod': method.name,
             'paymentId': facilityPaymentRef.id,
+            if (cleanReference.isNotEmpty) 'reference': cleanReference,
           },
         );
       } catch (e) {
@@ -737,157 +766,31 @@ class PaymentService {
     }
   }
 
-  // Mark tenant as paid (creates payment record and updates tenant)
+  /// Mark Paid: record the tenant's payment as received today.
+  ///
+  /// This wrote its own payment doc with status 'paid' and a month-end
+  /// dueDate, which the create rules refuse for everyone but a super admin
+  /// (a client may only create a completed payment dated now), so for an
+  /// owner or manager it failed and nothing was saved. It now goes through
+  /// [recordManualPayment], the Record payment dialog's path: a completed
+  /// payment, a posted ledger line, and paidThrough moved on by the whole
+  /// months [amount] buys (advancePaidThrough).
   static Future<String> markTenantAsPaid({
     required String facilityId,
     required String tenantId,
     required double amount,
     PaymentMethod method = PaymentMethod.cash,
     String? notes,
-  }) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) throw Exception('User not authenticated');
-
-      if (kDebugMode) {
-        print('🔄 Marking tenant as paid: $tenantId');
-      }
-
-      // Get tenant information
-      final tenantDoc = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .get();
-
-      if (!tenantDoc.exists) {
-        throw Exception('Tenant not found');
-      }
-
-      final tenantData = tenantDoc.data()!;
-      final tenantName = tenantData['name'] ?? 'Unknown';
-      final unitNumber = tenantData['unitNumber'] ?? '';
-
-      // Advance paidThrough by the whole months this payment actually covers.
-      //
-      // It used to jump to the end of the current month regardless of amount,
-      // so a tenant three months behind who paid $25 was marked paid through
-      // today: isTenantLate went false, the delinquency job skipped them, and
-      // collection stopped on the rest of the debt. Paying six months forward
-      // had the mirror problem, advancing only to this month's end.
-      final now = DateTime.now();
-      final endOfCurrentMonth = DateTime(now.year, now.month + 1, 0);
-      final monthlyRate = (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0;
-      final existingPaidThrough = (tenantData['paidThrough'] as Timestamp?)?.toDate();
-
-      final newPaidThrough = advancePaidThrough(
-        amountPaid: amount,
-        monthlyRate: monthlyRate,
-        existingPaidThrough: existingPaidThrough,
-        now: now,
-      );
-
-      // Create payment record
-      final paymentRef = await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('payments')
-          .add({
-        'tenantId': tenantId,
-        'facilityId': facilityId,
-        'tenantName': tenantName,
-        'unitNumber': unitNumber,
-        'amount': amount,
-        'status': 'paid',
-        'paidAt': FieldValue.serverTimestamp(),
-        'paidDate': FieldValue.serverTimestamp(),
-        'dueDate': Timestamp.fromDate(endOfCurrentMonth),
-        'method': method.name,
-        'notes': notes,
-        'contractId': tenantData['contractId'] ?? '',
-        'createdByUid': user.uid,
-        'createdBy': user.uid,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'isActive': true,
-      });
-
-      // Update tenant's paidThrough date, only when a whole month was covered.
-      await _firestore
-          .collection('facilities')
-          .doc(facilityId)
-          .collection('tenants')
-          .doc(tenantId)
-          .update({
-        if (newPaidThrough != null) 'paidThrough': Timestamp.fromDate(newPaidThrough),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Create ledger entry and allocate payment
-      try {
-        // Check if ledger entry already exists for this payment
-        final ledgerEntries = await LedgerService.getLedgerEntries(
-          tenantId: tenantId,
-          facilityId: facilityId,
-        );
-        
-        LedgerEntry? existingEntry;
-        try {
-          existingEntry = ledgerEntries.firstWhere(
-            (e) => e.referenceId == paymentRef.id,
-          );
-        } catch (_) {
-          existingEntry = null;
-        }
-
-        if (existingEntry == null) {
-          // Create ledger entry for this payment
-          await LedgerService.createLedgerEntry(
-            tenantId: tenantId,
-            facilityId: facilityId,
-            type: LedgerEntryType.payment,
-            amount: -amount, // Negative for payments
-            description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
-            referenceId: paymentRef.id,
-            entryDate: now,
-            status: LedgerEntryStatus.posted,
-            metadata: {
-              'paymentMethod': method.name,
-              'paymentId': paymentRef.id,
-            },
-          );
-        }
-
-        // Allocate payment to oldest charges
-        await LedgerService.allocatePayment(
-          paymentId: paymentRef.id,
-          tenantId: tenantId,
-          facilityId: facilityId,
-          paymentAmount: amount,
-        );
-      } catch (e) {
-        // Don't fail payment marking if ledger fails
-        if (kDebugMode) {
-          print('⚠️ Error creating/updating ledger entry for payment ${paymentRef.id}: $e');
-        }
-      }
-
-      if (kDebugMode) {
-        print('✅ Tenant marked as paid successfully: $tenantId');
-        print('✅ Payment record created: ${paymentRef.id}');
-        print(newPaidThrough != null
-            ? '✅ Tenant paidThrough updated to: $newPaidThrough'
-            : '✅ Payment recorded; paidThrough unchanged (less than one month)');
-      }
-
-      return paymentRef.id;
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error marking tenant as paid: $e');
-      }
-      rethrow;
-    }
+    String? reference,
+  }) {
+    return recordManualPayment(
+      facilityId: facilityId,
+      tenantId: tenantId,
+      amount: amount,
+      method: method,
+      notes: notes,
+      reference: reference,
+    );
   }
 
   // Helper method to update tenant's paidThrough date
@@ -1181,7 +1084,8 @@ class PaymentService {
       final paymentData = paymentDoc.data()!;
       final tenantId = paymentData['tenantId'] as String;
       final amount = (paymentData['amount'] as num).toDouble();
-      final method = paymentData['method'] as String;
+      final method = paymentMethodFromStored(paymentData['method']).displayName;
+      final reference = (paymentData['reference'] as String?)?.trim() ?? '';
       final paidDate = paymentData['paidDate'] as Timestamp? ?? paymentData['paidAt'] as Timestamp?;
 
       // Get tenant details
@@ -1236,7 +1140,8 @@ class PaymentService {
                 <p><strong>Facility:</strong> $facilityName</p>
                 ${unitNumber.isNotEmpty ? '<p><strong>Unit:</strong> $unitNumber</p>' : ''}
                 <p><strong>Amount:</strong> \$${amount.toStringAsFixed(2)}</p>
-                <p><strong>Payment Method:</strong> ${method.replaceAll('_', ' ').split(' ').map((w) => w[0].toUpperCase() + w.substring(1)).join(' ')}</p>
+                <p><strong>Payment Method:</strong> $method</p>
+                ${reference.isNotEmpty ? '<p><strong>Reference:</strong> ${const HtmlEscape().convert(reference)}</p>' : ''}
                 <p><strong>Payment Date:</strong> $paymentDateStr</p>
                 <p><strong>Payment ID:</strong> $paymentId</p>
               </div>

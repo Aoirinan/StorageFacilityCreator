@@ -21,6 +21,10 @@ import '../providers/invoice_provider.dart';
 import '../widgets/ledger_entry_card.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import '../utils/error_message_helper.dart';
+import 'package:sfcapp/utils/past_history_math.dart';
+import 'package:sfcapp/services/past_history_service.dart';
+import 'package:sfcapp/providers/tenant_provider.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
 /// The ledger's back arrow. The ledger is opened on top of the tenant's page,
 /// so back pops to that page. It used to push a second tenant page on top of
@@ -65,6 +69,7 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   // (neither run saw the other's) or sent the statement twice.
   bool _generatingInvoice = false;
   bool _sendingStatement = false;
+  bool _undoingHistory = false;
 
   @override
   Widget build(BuildContext context) {
@@ -391,7 +396,9 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
+                _buildPastHistorySection(context, entries),
+                const SizedBox(height: 8),
 
                 // Filters Summary
                 if (_hasActiveFilters())
@@ -472,6 +479,100 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
           );
         },
       );
+  }
+
+  /// Enter past history, and each history entry still on the ledger with
+  /// its undo.
+  Widget _buildPastHistorySection(BuildContext context, List<LedgerEntry> entries) {
+    final batches = postedHistoryBatches(entries);
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final b in batches)
+          Card(
+            color: AppTheme.primaryBlueLight.withOpacity(0.08),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.history_edu_outlined, size: 20, color: AppTheme.primaryBlue),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Past history entered ${DateFormat('M/d/yyyy').format(b.savedAt)}: '
+                      '${b.charges} rent charge${b.charges == 1 ? '' : 's'} '
+                      '(\$${b.totalCharges.toStringAsFixed(2)}), '
+                      '${b.payments} payment${b.payments == 1 ? '' : 's'} '
+                      '(\$${b.totalPayments.toStringAsFixed(2)})',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _undoingHistory ? null : () => _undoHistory(context, b),
+                    child: const Text('Undo this history entry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        TextButton.icon(
+          onPressed: () => showTenantPastHistoryDialog(context, widget.tenant, fromLedger: true),
+          icon: const Icon(Icons.history_edu_outlined, size: 18),
+          label: const Text('Enter past history'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _undoHistory(BuildContext context, HistoryBatchSummary batch) async {
+    if (_undoingHistory) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Undo this history entry?'),
+        content: Text(
+          'Voids the ${batch.charges} rent charge${batch.charges == 1 ? '' : 's'} and '
+          '${batch.payments} payment${batch.payments == 1 ? '' : 's'} it added, and puts the '
+          'paid-through date back to what it was. You can then enter the history again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Undo'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _undoingHistory = true);
+    try {
+      final warnings = await PastHistoryService.undo(
+        facilityId: widget.tenant.facilityId,
+        tenantId: widget.tenant.id,
+        requestId: batch.requestId,
+      );
+      ref.invalidate(facilityTenantsProvider(widget.tenant.facilityId));
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(warnings.isEmpty ? 'History entry undone' : 'History entry undone. ${warnings.join(' ')}'),
+          duration: Duration(seconds: warnings.isEmpty ? 4 : 10),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Could not undo: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
+          backgroundColor: AppTheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _undoingHistory = false);
+    }
   }
 
   bool _hasActiveFilters() {

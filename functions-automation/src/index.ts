@@ -50,3 +50,5 @@ export { mirrorOwnerAccountStanding, syncOwnerAccountStandingNightly } from './o
 // Backstop for the delete/offboard paths: nothing should still be billing for
 // a facility or account that no longer exists.
 export { sweepOrphanedSubscriptions } from './orphanedSubscriptionSweep';
+// Paper-ledger history for a tenant (dated charges and payments), and its undo.
+export { recordTenantPastHistory, undoTenantPastHistory } from './tenantPastHistoryCallable';

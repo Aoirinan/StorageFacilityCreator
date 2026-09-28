@@ -174,6 +174,243 @@ test('facility staff can create valid manual tenant payment rows only', async ()
   );
 });
 
+/** The facility payment PaymentService.recordManualPayment writes (Record payment dialog, Create Payment screen). */
+function receivedPayment(uid, extra = {}) {
+  return {
+    tenantId: TENANT_ID,
+    facilityId: FACILITY_ID,
+    contractId: '',
+    tenantName: 'Test Tenant',
+    unitNumber: 'A1',
+    amount: 80,
+    status: 'completed',
+    method: 'venmo',
+    paidAt: serverTimestamp(),
+    paidDate: serverTimestamp(),
+    dueDate: serverTimestamp(),
+    notes: 'June rent',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: uid,
+    isActive: true,
+    ...extra,
+  };
+}
+
+test('an owner records a received payment by Venmo, Zelle or Other, with a check # / reference', async () => {
+  await seedFacility();
+  const payments = testEnv
+    .authenticatedContext(OWNER_UID)
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('payments');
+
+  await assertSucceeds(payments.doc('p-venmo').set(receivedPayment(OWNER_UID, { reference: 'VEN-3345' })));
+  await assertSucceeds(payments.doc('p-zelle').set(receivedPayment(OWNER_UID, { method: 'zelle' })));
+  await assertSucceeds(payments.doc('p-other').set(receivedPayment(OWNER_UID, { method: 'other' })));
+  await assertSucceeds(
+    payments.doc('p-check').set(receivedPayment(OWNER_UID, { method: 'check', reference: '1234' })),
+  );
+  // No tenant name or unit, no contract (imported tenants have none), no notes.
+  const bare = receivedPayment(OWNER_UID, { method: 'cash' });
+  delete bare.tenantName;
+  delete bare.unitNumber;
+  delete bare.notes;
+  await assertSucceeds(payments.doc('p-bare').set(bare));
+
+  await assertFails(payments.doc('p-bad-method').set(receivedPayment(OWNER_UID, { method: 'bitcoin' })));
+  await assertFails(payments.doc('p-long-ref').set(receivedPayment(OWNER_UID, { reference: 'x'.repeat(101) })));
+  await assertFails(payments.doc('p-num-ref').set(receivedPayment(OWNER_UID, { reference: 1234 })));
+  // Received money is dated now; past dates go through recordTenantPastHistory.
+  await assertFails(
+    payments.doc('p-backdated').set(receivedPayment(OWNER_UID, { paidAt: new Date('2026-02-10T12:00:00Z') })),
+  );
+});
+
+test('the old Create Payment "payment request" payload is refused, which is why the screen now records a received payment', async () => {
+  await seedFacility();
+  const now = new Date();
+  await assertFails(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('payments')
+      .doc('p-request')
+      .set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        contractId: '',
+        tenantName: 'Test Tenant',
+        amount: 80,
+        status: 'pending',
+        method: 'cash',
+        dueDate: now,
+        paidAt: null,
+        notes: null,
+        metadata: null,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: OWNER_UID,
+        isActive: true,
+      }),
+  );
+});
+
+test('the old Mark Paid (markTenantAsPaid) payload is refused for an owner, which is why it now records a received payment', async () => {
+  await seedFacility();
+  const now = new Date();
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  await assertFails(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('payments')
+      .doc('p-mark-paid')
+      .set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        tenantName: 'Test Tenant',
+        unitNumber: 'A1',
+        amount: 80,
+        status: 'paid',
+        paidAt: serverTimestamp(),
+        paidDate: serverTimestamp(),
+        dueDate: endOfMonth,
+        method: 'cash',
+        notes: 'Marked as paid manually',
+        contractId: '',
+        createdByUid: OWNER_UID,
+        createdBy: OWNER_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        isActive: true,
+      }),
+  );
+});
+
+test('every other client write to a facility payment works for an owner and a manager', async () => {
+  await seedFacility();
+  const MANAGER = 'manager-user';
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.collection('facilities').doc(FACILITY_ID).update({ [`roles.${MANAGER}`]: 'manager' });
+    for (const id of ['p-pending', 'p-pending-2', 'p-done', 'p-done-2']) {
+      await db.collection('facilities').doc(FACILITY_ID).collection('payments').doc(id).set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        contractId: '',
+        amount: 80,
+        status: id.startsWith('p-pending') ? 'pending' : 'completed',
+        method: 'venmo',
+        isActive: true,
+      });
+    }
+  });
+  const payments = (uid) =>
+    testEnv.authenticatedContext(uid).firestore().collection('facilities').doc(FACILITY_ID).collection('payments');
+  const markPaid = (uid) => ({
+    status: 'paid',
+    method: 'venmo',
+    transactionId: null,
+    paidDate: new Date(),
+    paidAt: new Date(),
+    paidBy: uid,
+    notes: null,
+    updatedAt: new Date(),
+  });
+
+  // Process (markPaymentAsPaid, from the payment list and detail pages).
+  await assertSucceeds(payments(OWNER_UID).doc('p-pending').update(markPaid(OWNER_UID)));
+  await assertSucceeds(payments(MANAGER).doc('p-pending-2').update(markPaid(MANAGER)));
+  // Edit Payment (updatePayment), link to a deposit, archive, delete.
+  await assertSucceeds(payments(OWNER_UID).doc('p-done').update({ amount: 85, method: 'zelle', notes: 'x', updatedAt: serverTimestamp() }));
+  await assertSucceeds(payments(MANAGER).doc('p-done').update({ depositId: 'dep-1', updatedAt: serverTimestamp() }));
+  await assertSucceeds(
+    payments(OWNER_UID).doc('p-done').update({ isActive: false, archivedAt: new Date(), archivedByUid: OWNER_UID, updatedAt: new Date() }),
+  );
+  await assertSucceeds(payments(MANAGER).doc('p-done-2').delete());
+  // Record payment (recordManualPayment) as a manager.
+  await assertSucceeds(payments(MANAGER).doc('p-mgr').set(receivedPayment(MANAGER, { reference: '77' })));
+  // Employees record payments but may not process, edit or delete them.
+  await assertSucceeds(payments(STAFF_UID).doc('p-emp').set(receivedPayment(STAFF_UID)));
+  await assertFails(payments(STAFF_UID).doc('p-emp').update(markPaid(STAFF_UID)));
+});
+
+test('the ledger line and tenant payment row Record payment writes are allowed', async () => {
+  await seedFacility();
+  const db = testEnv.authenticatedContext(OWNER_UID).firestore();
+  await assertSucceeds(
+    db.collection('facilities').doc(FACILITY_ID).collection('ledgers').doc('l-pay').set({
+      tenantId: TENANT_ID,
+      facilityId: FACILITY_ID,
+      type: 'payment',
+      amount: -80,
+      description: 'Payment - Venmo #VEN-1',
+      referenceId: 'p-venmo',
+      entryDate: new Date(),
+      status: 'posted',
+      metadata: { paymentMethod: 'venmo', paymentId: 'p-venmo', reference: 'VEN-1' },
+      createdAt: new Date(),
+      createdBy: OWNER_UID,
+    }),
+  );
+  await assertSucceeds(
+    db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).collection('payments').doc('tp-1').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      type: 'manual',
+      amountCents: 8000,
+      currency: 'usd',
+      chargeType: 'manual_venmo',
+      status: 'succeeded',
+      description: 'Venmo payment #VEN-1',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: OWNER_UID,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: 'p-venmo',
+    }),
+  );
+  await assertFails(
+    db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).collection('payments').doc('tp-2').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      type: 'manual',
+      amountCents: 8000,
+      currency: 'usd',
+      chargeType: 'manual_cash',
+      status: 'succeeded',
+      description: 'Cash payment',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: OWNER_UID,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: 42,
+    }),
+  );
+});
+
+test('past-history batches are server-only', async () => {
+  await seedFacility();
+  const ref = (uid) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('tenantPastHistory')
+      .doc('req-00000001');
+  await assertFails(ref(OWNER_UID).set({ tenantId: TENANT_ID, status: 'applied' }));
+  await assertFails(ref(OWNER_UID).get());
+});
+
 test('outsider cannot create manual tenant payments', async () => {
   await seedFacility();
   const outsider = testEnv.authenticatedContext(OUTSIDER_UID);
