@@ -1,28 +1,31 @@
 #!/usr/bin/env node
 /**
- * Finds units rented twice: two or more active tenants in one facility whose
- * unit number is the same. Reads only; it never writes to Firestore.
+ * Finds units rented twice: two or more active tenants in one facility who
+ * hold the same unit. Reads only; it never writes to Firestore.
  *
- * The online rental callables (functions-public-website/src/publicMoveIn.ts)
- * check a unit's status, listing and hold, but not its tenantId or whether an
- * active tenant's unitNumber names it. A unit taken only through a tenant's
- * unit number (unit doc still 'available', no tenantId) could be held, paid
- * for and moved into by a stranger, leaving two active tenants on one unit.
- * The public map was the only guard, and the app's publish and refresh
- * dropped it on a failed tenant read.
+ * When this was written, the online rental callables
+ * (functions-public-website/src/publicMoveIn.ts) checked a unit's status,
+ * listing and hold, but not its tenantId or whether an active tenant held it.
+ * A unit taken only through a tenant's unit number (unit doc still
+ * 'available', no tenantId) could be held, paid for and moved into by a
+ * stranger, leaving two active tenants on one unit. The public map was the
+ * only guard, and the app's publish and refresh dropped it on a failed tenant
+ * read.
  *
  * It reports, per facility:
- *   1. Active tenants sharing a unit number, with the unit(s) of that number,
- *      which tenant each unit links, and which tenants came from an online
- *      move-in (createdBy 'publicMoveIn'). A group with an online move-in in
- *      it is the double rental this looks for.
+ *   1. Units two or more active tenants hold, with each unit doc's status and
+ *      tenant link, how each tenant was matched to it, and which tenants came
+ *      from an online move-in (createdBy 'publicMoveIn'). A group with an
+ *      online move-in in it is the double rental this looks for.
  *   2. Units a stranger could rent online right now although they are taken
- *      (tenantId set, or an active tenant's unit number names them): what the
- *      callables would accept, for facilities with online rentals on.
+ *      (tenantId set, or an active tenant holds them): what the callables
+ *      would accept, for facilities with online rentals on.
  *
- * Active and claimed are read as the inventory sync reads them
- * (publicFacilityMapInventorySync.ts): isActive exactly true, unit numbers
- * trimmed and lower-cased.
+ * Active is read as the inventory sync reads it (isActive exactly true, unit
+ * numbers trimmed and lower-cased). Which unit a tenant holds follows the
+ * tenant's unitId first, then its unitArea with the number, then the number
+ * alone, because facilities may repeat unit numbers across areas. A bare
+ * number that names units in several areas is reported as ambiguous.
  *
  * Usage, with Application Default Credentials for an account that can read
  * the project's Firestore (`gcloud auth application-default login`):
@@ -45,9 +48,9 @@ const require = createRequire(
 
 const DEFAULT_PROJECT = 'storage-facility-creator';
 const PAGE_SIZE = 500;
-const TENANT_FIELDS = ['unitNumber', 'isActive', 'createdAt', 'createdBy', 'leadSource', 'name'];
+const TENANT_FIELDS = ['unitNumber', 'unitId', 'unitArea', 'isActive', 'createdAt', 'createdBy', 'leadSource', 'name'];
 const UNIT_FIELDS = [
-  'unitNumber', 'status', 'tenantId', 'archived', 'internalUse', 'publicListingEnabled', 'unitType', 'updatedBy',
+  'unitNumber', 'area', 'status', 'tenantId', 'archived', 'internalUse', 'publicListingEnabled', 'unitType', 'updatedBy',
 ];
 
 function parseArgs(argv) {
@@ -99,9 +102,33 @@ async function readEveryDoc(admin, query, fields) {
   return out;
 }
 
-// As publicFacilityMapInventorySync reads them.
+// Unit numbers as publicFacilityMapInventorySync reads them.
 const tenantUnitKey = (t) => String(t.unitNumber || '').trim().toLowerCase();
 const unitKey = (u) => String(u.unitNumber ?? '').trim().toLowerCase();
+const trimmedOrNull = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+const areaKey = (v) => (trimmedOrNull(v) ?? '').toLowerCase();
+
+/**
+ * The unit docs an active tenant holds. A number alone is not enough once a
+ * facility repeats numbers across areas ("12" in Complex 2 and in Complex 3),
+ * so this follows the tenant's unitId first, then its unitArea with the
+ * number, and only then the number by itself. A bare number that names units
+ * in several areas matches all of them and is flagged ambiguous rather than
+ * guessed.
+ */
+function claimedUnits(t, unitsById, unitsByKey) {
+  const id = trimmedOrNull(t.unitId);
+  if (id && unitsById.has(id)) return { units: [unitsById.get(id)], how: 'unitId', ambiguous: false };
+  const candidates = unitsByKey.get(tenantUnitKey(t)) || [];
+  const area = areaKey(t.unitArea);
+  if (area) {
+    const inArea = candidates.filter((u) => areaKey(u.area) === area);
+    if (inArea.length > 0) return { units: inArea, how: 'area+number', ambiguous: inArea.length > 1 };
+  }
+  return { units: candidates, how: 'number', ambiguous: candidates.length > 1 };
+}
+
+const unitLabel = (u) => (trimmedOrNull(u.area) ? `${u.area.trim()} ${u.unitNumber ?? ''}` : `${u.unitNumber ?? ''}`);
 const hasTenantLink = (u) => typeof u.tenantId === 'string' && u.tenantId.trim() !== '';
 const storedStatus = (u) => (typeof u.status === 'string' ? u.status : '');
 // functions-shared/src/units/onlineRental.ts
@@ -134,41 +161,59 @@ async function checkFacility(admin, db, facilityId, facilityName, args) {
   const settings = settingsSnap.data() || {};
   const rentalsOn = settings.publicRentalsEnabled === true;
 
-  const activeByKey = new Map();
-  for (const doc of tenantDocs) {
-    const t = doc.data();
-    if (t.isActive !== true) continue;
-    const key = tenantUnitKey(t);
-    if (!key) continue;
-    if (!activeByKey.has(key)) activeByKey.set(key, []);
-    activeByKey.get(key).push({ id: doc.id, ...t });
-  }
-
+  const units = unitDocs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const unitsById = new Map(units.map((u) => [u.id, u]));
   const unitsByKey = new Map();
-  for (const doc of unitDocs) {
-    const u = { id: doc.id, ...doc.data() };
+  for (const u of units) {
     const key = unitKey(u);
     if (!unitsByKey.has(key)) unitsByKey.set(key, []);
     unitsByKey.get(key).push(u);
   }
 
-  const shared = [...activeByKey.entries()]
-    .filter(([, tenants]) => tenants.length > 1)
-    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
+  // Which unit each active tenant holds. Tenants whose number names no unit
+  // are kept by number, so two of them on one missing unit still show.
+  const holdersByUnit = new Map();
+  const unmatchedByKey = new Map();
+  for (const doc of tenantDocs) {
+    const t = { id: doc.id, ...doc.data() };
+    if (t.isActive !== true) continue;
+    const key = tenantUnitKey(t);
+    if (!key && !trimmedOrNull(t.unitId)) continue;
+    const claim = claimedUnits(t, unitsById, unitsByKey);
+    t.claimHow = claim.how;
+    t.claimAmbiguous = claim.ambiguous;
+    if (claim.units.length === 0) {
+      if (!key) continue;
+      if (!unmatchedByKey.has(key)) unmatchedByKey.set(key, []);
+      unmatchedByKey.get(key).push(t);
+      continue;
+    }
+    for (const u of claim.units) {
+      if (!holdersByUnit.has(u.id)) holdersByUnit.set(u.id, []);
+      holdersByUnit.get(u.id).push(t);
+    }
+  }
+
+  const shared = [
+    ...[...holdersByUnit.entries()]
+      .filter(([, tenants]) => tenants.length > 1)
+      .map(([unitId, tenants]) => ({ units: [unitsById.get(unitId)], tenants, label: unitLabel(unitsById.get(unitId)) })),
+    ...[...unmatchedByKey.values()]
+      .filter((tenants) => tenants.length > 1)
+      .map((tenants) => ({ units: [], tenants, label: String(tenants[0].unitNumber) })),
+  ].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
 
   const types = enabledTypes(settings);
   const exposed = rentalsOn
-    ? unitDocs
-        .map((doc) => ({ id: doc.id, ...doc.data() }))
-        .filter((u) => {
-          const st = storedStatus(u).toLowerCase();
-          return (
-            (st === 'available' || st === 'reserved') &&
-            isOfferedOnline(u) &&
-            typeOffered(u, types) &&
-            (hasTenantLink(u) || activeByKey.has(unitKey(u)))
-          );
-        })
+    ? units.filter((u) => {
+        const st = storedStatus(u).toLowerCase();
+        return (
+          (st === 'available' || st === 'reserved') &&
+          isOfferedOnline(u) &&
+          typeOffered(u, types) &&
+          (hasTenantLink(u) || holdersByUnit.has(u.id))
+        );
+      })
     : [];
 
   const result = {
@@ -184,14 +229,14 @@ async function checkFacility(admin, db, facilityId, facilityName, args) {
 
   console.log(`\n${facilityName || '(no name)'} (${facilityId}), online rentals ${rentalsOn ? 'ON' : 'off'}`);
 
-  for (const [key, tenants] of shared) {
-    const units = unitsByKey.get(key) || [];
+  for (const group of shared) {
+    const { units: groupUnits, tenants } = group;
     const online = tenants.some(isOnlineMoveIn);
     if (online) result.onlineGroups++;
     const unitText =
-      units.length === 0
+      groupUnits.length === 0
         ? 'no unit has this number'
-        : units
+        : groupUnits
             .map(
               (u) =>
                 `unit doc ${u.id} status=${storedStatus(u) || '(none)'} ` +
@@ -201,15 +246,14 @@ async function checkFacility(admin, db, facilityId, facilityName, args) {
             )
             .join('; ');
     console.log(
-      `  ${online ? '[ONLINE MOVE-IN] ' : ''}unit number "${tenants[0].unitNumber}": ` +
-        `${tenants.length} active tenants; ${unitText}` +
-        `${units.length > 1 ? ' (more than one unit doc has this number)' : ''}`,
+      `  ${online ? '[ONLINE MOVE-IN] ' : ''}unit "${group.label}": ${tenants.length} active tenants; ${unitText}`,
     );
     for (const t of tenants.sort((a, b) => day(a.createdAt).localeCompare(day(b.createdAt)))) {
-      const linked = units.some((u) => u.tenantId === t.id);
+      const linked = groupUnits.some((u) => u.tenantId === t.id);
       console.log(
         `    - tenant ${t.id} created ${day(t.createdAt)} ` +
           `by ${t.createdBy || '?'}${t.leadSource ? ` (${t.leadSource})` : ''}` +
+          `, matched by ${t.claimHow}${t.claimAmbiguous ? ' (AMBIGUOUS: no unitId, and the number names units in more than one area)' : ''}` +
           `${linked ? ', linked by the unit doc' : ''}` +
           `${args.names ? `, name "${t.name || ''}"` : ''}`,
       );
@@ -219,14 +263,14 @@ async function checkFacility(admin, db, facilityId, facilityName, args) {
   if (exposed.length > 0) {
     console.log('  Rentable online right now although taken:');
     for (const u of exposed) {
-      const claimants = activeByKey.get(unitKey(u)) || [];
+      const claimants = holdersByUnit.get(u.id) || [];
       const why = [
         hasTenantLink(u) ? `tenantId=${u.tenantId}` : null,
-        claimants.length > 0 ? `unit number claimed by ${claimants.map((t) => t.id).join(', ')}` : null,
+        claimants.length > 0 ? `held by active tenant ${claimants.map((t) => `${t.id} (${t.claimHow})`).join(', ')}` : null,
       ]
         .filter(Boolean)
         .join('; ');
-      console.log(`    - unit ${u.unitNumber ?? '(no number)'} (${u.id}) status=${storedStatus(u)}: ${why}`);
+      console.log(`    - unit ${unitLabel(u) || '(no number)'} (${u.id}) status=${storedStatus(u)}: ${why}`);
     }
   }
   return result;
@@ -261,7 +305,7 @@ async function main() {
   console.log(
     `\nSummary: ${results.length} facilities (${results.filter((r) => r.rentalsOn).length} with online rentals on), ` +
       `${sum('tenants')} tenant docs, ${sum('units')} unit docs read.\n` +
-      `  Unit numbers shared by active tenants: ${sum('sharedGroups')} in ${withShared} facilities; ` +
+      `  Units held by two or more active tenants: ${sum('sharedGroups')} in ${withShared} facilities; ` +
       `${sum('onlineGroups')} include an online move-in.\n` +
       `  Taken units rentable online right now: ${sum('exposed')}.`,
   );
