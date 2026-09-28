@@ -1,0 +1,7 @@
+      // Stays (short-term rentals). Module and automation switches plus the
+      // confirmed zone. Readable by viewers too, so the app can tell whether
+      // Stays is on; only the staysSetControls callable writes it.
+      match /stayControls/{docId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false; // staysSetControls only
+      }

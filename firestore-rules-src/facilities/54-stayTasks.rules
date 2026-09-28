@@ -1,0 +1,77 @@
+      // Stays turnovers and to-dos. Automatic turnovers (turnover_{stayId})
+      // come from the staysOnStayWrite trigger. Owners and managers edit the
+      // task fields; an employee works tasks that are unassigned or theirs,
+      // and only the checklist, supplies, issue note, photos and status.
+      match /stayTasks/{taskId} {
+        function empKeys() {
+          return ['status', 'checklist', 'suppliesLow', 'issueNote', 'photoPaths', 'startedAt', 'completedAt', 'completedBy',
+                  'updatedAt', 'updatedBy'];
+        }
+        function mgrKeys() {
+          return empKeys().concat(['assigneeUid', 'assigneeName', 'dueByAt', 'dueByLocal', 'priority', 'title', 'notes',
+                                   'needsAttention']);
+        }
+        // Every key a manual task may have: the task doc less the server's plannedDigest.
+        function manualKeys() {
+          return mgrKeys().concat(['facilityId', 'category', 'listingId', 'stayId', 'nextStayId', 'dueStartAt', 'dueStartLocal',
+                                   'dueDate', 'sameDayTurn', 'createdBy', 'createdAt']);
+        }
+        function taskOk() {
+          let d = request.resource.data;
+          return d.get('status', '') in ['todo', 'in_progress', 'done', 'skipped', 'cancelled']
+            && d.get('checklist', []) is list && d.get('checklist', []).size() <= 50
+            && d.get('suppliesLow', []) is list && d.get('suppliesLow', []).size() <= 20
+            && d.get('photoPaths', []) is list && d.get('photoPaths', []).size() <= 10
+            && d.get('issueNote', '') is string && d.get('issueNote', '').size() <= 2000
+            && d.get('title', '') is string && d.get('title', '').size() <= 120
+            && d.get('notes', '') is string && d.get('notes', '').size() <= 2000
+            && d.get('priority', 'normal') in ['normal', 'high']
+            && d.get('needsAttention', false) is bool
+            && d.get('updatedBy', null) == request.auth.uid && d.get('updatedAt', null) == request.time;
+        }
+        // Completion is signed and timed by whoever finishes the task, only
+        // as it becomes done: completedBy is the signed-in user and
+        // completedAt is request.time. Reopening may clear both; nothing
+        // else may touch them. startedAt, when set, is request.time too.
+        function completionOk() {
+          let d = request.resource.data;
+          let before = resource.data.get('status', '');
+          let after = d.get('status', '');
+          let touched = d.diff(resource.data).affectedKeys().hasAny(['completedAt', 'completedBy']);
+          let startedOk = !d.diff(resource.data).affectedKeys().hasAny(['startedAt'])
+            || d.get('startedAt', null) == null || d.get('startedAt', null) == request.time;
+          return startedOk && (
+            (after == 'done' && before != 'done')
+              ? (d.get('completedBy', null) == request.auth.uid && d.get('completedAt', null) == request.time)
+              : ((after != 'done' && before == 'done')
+                  ? (!touched || (d.get('completedBy', null) == null && d.get('completedAt', null) == null))
+                  : !touched));
+        }
+        function createdCompletionOk() {
+          let d = request.resource.data;
+          return (d.get('startedAt', null) == null || d.get('startedAt', null) == request.time)
+            && ((d.get('status', '') == 'done')
+                ? (d.get('completedBy', null) == request.auth.uid && d.get('completedAt', null) == request.time)
+                : (d.get('completedBy', null) == null && d.get('completedAt', null) == null));
+        }
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) && !taskId.matches('^turnover_.*')
+          && request.resource.data.get('facilityId', null) == facilityId
+          && request.resource.data.keys().hasAll(['facilityId', 'category', 'title', 'status', 'dueDate', 'createdBy',
+               'createdAt', 'updatedAt', 'updatedBy'])
+          && request.resource.data.keys().hasOnly(manualKeys())
+          && request.resource.data.category in ['site_check', 'maintenance', 'restock', 'general']
+          && request.resource.data.status in ['todo', 'in_progress', 'done']
+          && request.resource.data.title is string && request.resource.data.title.size() >= 1
+          && request.resource.data.dueDate is string && request.resource.data.dueDate.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+          && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
+          && createdCompletionOk() && taskOk();
+        allow update: if (isFacilityOwnerOrManager(facilityId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(mgrKeys()) && taskOk() && completionOk())
+          || (facilityRole(facilityId) == 'employee'
+              && resource.data.get('assigneeUid', null) in [null, request.auth.uid]
+              && resource.data.get('status', '') in ['todo', 'in_progress', 'done']
+              && request.resource.data.get('status', '') in ['todo', 'in_progress', 'done']
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(empKeys()) && taskOk() && completionOk());
+        allow delete: if false;
+      }

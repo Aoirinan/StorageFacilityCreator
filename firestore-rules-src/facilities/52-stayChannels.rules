@@ -1,0 +1,25 @@
+      // Stays channel feeds and export links. The feed URL and the raw export
+      // token are bearer secrets: they live in secret/ subdocs nobody reads,
+      // owners, managers and super admins included.
+      match /stayChannels/{channelId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+        match /secret/{docId} {
+          allow read, write: if false;
+        }
+      }
+      match /stayChannelBlocks/{channelId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false;
+      }
+      match /stayExportLinks/{linkId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+        match /secret/{docId} {
+          allow read, write: if false;
+        }
+      }
+      match /staySyncLog/{runId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }

@@ -117,6 +117,23 @@ service firebase.storage {
     match /facilities/{facilityId}/{allPaths=**} {
       allow read, write: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
     }
+
+    // Stays turnover photos: cleaners (employees) add "issue found" photos to
+    // the tasks they work. Storage grants when any match allows, so this
+    // gives employees this one path and nothing else; owners and managers
+    // already have the whole facility through the match above.
+    function isFacilityStaffStorage(facilityId) {
+      return isFacilityOwnerOrManager(facilityId) || facilityRole(facilityId) == 'employee';
+    }
+    // Photos only: raster types phones and browsers produce, not SVG (a
+    // document that can carry script).
+    match /facilities/{facilityId}/stayTaskPhotos/{taskId}/{fileName} {
+      allow read: if isSuperAdmin() || isFacilityStaffStorage(facilityId);
+      allow create: if isFacilityStaffStorage(facilityId)
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp|gif|heic|heif)');
+      allow update, delete: if isSuperAdmin() || isFacilityOwnerOrManager(facilityId);
+    }
     
     // Storage templates - DEPRECATED/UNUSED
     // Contract templates are now stored in Firestore (facilities/{facilityId}/contractTemplates)

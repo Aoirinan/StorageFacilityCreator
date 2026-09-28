@@ -1,0 +1,105 @@
+      // Stays bookings and blocks. No personal data or money amounts here.
+      // Creating, deleting, dates, listing, status and version go through the
+      // callables (night locks must be transactional); staff may make quick
+      // edits and check guests in and out. Viewers read the whole doc,
+      // staffNotes and cleanerNotes included, and the app says so.
+      match /stays/{stayId} {
+        // Kept equal to STAY_STAFF_FIELDS in contracts.ts plus the stamp
+        // (functions-stays stayWriter.test.ts compares them).
+        function quickKeys() {
+          return ['guestDisplayName', 'adults', 'children', 'pets', 'rvLengthFt', 'staffNotes', 'cleanerNotes', 'tags',
+                  'messageMarks', 'arrivalState', 'checkedInAt', 'checkedOutAt', 'updatedAt', 'updatedBy'];
+        }
+        function quickValuesOk() {
+          let d = request.resource.data;
+          let marks = d.get('messageMarks', {});
+          return d.get('guestDisplayName', '') is string && d.get('guestDisplayName', '').size() <= 60
+            && d.get('adults', 0) is int && d.get('adults', 0) >= 0 && d.get('adults', 0) <= 50
+            && d.get('children', 0) is int && d.get('children', 0) >= 0 && d.get('children', 0) <= 50
+            && d.get('pets', 0) is int && d.get('pets', 0) >= 0 && d.get('pets', 0) <= 20
+            && (d.get('rvLengthFt', null) == null || (d.rvLengthFt is int && d.rvLengthFt >= 0 && d.rvLengthFt <= 80))
+            && d.get('staffNotes', '') is string && d.get('staffNotes', '').size() <= 2000
+            && d.get('cleanerNotes', '') is string && d.get('cleanerNotes', '').size() <= 2000
+            // Up to 10 short tags. The rules cannot loop, and a check per
+            // index costs more than the 1000-expression budget allows, so the
+            // tags are joined: join() refuses maps and timestamps, and the
+            // text must be 1-40 character pieces, 409 characters at most.
+            // The app writes strings.
+            && d.get('tags', []) is list && d.get('tags', []).size() <= 10
+            && d.get('tags', []).join('|').size() <= 409
+            && (d.get('tags', []).size() == 0 || d.get('tags', []).join('|').matches('[^|]{1,40}([|][^|]{1,40})*'))
+            // templateKey → when it was copied: known-shape keys, and every
+            // value either one already stored or this request's time.
+            && marks is map && marks.size() <= 30
+            && marks.keys().join('|').matches('([a-z0-9_]{1,40}([|][a-z0-9_]{1,40})*)?')
+            && marks.values().hasOnly(resource.data.get('messageMarks', {}).values().concat([request.time]));
+        }
+        // Staff: upcoming → checked_in (a reservation that holds its nights)
+        // and checked_in → checked_out (one that still does), each stamped
+        // with request.time. Owners and managers may also undo either step,
+        // which clears its time.
+        function arrivalOk() {
+          let b = resource.data.get('arrivalState', 'upcoming');
+          let a = request.resource.data.get('arrivalState', 'upcoming');
+          let holdsNights = resource.data.get('status', '') in ['confirmed', 'conflict'];
+          let inAt = request.resource.data.get('checkedInAt', null);
+          let outAt = request.resource.data.get('checkedOutAt', null);
+          let inSame = inAt == resource.data.get('checkedInAt', null);
+          let outSame = outAt == resource.data.get('checkedOutAt', null);
+          return (a == b && inSame && outSame)
+            || (b == 'upcoming' && a == 'checked_in' && resource.data.get('kind', '') == 'reservation'
+                && holdsNights && inAt == request.time && outSame)
+            || (b == 'checked_in' && a == 'checked_out' && holdsNights && outAt == request.time && inSame)
+            || (isFacilityOwnerOrManager(facilityId)
+                && ((b == 'checked_in' && a == 'upcoming' && inAt == null && outSame)
+                    || (b == 'checked_out' && a == 'checked_in' && outAt == null && inSame)));
+        }
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow create, delete: if false; // callables only: night locks must be transactional
+        allow update: if isFacilityStaff(facilityId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(quickKeys())
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time
+          && quickValuesOk() && arrivalOk();
+      }
+
+      // Guest name, phone last 4, profile link and private notes: owners and
+      // managers only. fullName may be null (a feed stay with no name yet).
+      match /stayPrivate/{stayId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow create, delete: if false;
+        allow update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'privateNotes', 'updatedAt', 'updatedBy'])
+          && (request.resource.data.get('fullName', null) == null
+              || (request.resource.data.fullName is string && request.resource.data.fullName.size() <= 120))
+          && request.resource.data.get('privateNotes', '') is string && request.resource.data.get('privateNotes', '').size() <= 2000
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+      }
+
+      // A per-stay door or gate code: staff read (cleaners need it), owners
+      // and managers write. Codes may be null.
+      match /stayAccess/{stayId} {
+        allow read: if isFacilityStaff(facilityId);
+        allow create, update: if isFacilityOwnerOrManager(facilityId)
+          && request.resource.data.keys().hasOnly(['facilityId', 'stayId', 'doorCode', 'gateCode', 'accessNotes', 'source',
+               'updatedAt', 'updatedBy'])
+          && request.resource.data.facilityId == facilityId && request.resource.data.stayId == stayId
+          && (request.resource.data.get('doorCode', null) == null
+              || (request.resource.data.doorCode is string && request.resource.data.doorCode.size() <= 40))
+          && (request.resource.data.get('gateCode', null) == null
+              || (request.resource.data.gateCode is string && request.resource.data.gateCode.size() <= 40))
+          && request.resource.data.get('accessNotes', '') is string && request.resource.data.get('accessNotes', '').size() <= 1000
+          && request.resource.data.get('source', 'manual') in ['manual', 'phone_last4', 'static']
+          && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
+
+      match /stayFolios/{stayId} {
+        allow read: if isFacilityOwnerOrManager(facilityId);
+        allow write: if false;
+      }
+
+      // Night lock buckets: a cache only the stayWriter transaction writes.
+      match /stayNightLocks/{bucketId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false;
+      }

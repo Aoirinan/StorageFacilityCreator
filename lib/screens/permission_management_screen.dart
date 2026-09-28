@@ -10,6 +10,7 @@ import '../services/facility_service.dart';
 import '../providers/facility_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
+import 'package:sfcapp/providers/stays_providers.dart';
 
 // #region agent log
 void _debugLogPMS(String location, String message, Map<String, dynamic> data, String hypothesisId) {
@@ -419,6 +420,7 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
 
   Widget _buildRolesTab() {
     final roles = PermissionService.getPredefinedRoles();
+    final showStays = ref.watch(staysUiAllowedProvider);
     final fid = _selectedFacilityId;
 
     return Column(
@@ -493,6 +495,10 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
             itemCount: roles.length,
             itemBuilder: (context, index) {
               final role = roles[index];
+              // Stays permissions show only while Stays is switched on.
+              final permissions = role.permissions
+                  .where((p) => showStays || !p.isStaysPermission)
+                  .toList();
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 16),
@@ -513,14 +519,14 @@ class _PermissionManagementScreenState extends ConsumerState<PermissionManagemen
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Permissions (${role.permissions.length}):',
+                            'Permissions (${permissions.length}):',
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
                             runSpacing: 4,
-                            children: role.permissions.map((permission) {
+                            children: permissions.map((permission) {
                               return Chip(
                                 label: Text(permission.displayName),
                                 backgroundColor: role.color.withOpacity(0.1),

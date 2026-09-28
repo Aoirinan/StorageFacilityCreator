@@ -165,4 +165,17 @@ final List<FeatureFlagModel> kDefaultFeatureFlags = [
     enabled: false,
     riskLevel: FlagRiskLevel.high,
   ),
+  // Stays (short-term rentals). Off, and only hides UI: the server gate is
+  // staysServerConfig/current. The app shows Stays only once the flags doc
+  // has loaded with this explicitly true (staysUiAllowedProvider), never
+  // through featureFlagEnabledProvider, which reads a flag as on while the
+  // doc is loading.
+  const FeatureFlagModel(
+    key: 'shortTermRentals',
+    label: 'Stays (short-term rentals)',
+    description:
+        'Shows the Stays module (Airbnbs, rentals and RV nights) to facilities the Stays server allowlist lets in.',
+    enabled: false,
+    riskLevel: FlagRiskLevel.high,
+  ),
 ];

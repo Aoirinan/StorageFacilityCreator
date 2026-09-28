@@ -355,4 +355,31 @@ void main() {
       expect(router, isNot(contains(path)));
     }
   });
+
+  // Stays pages opened by id load through loadByIdPage too, and live only in
+  // stays_routes.dart (test/stays_routes_test.dart runs them).
+  test('app_router takes the Stays routes from stays_routes.dart', () {
+    final router = File('lib/router/app_router.dart').readAsStringSync();
+    expect(router, contains('...staysShellRoutes()'));
+    for (final path in [
+      'AppRoute.stays,',
+      'AppRoute.stayDetail,',
+      'AppRoute.stayEdit,',
+      'AppRoute.turnoverDetail,',
+      "'/stays",
+    ]) {
+      expect(router, isNot(contains(path)));
+    }
+
+    final stays = File('lib/router/stays_routes.dart').readAsStringSync();
+    for (final route in ['AppRoute.stayDetail,', 'AppRoute.stayEdit,', 'AppRoute.turnoverDetail,']) {
+      final at = stays.indexOf(route);
+      expect(at, isNonNegative, reason: route);
+      // The page right after the path is built with loadByIdPage, not an inline FutureBuilder.
+      final next = stays.indexOf('page(', at);
+      final body = stays.substring(at, next < 0 ? stays.length : next);
+      expect(body, contains('loadByIdPage<'), reason: route);
+    }
+    expect(stays, isNot(contains('FutureBuilder')));
+  });
 }

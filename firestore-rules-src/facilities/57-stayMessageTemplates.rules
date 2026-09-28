@@ -1,0 +1,27 @@
+      // Stays copy-first message templates. The owner copies, prints or
+      // opens her own mail or text app; nothing sends them. No 'autoSend' key
+      // exists in v1, and kind is always 'copy'. Only the server seeds
+      // templates (seeded: true); who made one, and when, never changes.
+      match /stayMessageTemplates/{templateId} {
+        function templateOk() {
+          let d = request.resource.data;
+          return d.keys().hasOnly(['facilityId', 'key', 'name', 'body', 'channelHint', 'listingIds', 'kind',
+               'seeded', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && d.get('facilityId', null) == facilityId && d.get('kind', null) == 'copy'
+            && d.get('key', null) is string && d.key.matches('[a-z0-9_]{1,40}')
+            && d.get('name', null) is string && d.name.size() <= 80
+            && d.get('body', null) is string && d.body.size() <= 4000
+            && d.get('channelHint', null) in ['airbnb_paste', 'email', 'sms', 'print']
+            && d.get('listingIds', []) is list && d.get('listingIds', []).size() <= 60
+            && d.get('updatedBy', null) == request.auth.uid
+            && d.get('updatedAt', null) == request.time;
+        }
+        allow read: if isFacilityStaff(facilityId);
+        allow create: if isFacilityOwnerOrManager(facilityId) && templateOk()
+          && request.resource.data.get('seeded', false) == false
+          && request.resource.data.get('createdBy', null) == request.auth.uid
+          && request.resource.data.get('createdAt', null) == request.time;
+        allow update: if isFacilityOwnerOrManager(facilityId) && templateOk()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['facilityId', 'seeded', 'createdAt', 'createdBy']);
+        allow delete: if isFacilityOwnerOrManager(facilityId);
+      }
