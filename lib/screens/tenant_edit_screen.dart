@@ -1111,6 +1111,8 @@ class _TenantEditScreenState extends ConsumerState<TenantEditScreen> {
                               final facilityName = facilityAsync.value?.name ?? 'This facility';
                               return SmsConsentCheckbox(
                                 facilityName: facilityName,
+                                tenant: widget.tenant,
+                                startNumber: textingStartNumber(facilityAsync.value),
                                 savedState: smsConsentState(widget.tenant),
                                 value: _smsConsent,
                                 onChanged: (v) => setState(() => _smsConsent = v),

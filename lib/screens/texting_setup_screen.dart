@@ -22,6 +22,15 @@ const reserveNumberBlockedMessage =
     "Twilio's pre-check flagged your business details — fix them above (or "
     'contact support) before reserving a number.';
 
+/// Why it is locked when the pre-check has not passed but flagged nothing:
+/// it has not run for these details. Always the case on a Twilio dry-run
+/// setup, where the pre-check is skipped and a2pBundleReady is never set.
+const reserveNumberNotCheckedMessage =
+    "Twilio's pre-check has not passed for these business details yet, so "
+    'reserving a number is locked. Save the business details again (Edit, '
+    'above) to run it, or contact support. On a Twilio test (dry-run) setup '
+    'the pre-check never runs, so this stays locked there.';
+
 class TextingSetupScreen extends ConsumerStatefulWidget {
   final String? facilityId;
   final TextingOnboardingRepository? repository;
@@ -788,10 +797,9 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
               key: const Key('reserve-blocked'),
               icon: Icons.error_outline_rounded,
               title: 'Reserving a number is locked',
-              message: reserveNumberBlockedMessage +
-                  (bundleIssues == null || bundleIssues.isEmpty
-                      ? ''
-                      : '\n\nFlagged: $bundleIssues'),
+              message: bundleIssues == null || bundleIssues.isEmpty
+                  ? reserveNumberNotCheckedMessage
+                  : '$reserveNumberBlockedMessage\n\nFlagged: $bundleIssues',
             ),
           ],
           const SizedBox(height: 28),

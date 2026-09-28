@@ -1,8 +1,24 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 
 /// The shared SFC toll-free number tenants text START to, as shown to owners.
 const sfcTextingNumberDisplay = '(855) 526-4544';
+const _sfcTextingNumberDigits = '8555264544';
+
+/// The number a facility's tenants text START to: the facility's own number
+/// once it is approved for texting, otherwise the shared SFC number.
+String textingStartNumber(FacilityModel? facility) {
+  if (facility == null || !facility.textingPlatformApproved) {
+    return sfcTextingNumberDisplay;
+  }
+  var digits = (facility.twilioPhoneNumberE164 ?? '').replaceAll(RegExp(r'[^\d]'), '');
+  if (digits.length == 11 && digits.startsWith('1')) digits = digits.substring(1);
+  if (digits.length != 10 || digits == _sfcTextingNumberDigits) {
+    return sfcTextingNumberDisplay;
+  }
+  return '(${digits.substring(0, 3)}) ${digits.substring(3, 6)}-${digits.substring(6)}';
+}
 
 /// The one wording of the consent box, on every screen that records it. The
 /// owner is attesting that the tenant agreed; the tenant is not the one
@@ -11,14 +27,12 @@ String smsConsentCheckboxLabel(String facilityName) =>
     '$facilityName may text this tenant rent reminders and account notices '
     '(tenant agreed)';
 
-const smsConsentHelperText =
+String smsConsentHelper([String startNumber = sfcTextingNumberDisplay]) =>
     'Only tick this if the tenant agreed — in writing, on their lease, or by '
-    'texting START to $sfcTextingNumberDisplay.';
+    'texting START to $startNumber.';
 
-/// Shown in place of the box when the tenant opted out themselves.
-const smsOptedOutText =
-    'This tenant opted out of texts, so the box is locked. Only the tenant can '
-    'opt back in, by texting START to $sfcTextingNumberDisplay.';
+/// The helper as shown with the shared number.
+final smsConsentHelperText = smsConsentHelper();
 
 /// smsConsentSource values written by the app. The server writes
 /// 'inbound_stop', 'inbound_start', 'staff_restored' and 'publicRentalForm'.
@@ -30,11 +44,19 @@ class SmsConsentSources {
 
   /// Staff unticked the box, or removed consent in bulk. Stored as an opt-out
   /// so the server never texts them, but it is the facility's record, not the
-  /// tenant's STOP: staff may record consent again.
+  /// tenant's: staff may record consent again. The only opt-out source the
+  /// Firestore rules let staff reverse.
   static const staffRemoved = 'staff_removed';
 
-  /// The CSV import's "SMS Consent" column.
+  /// The CSV import's "SMS Consent" column said yes.
   static const csvImport = 'csv_import';
+
+  /// The CSV import's "SMS Consent" column said no / opted out / stop. The
+  /// tenant's own choice, so it is locked like a STOP.
+  static const csvOptOut = 'csv_opt_out';
+
+  /// The server's inbound STOP handler.
+  static const inboundStop = 'inbound_stop';
 }
 
 /// How the tenant agreed, as staff recorded it (smsConsentMethod).
@@ -63,31 +85,92 @@ enum SmsConsentState {
   /// Nothing recorded either way.
   none,
 
-  /// The tenant opted out (texted STOP, or an opt-out from elsewhere). Never
-  /// overridden by staff.
+  /// The tenant opted out (texted STOP, declined at move-in, said no on an
+  /// imported sheet, ...). Never overridden by staff.
   optedOut,
 
   /// Staff removed the consent they had recorded.
   removedByStaff,
 }
 
-/// The tenant's consent as the server reads it: an opt-out (either field)
-/// beats everything; then `smsConsentStatus: opted_in` or an `smsOptInDate`
-/// is consent (functions-messaging-twilio sendSMS and hasSmsConsent).
-SmsConsentState smsConsentState(TenantModel tenant) {
-  final status = tenant.smsConsentStatus.toLowerCase();
-  if (tenant.smsOptOut || status == 'opted_out') {
-    return tenant.smsConsentSource == SmsConsentSources.staffRemoved
+/// The consent in the raw tenant fields, as the server reads it: an opt-out
+/// (either field) beats everything; then `smsConsentStatus: opted_in` or an
+/// `smsOptInDate` is consent (functions-messaging-twilio sendSMS and
+/// hasSmsConsent).
+SmsConsentState smsConsentStateOf({
+  required bool smsOptOut,
+  String? status,
+  String? source,
+  required bool hasOptInDate,
+}) {
+  final s = (status ?? '').toLowerCase();
+  if (smsOptOut || s == 'opted_out') {
+    return source == SmsConsentSources.staffRemoved
         ? SmsConsentState.removedByStaff
         : SmsConsentState.optedOut;
   }
-  if (status == 'opted_in' || tenant.smsOptInDate != null) {
-    return SmsConsentState.consented;
-  }
+  if (s == 'opted_in' || hasOptInDate) return SmsConsentState.consented;
   return SmsConsentState.none;
 }
 
-/// A number a text can go to: ten digits or more.
+SmsConsentState smsConsentState(TenantModel tenant) => smsConsentStateOf(
+      smsOptOut: tenant.smsOptOut,
+      status: tenant.smsConsentStatus,
+      source: tenant.smsConsentSource,
+      hasOptInDate: tenant.smsOptInDate != null,
+    );
+
+/// [smsConsentState] of a tenant document as stored.
+SmsConsentState smsConsentStateOfData(Map<String, dynamic> data) =>
+    smsConsentStateOf(
+      smsOptOut: data['smsOptOut'] == true,
+      status: data['smsConsentStatus'] as String?,
+      source: data['smsConsentSource'] as String?,
+      hasOptInDate: data['smsOptInDate'] != null,
+    );
+
+/// Why a tenant is opted out, when they opted out themselves.
+enum SmsOptOutKind { textedStop, declinedAtMoveIn, other }
+
+SmsOptOutKind smsOptOutKindOf({
+  required bool smsOptOut,
+  String? status,
+  String? source,
+}) {
+  if (source == SmsConsentSources.inboundStop) return SmsOptOutKind.textedStop;
+  // An online move-in whose consent box was left unticked: opted out, with
+  // no source and no status.
+  final s = (status ?? '').trim().toLowerCase();
+  if (smsOptOut && (source == null || source.isEmpty) && (s.isEmpty || s == 'unknown')) {
+    return SmsOptOutKind.declinedAtMoveIn;
+  }
+  return SmsOptOutKind.other;
+}
+
+SmsOptOutKind smsOptOutKind(TenantModel tenant) => smsOptOutKindOf(
+      smsOptOut: tenant.smsOptOut,
+      status: tenant.smsConsentStatus,
+      source: tenant.smsConsentSource,
+    );
+
+String _optOutPhrase(SmsOptOutKind kind) {
+  switch (kind) {
+    case SmsOptOutKind.textedStop:
+      return 'texted STOP';
+    case SmsOptOutKind.declinedAtMoveIn:
+      return 'declined texts at move-in';
+    case SmsOptOutKind.other:
+      return 'opted out of texts';
+  }
+}
+
+/// Shown in place of the box when the tenant opted out themselves.
+String smsOptedOutLockText(TenantModel tenant,
+        [String startNumber = sfcTextingNumberDisplay]) =>
+    'This tenant ${_optOutPhrase(smsOptOutKind(tenant))}, so the box is '
+    'locked. Only the tenant can opt back in, by texting START to $startNumber.';
+
+/// A number a text can go to: ten digits or more. Not proof it is a mobile.
 bool hasTextablePhone(String? phone) =>
     (phone ?? '').replaceAll(RegExp(r'[^\d]'), '').length >= 10;
 
@@ -110,7 +193,7 @@ String smsConsentChipLabel(TenantModel tenant) {
 }
 
 /// One line for the tenant's page, e.g. "Can text · agreed 12 Sep 2026
-/// (Written lease)".
+/// · Written lease".
 String smsConsentSummary(TenantModel tenant) {
   final state = smsConsentState(tenant);
   switch (state) {
@@ -125,11 +208,21 @@ String smsConsentSummary(TenantModel tenant) {
       } else if (note.isNotEmpty) {
         parts.add(note);
       }
-      final head =
-          hasTextablePhone(tenant.phone) ? 'Can text' : 'Consent on file, but no mobile number';
+      final head = hasTextablePhone(tenant.phone)
+          ? 'Can text'
+          : 'Consent on file, but no phone number that can take texts';
       return parts.isEmpty ? head : '$head · ${parts.join(' · ')}';
     case SmsConsentState.optedOut:
-      return 'Opted out (tenant texted STOP)';
+      switch (smsOptOutKind(tenant)) {
+        case SmsOptOutKind.textedStop:
+          return 'Opted out (tenant texted STOP)';
+        case SmsOptOutKind.declinedAtMoveIn:
+          return 'Declined texts at move-in';
+        case SmsOptOutKind.other:
+          return tenant.smsConsentSource == SmsConsentSources.csvOptOut
+              ? 'Opted out (per imported spreadsheet)'
+              : 'Opted out';
+      }
     case SmsConsentState.removedByStaff:
       return 'No consent (removed by staff)';
     case SmsConsentState.none:
@@ -209,6 +302,28 @@ class SmsConsentUpdate {
         if (method != null) 'method': method!.value,
         if (note != null) 'note': note,
       };
+
+  /// Whether this change still applies to a tenant now in [state]: it does
+  /// nothing to a tenant already as asked (a consent on file keeps its
+  /// date), and never touches a tenant's own opt-out.
+  bool appliesTo(SmsConsentState state) {
+    if (state == SmsConsentState.optedOut) return false;
+    return grant
+        ? state != SmsConsentState.consented
+        : state == SmsConsentState.consented;
+  }
+}
+
+/// Said after a save when the tenant opted out while the form was open, so
+/// the consent change was dropped.
+String smsConsentDroppedNotice(Map<String, dynamic> stored) {
+  final kind = smsOptOutKindOf(
+    smsOptOut: stored['smsOptOut'] == true,
+    status: stored['smsConsentStatus'] as String?,
+    source: stored['smsConsentSource'] as String?,
+  );
+  return 'SMS consent was not changed: the tenant ${_optOutPhrase(kind)}, '
+      'and only they can opt back in.';
 }
 
 /// What saving the consent box does, given the tenant as saved and whether
@@ -232,12 +347,23 @@ SmsConsentUpdate? smsConsentChange({
       : SmsConsentUpdate.remove(at: at);
 }
 
+/// Bulk SMS consent works on one facility's list, not All Facilities.
+bool bulkSmsConsentAvailable(String facilityId) =>
+    facilityId.isNotEmpty && facilityId != 'all';
+
+/// The selected tenants the list is showing: a search or area filter can
+/// hide tenants that stay selected, and bulk consent acts only on what the
+/// owner can see.
+List<TenantModel> visibleSelectedTenants(
+        List<TenantModel> shown, Set<String> selectedIds) =>
+    shown.where((t) => selectedIds.contains(t.id)).toList();
+
 /// The selected tenants sorted for a bulk record or removal.
 class SmsConsentBulkPlan {
   /// Written.
   final List<TenantModel> toUpdate;
 
-  /// Grant only: no mobile number on file.
+  /// Grant only: no phone number that can take texts.
   final List<TenantModel> noPhone;
 
   /// Grant only: the tenant opted out themselves. Never overridden.

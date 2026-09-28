@@ -320,10 +320,13 @@ void main() {
         expect(repository.provisionCount, 0);
       });
 
-      testWidgets('is locked while the bundle has not passed the pre-check', (tester) async {
+      testWidgets('is locked while the bundle has not passed the pre-check, and says why',
+          (tester) async {
+        // Also what a Twilio dry-run setup shows: it never sets bundleReady.
         await openReview(tester, _atReview(bundleReady: false));
         expect(reserve(tester).onPressed, isNull);
-        expect(find.textContaining(reserveNumberBlockedMessage), findsOneWidget);
+        expect(find.text(reserveNumberNotCheckedMessage), findsOneWidget);
+        expect(find.textContaining('dry-run'), findsOneWidget);
       });
 
       testWidgets('is locked when ready but issues are still listed', (tester) async {

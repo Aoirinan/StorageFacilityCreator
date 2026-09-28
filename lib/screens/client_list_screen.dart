@@ -538,30 +538,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               icon: const Icon(Icons.forward_to_inbox_outlined),
                               label: Text('Email invites (${_selectedTenantIds.length})'),
                             ),
-                            MenuAnchor(
-                              menuChildren: [
-                                MenuItemButton(
-                                  key: const Key('bulk-sms-consent-record'),
-                                  leadingIcon: const Icon(Icons.sms_outlined),
-                                  onPressed: () => _changeSmsConsentForSelected(grant: true),
-                                  child: const Text('Record SMS consent…'),
-                                ),
-                                MenuItemButton(
-                                  key: const Key('bulk-sms-consent-remove'),
-                                  leadingIcon: const Icon(Icons.sms_failed_outlined),
-                                  onPressed: () => _changeSmsConsentForSelected(grant: false),
-                                  child: const Text('Remove SMS consent…'),
-                                ),
-                              ],
-                              builder: (context, menu, _) => OutlinedButton.icon(
-                                key: const Key('bulk-sms-consent-menu'),
-                                onPressed: _selectedTenantIds.isEmpty
-                                    ? null
-                                    : () => menu.isOpen ? menu.close() : menu.open(),
-                                icon: const Icon(Icons.sms_outlined),
-                                label: Text('SMS consent (${_selectedTenantIds.length})'),
-                              ),
-                            ),
+                            _smsConsentMenu(),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -1156,13 +1133,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
   /// it on record for everyone at once. Recording asks how and when they
   /// agreed and has the owner confirm it, because this is the record we
   /// stand behind if a carrier or a tenant asks why they were texted. A
-  /// tenant's own opt-out is never overridden, tenants with no mobile number
-  /// are skipped, and a consent already on file keeps its date.
+  /// tenant's own opt-out is never overridden, tenants with no phone number
+  /// that can take texts are skipped, and a consent already on file keeps its date.
   Future<void> _changeSmsConsentForSelected({required bool grant}) async {
     final facilityId = _selectedFacilityId;
-    if (facilityId.isEmpty || facilityId == 'all') return;
-    final tenants = ref.read(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[];
-    final selected = tenants.where((t) => _selectedTenantIds.contains(t.id)).toList();
+    if (!bulkSmsConsentAvailable(facilityId)) return;
+    final selected = _visibleSelectedTenants();
     if (selected.isEmpty) return;
     final facilityName =
         (await ref.read(facilityProvider(facilityId).future))?.name ?? 'This facility';
@@ -1192,11 +1168,66 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       await showSmsConsentBulkResult(context, plan: result.plan, grant: grant);
     } catch (e) {
       if (!mounted) return;
+      // Part of a large selection may have been saved before the failure.
+      ref.invalidate(facilityTenantsProvider(facilityId));
+      final cause = e is SmsConsentPartialFailure ? e.cause : e;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Nothing was changed: ${ErrorMessageHelper.getUserFriendlyMessage(e)}'),
+        content: Text(smsConsentBulkFailureMessage(
+            e, ErrorMessageHelper.getUserFriendlyMessage(cause))),
         backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 8),
       ));
     }
+  }
+
+  /// The selected tenants the list is showing now. A search or area filter
+  /// can hide tenants that stay selected; bulk SMS consent acts only on
+  /// what the owner can see.
+  List<TenantModel> _visibleSelectedTenants() {
+    final facilityId = _selectedFacilityId;
+    if (!bulkSmsConsentAvailable(facilityId)) return const [];
+    final shown = ref.read(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[];
+    return visibleSelectedTenants(shown, _selectedTenantIds);
+  }
+
+  /// Selection bar > SMS consent (N): Record / Remove SMS consent. One
+  /// facility at a time: under All Facilities it is disabled and says why.
+  Widget _smsConsentMenu() {
+    final facilityId = _selectedFacilityId;
+    final oneFacility = bulkSmsConsentAvailable(facilityId);
+    final shown = oneFacility
+        ? (ref.watch(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[])
+        : const <TenantModel>[];
+    final count = visibleSelectedTenants(shown, _selectedTenantIds).length;
+    final menu = MenuAnchor(
+      menuChildren: [
+        MenuItemButton(
+          key: const Key('bulk-sms-consent-record'),
+          leadingIcon: const Icon(Icons.sms_outlined),
+          onPressed: () => _changeSmsConsentForSelected(grant: true),
+          child: const Text('Record SMS consent…'),
+        ),
+        MenuItemButton(
+          key: const Key('bulk-sms-consent-remove'),
+          leadingIcon: const Icon(Icons.sms_failed_outlined),
+          onPressed: () => _changeSmsConsentForSelected(grant: false),
+          child: const Text('Remove SMS consent…'),
+        ),
+      ],
+      builder: (context, controller, _) => OutlinedButton.icon(
+        key: const Key('bulk-sms-consent-menu'),
+        onPressed: !oneFacility || count == 0
+            ? null
+            : () => controller.isOpen ? controller.close() : controller.open(),
+        icon: const Icon(Icons.sms_outlined),
+        label: Text('SMS consent ($count)'),
+      ),
+    );
+    if (oneFacility) return menu;
+    return Tooltip(
+      message: 'Pick one facility to record or remove SMS consent',
+      child: menu,
+    );
   }
 
   /// Bulk form of the portal invite: everyone currently selected.

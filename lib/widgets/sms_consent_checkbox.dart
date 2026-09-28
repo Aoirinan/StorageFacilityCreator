@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/theme/app_theme.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
 
@@ -17,6 +18,12 @@ class SmsConsentCheckbox extends StatelessWidget {
   final ValueChanged<SmsConsentMethod?> onMethodChanged;
   final bool compact;
 
+  /// The tenant as saved (null for a new tenant), for the lock wording.
+  final TenantModel? tenant;
+
+  /// Where tenants text START: see [textingStartNumber].
+  final String startNumber;
+
   const SmsConsentCheckbox({
     super.key,
     required this.facilityName,
@@ -26,6 +33,8 @@ class SmsConsentCheckbox extends StatelessWidget {
     required this.method,
     required this.onMethodChanged,
     this.compact = false,
+    this.tenant,
+    this.startNumber = sfcTextingNumberDisplay,
   });
 
   @override
@@ -59,7 +68,9 @@ class SmsConsentCheckbox extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 10),
                     child: locked
                         ? Text(
-                            smsOptedOutText,
+                            tenant == null
+                                ? 'This tenant opted out of texts, so the box is locked.'
+                                : smsOptedOutLockText(tenant!, startNumber),
                             style: TextStyle(
                               fontSize: fontSize,
                               color: AppTheme.error,
@@ -79,7 +90,7 @@ class SmsConsentCheckbox extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                smsConsentHelperText,
+                                smsConsentHelper(startNumber),
                                 style: TextStyle(
                                   fontSize: fontSize - 1,
                                   color: AppTheme.textSecondary,

@@ -149,7 +149,7 @@ void main() {
     testWidgets("a tenant's own opt-out is locked and untouched", (tester) async {
       final ops = await pump(
           tester, (_) => TenantEditScreen(tenant: tenant(optOut: true, source: 'inbound_stop')));
-      expect(find.text(smsOptedOutText), findsOneWidget);
+      expect(find.textContaining('This tenant texted STOP, so the box is locked'), findsOneWidget);
       await saveEdit(tester);
       expect(ops.saved, isTrue);
       expect(ops.consent, isNull);

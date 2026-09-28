@@ -1,8 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:sfcapp/models/tenant_model.dart';
+import 'package:sfcapp/services/sms_consent_service.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
 
 String _tenants(int n) => n == 1 ? '1 tenant' : '$n tenants';
+
+/// The snackbar after a bulk record/removal fails. Large selections commit
+/// in several batches, so a failure can come after some were saved: say how
+/// many, not "Nothing was changed".
+String smsConsentBulkFailureMessage(Object error, String friendly) {
+  if (error is SmsConsentPartialFailure && error.committed > 0) {
+    return '${error.committed} of ${error.total} saved; the rest were not. $friendly';
+  }
+  return 'Nothing was changed: $friendly';
+}
 
 String _dateLabel(DateTime d) =>
     '${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}/${d.year}';
@@ -266,11 +277,11 @@ List<Widget> _skipLines(
           : 'Skipped ${_tenants(plan.unchanged.length)} with no consent on file'
               '${names(plan.unchanged)}',
     if (plan.noPhone.isNotEmpty)
-      'Skipped ${_tenants(plan.noPhone.length)} with no mobile number on file'
+      'Skipped ${_tenants(plan.noPhone.length)} with no phone number that can take texts'
           '${names(plan.noPhone)}',
     if (plan.optedOut.isNotEmpty)
-      'Skipped ${_tenants(plan.optedOut.length)} who opted out themselves '
-          '(texted STOP). Only they can opt back in, by texting START'
+      'Skipped ${_tenants(plan.optedOut.length)} who opted out or declined '
+          'texts themselves. Only they can opt back in, by texting START'
           '${names(plan.optedOut)}',
   ];
   return [

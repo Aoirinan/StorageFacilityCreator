@@ -76,9 +76,12 @@ Future<void> editTenantContactInfo(
             }),
             const SizedBox(height: 12),
             Consumer(builder: (ctx2, ref2, _) {
-              final facilityName = ref2.watch(facilityProvider(tenant.facilityId)).value?.name ?? 'This facility';
+              final facility = ref2.watch(facilityProvider(tenant.facilityId)).value;
+              final facilityName = facility?.name ?? 'This facility';
               return SmsConsentCheckbox(
                 compact: true,
+                tenant: tenant,
+                startNumber: textingStartNumber(facility),
                 facilityName: facilityName,
                 savedState: savedConsent,
                 value: smsConsent,

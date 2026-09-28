@@ -19,11 +19,31 @@ class ImportedSmsConsent {
   /// a consent record with no date is weaker evidence than one with.
   final DateTime? consentedAt;
 
-  const ImportedSmsConsent({required this.optedIn, this.consentedAt});
+  /// Whether the row says plainly that the tenant refused or opted out
+  /// ("no", "opted out", "stop", ...). That is the tenant's own choice, so
+  /// it is imported as an opt-out staff cannot reverse, not as "no consent
+  /// yet". A blank, "false", "0" or "n/a" is only "not recorded".
+  final bool optedOut;
+
+  const ImportedSmsConsent({
+    required this.optedIn,
+    this.consentedAt,
+    this.optedOut = false,
+  });
 
   static const ImportedSmsConsent none =
       ImportedSmsConsent(optedIn: false, consentedAt: null);
+
+  static const ImportedSmsConsent refused =
+      ImportedSmsConsent(optedIn: false, consentedAt: null, optedOut: true);
 }
+
+/// Cells that say the tenant refused or opted out, as opposed to cells that
+/// only fail to say yes.
+const _explicitOptOut = <String>{
+  'no', 'n', 'opted out', 'opted-out', 'optout', 'opt out', 'opt-out',
+  'declined', 'refused', 'unsubscribed', 'stop',
+};
 
 const _affirmative = <String>{
   'yes', 'y', 'true', '1', 'x', 'opted in', 'opted-in', 'optin', 'opt in',
@@ -57,6 +77,7 @@ ImportedSmsConsent parseSmsConsent({
     return ImportedSmsConsent.none;
   }
 
+  if (_explicitOptOut.contains(raw)) return ImportedSmsConsent.refused;
   if (_negative.contains(raw)) return ImportedSmsConsent.none;
 
   if (_affirmative.contains(raw)) {

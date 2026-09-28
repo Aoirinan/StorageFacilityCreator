@@ -1352,6 +1352,7 @@ class _TenantCreationScreenState extends ConsumerState<TenantCreationScreen> {
                     final facilityName = facilityAsync.value?.name ?? 'This facility';
                     return SmsConsentCheckbox(
                       facilityName: facilityName,
+                      startNumber: textingStartNumber(facilityAsync.value),
                       savedState: null,
                       value: _smsConsent,
                       onChanged: (v) => setState(() => _smsConsent = v),

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/services/sms_consent_service.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
@@ -37,6 +38,26 @@ TenantModel tenant(
 class _DialogResult {
   bool done = false;
   SmsConsentUpdate? update;
+}
+
+/// Stands in for the fresh read: the tenants as stored now.
+class _Reader implements SmsConsentTenantReader {
+  final Map<String, TenantModel> stored;
+  List<String>? asked;
+  _Reader(Iterable<TenantModel> tenants) : stored = {for (final t in tenants) t.id: t};
+
+  @override
+  Future<List<TenantModel>> read(String facilityId, List<String> tenantIds) async {
+    asked = tenantIds;
+    return [for (final id in tenantIds) if (stored[id] != null) stored[id]!];
+  }
+}
+
+class _FailingWriter implements SmsConsentWriter {
+  @override
+  Future<void> commit(String facilityId, List<SmsConsentWrite> writes) async {
+    throw SmsConsentPartialFailure(committed: 200, total: writes.length, cause: 'unavailable');
+  }
 }
 
 class _RecordingWriter implements SmsConsentWriter {
@@ -160,6 +181,15 @@ void main() {
     });
   });
 
+  test('bulk consent: one facility only, and only the selected tenants shown', () {
+    expect(bulkSmsConsentAvailable('f1'), isTrue);
+    expect(bulkSmsConsentAvailable('all'), isFalse);
+    expect(bulkSmsConsentAvailable(''), isFalse);
+    // 'c' is selected but hidden by a search.
+    final shown = [tenant('a'), tenant('b')];
+    expect(visibleSelectedTenants(shown, {'a', 'c'}).map((t) => t.id), ['a']);
+  });
+
   group('SmsConsentService.applyBulk', () {
     test('writes the planned tenants, each with an audit row', () async {
       final writer = _RecordingWriter();
@@ -174,6 +204,7 @@ void main() {
         ],
         update: update,
         writer: writer,
+        reader: _Reader([tenant('a'), tenant('b', phone: ''), tenant('c', smsOptOut: true)]),
         actingUid: 'owner-1',
         actingEmail: 'owner@example.com',
       );
@@ -203,10 +234,58 @@ void main() {
         tenants: [tenant('a', smsOptInDate: agreed)],
         update: SmsConsentUpdate.grant(consentDate: agreed),
         writer: writer,
+        reader: _Reader([tenant('a', smsOptInDate: agreed)]),
         actingUid: 'owner-1',
       );
       expect(result.updated, 0);
       expect(writer.facilityId, isNull);
+    });
+
+    test('plans from a fresh read: a STOP that arrived while the dialog was open is skipped',
+        () async {
+      final writer = _RecordingWriter();
+      // The list showed both without consent; 'b' has since texted STOP.
+      final reader = _Reader([
+        tenant('a'),
+        tenant('b', smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop'),
+      ]);
+      final result = await SmsConsentService.applyBulk(
+        facilityId: 'f1',
+        tenants: [tenant('a'), tenant('b')],
+        update: SmsConsentUpdate.grant(consentDate: agreed),
+        writer: writer,
+        reader: reader,
+        actingUid: 'owner-1',
+      );
+      expect(reader.asked, ['a', 'b']);
+      expect(writer.writes.map((w) => w.tenantId), ['a']);
+      expect(result.plan.optedOut.map((t) => t.id), ['b']);
+    });
+
+    test('a failure part way reports how many were saved', () async {
+      await expectLater(
+        SmsConsentService.applyBulk(
+          facilityId: 'f1',
+          tenants: [for (var i = 0; i < 250; i++) tenant('t$i')],
+          update: SmsConsentUpdate.grant(consentDate: agreed),
+          writer: _FailingWriter(),
+          reader: _Reader([for (var i = 0; i < 250; i++) tenant('t$i')]),
+          actingUid: 'owner-1',
+        ),
+        throwsA(isA<SmsConsentPartialFailure>()
+            .having((e) => e.committed, 'committed', 200)
+            .having((e) => e.total, 'total', 250)),
+      );
+      expect(
+          smsConsentBulkFailureMessage(
+              const SmsConsentPartialFailure(committed: 200, total: 250, cause: 'x'), 'Try again.'),
+          '200 of 250 saved; the rest were not. Try again.');
+      expect(
+          smsConsentBulkFailureMessage(
+              const SmsConsentPartialFailure(committed: 0, total: 250, cause: 'x'), 'Try again.'),
+          'Nothing was changed: Try again.');
+      expect(smsConsentBulkFailureMessage(Exception('x'), 'Try again.'),
+          'Nothing was changed: Try again.');
     });
 
     test('removal is logged as removed', () async {
@@ -216,6 +295,7 @@ void main() {
         tenants: [tenant('a', smsOptInDate: agreed)],
         update: SmsConsentUpdate.remove(at: now),
         writer: writer,
+        reader: _Reader([tenant('a', smsOptInDate: agreed)]),
         actingUid: 'owner-1',
       );
       expect(writer.writes.single.fields['smsOptOut'], isTrue);
@@ -245,6 +325,46 @@ void main() {
               tenant('a', smsOptInDate: agreed, smsConsentMethod: 'written_lease')),
           'Can text · agreed 14 Mar 2025 · Written lease');
       expect(smsConsentSummary(tenant('b')), 'No consent recorded');
+    });
+  });
+
+  group('opt-out wording', () {
+    test('says STOP only for a STOP, and names a declined move-in', () {
+      final stop = tenant('a',
+          smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: 'inbound_stop');
+      final declined = tenant('b', smsOptOut: true);
+      final csv = tenant('c',
+          smsOptOut: true, smsConsentStatus: 'opted_out', smsConsentSource: SmsConsentSources.csvOptOut);
+      expect(smsOptedOutLockText(stop),
+          'This tenant texted STOP, so the box is locked. Only the tenant can opt back in, by texting START to (855) 526-4544.');
+      expect(smsOptedOutLockText(declined), startsWith('This tenant declined texts at move-in, so'));
+      expect(smsOptedOutLockText(csv), startsWith('This tenant opted out of texts, so'));
+      expect(smsConsentSummary(stop), 'Opted out (tenant texted STOP)');
+      expect(smsConsentSummary(declined), 'Declined texts at move-in');
+      expect(smsConsentSummary(csv), 'Opted out (per imported spreadsheet)');
+      // Locked all the same.
+      for (final t in [stop, declined, csv]) {
+        expect(smsConsentState(t), SmsConsentState.optedOut);
+      }
+    });
+
+    test('the START number is the facility\'s own once it is approved', () {
+      FacilityModel facility({bool approved = true, String? number}) => FacilityModel(
+            id: 'f1',
+            name: 'Keepsake',
+            ownerUid: 'o',
+            createdAt: DateTime(2025),
+            textingPlatformApproved: approved,
+            twilioPhoneNumberE164: number,
+          );
+      expect(textingStartNumber(null), '(855) 526-4544');
+      expect(textingStartNumber(facility(number: '+19035550188')), '(903) 555-0188');
+      expect(textingStartNumber(facility(approved: false, number: '+19035550188')), '(855) 526-4544');
+      expect(textingStartNumber(facility()), '(855) 526-4544');
+      expect(textingStartNumber(facility(number: '+18555264544')), '(855) 526-4544');
+      expect(smsOptedOutLockText(tenant('a', smsOptOut: true), '(903) 555-0188'),
+          endsWith('by texting START to (903) 555-0188.'));
+      expect(smsConsentHelper('(903) 555-0188'), endsWith('texting START to (903) 555-0188.'));
     });
   });
 
@@ -294,10 +414,11 @@ void main() {
             method: null,
             onMethodChanged: (_) {},
           ));
-      expect(find.text(smsOptedOutText), findsOneWidget);
+      final lock = find.textContaining('so the box is locked');
+      expect(lock, findsOneWidget);
       final box = tester.widget<Checkbox>(find.byKey(const Key('sms-consent-checkbox')));
       expect(box.onChanged, isNull);
-      await tester.tap(find.text(smsOptedOutText));
+      await tester.tap(lock);
       expect(changed, isNull);
     });
   });
@@ -342,8 +463,8 @@ void main() {
 
       expect(find.text('2 tenants will be marked as agreeing to texts from Keepsake.'),
           findsOneWidget);
-      expect(find.textContaining('1 tenant with no mobile number'), findsOneWidget);
-      expect(find.textContaining('1 tenant who opted out themselves'), findsOneWidget);
+      expect(find.textContaining('1 tenant with no phone number that can take texts'), findsOneWidget);
+      expect(find.textContaining('1 tenant who opted out or declined texts themselves'), findsOneWidget);
       expect(save(tester).onPressed, isNull);
 
       await tester.tap(find.byKey(const Key('bulk-consent-method-written_lease')));

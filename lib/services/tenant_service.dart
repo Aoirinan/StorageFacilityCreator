@@ -809,6 +809,9 @@ class TenantService {
     // box, or the CSV import.
     String smsConsentSource = SmsConsentSources.staffRecorded,
     SmsConsentMethod? smsConsentMethod,
+    // The tenant refused texts (the CSV import's "no" / "stop"): recorded
+    // as their own opt-out, which staff cannot reverse.
+    bool smsRefused = false,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -867,8 +870,13 @@ class TenantService {
         'portalLastAccessAt': null,
         'portalVisitCount': 0,
         if (leadSource != null && leadSource.isNotEmpty) 'leadSource': leadSource,
-        'smsOptOut': false,
-        if (smsOptInDate != null) ...{
+        'smsOptOut': smsRefused,
+        if (smsRefused) ...{
+          'smsOptOutDate': FieldValue.serverTimestamp(),
+          'smsConsentStatus': 'opted_out',
+          'smsConsentTimestamp': FieldValue.serverTimestamp(),
+          'smsConsentSource': SmsConsentSources.csvOptOut,
+        } else if (smsOptInDate != null) ...{
           'smsOptInDate': Timestamp.fromDate(smsOptInDate),
           // Both shapes the server reads, kept in step.
           'smsConsentStatus': 'opted_in',
@@ -1323,9 +1331,6 @@ class TenantService {
       if (tppCoverageLevel != null) {
         updateData['tppCoverageLevel'] = tppCoverageLevel.isEmpty ? FieldValue.delete() : tppCoverageLevel;
       }
-      if (smsConsent != null) {
-        updateData.addAll(smsConsent.fields(actingUid: uid));
-      }
 
       // Month status overrides: Map<String, String> keyed by "yyyy-MM", value "paid"|"late"|"moved_out"
       if (monthStatusOverrides != null) {
@@ -1334,6 +1339,19 @@ class TenantService {
 
       // Get before snapshot for audit log
       final beforeData = await store.tenant(tenantId);
+
+      // The consent change is checked against the tenant as stored now, not
+      // as the form opened: a STOP that arrived meanwhile must not be undone
+      // by the save, and a consent already recorded keeps its date.
+      String? consentNotice;
+      if (smsConsent != null && beforeData != null) {
+        final stored = smsConsentStateOfData(beforeData);
+        if (smsConsent.appliesTo(stored)) {
+          updateData.addAll(smsConsent.fields(actingUid: uid));
+        } else if (stored == SmsConsentState.optedOut) {
+          consentNotice = smsConsentDroppedNotice(beforeData);
+        }
+      }
 
       // A missing isActive is inactive, as TenantModel and the server jobs
       // read it. `?? true` took a doc with no flag for an active tenant: a
@@ -1539,6 +1557,9 @@ class TenantService {
 
       if (kDebugMode) {
         print('✅ Tenant updated successfully: $tenantId');
+      }
+      if (consentNotice != null) {
+        return notice == null ? consentNotice : '$notice $consentNotice';
       }
       return notice;
     } catch (e) {
