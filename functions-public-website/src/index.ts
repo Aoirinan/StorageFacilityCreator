@@ -42,6 +42,7 @@ export {
   createPublicPaymentLink,
   getPublicPaymentLink,
   createPublicPaymentCheckout,
+  confirmPublicPaymentCheckout,
 } from './publicPaymentCheckout';
 export { migratePublicWebsiteTemplateV4OptionalFields } from './migratePublicWebsiteTemplate';
 export { redirectToCustomDomain } from './redirectToCustomDomain';

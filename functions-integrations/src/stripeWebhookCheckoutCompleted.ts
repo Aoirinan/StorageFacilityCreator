@@ -1,15 +1,85 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
-import { getStripeClient } from '@sfc/functions-shared';
+import {
+  completePublicLinkPayment,
+  getStripeClient,
+  isPublicLinkCheckoutSession,
+} from '@sfc/functions-shared';
 import {
   updateAccountFromSubscription,
   updateFacilityFromPlatformSubscription,
   updateFacilityFromWebsiteSubscription,
 } from './stripeWebhookSubscriptionInternal';
 import { reconcileAccountSubscription } from './accountSubscriptionReconcile';
+import { recordStripeEventRefusal, refusalReasonFor } from './connectedAccountGuard';
 
-export async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+/**
+ * [connectedAccountId] is the event's `account`: set when the session lives
+ * on a facility's connected account (public payment links), absent for the
+ * platform's own subscription checkouts.
+ */
+export async function handleCheckoutCompleted(
+  session: Stripe.Checkout.Session,
+  connectedAccountId?: string,
+  eventId?: string,
+) {
+  // Public payment links are tenant payments on the facility's connected
+  // account and carry no accountId, so the subscription path below dropped
+  // them with "No accountId" and the link stayed pending forever. The money
+  // itself is recorded by payment_intent.succeeded; this marks the link paid
+  // (or raises an exception for staff). No try/catch: a failure returns 500
+  // and Stripe redelivers, instead of the event being marked processed.
+  if (isPublicLinkCheckoutSession(session)) {
+    const result = await completePublicLinkPayment({
+      db: admin.firestore(),
+      session,
+      connectedAccountId,
+      source: 'webhook',
+    });
+    const details = { sessionId: session.id, connectedAccountId: connectedAccountId || null, ...result };
+    if (result.outcome === 'rejected') {
+      functions.logger.error('Public payment link checkout rejected', details);
+      // Refused for good, like the other connected-account checks: record it
+      // where a super admin will see it.
+      if (result.rejectReason === 'account_mismatch' && connectedAccountId) {
+        const facilityId = session.metadata?.facilityId || '';
+        const facilitySnap = facilityId
+          ? await admin.firestore().collection('facilities').doc(facilityId).get()
+          : null;
+        const facilityData = (facilitySnap?.exists ? facilitySnap.data() : {}) as Record<string, unknown>;
+        const facilityAccount =
+          typeof facilityData.stripeConnectAccountId === 'string' ? facilityData.stripeConnectAccountId : null;
+        await recordStripeEventRefusal({
+          reason: refusalReasonFor(facilityData, connectedAccountId),
+          facilityId,
+          facilityExists: !!facilitySnap?.exists,
+          facilityAccount,
+          connectedAccountId,
+          eventType: 'checkout.session.completed',
+          objectId: session.id,
+          eventId,
+          tenantId: session.metadata?.tenantId ?? null,
+          amount: typeof session.amount_total === 'number' ? session.amount_total / 100 : null,
+        });
+      }
+    } else {
+      functions.logger.info('Public payment link checkout completed', details);
+    }
+    return;
+  }
+
+  // Owner subscription checkouts live on the platform account. One from a
+  // connected account carries whatever metadata its owner wrote (accountId,
+  // facilityId), and this path adds that facility to that owner account.
+  if (connectedAccountId) {
+    functions.logger.error('Subscription checkout from a connected account ignored', {
+      sessionId: session.id,
+      connectedAccountId,
+    });
+    return;
+  }
+
   const accountId = session.metadata?.accountId;
   const facilityId = session.metadata?.facilityId;
   if (!accountId) {

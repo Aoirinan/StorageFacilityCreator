@@ -10,6 +10,8 @@ import {
   cancelSubscriptions,
   collectSubscriptionsToCancel,
 } from '@sfc/functions-shared/stripe/subscriptionCleanup';
+import { PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION } from '@sfc/functions-shared/stripe/completePublicLinkPayment';
+import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '@sfc/functions-shared/stripe/webhookRefusals';
 
 /**
  * Permanently removing one facility: shared by superAdminDeleteFacility and
@@ -131,6 +133,10 @@ export const FACILITY_KEYED_COLLECTIONS = [
   'publicReservations',
   'publicPaymentLinks',
   'customDomainClaims',
+  // Link payments staff must look at, and refused Stripe money events: both
+  // carry the facility's tenant ids and amounts, like the links.
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  STRIPE_WEBHOOK_REFUSALS_COLLECTION,
 ] as const;
 
 /** Deletes every row of [FACILITY_KEYED_COLLECTIONS] whose facilityId is [facilityId]. */

@@ -2,12 +2,23 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
  * Handle successful setup intent (for saving payment methods).
  * If connectedAccountId is set, the SetupIntent was on a Connect account; use stripeAccount for Stripe API calls.
+ *
+ * The facility and tenant come from the SetupIntent's metadata, which the
+ * owner of whatever account created it chose. Trusting it let another
+ * account point a tenant's billing, saved card and default card at its own
+ * customer and card, so the tenant's next autopay went to that account's
+ * card on file. Only the facility's own account may save a card for it.
  */
-export async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent, connectedAccountId?: string) {
+export async function handleSetupIntentSucceeded(
+  setupIntent: Stripe.SetupIntent,
+  connectedAccountId?: string,
+  eventId?: string,
+) {
   try {
     const facilityId = setupIntent.metadata?.facilityId as string | undefined;
     const tenantId = setupIntent.metadata?.tenantId as string | undefined;
@@ -17,6 +28,19 @@ export async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent
       functions.logger.warn('Setup intent missing facilityId, tenantId, or payment_method');
       return;
     }
+
+    // Before any write, on Stripe or here.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'setup_intent.succeeded',
+      objectId: setupIntent.id,
+      eventId,
+      tenantId,
+      // A saved card moves no money: logged and sent to Sentry, not recorded.
+      record: false,
+    });
+    if (!accountMatches) return;
 
     functions.logger.info(
       `Setup intent succeeded: ${setupIntent.id} for tenant ${tenantId}` + (connectedAccountId ? ' (Connect)' : ''),

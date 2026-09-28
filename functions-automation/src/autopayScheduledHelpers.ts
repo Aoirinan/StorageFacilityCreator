@@ -6,6 +6,7 @@
  * runs in production, and it moves real money, so the decisions about *whether*
  * and *how much* to charge should be verifiable in isolation.
  */
+import { splitLedgerBalance } from '@sfc/functions-shared';
 
 /** Shape we care about from `facilities/{facilityId}`. */
 export interface AutopayFacilityData {
@@ -54,22 +55,23 @@ export function isAutopayDue(
 }
 
 /**
- * Sum posted ledger entries into an outstanding balance.
+ * What automation may collect from a tenant's posted ledger entries.
  *
  * Entries are signed: charges positive, payments negative. Non-numeric or
  * missing amounts count as zero rather than poisoning the total with NaN.
+ *
+ * Card-dispute rows (`dispute`, `dispute_reversal`) are left out. They stay
+ * on the ledger, and in the balance staff see, but summing them here made
+ * autopay charge an amount the cardholder had just disputed straight back to
+ * the same card: re-billing without consent, which card networks forbid, and
+ * when the facility then won, the tenant had paid it twice. The same sum set
+ * the delinquency job's late-fee basis. Staff collect a disputed amount by
+ * hand.
  */
-export function sumLedgerBalance(
-  entries: ReadonlyArray<{ amount?: unknown }>,
+export function collectibleLedgerBalance(
+  entries: ReadonlyArray<{ amount?: unknown; type?: unknown; metadata?: unknown }>,
 ): number {
-  let balance = 0;
-  for (const entry of entries) {
-    const amount = entry?.amount;
-    if (typeof amount === 'number' && Number.isFinite(amount)) {
-      balance += amount;
-    }
-  }
-  return balance;
+  return splitLedgerBalance(entries).collectible;
 }
 
 /**

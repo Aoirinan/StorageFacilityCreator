@@ -9,9 +9,11 @@ import {
   getStripeClient,
 } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
+import { confirmPublicLinkCheckout, getOrCreatePublicLinkCheckout } from './publicPaymentCheckoutSession';
 
 const PUBLIC_PAYMENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{24,128}$/;
 const DOCUMENT_ID_PATTERN = /^[^/]{1,128}$/;
+const CHECKOUT_SESSION_ID_PATTERN = /^cs_(test|live)_[A-Za-z0-9]{1,250}$/;
 const PUBLIC_LOOKUP_LIMIT_PER_MINUTE = 60;
 
 async function enforcePublicLookupRateLimit(
@@ -194,8 +196,12 @@ export const createPublicPaymentLink = functions.https.onCall(async (data: any, 
 });
 
 /**
- * Create a payment checkout session for public payment links
- * No authentication required - uses token-based validation
+ * Create (or hand back) the checkout session for a public payment link.
+ * No authentication required - uses token-based validation.
+ *
+ * Returns `{checkoutUrl, sessionId}` for a payable link, or `{alreadyPaid: true}`
+ * when the link has been paid (including by a session this call just found
+ * complete). The one-open-session rules live in publicPaymentCheckoutSession.ts.
  */
 export const createPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
   // Note: No auth check - public access via token
@@ -204,111 +210,56 @@ export const createPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_S
   const token = requirePaymentToken(data);
 
   try {
-    // Get payment link from Firestore
-    const linkDoc = await admin.firestore()
-      .collection('publicPaymentLinks')
-      .doc(token)
-      .get();
-
-    if (!linkDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Payment link not found');
-    }
-
-    const linkData = linkDoc.data()!;
-    const facilityId = linkData.facilityId as string;
-    const tenantId = linkData.tenantId as string;
-    const amount = linkData.amount as number;
-    const description = linkData.description as string || 'Payment';
-    const status = linkData.status as string;
-    const expiresAt = linkData.expiresAt as admin.firestore.Timestamp;
-
-    // Validate link is active
-    if (status !== 'pending') {
-      throw new functions.https.HttpsError('failed-precondition', 'Payment link is no longer active');
-    }
-
-    // Check if expired
-    if (expiresAt && expiresAt.toDate() < new Date()) {
-      throw new functions.https.HttpsError('failed-precondition', 'Payment link has expired');
-    }
-
-    // Get facility info
-    const facilityDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .get();
-
-    if (!facilityDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Facility not found');
-    }
-
-    const facilityData = facilityDoc.data()!;
-    const connectAccountId = facilityData.stripeConnectAccountId as string | undefined;
-    const onboardingComplete = facilityData.stripeConnectOnboardingComplete as boolean | undefined;
-
-    if (!connectAccountId || !onboardingComplete) {
-      throw new functions.https.HttpsError('failed-precondition', 'Facility owner must complete Stripe Connect onboarding before accepting payments');
-    }
-
-    // Get tenant info
-    const tenantDoc = await admin.firestore()
-      .collection('facilities')
-      .doc(facilityId)
-      .collection('tenants')
-      .doc(tenantId)
-      .get();
-
-    if (!tenantDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'Tenant not found');
-    }
-
-    const tenantData = tenantDoc.data()!;
-    const tenantEmail = tenantData['email'] as string | undefined;
-
-    const stripe = getStripeClient();
-
-    // Create checkout session directly on the connected account
-    // For Standard accounts, payments go directly to the connected account (0% platform fee)
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: description || `Payment for ${facilityData['name'] || 'Facility'}`,
-              description: `Payment for ${facilityData['name'] || 'Facility'}`,
-            },
-            unit_amount: Math.round(amount * 100), // Convert to cents
-          },
-          quantity: 1,
-        },
-      ],
-      customer_email: tenantEmail,
-      // Hash route, query before the hash: a path-style /pay?token=… has no
-      // route and lands the tenant on the facility-manager login after paying.
-      success_url: getPublicAppUrl() + '/?status=success&session_id={CHECKOUT_SESSION_ID}#/pay?token=' + token,
-      cancel_url: getPublicAppUrl() + '/?status=cancel#/pay?token=' + token,
-      metadata: {
-        facilityId: facilityId,
-        tenantId: tenantId,
-        type: 'public_payment_link',
-        paymentLinkToken: token,
-      },
-    }, {
-      stripeAccount: connectAccountId, // Create session on connected account - all funds go to facility owner
+    // Sessions are created on the facility's connected account (Standard,
+    // direct charges): all funds go to the facility owner.
+    const result = await getOrCreatePublicLinkCheckout(token, {
+      db: admin.firestore(),
+      sessions: getStripeClient().checkout.sessions,
+      appUrl: getPublicAppUrl(),
     });
-
+    if (result.kind === 'paid') {
+      return { alreadyPaid: true, status: 'paid' };
+    }
     return {
-      checkoutUrl: session.url,
-      sessionId: session.id,
+      checkoutUrl: result.checkoutUrl,
+      sessionId: result.sessionId,
     };
   } catch (error: any) {
     if (error instanceof functions.https.HttpsError) {
       throw error;
     }
+    // Stripe's own wording can name accounts and parameters, and the caller
+    // is anonymous: it stays in the log.
     functions.logger.error('Error creating public payment checkout', error);
-    throw new functions.https.HttpsError('internal', `Failed to create checkout: ${error.message}`);
+    throw new functions.https.HttpsError('internal', 'Failed to create checkout. Please try again.');
+  }
+});
+
+/**
+ * Called by the payment page when Stripe sends the tenant back
+ * (`?status=success&session_id=…`). Applies the paid session to the link at
+ * once rather than leaving the tenant looking at "Pay Now" until the webhook
+ * lands. Safe to race the webhook and to call repeatedly.
+ */
+export const confirmPublicPaymentCheckout = functions.runWith({ secrets: STRIPE_SECRETS }).https.onCall(async (data: any, context) => {
+  enforceAppCheckOrThrow(context);
+  await enforcePublicLookupRateLimit(context);
+  const token = requirePaymentToken(data);
+  const sessionId = String(data?.sessionId || '').trim();
+  if (!CHECKOUT_SESSION_ID_PATTERN.test(sessionId)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Valid sessionId is required');
+  }
+
+  try {
+    return await confirmPublicLinkCheckout(token, sessionId, {
+      db: admin.firestore(),
+      sessions: getStripeClient().checkout.sessions,
+    });
+  } catch (error: any) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    functions.logger.error('Error confirming public payment checkout', error);
+    throw new functions.https.HttpsError('internal', 'Could not confirm the payment. Please refresh in a moment.');
   }
 });

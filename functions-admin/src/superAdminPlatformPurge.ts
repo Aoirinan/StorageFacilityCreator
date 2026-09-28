@@ -2,18 +2,28 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { getSuperAdminEmails, isSuperAdmin } from '@sfc/functions-shared/auth/superAdmin';
 import { getStripeClient } from '@sfc/functions-shared/stripe/client';
+import {
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  PUBLIC_PAYMENT_LINKS_COLLECTION,
+} from '@sfc/functions-shared/stripe/completePublicLinkPayment';
+import { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from '@sfc/functions-shared/stripe/webhookRefusals';
 import { adminDeleteDocumentTree, adminDeleteEntireCollection } from './admin_delete_document_tree';
 import { STRIPE_SECRETS } from './secrets';
 
 const PURGE_CONFIRMATION_PHRASE = 'PURGE PLATFORM';
 
 /** Top-level Firestore collections wiped by platform purge (operational / customer data). */
-const PURGE_ROOT_COLLECTIONS = [
+export const PURGE_ROOT_COLLECTIONS = [
   'facilities',
   'facilityCreatorAccounts',
   'publicReservations',
   'publicFacilityMaps',
-  'publicPaymentLinks',
+  PUBLIC_PAYMENT_LINKS_COLLECTION,
+  // Server-only records of link payments staff must look at: tenant ids,
+  // amounts and connected-account ids, so customer data like the links.
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  // Refused Stripe money events: tenant ids, amounts and account ids too.
+  STRIPE_WEBHOOK_REFUSALS_COLLECTION,
   'marketing_leads',
   'referralLookup',
   'referralRewardsPending',

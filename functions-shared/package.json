@@ -73,6 +73,10 @@
     "./net/*": {
       "types": "./lib/net/*.d.ts",
       "default": "./lib/net/*.js"
+    },
+    "./testing/*": {
+      "types": "./lib/testing/*.d.ts",
+      "default": "./lib/testing/*.js"
     }
   },
   "engines": {

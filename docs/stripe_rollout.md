@@ -35,7 +35,14 @@ This rollout plan ensures safe, gradual deployment of the enhanced Stripe Connec
   - `payment_intent.*`
   - `setup_intent.succeeded`
   - `charge.refunded` (NEW)
-  - `charge.dispute.created` (NEW)
+  - `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.closed`,
+    `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`
+- [ ] Verify the Connect destination (events from connected accounts) subscribes to
+  `payment_intent.succeeded`, `checkout.session.completed`, `charge.refunded` and the five
+  `charge.dispute.*` events above. Add them in the same sitting as deploying `stripeWebhook`: an event
+  delivered to the old handler is marked processed and never handled again.
+- [ ] A test-mode project only: set `STRIPE_ACCEPT_TEST_MODE_EVENTS=true` for the integrations codebase, or
+  every connected-account event there is ignored as test mode. Never on the live project.
 - [ ] Verify products exist: `sfc_base_monthly_75`, `sfc_addon_monthly_75`
 - [ ] Verify Connect is enabled in Stripe Dashboard
 - [ ] Test Connect account creation manually (if possible)

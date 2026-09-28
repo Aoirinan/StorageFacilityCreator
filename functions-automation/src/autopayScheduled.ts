@@ -2,7 +2,7 @@ import * as functions from 'firebase-functions/v1';
 import { resolveAutopayFailureOutcome } from './autopayFailureHelpers';
 import { autopayIdempotencyKey, hasLedgerEntryForPayment } from './autopayIdempotency';
 import * as admin from 'firebase-admin';
-import { getStripeClient } from '@sfc/functions-shared';
+import { getStripeClient, splitLedgerBalance } from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import {
   calculateNextAutopayRun,
@@ -10,7 +10,6 @@ import {
   isFacilityChargeReady,
   resolveChargeAmount,
   shouldAttemptCharge,
-  sumLedgerBalance,
 } from './autopayScheduledHelpers';
 import { enqueueFacilityJobs } from './facilityJobEnqueue';
 import {
@@ -200,8 +199,12 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
             .where('status', '==', 'posted')
             .get();
 
-          const balance = sumLedgerBalance(ledgerSnapshot.docs.map((entry) => entry.data()));
-          const amount = resolveChargeAmount(balance, autopaySchedule, facilityData);
+          // Card-dispute rows are left out of what is charged: a disputed
+          // amount went straight back onto the card the cardholder was
+          // disputing, and after a win the tenant had paid it twice. They stay
+          // on the ledger for staff, who collect them by hand.
+          const { collectible, disputed } = splitLedgerBalance(ledgerSnapshot.docs.map((entry) => entry.data()));
+          const amount = resolveChargeAmount(collectible, autopaySchedule, facilityData);
 
           if (!shouldAttemptCharge(amount, methodData.stripePaymentMethodId)) continue;
 
@@ -346,6 +349,8 @@ async function chargeFacilityAutopay(facilityId: string): Promise<number> {
                 amount,
                 paymentIntentId: paymentIntent.id,
                 scheduled: true,
+                // What the ledger held in card disputes and autopay did not charge.
+                disputedExcluded: disputed,
               },
               at: admin.firestore.FieldValue.serverTimestamp(),
             });

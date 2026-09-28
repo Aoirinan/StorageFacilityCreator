@@ -280,44 +280,6 @@ class StripeService {
     }
   }
 
-  /// Create a payment checkout session for public payment links
-  /// No authentication required - uses token-based validation
-  static Future<String> createPublicPaymentCheckout({
-    required String token,
-  }) async {
-    try {
-      if (kDebugMode) {
-        print('🔄 Creating public payment checkout for token: $token');
-      }
-
-      final callable = _functions.httpsCallable('createPublicPaymentCheckout');
-      final result = await callable.call(<String, dynamic>{
-        'token': token,
-      }).timeout(
-        const Duration(seconds: 60),
-        onTimeout: () {
-          throw Exception('Request timed out. Please try again.');
-        },
-      );
-
-      final checkoutUrl = result.data['checkoutUrl'] as String?;
-      if (checkoutUrl == null) {
-        throw Exception('Failed to create checkout session');
-      }
-
-      if (kDebugMode) {
-        print('✅ Public payment checkout created: $checkoutUrl');
-      }
-
-      return checkoutUrl;
-    } catch (e) {
-      if (kDebugMode) {
-        print('❌ Error creating public payment checkout: $e');
-      }
-      rethrow;
-    }
-  }
-
   /// Create a payment checkout session for tenant portal payment
   /// Uses email + accessCode for authentication (no Firebase Auth required)
   static Future<String> createTenantPortalPaymentCheckout({

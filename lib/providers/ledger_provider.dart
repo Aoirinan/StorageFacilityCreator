@@ -48,6 +48,16 @@ double sumPostedLedgerEntries(List<LedgerEntry> entries) {
   return double.parse(total.toStringAsFixed(2));
 }
 
+/// [splitLedgerBalance] over the posted entries: how much of the balance is
+/// card disputes, which autopay and the reminders leave out.
+LedgerBalanceSplit splitPostedLedgerEntries(List<LedgerEntry> entries) {
+  return splitLedgerBalance([
+    for (final entry in entries)
+      if (entry.status == LedgerEntryStatus.posted)
+        {'type': entry.storedType, 'amount': entry.amount, 'metadata': entry.metadata},
+  ]);
+}
+
 /// Provider for ledger entries by date range
 final ledgerEntriesByDateRangeProvider = FutureProvider.family<List<LedgerEntry>, LedgerDateRangeParams>((ref, params) {
   return LedgerService.getLedgerEntriesByDateRange(

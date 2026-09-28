@@ -151,6 +151,25 @@ export type {
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export {
+  PUBLIC_LINK_PAYMENT_TYPE,
+  PUBLIC_LINK_SFC_KIND,
+  PUBLIC_PAYMENT_LINKS_COLLECTION,
+  PUBLIC_PAYMENT_LINK_EXCEPTIONS_COLLECTION,
+  buildPublicLinkPaymentIntentMetadata,
+  completePublicLinkPayment,
+  isPublicLinkCheckoutSession,
+  isPublicLinkPaymentIntent,
+  publicLinkAmountCents,
+  publicLinkNotificationId,
+} from './stripe/completePublicLinkPayment';
+export type {
+  CompletePublicLinkPaymentResult,
+  PublicLinkCheckoutSessionLike,
+  PublicLinkCompletionSource,
+  PublicLinkExceptionReason,
+} from './stripe/completePublicLinkPayment';
+export { STRIPE_WEBHOOK_REFUSALS_COLLECTION } from './stripe/webhookRefusals';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,
@@ -312,6 +331,14 @@ export {
   unitStatusOf,
   unitsHeldByTenant,
 } from './tenants/permanentDeleteRules';
+
+export type { LedgerBalanceSplit } from './ledger/disputeEntries';
+export {
+  DISPUTE_LEDGER_TYPE,
+  DISPUTE_REVERSAL_LEDGER_TYPE,
+  isDisputeLedgerRow,
+  splitLedgerBalance,
+} from './ledger/disputeEntries';
 
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {

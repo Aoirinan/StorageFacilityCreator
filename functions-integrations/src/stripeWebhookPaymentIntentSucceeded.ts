@@ -1,11 +1,26 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import type Stripe from 'stripe';
+import { isPublicLinkPaymentIntent } from '@sfc/functions-shared';
+import { isAlreadyExistsError } from './firestoreErrors';
+import { eventAccountMatchesFacility } from './connectedAccountGuard';
 
 /**
- * Handle successful payment intent (for tenant payments via Stripe Connect / embedded)
+ * Handle successful payment intent (for tenant payments via Stripe Connect / embedded).
+ *
+ * This is the one place a public payment-link payment is recorded: the link's
+ * Checkout Session puts facilityId/tenantId on the PaymentIntent
+ * (`payment_intent_data.metadata`, sfcKind 'tenant_link') for exactly this.
+ *
+ * [connectedAccountId] is the event's `account`. A connected-account payment
+ * is only credited when that account is the facility's own: the metadata that
+ * names the facility is written by whoever created the PaymentIntent.
  */
-export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
+export async function handlePaymentIntentSucceeded(
+  paymentIntent: Stripe.PaymentIntent,
+  connectedAccountId?: string,
+  eventId?: string,
+) {
   try {
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
@@ -16,6 +31,19 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
       return;
     }
+
+    // Before any write: a PaymentIntent on another facility's account carrying
+    // this facility's id must not credit this facility's tenant.
+    const accountMatches = await eventAccountMatchesFacility({
+      facilityId,
+      connectedAccountId,
+      eventType: 'payment_intent.succeeded',
+      objectId: paymentIntent.id,
+      eventId,
+      tenantId,
+      amount: paymentIntent.amount / 100,
+    });
+    if (!accountMatches) return;
 
     // Update tenant payments subcollection (embedded one-time payments)
     if (paymentDocId) {
@@ -55,34 +83,44 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
     const paymentsRef = admin.firestore().collection('facilities').doc(facilityId).collection('payments');
 
     const existingPayments = await paymentsRef.where('externalPaymentId', '==', paymentIntent.id).limit(1).get();
+    const markCompleted = () => {
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      return { status: 'completed', paidAt: now, paidDate: now, updatedAt: now };
+    };
 
+    let paymentRecordId: string;
     if (!existingPayments.empty) {
-      const now = admin.firestore.FieldValue.serverTimestamp();
-      await existingPayments.docs[0].ref.update({
-        status: 'completed',
-        paidAt: now,
-        paidDate: now,
-        updatedAt: now,
-      });
+      paymentRecordId = existingPayments.docs[0].id;
+      await existingPayments.docs[0].ref.update(markCompleted());
     } else {
-      // Create new payment record (embedded or Connect)
+      // Create new payment record (embedded or Connect). Deterministic id and
+      // create(): two deliveries of this event racing past the query above
+      // (the processed-event check is not atomic) converge on one record
+      // instead of each adding one.
+      const paymentRef = paymentsRef.doc(`stripe_${paymentIntent.id}`);
+      paymentRecordId = paymentRef.id;
       const now = admin.firestore.FieldValue.serverTimestamp();
-      await paymentsRef.add({
-        tenantId: tenantId,
-        facilityId: facilityId,
-        contractId: paymentIntent.metadata?.contractId || '',
-        amount: paymentIntent.amount / 100, // Convert from cents
-        status: 'completed',
-        method: 'stripe',
-        externalPaymentId: paymentIntent.id,
-        transactionId: paymentIntent.id,
-        paidAt: now,
-        paidDate: now,
-        createdAt: now,
-        updatedAt: now,
-        createdBy: 'system@stripe-webhook',
-        isActive: true,
-      });
+      try {
+        await paymentRef.create({
+          tenantId: tenantId,
+          facilityId: facilityId,
+          contractId: paymentIntent.metadata?.contractId || '',
+          amount: paymentIntent.amount / 100, // Convert from cents
+          status: 'completed',
+          method: 'stripe',
+          externalPaymentId: paymentIntent.id,
+          transactionId: paymentIntent.id,
+          paidAt: now,
+          paidDate: now,
+          createdAt: now,
+          updatedAt: now,
+          createdBy: 'system@stripe-webhook',
+          isActive: true,
+        });
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) throw error;
+        await paymentRef.update(markCompleted());
+      }
     }
 
     // If invoiceId provided, mark invoice as paid
@@ -118,7 +156,7 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
         type: 'payment',
         amount: -(paymentIntent.amount / 100), // Negative for payments
         description: `Payment via Stripe - ${paymentIntent.id}`,
-        referenceId: existingPayments.empty ? null : existingPayments.docs[0].id,
+        referenceId: paymentRecordId,
         entryDate: admin.firestore.FieldValue.serverTimestamp(),
         status: 'posted',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -133,5 +171,12 @@ export async function handlePaymentIntentSucceeded(paymentIntent: Stripe.Payment
     functions.logger.info(`Payment intent succeeded: ${paymentIntent.id} for tenant ${tenantId}`);
   } catch (error: any) {
     functions.logger.error('Error handling payment intent succeeded:', error);
+    // Swallowing marks the event processed and the credit is never retried.
+    // Nothing else records a payment-link payment (no job writes it, and the
+    // link completion deliberately does not), so let Stripe redeliver it.
+    // Every write above is keyed on the PaymentIntent, so a retry converges.
+    if (isPublicLinkPaymentIntent(paymentIntent)) {
+      throw error;
+    }
   }
 }

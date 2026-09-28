@@ -12,7 +12,7 @@ import {
   facilityHasActiveTenantsMessage,
   facilityHasAutopayTenantsMessage,
 } from '../../deleteFacilityPermanently';
-import { FACILITY_KEYED_COLLECTIONS, FacilityPurgeDeps } from '../../facilityPurge';
+import { FacilityPurgeDeps } from '../../facilityPurge';
 import { TWO_FACTOR_REQUIRED_MESSAGE } from '../../recentTwoFactor';
 import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
 
@@ -117,13 +117,35 @@ async function seedFacility(): Promise<void> {
       .doc(`token-${suffix}`)
       .set({ facilityId, tenantId: 't1', amount: 50, status: 'pending' });
     await db.collection('customDomainClaims').doc(`${suffix}.example.com`).set({ facilityId });
+    await db
+      .collection('publicPaymentLinkExceptions')
+      .doc(`cs-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amountCents: 5000, reason: 'duplicate_payment' });
+    await db
+      .collection('stripeWebhookRefusals')
+      .doc(`acct_x__pi-${suffix}`)
+      .set({ facilityId, tenantId: 't1', amount: 50, reason: 'unknown_account' });
   }
 }
+
+/**
+ * Every collection seedKeyedRows writes, named here rather than read from
+ * FACILITY_KEYED_COLLECTIONS: a collection dropped from that list must show
+ * up as rows left behind.
+ */
+const SEEDED_KEYED_COLLECTIONS = [
+  'user_roles',
+  'publicReservations',
+  'publicPaymentLinks',
+  'customDomainClaims',
+  'publicPaymentLinkExceptions',
+  'stripeWebhookRefusals',
+];
 
 /** The keyed rows left, as 'collection/id'. */
 async function keyedRowsLeft(): Promise<string[]> {
   const left: string[] = [];
-  for (const collection of FACILITY_KEYED_COLLECTIONS) {
+  for (const collection of SEEDED_KEYED_COLLECTIONS) {
     for (const doc of (await emulatorDb().collection(collection).get()).docs) left.push(`${collection}/${doc.id}`);
   }
   return left.sort();
@@ -131,15 +153,19 @@ async function keyedRowsLeft(): Promise<string[]> {
 
 const THEIR_KEYED_ROWS = [
   'customDomainClaims/theirs.example.com',
+  'publicPaymentLinkExceptions/cs-theirs',
   'publicPaymentLinks/token-theirs',
   'publicReservations/res-theirs',
+  'stripeWebhookRefusals/acct_x__pi-theirs',
   'user_roles/role-theirs',
 ];
 const ALL_KEYED_ROWS = [
   ...THEIR_KEYED_ROWS,
   'customDomainClaims/mine.example.com',
+  'publicPaymentLinkExceptions/cs-mine',
   'publicPaymentLinks/token-mine',
   'publicReservations/res-mine',
+  'stripeWebhookRefusals/acct_x__pi-mine',
   'user_roles/role-mine',
 ].sort();
 

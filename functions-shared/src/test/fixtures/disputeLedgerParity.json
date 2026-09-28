@@ -1,0 +1,50 @@
+{
+  "_comment": "Shared by functions-shared/src/test/disputeLedgerEntries.test.ts and test/dispute_ledger_parity_test.dart. Which ledger rows are card-dispute rows, and how a posted balance splits into what automation may collect and what staff collect by hand.",
+  "rows": [
+    { "name": "dispute charge", "row": { "type": "dispute", "amount": 42, "metadata": { "disputeId": "du_1" } }, "isDispute": true },
+    { "name": "dispute reversal", "row": { "type": "dispute_reversal", "amount": -42, "metadata": { "disputeId": "du_1", "reversesEntryId": "dispute_du_1" } }, "isDispute": true },
+    { "name": "old random-id dispute row without metadata", "row": { "type": "dispute", "amount": 50 }, "isDispute": true },
+    { "name": "re-labelled row still carrying the dispute id", "row": { "type": "otherCharge", "amount": 42, "metadata": { "disputeId": "du_2" } }, "isDispute": true },
+    { "name": "blank dispute id is not a dispute", "row": { "type": "otherCharge", "amount": 10, "metadata": { "disputeId": "  " } }, "isDispute": false },
+    { "name": "rent", "row": { "type": "rentCharge", "amount": 100 }, "isDispute": false },
+    { "name": "payment", "row": { "type": "payment", "amount": -100, "metadata": { "paymentIntentId": "pi_1" } }, "isDispute": false },
+    { "name": "refund", "row": { "type": "refund", "amount": 42 }, "isDispute": false },
+    { "name": "late fee", "row": { "type": "lateFee", "amount": 25 }, "isDispute": false }
+  ],
+  "balances": [
+    {
+      "name": "open dispute on a paid month, next month's rent due",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "payment", "amount": -100 },
+        { "type": "dispute", "amount": 100, "metadata": { "disputeId": "du_1" } },
+        { "type": "rentCharge", "amount": 100 }
+      ],
+      "total": 200,
+      "disputed": 100,
+      "collectible": 100
+    },
+    {
+      "name": "won dispute nets out",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "payment", "amount": -100 },
+        { "type": "dispute", "amount": 100, "metadata": { "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "metadata": { "disputeId": "du_1" } }
+      ],
+      "total": 0,
+      "disputed": 0,
+      "collectible": 0
+    },
+    {
+      "name": "cents are kept",
+      "rows": [
+        { "type": "rentCharge", "amount": 33.3349 },
+        { "type": "dispute", "amount": 12.1, "metadata": { "disputeId": "du_3" } }
+      ],
+      "total": 45.43,
+      "disputed": 12.1,
+      "collectible": 33.33
+    }
+  ]
+}

@@ -15,7 +15,8 @@
     "declarationMap": true,
     "baseUrl": ".",
     "paths": {
-      "@sfc/functions-shared/init": ["../functions-shared/lib/init.d.ts"]
+      "@sfc/functions-shared/init": ["../functions-shared/lib/init.d.ts"],
+      "@sfc/functions-shared/testing/*": ["./vendor/functions-shared/lib/testing/*"]
     }
   },
   "compileOnSave": true,

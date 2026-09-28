@@ -2,6 +2,25 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { initializeSendGrid, sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
+import { collectibleLedgerBalance } from './autopayScheduledHelpers';
+
+/**
+ * The posted balance a payment reminder quotes. Exported for tests.
+ *
+ * Card-dispute rows are left out, as autopay leaves them out: the email
+ * quoted every posted row as the current balance, so it asked the tenant to
+ * pay a disputed amount again. Staff collect a disputed amount by hand.
+ */
+export async function reminderBalance(facilityId: string, tenantId: string): Promise<number> {
+  const ledgerSnapshot = await admin.firestore()
+    .collection('facilities')
+    .doc(facilityId)
+    .collection('ledgers')
+    .where('tenantId', '==', tenantId)
+    .where('status', '==', 'posted')
+    .get();
+  return collectibleLedgerBalance(ledgerSnapshot.docs.map((entryDoc) => entryDoc.data()));
+}
 
 /**
  * Scheduled function: Payment Reminders
@@ -94,19 +113,7 @@ export const processPaymentReminders = functions
               }
 
               // Get ledger balance to check if already paid
-              const ledgerSnapshot = await admin.firestore()
-                .collection('facilities')
-                .doc(facilityId)
-                .collection('ledgers')
-                .where('tenantId', '==', tenantId)
-                .where('status', '==', 'posted')
-                .get();
-
-              let balance = 0;
-              for (const entryDoc of ledgerSnapshot.docs) {
-                const entryData = entryDoc.data();
-                balance += entryData.amount || 0;
-              }
+              const balance = await reminderBalance(facilityId, tenantId);
 
               // Skip if already paid (negative or zero balance means paid)
               if (balance <= 0) {
