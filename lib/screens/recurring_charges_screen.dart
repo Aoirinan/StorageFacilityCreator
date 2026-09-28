@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -484,7 +486,7 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
                       child: Text(
                         _dryRun
                             ? 'Preview mode: This will show what charges would be created without actually creating them.'
-                            : 'This will generate rent charges for all active tenants. Existing charges for the selected month will be skipped.',
+                            : 'This will generate rent charges for all active tenants. Tenants already charged for the selected month, including by their move-in, will be skipped.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: _dryRun ? AppTheme.info : AppTheme.warning,
                         ),
@@ -531,76 +533,77 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
       );
 
       if (mounted) {
-        if (result.success) {
-          if (dryRun) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Preview: ${result.successCount} charges would be created (${result.skippedCount} skipped)',
-                ),
-                backgroundColor: AppTheme.info,
-                duration: const Duration(seconds: 5),
-              ),
-            );
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Generated ${result.successCount} charges. '
-                  '${result.skippedCount} skipped (already exist). '
-                  '${result.errorCount} errors.',
-                ),
-                backgroundColor: (result.errorCount ?? 0) > 0 ? AppTheme.warning : AppTheme.success,
-                duration: const Duration(seconds: 5),
-              ),
-            );
-
-            if (result.errors.isNotEmpty) {
-              // Show errors in a dialog
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Generation Errors'),
-                  content: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'The following errors occurred during generation:',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                        const SizedBox(height: 16),
-                        ...result.errors.map((error) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: Text(
-                            '• $error',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppTheme.error,
-                            ),
-                          ),
-                        )),
-                      ],
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
-                    ),
-                  ],
-                ),
-              );
-            }
-          }
-        } else {
+        // Skipped covers tenants already charged for the month (including
+        // by their move-in), tenants with no rate, and tenants the server
+        // left to check by hand, which it also lists in errors.
+        final toCheck = result.errors.isNotEmpty
+            ? ' ${result.errors.length} to check.'
+            : '';
+        if (dryRun) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Error generating charges: ${result.error ?? "Unknown error"}'),
-              backgroundColor: AppTheme.error,
+              content: Text(
+                'Preview: ${result.successCount} charges would be created '
+                '(${result.skippedCount} skipped).$toCheck',
+              ),
+              backgroundColor: AppTheme.info,
               duration: const Duration(seconds: 5),
             ),
           );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Generated ${result.successCount} charges. '
+                '${result.skippedCount} skipped.$toCheck',
+              ),
+              backgroundColor: result.errors.isNotEmpty || result.errorCount > 0
+                  ? AppTheme.warning
+                  : AppTheme.success,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+
+        // A preview lists them too: a tenant flagged for review is one the
+        // real run won't charge either.
+        if (result.errors.isNotEmpty) {
+          unawaited(showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Tenants to Check'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      dryRun
+                          ? 'The preview found these:'
+                          : 'These came up while generating charges:',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 16),
+                    ...result.errors.map((error) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Text(
+                        '• $error',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.error,
+                        ),
+                      ),
+                    )),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+              ],
+            ),
+          ));
         }
       }
     } catch (e) {
