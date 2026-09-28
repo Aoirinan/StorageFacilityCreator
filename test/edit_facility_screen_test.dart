@@ -253,6 +253,30 @@ void main() {
         findsOneWidget);
   });
 
+  testWidgets("another facility's URL name saves nothing", (tester) async {
+    store.put(_settingsPath, {
+      'facilityId': 'fac1',
+      'publicRentalsEnabled': false,
+      'publicRentalSlug': 'main-street',
+    });
+    store.put('publicFacilityMaps/rival', {'facilityId': 'rival-facility'});
+    final actions = _FakeEditActions(_facility());
+    await _openEditFacility(tester, actions);
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Public URL Name'), 'rival');
+    store.writes.clear();
+
+    await _tap(tester, 'Save Public Rental Settings');
+
+    expect(
+        find.textContaining(
+            '"rival" is already used by another facility. Choose a different one.'),
+        findsOneWidget);
+    expect(store.writes, isEmpty);
+    expect(store.data(_settingsPath)!['publicRentalSlug'], 'main-street');
+    expect(actions.published, isEmpty);
+  });
+
   testWidgets('a URL name saved in Website Setup is kept by the next save here',
       (tester) async {
     store.put(_settingsPath, {
