@@ -1,11 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_subcollections.dart';
-import 'package:sfcapp/services/tenant_service.dart';
 
 import 'support/fake_facility_collection.dart';
 
@@ -29,12 +27,7 @@ void main() {
   ) as Map<String, Object?>;
   final cases = fixture['cases']! as List<Object?>;
 
-  setUp(() {
-    TenantService.authForTesting =
-        MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner-1'));
-  });
   tearDown(() {
-    TenantService.authForTesting = null;
     FacilitySubcollections.overrideForTesting(null);
   });
 
@@ -55,15 +48,15 @@ void main() {
       );
 
       // What publish and refreshPublicMapInventoryFromLiveUnits do between
-      // reading the public settings (none here: the defaults) and writing.
+      // reading the public settings (none here: the defaults) and writing,
+      // through the same unit and tenant-claim reads.
       final units =
           await FacilityMapV2Service.fetchActiveUnitsForTesting('fac1');
-      final tenants = await TenantService.getTenantsForFacility('fac1');
       final maps = FacilityMapV2Service.buildPublicUnitInventoryMaps(
         units: units,
         publicSettings: null,
-        tenantClaimedUnitNumbers:
-            FacilityMapV2Service.claimedUnitNumbersFromActiveTenants(tenants),
+        tenantClaimedUnitNumbers: await FacilityMapV2Service
+            .readTenantClaimedUnitNumbersOrThrow('fac1'),
       );
 
       // The fields each unit's entry names (isRentable and status in all of

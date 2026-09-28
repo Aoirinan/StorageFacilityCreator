@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:sfcapp/router/public_rent_entry_page.dart';
 
 import '../screens/public_facility_map_screen.dart';
 import '../screens/public_facility_page_screen.dart';
@@ -27,7 +27,10 @@ List<RouteBase> buildPublicCommerceRoutes() {
         if (slug == null || slug.isEmpty) {
           return NotFoundPage(state: state);
         }
-        return _RedirectToWebsiteUnitsPage(slug: slug);
+        return PublicRentEntryPage(
+          key: ValueKey('public-rent-$slug'),
+          slug: slug,
+        );
       },
     ),
     GoRoute(
@@ -38,7 +41,11 @@ List<RouteBase> buildPublicCommerceRoutes() {
         if (slug == null || slug.isEmpty) {
           return NotFoundPage(state: state);
         }
-        return _RedirectToWebsiteUnitsPage(slug: slug);
+        return PublicRentEntryPage(
+          key: ValueKey('public-available-units-$slug'),
+          slug: slug,
+          availableOnly: true,
+        );
       },
     ),
     GoRoute(
@@ -94,44 +101,4 @@ List<RouteBase> buildPublicCommerceRoutes() {
       },
     ),
   ];
-}
-
-class _RedirectToWebsiteUnitsPage extends StatefulWidget {
-  final String slug;
-
-  const _RedirectToWebsiteUnitsPage({required this.slug});
-
-  @override
-  State<_RedirectToWebsiteUnitsPage> createState() =>
-      _RedirectToWebsiteUnitsPageState();
-}
-
-class _RedirectToWebsiteUnitsPageState extends State<_RedirectToWebsiteUnitsPage> {
-  bool _launched = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_launched) return;
-    _launched = true;
-    final target = Uri.parse(
-      '${Uri.base.origin}/w/${widget.slug}#unit-list',
-    );
-    Future<void>.microtask(() async {
-      await launchUrl(
-        target,
-        mode: LaunchMode.platformDefault,
-        webOnlyWindowName: '_self',
-      );
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
-  }
 }

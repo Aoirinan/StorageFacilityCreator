@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
+import { facilityAcceptsPublicRentals } from './publicRentalGate';
 import {
   categoryNavLabel,
   resolveHeroHeadline,
@@ -227,6 +228,12 @@ function toHtml(payload: {
     sizeLabel: string;
     rentHref: string;
   }>;
+  /**
+   * Whether the reservation hold would take a rental here now
+   * (facilityAcceptsPublicRentals). Anything but true renders no rent or
+   * reserve action, only a way to contact the office.
+   */
+  onlineRentalsEnabled?: boolean;
   logoImageUrl?: string | null;
   phoneNumber?: string;
   showPaymentLoginButtonInHeader?: boolean;
@@ -284,6 +291,16 @@ function toHtml(payload: {
   const logoSrc = safeHttpsImageUrl(payload.logoImageUrl || '') || safeHttpsImageUrl(payload.facilityLogoUrl || '');
   const heroBg = safeHttpsImageUrl(payload.heroImageUrl || '');
 
+  // Every "Rent now", "Reserve Now" and "Start a rental" below led to the
+  // reservation hold, which refuses them all while online rentals are off.
+  // Then the page offers the office instead, by phone when it has one.
+  const rentalsOpen = payload.onlineRentalsEnabled === true;
+  const phoneDisplay = (payload.phoneNumber || '').trim() || (payload.facilityPhone || '').trim() || 'Call for details';
+  const phoneDigits = phoneDisplay.replace(/\D/g, '');
+  const phoneTelHref = phoneDigits.length >= 10 ? `tel:${escapeHtml(phoneDigits)}` : '';
+  const contactHref = phoneTelHref || '#contact';
+  const contactLabel = phoneTelHref ? 'Call to rent' : 'Contact us to rent';
+
   const categorySlugListForNav = [
     ...new Set(payload.unitRows.map((u) => u.categorySlug).filter((s) => s.trim().length > 0)),
   ].sort((a, b) => a.localeCompare(b));
@@ -302,7 +319,7 @@ function toHtml(payload: {
 
   const amenityList = payload.amenities.length
     ? payload.amenities.slice(0, 14)
-    : ['Online rentals', 'Online bill pay', 'Secure access', 'Variety of unit sizes'];
+    : [...(rentalsOpen ? ['Online rentals'] : []), 'Online bill pay', 'Secure access', 'Variety of unit sizes'];
 
   // Category links carry the words customers actually search. The nav used the
   // raw slug ("Standard", "Outdoor"), which is internal jargon that matches no
@@ -368,6 +385,15 @@ function toHtml(payload: {
         }));
         const optionsEnc = encodeURIComponent(JSON.stringify(opts));
         const bulletsEnc = encodeURIComponent(JSON.stringify(bullets));
+        const rentAction = rentalsOpen
+          ? `<button type="button" class="legend-rent-btn" data-modal-open="1" data-rent-base="${escapeHtml(
+              rentBase,
+            )}" data-title="${escapeHtml(title)}" data-bullets-json="${bulletsEnc}" data-cycle="${escapeHtml(
+              cycleText,
+            )}" data-options="${optionsEnc}">Rent now</button>`
+          : `<a class="legend-rent-btn legend-contact-btn" href="${escapeHtml(contactHref)}">${escapeHtml(
+              contactLabel,
+            )}</a>`;
         const domId = `cat-${slugToDomId(key)}`;
         return `<article class="legend-card" id="${escapeHtml(domId)}">
   <div class="legend-card-grid">
@@ -381,11 +407,7 @@ function toHtml(payload: {
         <span class="legend-price">${escapeHtml(priceText)}</span>
         ${scarcity ? `<span class="legend-scarcity">${escapeHtml(scarcity)}</span>` : ''}
       </div>
-      <button type="button" class="legend-rent-btn" data-modal-open="1" data-rent-base="${escapeHtml(
-        rentBase,
-      )}" data-title="${escapeHtml(title)}" data-bullets-json="${bulletsEnc}" data-cycle="${escapeHtml(
-        cycleText,
-      )}" data-options="${optionsEnc}">Rent now</button>
+      ${rentAction}
     </aside>
   </div>
 </article>`;
@@ -396,12 +418,12 @@ function toHtml(payload: {
   const unitRowsHtml = buildLegendUnitGrid();
 
   const defaultFeatures = [
-    'Online rentals',
+    ...(rentalsOpen ? ['Online rentals'] : []),
     'Online bill pay',
     'Variety of unit sizes',
     'Secure facility access',
     'Live availability',
-    'Fast move-in flow',
+    ...(rentalsOpen ? ['Fast move-in flow'] : []),
   ];
   const featureMerged = [...new Set([...defaultFeatures, ...amenityList])].slice(0, 8);
   const featureCells = featureMerged
@@ -424,7 +446,10 @@ function toHtml(payload: {
           byline ? `<footer class="quote-author">— ${escapeHtml(byline)}</footer>` : ''
         }</article>`;
       })
-    : (payload.testimonials.length ? payload.testimonials.slice(0, 4) : ['Great facility and easy online rentals.']).map(
+    : (payload.testimonials.length
+        ? payload.testimonials.slice(0, 4)
+        : [rentalsOpen ? 'Great facility and easy online rentals.' : 'Great facility and friendly service.']
+      ).map(
         (raw) => {
           const { quote, author } = parseTestimonialLine(raw);
           const q = escapeHtml(quote);
@@ -458,9 +483,6 @@ function toHtml(payload: {
         .map((line) => `<li>${escapeHtml(line)}</li>`)
         .join('');
 
-  const phoneDisplay = (payload.phoneNumber || '').trim() || (payload.facilityPhone || '').trim() || 'Call for details';
-  const phoneDigits = phoneDisplay.replace(/\D/g, '');
-  const phoneTelHref = phoneDigits.length >= 10 ? `tel:${escapeHtml(phoneDigits)}` : '';
   const emailDisplay = (payload.contactEmail || '').trim();
   const emailRow =
     emailDisplay.length > 0
@@ -475,7 +497,7 @@ function toHtml(payload: {
   const taglineHtml =
     payload.tagline.trim().length > 0
       ? `<p class="site-tagline">${escapeHtml(payload.tagline)}</p>`
-      : `<p class="site-tagline">Self storage with online rentals</p>`;
+      : `<p class="site-tagline">${rentalsOpen ? 'Self storage with online rentals' : 'Self storage'}</p>`;
 
   const promiseS =
     payload.promiseSecurity.trim().length > 0
@@ -488,7 +510,9 @@ function toHtml(payload: {
   const promiseC =
     payload.promiseConvenience.trim().length > 0
       ? escapeHtml(payload.promiseConvenience)
-      : 'Manage your storage online anytime—browse availability, rent, and stay on top of payments.';
+      : rentalsOpen
+      ? 'Manage your storage online anytime—browse availability, rent, and stay on top of payments.'
+      : 'Manage your storage online anytime—browse availability and stay on top of payments.';
 
   const promoSection =
     payload.promoTitle.trim().length > 0 || payload.promoBody.trim().length > 0
@@ -676,7 +700,9 @@ function toHtml(payload: {
       ? `<img class="card-icon-img" src="${escapeHtml(uploadedUrl)}" alt="${escapeHtml(alt)}" width="28" height="28" loading="lazy" />`
       : `<i class="card-icon-glyph" data-lucide="${escapeHtml(lucideName)}" aria-hidden="true"></i>`;
 
-  const howItWorksSection = isCategoryPage
+  // The three steps describe the online reservation, which is not on offer
+  // while rentals are off.
+  const howItWorksSection = isCategoryPage || !rentalsOpen
     ? ''
     : `<section class="section" id="how-it-works">
   <div class="wrap">
@@ -1004,6 +1030,7 @@ function toHtml(payload: {
     }
     .legend-rent-btn:hover{filter:brightness(1.06)}
     .legend-rent-btn:disabled{opacity:.45;cursor:not-allowed}
+    .legend-contact-btn{display:block;text-align:center;text-decoration:none}
     .rent-modal{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;padding:18px}
     .rent-modal.open{display:flex}
     .rent-modal-backdrop{position:absolute;inset:0;background:rgba(15,23,42,.45)}
@@ -1073,12 +1100,17 @@ function toHtml(payload: {
   <div class="hero-shell" id="home">
     <section class="hero">
       <div class="wrap">
-        <p class="eyebrow">Reserve online</p>
+        <p class="eyebrow">${rentalsOpen ? 'Reserve online' : 'Self storage'}</p>
         <h1>${escapeHtml(payload.heroHeadline)}</h1>
         <p class="sub">${escapeHtml(payload.heroSubheadline)}</p>
         <div class="cta">
-          <a class="btn btn-primary" href="${escapeHtml(unitsHref)}">${escapeHtml(payload.primaryCtaLabel)}</a>
-          <a class="btn btn-ghost" href="#unit-list">Rent online</a>
+          ${
+            rentalsOpen
+              ? `<a class="btn btn-primary" href="${escapeHtml(unitsHref)}">${escapeHtml(payload.primaryCtaLabel)}</a>
+          <a class="btn btn-ghost" href="#unit-list">Rent online</a>`
+              : `<a class="btn btn-primary" href="${escapeHtml(contactHref)}">${escapeHtml(contactLabel)}</a>
+          <a class="btn btn-ghost" href="${escapeHtml(unitsHref)}">View units</a>`
+          }
         </div>
       </div>
     </section>
@@ -1112,13 +1144,22 @@ function toHtml(payload: {
             <h3>Starting at</h3>
             <p class="price-big">${escapeHtml(startingLabel)}</p>
             <p>Live pricing from your published inventory. Sizes and rates update as your availability changes.</p>
-            <a class="btn btn-primary" style="border-radius:12px" href="${escapeHtml(unitsHref)}">${escapeHtml(payload.primaryCtaLabel)}</a>
+            <a class="btn btn-primary" style="border-radius:12px" href="${escapeHtml(unitsHref)}">${escapeHtml(
+              // The owner's label can be a rental one ("Reserve Now").
+              rentalsOpen ? payload.primaryCtaLabel : 'View units',
+            )}</a>
           </article>
           <article class="price-card">
             <h3>Available now</h3>
             <p class="price-big">${payload.availableCount}</p>
             <p>Units currently marked available on your public map snapshot.</p>
-            <a class="btn btn-light" style="border-radius:12px" href="#unit-list">Start a rental</a>
+            ${
+              rentalsOpen
+                ? `<a class="btn btn-light" style="border-radius:12px" href="#unit-list">Start a rental</a>`
+                : `<a class="btn btn-light" style="border-radius:12px" href="${escapeHtml(contactHref)}">${escapeHtml(
+                    contactLabel,
+                  )}</a>`
+            }
           </article>
         </div>
       </div>
@@ -1208,7 +1249,11 @@ function toHtml(payload: {
       </div>
     </div>
   </footer>
-  <div id="rent-modal" class="rent-modal" aria-hidden="true">
+  ${
+    // The modal collects a renter's details for the hold; with rentals off it
+    // would only lead to the hold's refusal.
+    rentalsOpen
+      ? `<div id="rent-modal" class="rent-modal" aria-hidden="true">
     <div class="rent-modal-backdrop" data-modal-close="1"></div>
     <div class="rent-modal-panel" role="dialog" aria-modal="true" aria-labelledby="rent-modal-title">
       <button type="button" class="rent-modal-close" data-modal-close="1" aria-label="Close">&times;</button>
@@ -1256,7 +1301,9 @@ function toHtml(payload: {
         </div>
       </div>
     </div>
-  </div>
+  </div>`
+      : ''
+  }
   <script>
     (function () {
       function scrollToId(hash) {
@@ -1541,6 +1588,7 @@ export const getPublicWebsiteConfig = functions.runWith({ minInstances: 1 }).htt
       res.status(404).json({ error: 'Website not found.' });
       return;
     }
+    const onlineRentalsEnabled = await facilityAcceptsPublicRentals(admin.firestore(), facilityId);
     const units = Array.isArray(data.units) ? (data.units as Record<string, unknown>[]) : [];
     // isRentable already folds in status, tenant links, unit-type visibility, and the
     // per-unit publicListingEnabled and internalUse flags — do not re-derive availability from raw status
@@ -1588,7 +1636,10 @@ export const getPublicWebsiteConfig = functions.runWith({ minInstances: 1 }).htt
         (publicSettings.websiteConfig as Record<string, unknown> | undefined) ??
         ((publicSettings.widgets as Record<string, unknown> | undefined)?.websiteConfig as Record<string, unknown> | undefined) ??
         {},
-      rentUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
+      // No rent link while the hold would refuse one; the units page still
+      // lists what the facility has, for renters to call about.
+      onlineRentalsEnabled,
+      rentUrl: onlineRentalsEnabled ? `https://app.storagefacilitycreator.com/w/${slug}#units` : null,
       availableUnitsUrl: `https://app.storagefacilitycreator.com/w/${slug}#units`,
       generatedAt: new Date().toISOString(),
     });
@@ -1621,6 +1672,7 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
       heroSubheadline: 'No published facility website exists for this link.',
       primaryCtaLabel: 'See Units',
       secondaryCtaLabel: 'Rent Online',
+      showPaymentLoginButtonInHeader: false,
       paymentUrl: '#',
       tenantPortalUrl: '#',
       address: '',
@@ -1664,6 +1716,7 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
       heroSubheadline: 'No published facility website exists for this link.',
       primaryCtaLabel: 'See Units',
       secondaryCtaLabel: 'Rent Online',
+      showPaymentLoginButtonInHeader: false,
       paymentUrl: '#',
       tenantPortalUrl: '#',
       address: '',
@@ -1702,6 +1755,9 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
     res.status(404).type('text/plain').send('Website not found.');
     return;
   }
+  // Read live from settings/public, as the hold reads it, not from the
+  // snapshot's copy, which only changes when the owner republishes.
+  const onlineRentalsEnabled = await facilityAcceptsPublicRentals(admin.firestore(), facilityId);
   const widgetsBlock = (publicSettings.widgets || {}) as Record<string, unknown>;
   const websiteConfig = (
     (publicSettings.websiteConfig || widgetsBlock.websiteConfig || {}) as Record<string, unknown>
@@ -1778,7 +1834,11 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
   });
   const facilityName = String(data.facilityName || 'Storage Facility');
   const facilityLogoUrl = typeof data.facilityLogoUrl === 'string' ? data.facilityLogoUrl : null;
-  const description = String(publicSettings.marketingContent || data.facilityDescription || 'Browse available storage units and rent online.');
+  const description = String(
+    publicSettings.marketingContent ||
+      data.facilityDescription ||
+      (onlineRentalsEnabled ? 'Browse available storage units and rent online.' : 'Browse available storage units.'),
+  );
   const unitCategories = Array.isArray(websiteConfig.unitCategories)
     ? (websiteConfig.unitCategories as Record<string, unknown>[])
         .map((entry) => ({
@@ -1824,7 +1884,10 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
         }),
       }),
       heroSubheadline: String(
-        websiteConfig.heroSubheadline || 'Secure, convenient, and reliable storage with online rentals.',
+        websiteConfig.heroSubheadline ||
+          (onlineRentalsEnabled
+            ? 'Secure, convenient, and reliable storage with online rentals.'
+            : 'Secure, convenient, and reliable storage.'),
       ),
       primaryCtaLabel: String(websiteConfig.primaryCtaLabel || 'See Units'),
       secondaryCtaLabel: String(websiteConfig.secondaryCtaLabel || 'Make a Payment/Login'),
@@ -1890,6 +1953,7 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
       promiseServiceIconUrl: String(websiteConfig.promiseServiceIconUrl || ''),
       promiseConvenienceIconUrl: String(websiteConfig.promiseConvenienceIconUrl || ''),
       categoryPage,
+      onlineRentalsEnabled,
       startingAt,
       availableCount: available.length,
       facilitySlug: slug,

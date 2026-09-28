@@ -32,16 +32,27 @@ String linkBaseUrlFromCustomDomainField(String customDomainFieldText) {
 
 /// SMS/email-friendly template: facility links are filled in; amount and pay URL
 /// come from Payment Links (per tenant).
+///
+/// [onlineRentalsEnabled] is the facility's online rentals switch
+/// (settings/public publicRentalsEnabled). While it is off the reservation
+/// hold refuses every rental, so the message leaves out the rent link rather
+/// than invite renters to rent online.
 String buildRenterAccountMessage({
   required FacilityModel? facility,
   required String slug,
   required String linkBaseUrl,
+  required bool onlineRentalsEnabled,
 }) {
   final facilityName = facility?.name ?? 'Our facility';
   final rentUrl = FacilityPublicService.getPublicRentUrl(
     slug,
     baseUrl: linkBaseUrl,
   );
+  final intro = onlineRentalsEnabled
+      ? 'Here is what you need for online rentals and your account:'
+      : 'Here is what you need for your account:';
+  final rentBlock =
+      onlineRentalsEnabled ? 'Rent or reserve a unit online:\n$rentUrl\n\n' : '';
   final portalUrl = '$linkBaseUrl/#/tenant-portal';
   final phone = facility?.phone?.trim();
   final phoneBlock = (phone != null && phone.isNotEmpty)
@@ -50,12 +61,9 @@ String buildRenterAccountMessage({
 
   return '''Hi,
 
-This is $facilityName. Here is what you need for online rentals and your account:
+This is $facilityName. $intro
 
-Rent or reserve a unit online:
-$rentUrl
-
-See your balance and sign in to the tenant portal:
+${rentBlock}See your balance and sign in to the tenant portal:
 $portalUrl
 
 Amount due: \$[AMOUNT]
@@ -85,5 +93,6 @@ Future<String> buildRenterAccountMessageForFacilityId(String facilityId) async {
     facility: facility,
     slug: effectiveSlug,
     linkBaseUrl: linkBaseUrl,
+    onlineRentalsEnabled: settings?.publicRentalsEnabled ?? false,
   );
 }
