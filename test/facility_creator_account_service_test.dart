@@ -771,7 +771,7 @@ void main() {
         FacilityCreatorAccountService.resetEnsuredForTesting();
         store.put('user_roles/r1', {
           'userId': 'u1',
-          'facilityId': 'caprock',
+          'facilityId': 'test-facility',
           'roleType': 'employee',
           'isActive': isActive,
         });

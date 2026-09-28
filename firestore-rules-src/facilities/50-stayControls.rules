@@ -1,0 +1,15 @@
+      // Stays (short-term rentals). Module and automation switches plus the
+      // confirmed zone. Readable by viewers too, so the app can tell whether
+      // Stays is on; only the staysSetControls callable writes it.
+      match /stayControls/{docId} {
+        allow read: if canReadFacilityCalendarAndLists(facilityId);
+        allow write: if false; // staysSetControls only
+      }
+
+      // True only once staysSetControls has switched Stays on for this
+      // facility. Client creates of Stays docs require it, so nothing Stays
+      // can be written from the app while the module is off.
+      function stayModuleOn(facilityId) {
+        let controls = /databases/$(database)/documents/facilities/$(facilityId)/stayControls/current;
+        return exists(controls) && get(controls).data.get('moduleEnabled', false) == true;
+      }

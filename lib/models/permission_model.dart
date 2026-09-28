@@ -65,6 +65,15 @@ enum PermissionType {
 
   // Manager Overlock (manager/admin only)
   manageOverlock,
+
+  // Stays (short-term rentals). Employee walk-up booking and cash are owner
+  // switches in stayControls, enforced by the server, not permissions.
+  viewStays,
+  manageStays,
+  manageStayChannels,
+  manageStayMoney,
+  manageStaySettings,
+  workStayTasks,
 }
 
 enum RoleType {
@@ -337,8 +346,34 @@ extension PermissionTypeExtension on PermissionType {
         return 'View Audit Logs';
       case PermissionType.systemAdmin:
         return 'System Admin';
+      case PermissionType.viewStays:
+        return 'View Stays';
+      case PermissionType.manageStays:
+        return 'Manage Stays';
+      case PermissionType.manageStayChannels:
+        return 'Manage Stay Channels';
+      case PermissionType.manageStayMoney:
+        return 'Manage Stay Money';
+      case PermissionType.manageStaySettings:
+        return 'Manage Stay Settings';
+      case PermissionType.workStayTasks:
+        return 'Work Stay Turnovers';
     }
   }
+
+  /// A Stays permission. The Roles tab lists these only while Stays is
+  /// switched on (the shortTermRentals flag), so the page is unchanged for
+  /// everyone else.
+  bool get isStaysPermission => switch (this) {
+        PermissionType.viewStays ||
+        PermissionType.manageStays ||
+        PermissionType.manageStayChannels ||
+        PermissionType.manageStayMoney ||
+        PermissionType.manageStaySettings ||
+        PermissionType.workStayTasks =>
+          true,
+        _ => false,
+      };
 }
 
 extension RoleTypeExtension on RoleType {

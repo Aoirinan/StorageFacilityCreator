@@ -132,6 +132,25 @@ class _NotificationTile extends StatelessWidget {
       case FacilityNotificationType.stripeActionRequired:
       case FacilityNotificationType.onlineMoveInReview:
         return AppTheme.warning;
+      case FacilityNotificationType.stayConflict:
+      case FacilityNotificationType.stayFeedFailing:
+      case FacilityNotificationType.stayBookingNeedsReview:
+        return AppTheme.error;
+      case FacilityNotificationType.stayBookingRemoved:
+      case FacilityNotificationType.stayFeedSuspicious:
+      case FacilityNotificationType.stayTurnoverIssue:
+      case FacilityNotificationType.stayTurnoverUnassigned:
+        return AppTheme.warning;
+      case FacilityNotificationType.stayFeedFirstSync:
+      case FacilityNotificationType.stayTurnoverDone:
+        return AppTheme.success;
+      case FacilityNotificationType.stayBookingImported:
+      case FacilityNotificationType.stayBookingChanged:
+      case FacilityNotificationType.stayDailyBrief:
+        return AppTheme.info;
+      // Unknown types looked like autopayRequested before `other` existed.
+      case FacilityNotificationType.other:
+        return AppTheme.warning;
     }
   }
 
@@ -146,6 +165,33 @@ class _NotificationTile extends StatelessWidget {
       case FacilityNotificationType.stripeActionRequired:
       case FacilityNotificationType.onlineMoveInReview:
         return Icons.warning;
+      case FacilityNotificationType.stayBookingImported:
+        return Icons.event_available;
+      case FacilityNotificationType.stayBookingChanged:
+        return Icons.edit_calendar;
+      case FacilityNotificationType.stayBookingRemoved:
+        return Icons.event_busy;
+      case FacilityNotificationType.stayBookingNeedsReview:
+        return Icons.rule;
+      case FacilityNotificationType.stayConflict:
+        return Icons.report;
+      case FacilityNotificationType.stayFeedFirstSync:
+        return Icons.sync;
+      case FacilityNotificationType.stayFeedFailing:
+        return Icons.sync_problem;
+      case FacilityNotificationType.stayFeedSuspicious:
+        return Icons.help_outline;
+      case FacilityNotificationType.stayTurnoverDone:
+        return Icons.cleaning_services;
+      case FacilityNotificationType.stayTurnoverIssue:
+        return Icons.build_circle;
+      case FacilityNotificationType.stayTurnoverUnassigned:
+        return Icons.person_off;
+      case FacilityNotificationType.stayDailyBrief:
+        return Icons.wb_sunny;
+      // Unknown types looked like autopayRequested before `other` existed.
+      case FacilityNotificationType.other:
+        return Icons.schedule;
     }
   }
 }
