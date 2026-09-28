@@ -1,6 +1,52 @@
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
-import { getOrCreateFirstMonthFreeCouponId, writeAuditLog } from '@sfc/functions-shared';
+import {
+  getOrCreateFirstMonthFreeCouponId,
+  platformCheckoutTrialSubscriptionData,
+  writeAuditLog,
+  type PlatformCheckoutTrialDecision,
+} from '@sfc/functions-shared';
+
+/**
+ * Pure: the Checkout Session params for an account-level platform subscription.
+ * The trial comes from `decidePlatformCheckoutTrial` so an owner already inside the
+ * app trial is not handed a second one; the first-month-free coupon is always attached.
+ */
+export function buildAccountSubscriptionCheckoutParams(options: {
+  accountId: string;
+  customerId: string;
+  facilityCount: number;
+  lineItems: Stripe.Checkout.SessionCreateParams.LineItem[];
+  firstMonthFreeCouponId: string;
+  trial: PlatformCheckoutTrialDecision;
+  successUrl?: string;
+  cancelUrl?: string;
+  ownerUid: string;
+}): Stripe.Checkout.SessionCreateParams {
+  const { accountId, customerId, facilityCount, lineItems, firstMonthFreeCouponId, trial, successUrl, cancelUrl, ownerUid } =
+    options;
+  return {
+    customer: customerId,
+    mode: 'subscription',
+    line_items: lineItems,
+    discounts: [{ coupon: firstMonthFreeCouponId }],
+    success_url: successUrl || 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
+    cancel_url: cancelUrl || 'https://app.storagefacilitycreator.com/subscription/cancel',
+    metadata: {
+      accountId: accountId,
+      ownerUid,
+      facilityCount: facilityCount.toString(),
+    },
+    subscription_data: {
+      ...platformCheckoutTrialSubscriptionData(trial),
+      metadata: {
+        accountId: accountId,
+        facilityCount: facilityCount.toString(),
+        trialDecision: trial.kind,
+      },
+    },
+  };
+}
 
 export async function createSubscriptionCheckoutSessionAndAudit(options: {
   stripe: Stripe;
@@ -13,6 +59,8 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
   successUrl?: string;
   cancelUrl?: string;
   ownerUid: string;
+  /** From `decidePlatformCheckoutTrial` on the account document. */
+  trial: PlatformCheckoutTrialDecision;
 }): Promise<{ checkoutUrl: string | null; sessionId: string }> {
   const {
     stripe,
@@ -25,6 +73,7 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
     successUrl,
     cancelUrl,
     ownerUid,
+    trial,
   } = options;
 
   const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
@@ -48,29 +97,24 @@ export async function createSubscriptionCheckoutSessionAndAudit(options: {
       facilityCount,
       additionalFacilityCount,
       lineItemsCount: lineItems.length,
+      trialDecision: trial.kind,
+      trialReason: trial.reason,
     });
-    // Public offer: 30-day trial, then the first paid month is free.
+    // Public offer: 30-day trial, then the first paid month is free (two months in total).
     const firstMonthFreeCouponId = await getOrCreateFirstMonthFreeCouponId(stripe);
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: 'subscription',
-      line_items: lineItems,
-      discounts: [{ coupon: firstMonthFreeCouponId }],
-      success_url: successUrl || 'https://app.storagefacilitycreator.com/subscription/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: cancelUrl || 'https://app.storagefacilitycreator.com/subscription/cancel',
-      metadata: {
-        accountId: accountId,
+    const session = await stripe.checkout.sessions.create(
+      buildAccountSubscriptionCheckoutParams({
+        accountId,
+        customerId,
+        facilityCount,
+        lineItems,
+        firstMonthFreeCouponId,
+        trial,
+        successUrl,
+        cancelUrl,
         ownerUid,
-        facilityCount: facilityCount.toString(),
-      },
-      subscription_data: {
-        trial_period_days: 30,
-        metadata: {
-          accountId: accountId,
-          facilityCount: facilityCount.toString(),
-        },
-      },
-    });
+      }),
+    );
     functions.logger.info('Checkout session created successfully', {
       sessionId: session.id,
       checkoutUrl: session.url,

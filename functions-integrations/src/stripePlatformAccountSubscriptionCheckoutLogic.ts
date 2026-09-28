@@ -5,6 +5,8 @@ import {
   getStripeClient,
   getOrCreateBasePriceId,
   getOrCreateAddOnPriceId,
+  decidePlatformCheckoutTrial,
+  DEFAULT_PLATFORM_TRIAL_DAYS,
 } from '@sfc/functions-shared';
 import { tryUpdateExistingSubscriptionInsteadOfCheckout } from './stripePlatformSubscriptionCheckoutUpdateExisting';
 import { createSubscriptionCheckoutSessionAndAudit } from './stripePlatformSubscriptionCheckoutSessionCreate';
@@ -105,6 +107,16 @@ export async function executeCreateSubscriptionCheckout(
       return updatedInstead;
     }
 
+    // An owner inside the app-only trial keeps its end date; one whose trial is over
+    // gets no second trial. Either way the coupon makes the first paid month free.
+    const trial = decidePlatformCheckoutTrial({
+      accountSubscriptionStatus: subscriptionStatus,
+      accountTrialEnd: accountData.subscriptionTrialEnd,
+      accountHasStripeSubscription: !!subscriptionId,
+      defaultTrialDays: DEFAULT_PLATFORM_TRIAL_DAYS,
+      nowMs: Date.now(),
+    });
+
     return await createSubscriptionCheckoutSessionAndAudit({
       stripe,
       accountId,
@@ -116,6 +128,7 @@ export async function executeCreateSubscriptionCheckout(
       successUrl,
       cancelUrl,
       ownerUid: context.auth!.uid,
+      trial,
     });
   } catch (error: any) {
     const errorMessage = error?.message || 'Unknown error';

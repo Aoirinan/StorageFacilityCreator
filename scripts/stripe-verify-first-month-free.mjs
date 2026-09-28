@@ -1,57 +1,138 @@
 #!/usr/bin/env node
 /**
- * Verifies the public "30-day trial + first month free" offer end to end in Stripe
- * TEST mode using a test clock, without touching live data.
+ * Verifies the public "30-day trial, then first month free" offer in Stripe TEST mode
+ * on test clocks, without touching live data. The open question it answers: does a
+ * `duration: 'once'` coupon get spent on the $0 trial invoice, or kept for the first
+ * paid invoice?
  *
- * What it checks:
- *   1. Coupon `sfc_first_month_free` (100% off, duration once) exists or gets created.
- *   2. A subscription with trial_period_days=30 and that coupon produces a $0 trial invoice.
- *   3. After advancing the clock past the trial, the first real invoice is $0 (coupon consumed).
- *   4. After advancing another month, the second invoice charges the full price.
+ * Scenarios (one test clock each, shaped like the subscription Checkout creates):
+ *   A. Card at signup: trial_period_days=30 + coupon.
+ *   B. App trial still running: trial_end = the app trial's end (10 days out here) + coupon.
+ *   C. App trial already over: no trial + coupon.
+ * For each: the trial invoice (if any) is $0, the coupon survives it, the first
+ * post-trial invoice is $0 with a $75 discount, and the month after charges $75.
  *
- * Usage (after `stripe login` so the CLI holds a fresh test key, or with an explicit key):
- *   STRIPE_SECRET_KEY=sk_test_... node scripts/stripe-verify-first-month-free.mjs
- *   node scripts/stripe-verify-first-month-free.mjs   # reads the key from `stripe config --list`
+ * Usage (the Stripe project must be named explicitly; the CLI may hold several accounts):
+ *   stripe login --project-name "storage facility creator"
+ *   node scripts/stripe-verify-first-month-free.mjs --project-name "storage facility creator"
+ *   # or: STRIPE_PROJECT_NAME="storage facility creator" node scripts/stripe-verify-first-month-free.mjs
  *
- * Exits non-zero if any expectation fails. Cleans up the test clock (which deletes the
- * customer and subscription it created).
+ * The TEST key is read from `stripe config --list --project-name <name>`. Before creating
+ * anything the script prints the Stripe account's display name and id and waits for you
+ * to type "yes". Exits non-zero if any expectation fails. Each test clock is deleted at
+ * the end, which deletes the customer and subscription made on it.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-// The Stripe SDK is not a root dependency; borrow the copy functions-integrations already has.
-const require = createRequire(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'functions-integrations', 'package.json'),
-);
-const Stripe = require('stripe');
+import readline from 'node:readline/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const COUPON_ID = 'sfc_first_month_free';
 const LOOKUP_KEY = 'sfc_base_monthly_75';
-const TRIAL_DAYS = 30;
+const PRICE_CENTS = 7500;
 const DAY = 24 * 60 * 60;
 
-function resolveKey() {
-  const fromEnv = (process.env.STRIPE_SECRET_KEY ?? '').trim();
-  if (fromEnv) return fromEnv;
-  try {
-    const out = execSync('stripe config --list', { encoding: 'utf8' });
-    const m = out.match(/test_mode_api_key\s*=\s*'([^']+)'/);
-    if (m) return m[1];
-  } catch {
-    /* fall through */
+/** `--project-name <name>`, `--project-name=<name>`, or STRIPE_PROJECT_NAME. */
+export function resolveProjectName(argv, env) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--project-name') return (argv[i + 1] ?? '').trim();
+    if (a.startsWith('--project-name=')) return a.slice('--project-name='.length).trim();
   }
-  throw new Error('No test key: set STRIPE_SECRET_KEY or run `stripe login`.');
+  return (env.STRIPE_PROJECT_NAME ?? '').trim();
 }
 
-function assert(cond, msg) {
-  if (!cond) {
-    console.error(`FAIL: ${msg}`);
-    process.exitCode = 1;
-    throw new Error(msg);
+function unquote(s) {
+  const t = s.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) return t.slice(1, -1);
+  return t;
+}
+
+/**
+ * Pulls the test-mode key for `projectName` out of `stripe config --list` output.
+ * The CLI prints either just that project's keys, or (for the default profile) the whole
+ * config file with one [section] per project. Never falls back to another section's key.
+ */
+export function parseTestKeyForProject(output, projectName) {
+  const entries = [];
+  const sections = new Set();
+  let section = null;
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = line.match(/^\[(.+)\]$/);
+    if (header) {
+      section = unquote(header[1]);
+      sections.add(section);
+      continue;
+    }
+    const kv = line.match(/^test_mode_api_key\s*=\s*(.+)$/);
+    if (kv) entries.push({ section, key: unquote(kv[1]) });
   }
-  console.log(`ok   ${msg}`);
+  if (sections.size > 0) {
+    const mine = entries.filter((e) => e.section === projectName);
+    if (mine.length !== 1) {
+      throw new Error(
+        `No single test_mode_api_key for project "${projectName}" in the Stripe CLI config ` +
+          `(sections found: ${[...sections].join(', ') || 'none'}). ` +
+          `Run: stripe login --project-name "${projectName}"`,
+      );
+    }
+    return mine[0].key;
+  }
+  if (entries.length !== 1) {
+    throw new Error(
+      `Expected exactly one test_mode_api_key for project "${projectName}", found ${entries.length}. ` +
+        `Run: stripe login --project-name "${projectName}"`,
+    );
+  }
+  return entries[0].key;
+}
+
+function readTestKey(projectName) {
+  let out;
+  try {
+    out = execFileSync('stripe', ['config', '--list', '--project-name', projectName], { encoding: 'utf8' });
+  } catch (e) {
+    throw new Error(`Could not run the Stripe CLI (stripe config --list --project-name): ${e.message ?? e}`);
+  }
+  const key = parseTestKeyForProject(out, projectName);
+  if (!key.startsWith('sk_test_') && !key.startsWith('rk_test_')) {
+    throw new Error('Refusing to run: the project key is not a TEST mode key.');
+  }
+  return key;
+}
+
+async function confirmAccount(stripe, projectName) {
+  const account = await stripe.accounts.retrieveCurrent();
+  const displayName =
+    account.settings?.dashboard?.display_name || account.business_profile?.name || '(no display name)';
+  console.log(`Stripe CLI project: ${projectName}`);
+  console.log(`Stripe account:     ${displayName} (${account.id}), TEST mode`);
+  console.log('This creates a coupon/price if missing, plus test clocks, customers and subscriptions.');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question('Type "yes" to continue: ')).trim().toLowerCase();
+    if (answer !== 'yes') throw new Error('Not confirmed; nothing was created.');
+  } finally {
+    rl.close();
+  }
+}
+
+class Checks {
+  constructor(label) {
+    this.label = label;
+    this.failed = 0;
+  }
+  check(cond, msg) {
+    if (cond) {
+      console.log(`  ok   ${msg}`);
+    } else {
+      this.failed += 1;
+      console.error(`  FAIL ${msg}`);
+    }
+    return cond;
+  }
 }
 
 async function waitForClock(stripe, clockId) {
@@ -63,40 +144,24 @@ async function waitForClock(stripe, clockId) {
   throw new Error('Test clock did not become ready in time');
 }
 
-async function main() {
-  const key = resolveKey();
-  if (!key.startsWith('sk_test_') && !key.startsWith('rk_test_')) {
-    throw new Error('Refusing to run: key is not a TEST mode key.');
-  }
-  const stripe = new Stripe(key);
+async function advance(stripe, clockId, frozenTime) {
+  await stripe.testHelpers.testClocks.advance(clockId, { frozen_time: frozenTime });
+  await waitForClock(stripe, clockId);
+}
 
-  // 1. Coupon
-  let coupon;
-  try {
-    coupon = await stripe.coupons.retrieve(COUPON_ID);
-  } catch (e) {
-    if (e?.code !== 'resource_missing') throw e;
-    coupon = await stripe.coupons.create({ id: COUPON_ID, name: 'First month free', percent_off: 100, duration: 'once' });
-  }
-  assert(coupon.percent_off === 100 && coupon.duration === 'once', 'coupon is 100% off, duration once');
+function discountTotal(invoice) {
+  return (invoice.total_discount_amounts ?? []).reduce((sum, d) => sum + (d.amount ?? 0), 0);
+}
 
-  // Price
-  const prices = await stripe.prices.list({ lookup_keys: [LOOKUP_KEY], limit: 1 });
-  let price = prices.data[0];
-  if (!price) {
-    const product = await stripe.products.create({ name: 'SFC Base Plan - First Facility (verify)' });
-    price = await stripe.prices.create({
-      product: product.id,
-      unit_amount: 7500,
-      currency: 'usd',
-      recurring: { interval: 'month' },
-      lookup_key: LOOKUP_KEY,
-    });
-  }
-
-  // 2. Customer on a test clock + subscription shaped like Checkout would create it
+/**
+ * One scenario on its own test clock. `trialDays` is 0 for "no trial"; `trialParams`
+ * builds the subscription's trial fields from the clock's start time.
+ */
+async function runScenario(stripe, price, { label, trialDays, trialParams }) {
+  console.log(`\n${label}`);
+  const c = new Checks(label);
   const start = Math.floor(Date.now() / 1000);
-  const clock = await stripe.testHelpers.testClocks.create({ frozen_time: start, name: 'verify first month free' });
+  const clock = await stripe.testHelpers.testClocks.create({ frozen_time: start, name: `verify first month free: ${label}`.slice(0, 100) });
   try {
     const customer = await stripe.customers.create({
       email: 'verify-first-month-free@example.com',
@@ -107,46 +172,136 @@ async function main() {
     const sub = await stripe.subscriptions.create({
       customer: customer.id,
       items: [{ price: price.id }],
-      trial_period_days: TRIAL_DAYS,
       discounts: [{ coupon: COUPON_ID }],
+      ...trialParams(start),
     });
-    assert(sub.status === 'trialing', 'subscription starts trialing');
 
-    const trialInvoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
-    assert(trialInvoices.data.every((i) => i.amount_due === 0), 'trial-start invoice(s) are $0');
-    const subAfterTrialStart = await stripe.subscriptions.retrieve(sub.id);
-    assert(
-      (subAfterTrialStart.discounts ?? []).length === 1,
-      'coupon is still attached after the $0 trial invoice (not consumed early)',
-    );
-
-    // 3. Past trial end
-    await stripe.testHelpers.testClocks.advance(clock.id, { frozen_time: start + (TRIAL_DAYS + 1) * DAY });
-    await waitForClock(stripe, clock.id);
     let invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
-    let charged = invoices.data.filter((i) => i.amount_due > 0);
-    const firstPostTrial = invoices.data
-      .filter((i) => i.billing_reason === 'subscription_cycle')
+    if (trialDays > 0) {
+      c.check(sub.status === 'trialing', `subscription starts trialing (was ${sub.status})`);
+      c.check(invoices.data.every((i) => i.amount_due === 0), 'trial-start invoice(s) are $0');
+      const afterTrialStart = await stripe.subscriptions.retrieve(sub.id);
+      c.check(
+        (afterTrialStart.discounts ?? []).length === 1,
+        'coupon is still attached after the $0 trial invoice (not spent on the trial)',
+      );
+
+      await advance(stripe, clock.id, start + (trialDays + 1) * DAY);
+      invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
+    } else {
+      c.check(sub.status === 'active', `subscription starts active, no trial (was ${sub.status})`);
+    }
+
+    const firstPaidPeriod = invoices.data
+      .filter((i) => i.billing_reason === (trialDays > 0 ? 'subscription_cycle' : 'subscription_create'))
       .sort((a, b) => a.created - b.created)[0];
-    assert(!!firstPostTrial, 'an invoice was generated at trial end');
-    assert(firstPostTrial.amount_due === 0, `first post-trial invoice is $0 (was ${firstPostTrial.amount_due})`);
-    assert(firstPostTrial.total_discount_amounts?.some((d) => d.amount === 7500), 'first post-trial invoice shows $75 discount');
-    assert(charged.length === 0, 'nothing charged through the free month');
+    if (c.check(!!firstPaidPeriod, 'an invoice exists for the first paid month')) {
+      c.check(firstPaidPeriod.amount_due === 0, `first paid-month invoice is $0 (was ${firstPaidPeriod.amount_due})`);
+      c.check(
+        discountTotal(firstPaidPeriod) === PRICE_CENTS,
+        `first paid-month invoice shows the $75 discount (was ${discountTotal(firstPaidPeriod)})`,
+      );
+    }
+    c.check(invoices.data.every((i) => i.amount_due === 0), 'nothing charged through the free month');
 
-    // 4. Following month
-    await stripe.testHelpers.testClocks.advance(clock.id, { frozen_time: start + (TRIAL_DAYS + 33) * DAY });
-    await waitForClock(stripe, clock.id);
+    await advance(stripe, clock.id, start + (trialDays + 33) * DAY);
     invoices = await stripe.invoices.list({ subscription: sub.id, limit: 10 });
-    charged = invoices.data.filter((i) => i.amount_due > 0);
-    assert(charged.length === 1 && charged[0].amount_due === 7500, 'second month charges the full $75');
-
-    console.log('\nAll checks passed: 30-day trial, then first month free, then $75/month.');
+    const charged = invoices.data.filter((i) => i.amount_due > 0);
+    c.check(
+      charged.length === 1 && charged[0].amount_due === PRICE_CENTS,
+      `the month after the free month charges the full $75 (charged: ${charged.map((i) => i.amount_due).join(', ') || 'none'})`,
+    );
+  } catch (e) {
+    c.check(false, `scenario errored: ${e.message ?? e}`);
   } finally {
     await stripe.testHelpers.testClocks.del(clock.id).catch(() => {});
   }
+  return c.failed;
 }
 
-main().catch((e) => {
-  console.error(e.message ?? e);
-  process.exitCode = 1;
-});
+async function main() {
+  const projectName = resolveProjectName(process.argv.slice(2), process.env);
+  if (!projectName) {
+    throw new Error(
+      'Name the Stripe project explicitly: --project-name "storage facility creator" ' +
+        '(or STRIPE_PROJECT_NAME). The first key in the CLI config may belong to another account.',
+    );
+  }
+  const key = readTestKey(projectName);
+
+  // The Stripe SDK is not a root dependency; borrow the copy functions-integrations already has.
+  const require = createRequire(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'functions-integrations', 'package.json'),
+  );
+  const Stripe = require('stripe');
+  const stripe = new Stripe(key);
+
+  await confirmAccount(stripe, projectName);
+
+  // Coupon
+  let coupon;
+  try {
+    coupon = await stripe.coupons.retrieve(COUPON_ID);
+  } catch (e) {
+    if (e?.code !== 'resource_missing') throw e;
+    coupon = await stripe.coupons.create({ id: COUPON_ID, name: 'First month free', percent_off: 100, duration: 'once' });
+  }
+  if (!(coupon.percent_off === 100 && coupon.duration === 'once')) {
+    throw new Error(`Coupon ${COUPON_ID} is not 100% off, duration once.`);
+  }
+  console.log(`ok   coupon ${COUPON_ID} is 100% off, duration once`);
+
+  // Price
+  const prices = await stripe.prices.list({ lookup_keys: [LOOKUP_KEY], limit: 1 });
+  let price = prices.data[0];
+  if (!price) {
+    const product = await stripe.products.create({ name: 'SFC Base Plan - First Facility (verify)' });
+    price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: PRICE_CENTS,
+      currency: 'usd',
+      recurring: { interval: 'month' },
+      lookup_key: LOOKUP_KEY,
+    });
+  }
+  if (price.unit_amount !== PRICE_CENTS) {
+    throw new Error(`Price ${LOOKUP_KEY} is ${price.unit_amount} cents, expected ${PRICE_CENTS}.`);
+  }
+
+  const APP_TRIAL_DAYS_LEFT = 10;
+  const scenarios = [
+    {
+      label: 'A. card at signup: trial_period_days=30 + coupon',
+      trialDays: 30,
+      trialParams: () => ({ trial_period_days: 30 }),
+    },
+    {
+      label: `B. app trial running: trial_end = app trial end (${APP_TRIAL_DAYS_LEFT} days out) + coupon`,
+      trialDays: APP_TRIAL_DAYS_LEFT,
+      trialParams: (start) => ({ trial_end: start + APP_TRIAL_DAYS_LEFT * DAY }),
+    },
+    {
+      label: 'C. app trial over: no trial + coupon',
+      trialDays: 0,
+      trialParams: () => ({}),
+    },
+  ];
+
+  let failed = 0;
+  for (const s of scenarios) failed += await runScenario(stripe, price, s);
+
+  if (failed > 0) {
+    console.error(`\n${failed} check(s) failed. If the coupon was spent on the $0 trial invoice (A/B), ` +
+      'see the PR "fallback" note: apply the coupon at trial end from the webhook instead.');
+    process.exitCode = 1;
+  } else {
+    console.log('\nAll checks passed: each path gives one trial, then one free month, then $75/month.');
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((e) => {
+    console.error(e.message ?? e);
+    process.exitCode = 1;
+  });
+}

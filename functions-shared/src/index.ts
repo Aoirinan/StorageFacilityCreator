@@ -151,6 +151,18 @@ export type {
 export { mapStripeErrorToUserMessage } from './stripe/errors';
 export { getOrCreateBasePriceId, getOrCreateAddOnPriceId } from './stripe/subscriptionPricing';
 export { FIRST_MONTH_FREE_COUPON_ID, getOrCreateFirstMonthFreeCouponId } from './stripe/firstMonthFreeCoupon';
+export {
+  DEFAULT_PLATFORM_TRIAL_DAYS,
+  STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS,
+  TRIAL_END_SAFETY_MARGIN_MS,
+  decidePlatformCheckoutTrial,
+  platformCheckoutTrialSubscriptionData,
+  trialEndToMillis,
+} from './stripe/platformCheckoutTrial';
+export type {
+  PlatformCheckoutTrialDecision,
+  PlatformCheckoutTrialInput,
+} from './stripe/platformCheckoutTrial';
 export { computeAccountRollup, isLocalTrialExpired } from './subscription/accountRollup';
 export type {
   AccountSubscriptionStatus,

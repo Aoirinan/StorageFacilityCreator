@@ -6,8 +6,11 @@ import type Stripe from 'stripe';
  *
  * The marketing site, Terms, and Billing page all promise that the first paid month
  * after the 30-day trial is free. Checkout applies this coupon so the first
- * post-trial invoice is $0. `duration: 'once'` means the discount is consumed by the
- * first invoice that carries a charge; the $0 trial-start invoice does not consume it.
+ * post-trial invoice is $0. The trial itself is chosen by `decidePlatformCheckoutTrial`.
+ *
+ * UNVERIFIED: whether Stripe spends a `duration: 'once'` coupon on the $0 trial-start
+ * invoice or keeps it for the first paid invoice has not been confirmed.
+ * `scripts/stripe-verify-first-month-free.mjs` checks it on a test clock.
  */
 export const FIRST_MONTH_FREE_COUPON_ID = 'sfc_first_month_free';
 
