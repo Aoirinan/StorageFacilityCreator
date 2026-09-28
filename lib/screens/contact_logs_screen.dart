@@ -332,6 +332,8 @@ class _ContactLogsScreenState extends ConsumerState<ContactLogsScreen> {
         return Icons.note;
       case ContactLogType.reminder:
         return Icons.notifications;
+      case ContactLogType.letter:
+        return Icons.markunread_mailbox_outlined;
       case ContactLogType.other:
         return Icons.more_horiz;
     }
@@ -351,6 +353,8 @@ class _ContactLogsScreenState extends ConsumerState<ContactLogsScreen> {
         return AppTheme.textSecondary;
       case ContactLogType.reminder:
         return AppTheme.primaryBlue;
+      case ContactLogType.letter:
+        return AppTheme.warning;
       case ContactLogType.other:
         return AppTheme.textTertiary;
     }
@@ -370,6 +374,8 @@ class _ContactLogsScreenState extends ConsumerState<ContactLogsScreen> {
         return 'Note';
       case ContactLogType.reminder:
         return 'Reminder';
+      case ContactLogType.letter:
+        return contactLogLetterLabel;
       case ContactLogType.other:
         return 'Other';
     }
@@ -413,12 +419,21 @@ class _ContactLogsScreenState extends ConsumerState<ContactLogsScreen> {
                       if (value != null) {
                         setDialogState(() {
                           selectedType = value;
+                          // A letter is one the facility sent; start the
+                          // subject off as the usual one.
+                          if (value == ContactLogType.letter) {
+                            selectedDirection = ContactLogDirection.outbound;
+                            if (subjectController.text.trim().isEmpty) {
+                              subjectController.text = 'Final notice letter mailed';
+                            }
+                          }
                         });
                       }
                     },
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<ContactLogDirection>(
+                    key: ValueKey(selectedDirection),
                     value: selectedDirection,
                     decoration: const InputDecoration(
                       labelText: 'Direction',

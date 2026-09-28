@@ -34,6 +34,8 @@ import 'package:sfcapp/services/sms_consent_service.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/sms_consent_bulk_dialog.dart';
+import 'package:sfcapp/widgets/paid_through_bulk_dialog.dart';
+import 'package:sfcapp/services/paid_through_bulk_service.dart';
 import 'package:sfcapp/widgets/sms_consent_chip.dart';
 
 /// Grace period for delinquency badge (uses facility Billing Settings when available).
@@ -539,6 +541,7 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               label: Text('Email invites (${_selectedTenantIds.length})'),
                             ),
                             _smsConsentMenu(),
+                            _paidThroughButton(),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -1228,6 +1231,74 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
       message: 'Pick one facility to record or remove SMS consent',
       child: menu,
     );
+  }
+
+  /// Selection bar > Paid through (N). One facility at a time, like SMS
+  /// consent: under All Facilities it is disabled and says why.
+  Widget _paidThroughButton() {
+    final facilityId = _selectedFacilityId;
+    final oneFacility = bulkSmsConsentAvailable(facilityId);
+    final shown = oneFacility
+        ? (ref.watch(filteredTenantsProvider(facilityId)).value ?? const <TenantModel>[])
+        : const <TenantModel>[];
+    final count = visibleSelectedTenants(shown, _selectedTenantIds).length;
+    final button = OutlinedButton.icon(
+      key: const Key('bulk-paid-through'),
+      onPressed: !oneFacility || count == 0 ? null : _markPaidThroughForSelected,
+      icon: const Icon(Icons.event_available_outlined),
+      label: Text('Paid through ($count)'),
+    );
+    if (oneFacility) return button;
+    return Tooltip(
+      message: 'Pick one facility to mark tenants paid through a month',
+      child: button,
+    );
+  }
+
+  /// Tenants List > Select Multiple > Paid through: marks the selected
+  /// tenants paid through the end of a month, as Set Paid Through does for
+  /// one tenant. For an owner coming from a paper ledger, who can mark
+  /// everyone who is paid up in one step. Tenants already paid through a
+  /// later date are left alone.
+  Future<void> _markPaidThroughForSelected() async {
+    final facilityId = _selectedFacilityId;
+    if (!bulkSmsConsentAvailable(facilityId)) return;
+    final selected = _visibleSelectedTenants();
+    if (selected.isEmpty) return;
+
+    final picked = await showPaidThroughBulkDialog(context, tenants: selected);
+    if (picked == null || !mounted) return;
+
+    try {
+      final plan = await PaidThroughBulkService.applyBulk(
+        facilityId: facilityId,
+        tenants: selected,
+        year: picked.year,
+        month: picked.month,
+      );
+      if (!mounted) return;
+      ref.invalidate(facilityTenantsProvider(facilityId));
+      setState(() {
+        _isSelectionMode = false;
+        _selectedTenantIds.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(paidThroughBulkDoneMessage(plan)),
+        backgroundColor: AppTheme.success,
+        duration: const Duration(seconds: 6),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      // Part of a large selection may have been saved before the failure.
+      ref.invalidate(facilityTenantsProvider(facilityId));
+      final cause = e is PaidThroughPartialFailure ? e.cause : e;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(paidThroughBulkFailureMessage(
+            e, ErrorMessageHelper.getUserFriendlyMessage(cause))),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 8),
+      ));
+    }
   }
 
   /// Bulk form of the portal invite: everyone currently selected.
