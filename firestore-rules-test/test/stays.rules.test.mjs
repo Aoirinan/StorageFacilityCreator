@@ -154,14 +154,14 @@ async function seed() {
     const db = context.firestore();
     const fac = facilityScope(db);
     await db.collection('facilities').doc(FAC).set({
-      name: 'Caprock',
+      name: 'Test Park',
       ownerUid: OWNER,
       roles: { [OWNER]: 'owner', [MANAGER]: 'manager', [EMPLOYEE]: 'employee', [EMPLOYEE2]: 'employee', [VIEWER]: 'viewer' },
     });
     const set = (path, data) => fac.doc(path).set({ facilityId: FAC, ...data });
     await set(DOCS.stayControls, { moduleEnabled: true, timeZone: 'America/Denver', version: 1 });
     await set(DOCS.stayListings, { name: 'Airbnb 1', kind: 'vacation_rental', active: true });
-    await set(DOCS.stayListingAccess, { listingId: 'lst1', wifiName: 'Caprock', wifiPassword: 'secret', staticDoorCode: '1234' });
+    await set(DOCS.stayListingAccess, { listingId: 'lst1', wifiName: 'Test Park', wifiPassword: 'secret', staticDoorCode: '1234' });
     await set(DOCS.stayChannels, { listingId: 'lst1', provider: 'airbnb', urlHost: 'www.airbnb.com' });
     await fac.doc('stayChannels/ch1/secret/current').set({ url: 'https://www.airbnb.com/calendar/ical/1.ics?s=abc' });
     await set(DOCS.stayChannelBlocks, { listingId: 'lst1', provider: 'airbnb', ranges: [] });
@@ -416,7 +416,7 @@ test('managers write listing access with whitelisted keys only', async () => {
   const base = {
     facilityId: FAC,
     listingId: 'lst2',
-    wifiName: 'Caprock Guest',
+    wifiName: 'Test Park Guest',
     wifiPassword: 'riverside',
     staticDoorCode: '4821',
     lockboxCode: '',
@@ -634,7 +634,7 @@ async function seedFacilityForStorageRules() {
   });
   await lookupEnv.withSecurityRulesDisabled(async (context) => {
     await context.firestore().collection('facilities').doc(FAC).set({
-      name: 'Caprock',
+      name: 'Test Park',
       ownerUid: OWNER,
       roles: { [OWNER]: 'owner', [MANAGER]: 'manager', [EMPLOYEE]: 'employee', [VIEWER]: 'viewer' },
     });
