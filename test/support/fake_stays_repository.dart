@@ -133,6 +133,12 @@ class FakeStaysRepository implements StaysRepository {
       _watch(() => _staysIn(facilityId, from, to));
 
   @override
+  Stream<List<Stay>> watchConflictStays(String facilityId) => _watch(() => [
+        for (final e in _entries(facilityId, StaysCollections.stays))
+          if (e.value['status'] == StayStatus.conflict.wire) Stay.fromMap(e.key, e.value),
+      ]);
+
+  @override
   Stream<Stay?> watchStay(String facilityId, String stayId) => _watch(() {
         final d = read(facilityId, StaysCollections.stays, stayId);
         return d == null ? null : Stay.fromMap(stayId, d);
