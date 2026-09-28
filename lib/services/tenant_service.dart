@@ -1577,8 +1577,9 @@ class TenantService {
   /// shows when the unit is added to units they already hold.
   ///
   /// Their first unit (or a returning tenant's): the unit number becomes
-  /// [unitNumber] and the rate [monthlyRate] (the prorated first month), as
-  /// before, and the tenant is made active through updateTenant's
+  /// [unitNumber] and the rate [monthlyRate], the unit's monthly rent (never
+  /// a prorated first month: the rent job bills it every month), and the
+  /// tenant is made active through updateTenant's
   /// reactivation path, which refuses a unit someone else holds. Without
   /// isActive an archived tenant who moved back in stayed inactive, and
   /// rent, autopay and lockout all skipped them.

@@ -7,8 +7,20 @@ import 'audit_service.dart';
 /// Service for managing tenant financial ledgers
 /// Ledger is the single source of truth for all tenant financials
 class LedgerService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  // Getters, not final fields, so a test can run the real move-in, charges
+  // and all (see firestoreForTesting).
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+  static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
+  static FirebaseAuth? _authForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
+
+  @visibleForTesting
+  static set authForTesting(FirebaseAuth? auth) => _authForTesting = auth;
 
   /// Rows returned for a statement view, newest first. Balances do not use
   /// this: they are summed on the server so they cannot be truncated.
