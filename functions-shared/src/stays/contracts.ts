@@ -1040,6 +1040,12 @@ export interface StaysServerConfigDoc {
   enabledGlobal: boolean;
   allowlistFacilityIds: string[];
   extraIcalHosts: string[];
+  /**
+   * Facilities whose owner may turn on sending their SFC calendar
+   * (stayControls.icalExportEnabled). Set by a super admin after the
+   * shadow week; missing means no facility may.
+   */
+  exportAllowlist?: string[];
   /** Later. */
   paymentsAllowlistFacilityIds: string[];
   /** Later. */
@@ -1298,6 +1304,8 @@ export type StaysGetAvailabilityRequest = FacilityScopedRequest;
 export interface StaysGetAvailabilityResponse {
   allowed: boolean;
   paused: boolean;
+  /** The facility is on staysServerConfig.exportAllowlist, so calendar sending may be turned on. */
+  exportAllowed: boolean;
 }
 
 // --- staysSetControls -------------------------------------------------------

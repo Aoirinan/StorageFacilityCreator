@@ -232,15 +232,22 @@ Map<String, dynamic> _withoutNulls(Map<String, dynamic> map) => {
 // --- staysGetAvailability ----------------------------------------------------
 
 class StaysAvailability {
-  const StaysAvailability({required this.allowed, required this.paused});
+  const StaysAvailability({required this.allowed, required this.paused, this.exportAllowed = false});
 
-  factory StaysAvailability.fromJson(Map<String, dynamic> j) =>
-      StaysAvailability(allowed: stayTrue(j['allowed']), paused: stayTrue(j['paused']));
+  factory StaysAvailability.fromJson(Map<String, dynamic> j) => StaysAvailability(
+        allowed: stayTrue(j['allowed']),
+        paused: stayTrue(j['paused']),
+        exportAllowed: stayTrue(j['exportAllowed']),
+      );
 
   static const unavailable = StaysAvailability(allowed: false, paused: false);
 
   final bool allowed;
   final bool paused;
+
+  /// Support has cleared this facility to send its SFC calendar to other
+  /// sites (staysServerConfig.exportAllowlist). Missing reads as false.
+  final bool exportAllowed;
 }
 
 // --- staysSetControls ------------------------------------------------------------
