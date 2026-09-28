@@ -51,8 +51,10 @@ function apply(store: Store, writes: PlannedWrite[]): void {
 let idCounter = 0;
 const newId = () => `id-${++idCounter}`;
 
-function ledgerOf(store: Store) {
-  return Object.values(store.ledgers).filter((e) => e.tenantId === TENANT_ID);
+function ledgerOf(store: Store): Array<Record<string, any> & { id: string }> {
+  return Object.entries(store.ledgers)
+    .filter(([, e]) => e.tenantId === TENANT_ID)
+    .map(([id, e]) => ({ ...e, id }));
 }
 
 function balanceOf(store: Store): number {
@@ -74,6 +76,7 @@ function record(store: Store, data: Record<string, unknown>, caller: Caller = OW
     tenant: store.tenants[TENANT_ID] ?? null,
     existingLedger: ledgerOf(store),
     existingBatch: store.tenantPastHistory[request.requestId] ?? null,
+    linkedPayments: Object.entries(store.payments).map(([id, data]) => ({ id, data })),
     newId,
     serverTime: NOW,
   });
@@ -95,6 +98,11 @@ function undo(store: Store, requestId = 'req-00000001', caller: Caller = OWNER) 
     batch,
     ledgerEntries: ids.map((id) => ({ id, data: store.ledgers[id] ?? null })),
     payments: pids.map((id) => ({ id, data: store.payments[id] ?? null })),
+    replacedEntries: ((batch?.voidedExistingLedgerIds as string[]) ?? []).map((id) => ({ id, data: store.ledgers[id] ?? null })),
+    replacedPayments: ((batch?.voidedExistingPayments as Array<{ id: string }>) ?? []).map((p) => ({
+      id: p.id,
+      data: store.payments[p.id] ?? null,
+    })),
     newId,
     serverTime: NOW,
   });
@@ -378,4 +386,162 @@ test('request validation', () => {
   bad({ requestId: 'x', payments: [venmo('2026-02-10', 80)] }, /requestId/);
   // Today is fine, and so is tomorrow in UTC while it is still today somewhere west.
   parsePastHistoryRequest({ ...base, payments: [venmo('2026-09-28', 80)] }, NOW);
+});
+
+// --- History typed in by hand before this tool existed ----------------------
+
+/**
+ * What the owner typed through Ledger -> Add entry and then invoiced: eight
+ * $80 rent charges and four payments, all dated the day she typed them, with
+ * the invoice's metadata rather than the rent job's, plus one she voided.
+ */
+function seedHandEntered(store: Store): string[] {
+  const today = new Date('2026-09-28T02:00:00Z');
+  const ids: string[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    const id = `hand-charge-${i}`;
+    store.ledgers[id] = {
+      tenantId: TENANT_ID,
+      type: 'rentCharge',
+      status: 'posted',
+      amount: 80,
+      entryDate: today,
+      metadata: { invoiceId: 'inv-demo-1' },
+    };
+    ids.push(id);
+  }
+  [-160, -80, -80, -80].forEach((amount, i) => {
+    const id = `hand-payment-${i}`;
+    store.ledgers[id] = { tenantId: TENANT_ID, type: 'payment', status: 'posted', amount, entryDate: today };
+    ids.push(id);
+  });
+  store.ledgers['hand-voided'] = { tenantId: TENANT_ID, type: 'rentCharge', status: 'voided', amount: 80, entryDate: today };
+  return ids;
+}
+
+const throughAugust = () => exampleCharges().filter((c) => c.month <= 8);
+
+test('hand-entered rent dated today blocks this month, and left alone it doubles the balance', () => {
+  const store = newStore();
+  seedHandEntered(store);
+  assert.equal(balanceOf(store), 240);
+  // Dated September 28, so September counts as charged.
+  assert.throws(
+    () => record(store, { charges: exampleCharges(), payments: examplePayments }),
+    (e: unknown) => e instanceof PastHistoryRefusal && /September 2026/.test(e.message),
+  );
+  const { result } = record(store, { charges: throughAugust(), payments: examplePayments });
+  assert.equal(result.balance, 320); // 240 already there + 80 from the history
+  assert.equal(result.existingVoided, 0);
+});
+
+test('voiding the hand-entered entries in the same save gives the real balance, and undo puts them back', () => {
+  const store = newStore();
+  const handIds = seedHandEntered(store);
+  const { result } = record(store, { charges: exampleCharges(), payments: examplePayments, voidLedgerEntryIds: handIds });
+  assert.equal(result.existingVoided, 12);
+  assert.equal(result.balance, 160);
+  assert.equal(result.paidThrough, '2026-07-31');
+  assert.equal(balanceOf(store), 160);
+  for (const id of handIds) {
+    assert.equal(store.ledgers[id].status, 'voided');
+    assert.equal((store.ledgers[id].metadata as any).voidedByHistoryRequestId, 'req-00000001');
+  }
+  // The one she had voided herself is untouched.
+  assert.equal((store.ledgers['hand-voided'].metadata as any)?.voidedByHistoryRequestId, undefined);
+
+  const undone = undo(store);
+  assert.equal(undone.result.entriesRestored, 12);
+  assert.equal(balanceOf(store), 240);
+  for (const id of handIds) {
+    assert.equal(store.ledgers[id].status, 'posted');
+    assert.equal(store.ledgers[id].voidedAt, null);
+    assert.equal((store.ledgers[id].metadata as any).voidedByHistoryRequestId, undefined);
+  }
+  assert.equal((store.ledgers['hand-charge-0'].metadata as any).invoiceId, 'inv-demo-1');
+  assert.equal(store.ledgers['hand-voided'].status, 'voided');
+});
+
+test('a payment recorded in the app is voided with its ledger line, and restored on undo', () => {
+  const store = newStore();
+  store.payments['pay-app'] = { tenantId: TENANT_ID, amount: 80, status: 'completed', isActive: true, method: 'cash' };
+  store.ledgers['led-app'] = {
+    tenantId: TENANT_ID,
+    type: 'payment',
+    status: 'posted',
+    amount: -80,
+    entryDate: new Date('2026-09-20T15:00:00Z'),
+    metadata: { paymentId: 'pay-app', paymentMethod: 'cash' },
+  };
+  record(store, { charges: exampleCharges(), payments: examplePayments, voidLedgerEntryIds: ['led-app'] });
+  assert.equal(store.payments['pay-app'].status, 'voided');
+  assert.equal(store.payments['pay-app'].isActive, false);
+  undo(store);
+  assert.equal(store.payments['pay-app'].status, 'completed');
+  assert.equal(store.payments['pay-app'].isActive, true);
+  assert.equal(store.ledgers['led-app'].status, 'posted');
+});
+
+test("entries to void must be this tenant's, still posted, and not from another history entry", () => {
+  const store = newStore();
+  store.ledgers['other-tenant'] = { tenantId: 'someone-else', type: 'rentCharge', status: 'posted', amount: 80, entryDate: NOW };
+  store.ledgers['already-void'] = { tenantId: TENANT_ID, type: 'rentCharge', status: 'voided', amount: 80, entryDate: NOW };
+  assert.throws(
+    () => record(store, { charges: throughAugust(), voidLedgerEntryIds: ['other-tenant'] }),
+    (e: unknown) => e instanceof PastHistoryRefusal && e.code === 'invalid-argument',
+  );
+  assert.throws(
+    () => record(store, { charges: throughAugust(), voidLedgerEntryIds: ['already-void'] }),
+    (e: unknown) => e instanceof PastHistoryRefusal && e.code === 'failed-precondition',
+  );
+  record(store, { charges: throughAugust() });
+  const fromHistory = ledgerOf(store).find((e) => e.metadata?.source === 'past_history')!;
+  assert.throws(
+    () => record(store, { requestId: 'req-00000002', payments: examplePayments, voidLedgerEntryIds: [fromHistory.id] }),
+    (e: unknown) => e instanceof PastHistoryRefusal && /Undo this history entry/.test(e.message),
+  );
+});
+
+test("rent comes from the tenant's monthly rate, which covers all their units", () => {
+  // Four $20 outdoor spaces billed as one $80 rate: the history is $80 a month.
+  const store = newStore({ monthlyRate: 80, unitNumber: 'OUT-1' });
+  const { result } = record(store, { charges: exampleCharges(), payments: examplePayments });
+  assert.equal(result.totalCharges, 640);
+  assert.equal(ledgerOf(store).filter((e) => e.type === 'rentCharge').length, 8);
+});
+
+test('the move-in date is saved on a tenant without one, never over one, and taken off by undo', () => {
+  const store = newStore();
+  record(store, { charges: exampleCharges(), moveInDate: '2026-02-10' });
+  assert.equal((store.tenants[TENANT_ID].moveInDate as Date).toISOString(), '2026-02-10T12:00:00.000Z');
+  undo(store);
+  assert.equal(store.tenants[TENANT_ID].moveInDate, null);
+
+  const kept = new Date('2026-01-05T06:00:00Z');
+  const store2 = newStore({ moveInDate: kept });
+  const { result } = record(store2, { charges: exampleCharges(), moveInDate: '2026-02-10' });
+  assert.equal(result.moveInDateSaved, false);
+  assert.equal(store2.tenants[TENANT_ID].moveInDate, kept);
+});
+
+test('a payment known only by its month is dated the 1st and says so', () => {
+  // A house: moved in 8/17, August prorated to $475, September $1000.
+  const store = newStore({ monthlyRate: 1000 });
+  const { result } = record(store, {
+    moveInDate: '2026-08-17',
+    charges: [
+      { year: 2026, month: 8, day: 17, amount: 475 },
+      { year: 2026, month: 9, day: 1, amount: 1000 },
+    ],
+    payments: [
+      { date: '2026-08-17', amount: 475, method: 'zelle' },
+      { date: '2026-09-15', monthOnly: true, amount: 1000, method: 'check', reference: '2201' },
+    ],
+  });
+  assert.equal(result.balance, 0);
+  assert.equal(result.paidThrough, '2026-09-30');
+  const sept = ledgerOf(store).find((e) => e.type === 'payment' && e.amount === -1000)!;
+  assert.equal((sept.entryDate as Date).toISOString(), '2026-09-01T12:00:00.000Z');
+  assert.equal(sept.description, 'Payment - Check #2201 (September 2026)');
+  assert.equal((sept.metadata as any).dateIsMonthOnly, true);
 });

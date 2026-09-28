@@ -174,6 +174,105 @@ test('facility staff can create valid manual tenant payment rows only', async ()
   );
 });
 
+/** The facility payment PaymentService.recordManualPayment writes (Record payment dialog, Create Payment screen). */
+function receivedPayment(uid, extra = {}) {
+  return {
+    tenantId: TENANT_ID,
+    facilityId: FACILITY_ID,
+    contractId: '',
+    tenantName: 'Test Tenant',
+    unitNumber: 'A1',
+    amount: 80,
+    status: 'completed',
+    method: 'venmo',
+    paidAt: serverTimestamp(),
+    paidDate: serverTimestamp(),
+    dueDate: serverTimestamp(),
+    notes: 'June rent',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: uid,
+    isActive: true,
+    ...extra,
+  };
+}
+
+test('an owner records a received payment by Venmo, Zelle or Other, with a check # / reference', async () => {
+  await seedFacility();
+  const payments = testEnv
+    .authenticatedContext(OWNER_UID)
+    .firestore()
+    .collection('facilities')
+    .doc(FACILITY_ID)
+    .collection('payments');
+
+  await assertSucceeds(payments.doc('p-venmo').set(receivedPayment(OWNER_UID, { reference: 'VEN-3345' })));
+  await assertSucceeds(payments.doc('p-zelle').set(receivedPayment(OWNER_UID, { method: 'zelle' })));
+  await assertSucceeds(payments.doc('p-other').set(receivedPayment(OWNER_UID, { method: 'other' })));
+  await assertSucceeds(
+    payments.doc('p-check').set(receivedPayment(OWNER_UID, { method: 'check', reference: '1234' })),
+  );
+  // No tenant name or unit, no contract (imported tenants have none), no notes.
+  const bare = receivedPayment(OWNER_UID, { method: 'cash' });
+  delete bare.tenantName;
+  delete bare.unitNumber;
+  delete bare.notes;
+  await assertSucceeds(payments.doc('p-bare').set(bare));
+
+  await assertFails(payments.doc('p-bad-method').set(receivedPayment(OWNER_UID, { method: 'bitcoin' })));
+  await assertFails(payments.doc('p-long-ref').set(receivedPayment(OWNER_UID, { reference: 'x'.repeat(101) })));
+  await assertFails(payments.doc('p-num-ref').set(receivedPayment(OWNER_UID, { reference: 1234 })));
+  // Received money is dated now; past dates go through recordTenantPastHistory.
+  await assertFails(
+    payments.doc('p-backdated').set(receivedPayment(OWNER_UID, { paidAt: new Date('2026-02-10T12:00:00Z') })),
+  );
+});
+
+test('the old Create Payment "payment request" payload is refused, which is why the screen now records a received payment', async () => {
+  await seedFacility();
+  const now = new Date();
+  await assertFails(
+    testEnv
+      .authenticatedContext(OWNER_UID)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('payments')
+      .doc('p-request')
+      .set({
+        tenantId: TENANT_ID,
+        facilityId: FACILITY_ID,
+        contractId: '',
+        tenantName: 'Test Tenant',
+        amount: 80,
+        status: 'pending',
+        method: 'cash',
+        dueDate: now,
+        paidAt: null,
+        notes: null,
+        metadata: null,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: OWNER_UID,
+        isActive: true,
+      }),
+  );
+});
+
+test('past-history batches are server-only', async () => {
+  await seedFacility();
+  const ref = (uid) =>
+    testEnv
+      .authenticatedContext(uid)
+      .firestore()
+      .collection('facilities')
+      .doc(FACILITY_ID)
+      .collection('tenantPastHistory')
+      .doc('req-00000001');
+  await assertFails(ref(OWNER_UID).set({ tenantId: TENANT_ID, status: 'applied' }));
+  await assertFails(ref(OWNER_UID).get());
+});
+
 test('outsider cannot create manual tenant payments', async () => {
   await seedFacility();
   const outsider = testEnv.authenticatedContext(OUTSIDER_UID);

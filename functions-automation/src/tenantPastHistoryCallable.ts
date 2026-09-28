@@ -79,12 +79,30 @@ export const recordTenantPastHistory = functions
           throw new PastHistoryRefusal('permission-denied', 'Only the facility owner or a manager can enter past history');
         }
         const ledgerSnap = await tx.get(ledgerQuery);
+        const existingLedger = ledgerSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+        // Payment docs behind the entries being replaced, voided with them.
+        const voiding = new Set(request.voidLedgerEntryIds);
+        const linkedIds = [
+          ...new Set(
+            existingLedger
+              .filter((row) => voiding.has(row.id))
+              .map((row) => (row as { metadata?: { paymentId?: unknown } }).metadata?.paymentId)
+              .filter((v): v is string => typeof v === 'string' && v !== ''),
+          ),
+        ];
+        const linkedSnaps = linkedIds.length
+          ? await tx.getAll(...linkedIds.map((id) => facilityRef.collection('payments').doc(id)))
+          : [];
         const plan = planRecordPastHistory({
           request,
           caller,
           facility,
           tenant: tenantSnap.exists ? (tenantSnap.data() as Record<string, unknown>) : null,
-          existingLedger: ledgerSnap.docs.map((d) => d.data()),
+          existingLedger,
+          linkedPayments: linkedSnaps.map((snap) => ({
+            id: snap.id,
+            data: snap.exists ? (snap.data() as Record<string, unknown>) : null,
+          })),
           existingBatch: batchSnap.exists ? (batchSnap.data() as Record<string, unknown>) : null,
           newId: () => facilityRef.collection('ledgers').doc().id,
           serverTime: admin.firestore.FieldValue.serverTimestamp(),
@@ -134,6 +152,19 @@ export const undoTenantPastHistory = functions
         const paymentSnaps = paymentIds.length
           ? await tx.getAll(...paymentIds.map((id) => facilityRef.collection('payments').doc(id)))
           : [];
+        // What the history had replaced (hand-entered entries it voided).
+        const replacedIds = Array.isArray(batch?.voidedExistingLedgerIds)
+          ? (batch!.voidedExistingLedgerIds as string[])
+          : [];
+        const replacedPaymentIds = Array.isArray(batch?.voidedExistingPayments)
+          ? (batch!.voidedExistingPayments as Array<{ id: string }>).map((p) => p.id)
+          : [];
+        const replacedSnaps = replacedIds.length
+          ? await tx.getAll(...replacedIds.map((id) => facilityRef.collection('ledgers').doc(id)))
+          : [];
+        const replacedPaymentSnaps = replacedPaymentIds.length
+          ? await tx.getAll(...replacedPaymentIds.map((id) => facilityRef.collection('payments').doc(id)))
+          : [];
         const plan = planUndoPastHistory({
           facilityId,
           tenantId,
@@ -144,6 +175,11 @@ export const undoTenantPastHistory = functions
           batch,
           ledgerEntries: ledgerSnaps.map((s) => ({ id: s.id, data: s.exists ? (s.data() as Record<string, unknown>) : null })),
           payments: paymentSnaps.map((s) => ({ id: s.id, data: s.exists ? (s.data() as Record<string, unknown>) : null })),
+          replacedEntries: replacedSnaps.map((s) => ({ id: s.id, data: s.exists ? (s.data() as Record<string, unknown>) : null })),
+          replacedPayments: replacedPaymentSnaps.map((s) => ({
+            id: s.id,
+            data: s.exists ? (s.data() as Record<string, unknown>) : null,
+          })),
           newId: () => facilityRef.collection('auditLogs').doc().id,
           serverTime: admin.firestore.FieldValue.serverTimestamp(),
         });

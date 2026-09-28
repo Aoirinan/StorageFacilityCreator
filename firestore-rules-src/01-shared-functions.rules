@@ -279,7 +279,7 @@
       ]) &&
       !request.resource.data.keys().hasAny(facilityPaymentWriteForbiddenKeys()) &&
       request.resource.data.keys().size() >= 13 &&
-      request.resource.data.keys().size() <= 16 &&
+      request.resource.data.keys().size() <= 17 &&
       request.resource.data.facilityId == facilityId &&
       request.resource.data.tenantId is string &&
       request.resource.data.contractId is string &&
@@ -288,7 +288,7 @@
       request.resource.data.amount <= 10000000 &&
       request.resource.data.status == 'completed' &&
       request.resource.data.method is string &&
-      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe)$') &&
+      request.resource.data.method.matches('^(creditCard|debitCard|bankTransfer|check|cash|square|stripe|venmo|zelle|other)$') &&
       request.resource.data.paidAt == request.time &&
       request.resource.data.paidDate == request.time &&
       request.resource.data.dueDate == request.time &&
@@ -298,7 +298,9 @@
       request.resource.data.isActive == true &&
       (!('tenantName' in request.resource.data) || request.resource.data.tenantName is string) &&
       (!('unitNumber' in request.resource.data) || request.resource.data.unitNumber is string) &&
-      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000));
+      (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 4000)) &&
+      // Check number or Venmo/Zelle reference from the Record payment dialog.
+      (!('reference' in request.resource.data) || (request.resource.data.reference is string && request.resource.data.reference.size() <= 100));
   }
 
   function isLateFeeFacilityPaymentCreate(facilityId) {

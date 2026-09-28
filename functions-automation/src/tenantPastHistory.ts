@@ -20,6 +20,8 @@ export const PAST_HISTORY_COLLECTION = 'tenantPastHistory';
 
 export const MAX_HISTORY_CHARGES = 120;
 export const MAX_HISTORY_PAYMENTS = 200;
+/** Entries already on the ledger that one save may void (hand-entered ones it replaces). */
+export const MAX_HISTORY_VOIDS = 200;
 /** No single rent charge or payment on a paper ledger is this big. */
 export const MAX_HISTORY_AMOUNT = 100000;
 export const MIN_HISTORY_YEAR = 2000;
@@ -73,6 +75,11 @@ export interface HistoryCharge {
 
 export interface HistoryPayment {
   date: CalendarDay;
+  /**
+   * The owner's records give only the month ("September $1000"): the date is
+   * the 1st of it, and the entry says so.
+   */
+  monthOnly: boolean;
   amount: number;
   method: string;
   reference: string | null;
@@ -85,6 +92,14 @@ export interface PastHistoryRequest {
   requestId: string;
   charges: HistoryCharge[];
   payments: HistoryPayment[];
+  /**
+   * Ledger entries already on this tenant's ledger to void in the same
+   * save: history the owner had typed in by hand (Add entry), dated the day
+   * it was typed, that this entry replaces. Undo puts them back.
+   */
+  voidLedgerEntryIds: string[];
+  /** The move-in date the owner gave; saved on the tenant if it has none. */
+  moveInDate: CalendarDay | null;
 }
 
 /** A request problem, reported to the app as invalid-argument. */
@@ -125,11 +140,16 @@ export function historyRentDescription(year: number, month: number): string {
  * "Payment - Check #1234", "Payment - Venmo: paid late". The Record payment
  * dialog in the app builds the same line.
  */
-export function historyPaymentDescription(p: Pick<HistoryPayment, 'method' | 'reference' | 'note'>): string {
+export function historyPaymentDescription(
+  p: Pick<HistoryPayment, 'method' | 'reference' | 'note'> & { monthOnly?: boolean; date?: CalendarDay },
+): string {
   const label = HISTORY_PAYMENT_METHODS[p.method] ?? p.method;
   const ref = p.reference ? ` #${p.reference}` : '';
+  // A payment known only by its month is dated the 1st; say so on the line
+  // so the statement does not claim a day nobody recorded.
+  const month = p.monthOnly && p.date ? ` (${monthLabel(p.date.year, p.date.month)})` : '';
   const note = p.note ? `: ${p.note}` : '';
-  return `Payment - ${label}${ref}${note}`;
+  return `Payment - ${label}${ref}${month}${note}`;
 }
 
 function roundCents(n: number): number {
@@ -212,8 +232,24 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
 
   const rawCharges = d.charges ?? [];
   const rawPayments = d.payments ?? [];
-  if (!Array.isArray(rawCharges) || !Array.isArray(rawPayments)) {
-    throw new PastHistoryInputError('charges and payments must be lists');
+  const rawVoids = d.voidLedgerEntryIds ?? [];
+  if (!Array.isArray(rawCharges) || !Array.isArray(rawPayments) || !Array.isArray(rawVoids)) {
+    throw new PastHistoryInputError('charges, payments and voidLedgerEntryIds must be lists');
+  }
+  if (rawVoids.length > MAX_HISTORY_VOIDS) {
+    throw new PastHistoryInputError(`At most ${MAX_HISTORY_VOIDS} existing entries can be voided at a time`);
+  }
+  const voidLedgerEntryIds: string[] = [];
+  for (const v of rawVoids) {
+    if (typeof v !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(v)) {
+      throw new PastHistoryInputError('An entry to void is not a valid id');
+    }
+    if (!voidLedgerEntryIds.includes(v)) voidLedgerEntryIds.push(v);
+  }
+  let moveInDate: CalendarDay | null = null;
+  if (d.moveInDate !== undefined && d.moveInDate !== null && d.moveInDate !== '') {
+    moveInDate = parseCalendarDay(d.moveInDate, 'Move-in date');
+    checkDayInRange(moveInDate, now, 'Move-in date');
   }
   if (rawCharges.length > MAX_HISTORY_CHARGES) {
     throw new PastHistoryInputError(`At most ${MAX_HISTORY_CHARGES} monthly charges at a time`);
@@ -221,7 +257,7 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
   if (rawPayments.length > MAX_HISTORY_PAYMENTS) {
     throw new PastHistoryInputError(`At most ${MAX_HISTORY_PAYMENTS} payments at a time`);
   }
-  if (rawCharges.length === 0 && rawPayments.length === 0) {
+  if (rawCharges.length === 0 && rawPayments.length === 0 && voidLedgerEntryIds.length === 0) {
     throw new PastHistoryInputError('Nothing to save: add a charge or a payment');
   }
 
@@ -250,7 +286,9 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
   const payments: HistoryPayment[] = rawPayments.map((raw, i) => {
     const p = (raw ?? {}) as Record<string, unknown>;
     const what = `Payment ${i + 1}`;
-    const date = parseCalendarDay(p.date, what);
+    const monthOnly = p.monthOnly === true;
+    const parsed = parseCalendarDay(p.date, what);
+    const date = monthOnly ? { ...parsed, day: 1 } : parsed;
     checkDayInRange(date, now, what);
     const method = typeof p.method === 'string' ? p.method : '';
     if (!Object.prototype.hasOwnProperty.call(HISTORY_PAYMENT_METHODS, method)) {
@@ -258,6 +296,7 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
     }
     return {
       date,
+      monthOnly,
       amount: readAmount(p.amount, what),
       method,
       reference: readOptionalString(p.reference, `${what} check # / reference`, MAX_REFERENCE_LENGTH),
@@ -265,11 +304,13 @@ export function parsePastHistoryRequest(data: unknown, now: Date): PastHistoryRe
     };
   });
 
-  return { facilityId, tenantId, requestId, charges, payments };
+  return { facilityId, tenantId, requestId, charges, payments, voidLedgerEntryIds, moveInDate };
 }
 
 /** A ledger row as stored, the fields these rules read. */
 export interface LedgerRow {
+  id?: string;
+  tenantId?: unknown;
   type?: unknown;
   status?: unknown;
   amount?: unknown;

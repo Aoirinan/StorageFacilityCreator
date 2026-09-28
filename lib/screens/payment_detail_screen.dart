@@ -291,6 +291,8 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
           if (unitVal.isNotEmpty) _buildInfoRow('Unit', unitVal),
           if (metadataPurpose != null) _buildInfoRow('Details', metadataPurpose),
           _buildInfoRow('Method', widget.payment.methodDisplayName),
+          if (widget.payment.reference != null)
+            _buildInfoRow('Check # / reference', widget.payment.reference!),
           if (notes != null && notes.isNotEmpty) _buildInfoRow('Notes', notes),
           if (!widget.payment.isPaid)
             _buildInfoRow('Due Date', _formatDate(widget.payment.dueDate)),

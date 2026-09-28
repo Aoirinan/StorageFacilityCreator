@@ -551,9 +551,16 @@ class PaymentService {
           final reason =
               paymentNotProcessableReason(stored.data()?['status']);
           if (reason != null) return reason;
+          // Keep the method the payment was stored with. The pages pass the
+          // method they parsed, and a method this build had no name for
+          // parsed as cash, so processing a Venmo payment on an older
+          // client rewrote it to cash.
+          final storedMethod = stored.data()?['method'];
           txn.update(paymentDoc, {
             'status': 'paid',
-            'method': method.name,
+            'method': storedMethod is String && storedMethod.isNotEmpty
+                ? storedMethod
+                : method.name,
             'transactionId': transactionId,
             'paidDate': nowTimestamp,
             'paidAt': nowTimestamp,
@@ -604,12 +611,19 @@ class PaymentService {
   /// late fee settled on its own — because paidThrough moves in whole months of
   /// rent, so a deposit equal to one month would otherwise buy a month the
   /// tenant has not paid for.
+  ///
+  /// [reference] is the check number or Venmo/Zelle reference; it is stored
+  /// on the payment and shown in the ledger line ("Payment - Check #1234").
+  /// The payment is dated now: past payments go through Enter past history
+  /// (the recordTenantPastHistory callable), which does not move paidThrough
+  /// from today.
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
     required double amount,
     required PaymentMethod method,
     String? notes,
+    String? reference,
     bool appliesToRent = true,
   }) async {
     try {
@@ -635,6 +649,12 @@ class PaymentService {
       final contractId = tenantData['contractId'] as String? ?? '';
       final snapshotName = (tenantData['name'] as String?)?.trim() ?? '';
       final snapshotUnit = (tenantData['unitNumber'] as String?)?.trim() ?? '';
+      final cleanReference = reference?.trim() ?? '';
+      final ledgerLine = receivedPaymentDescription(
+        method,
+        reference: cleanReference,
+        notes: notes,
+      );
 
       // 1. Create facility-level payment (shows in main Payments screen)
       final facilityPaymentRef = await _firestore
@@ -654,6 +674,7 @@ class PaymentService {
         'paidDate': FieldValue.serverTimestamp(),
         'dueDate': FieldValue.serverTimestamp(),
         if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+        if (cleanReference.isNotEmpty) 'reference': cleanReference,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
@@ -675,7 +696,10 @@ class PaymentService {
         'currency': 'usd',
         'chargeType': 'manual_${method.name}',
         'status': 'succeeded',
-        'description': notes ?? '${method.displayName} payment',
+        'description': notes ??
+            (cleanReference.isNotEmpty
+                ? '${method.displayName} payment #$cleanReference'
+                : '${method.displayName} payment'),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
@@ -690,13 +714,14 @@ class PaymentService {
           facilityId: facilityId,
           type: LedgerEntryType.payment,
           amount: -amount,
-          description: 'Payment - ${method.displayName}${notes != null ? ': $notes' : ''}',
+          description: ledgerLine,
           referenceId: facilityPaymentRef.id,
           entryDate: DateTime.now(),
           status: LedgerEntryStatus.posted,
           metadata: {
             'paymentMethod': method.name,
             'paymentId': facilityPaymentRef.id,
+            if (cleanReference.isNotEmpty) 'reference': cleanReference,
           },
         );
       } catch (e) {
@@ -1181,7 +1206,8 @@ class PaymentService {
       final paymentData = paymentDoc.data()!;
       final tenantId = paymentData['tenantId'] as String;
       final amount = (paymentData['amount'] as num).toDouble();
-      final method = paymentData['method'] as String;
+      final method = paymentMethodFromStored(paymentData['method']).displayName;
+      final reference = (paymentData['reference'] as String?)?.trim() ?? '';
       final paidDate = paymentData['paidDate'] as Timestamp? ?? paymentData['paidAt'] as Timestamp?;
 
       // Get tenant details
@@ -1236,7 +1262,8 @@ class PaymentService {
                 <p><strong>Facility:</strong> $facilityName</p>
                 ${unitNumber.isNotEmpty ? '<p><strong>Unit:</strong> $unitNumber</p>' : ''}
                 <p><strong>Amount:</strong> \$${amount.toStringAsFixed(2)}</p>
-                <p><strong>Payment Method:</strong> ${method.replaceAll('_', ' ').split(' ').map((w) => w[0].toUpperCase() + w.substring(1)).join(' ')}</p>
+                <p><strong>Payment Method:</strong> $method</p>
+                ${reference.isNotEmpty ? '<p><strong>Reference:</strong> $reference</p>' : ''}
                 <p><strong>Payment Date:</strong> $paymentDateStr</p>
                 <p><strong>Payment ID:</strong> $paymentId</p>
               </div>

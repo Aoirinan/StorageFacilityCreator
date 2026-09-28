@@ -124,6 +124,38 @@ test('the owner example, a double press, and undo', { skip: skipWithoutEmulator 
   assert.equal(redo.balance, 160);
 });
 
+test('hand-entered entries voided in the same save, move-in saved, and both put back by undo', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  const ledgers = fac().collection('ledgers');
+  const typedToday = admin.firestore.Timestamp.fromDate(new Date('2026-09-28T02:00:00Z'));
+  const handIds: string[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    await ledgers.doc(`hand-c${i}`).set({ tenantId: TENANT, type: 'rentCharge', status: 'posted', amount: 80, entryDate: typedToday, metadata: { invoiceId: 'inv-1' } });
+    handIds.push(`hand-c${i}`);
+  }
+  for (const [i, amount] of [-160, -80, -80, -80].entries()) {
+    await ledgers.doc(`hand-p${i}`).set({ tenantId: TENANT, type: 'payment', status: 'posted', amount, entryDate: typedToday });
+    handIds.push(`hand-p${i}`);
+  }
+  assert.equal(await balance(), 240);
+
+  const result = await record.run(
+    { ...example('req-emulator-4'), voidLedgerEntryIds: handIds, moveInDate: '2026-02-10' },
+    context(OWNER),
+  );
+  assert.equal(result.existingVoided, 12);
+  assert.equal(result.moveInDateSaved, true);
+  assert.equal(await balance(), 160);
+  const tenant = (await fac().collection('tenants').doc(TENANT).get()).data()!;
+  assert.equal((tenant.moveInDate as admin.firestore.Timestamp).toDate().toISOString(), '2026-02-10T12:00:00.000Z');
+
+  const undone = await undo.run({ facilityId: FACILITY, tenantId: TENANT, requestId: 'req-emulator-4' }, context(OWNER));
+  assert.equal(undone.entriesRestored, 12);
+  assert.equal(await balance(), 240);
+  const after = (await fac().collection('tenants').doc(TENANT).get()).data()!;
+  assert.equal(after.moveInDate, null);
+});
+
 test('undo: an employee is refused', { skip: skipWithoutEmulator }, async () => {
   await seed();
   await record.run(example(), context(OWNER));

@@ -43,6 +43,7 @@ import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
+import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
 
 class ClientDetailScreen extends ConsumerStatefulWidget {
   final TenantModel tenant;
@@ -1267,6 +1268,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppTheme.primaryBlue,
                             foregroundColor: AppTheme.textOnDark,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // Rent and payments from before the app (a paper
+                      // ledger), saved with their real dates.
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => showTenantPastHistoryDialog(context, tenant),
+                          icon: const Icon(Icons.history_edu_outlined),
+                          label: const Text('Enter past history'),
+                          style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                         ),

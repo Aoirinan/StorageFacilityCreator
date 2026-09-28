@@ -71,6 +71,9 @@ export interface RecordResult {
   paidThrough: string | null;
   paidThroughChanged: boolean;
   credit: number;
+  /** Entries already on the ledger this save voided. */
+  existingVoided: number;
+  moveInDateSaved: boolean;
   warnings: string[];
 }
 
@@ -105,8 +108,14 @@ export function planRecordPastHistory(input: {
   caller: Caller;
   facility: Record<string, unknown> | null;
   tenant: Record<string, unknown> | null;
+  /** The tenant's ledger, each row with its doc id. */
   existingLedger: ReadonlyArray<LedgerRow>;
   existingBatch: Record<string, unknown> | null;
+  /**
+   * Payment docs behind the entries being voided (their metadata.paymentId),
+   * so a payment recorded through the app is voided with its ledger line.
+   */
+  linkedPayments?: ReadonlyArray<{ id: string; data: Record<string, unknown> | null }>;
   newId: () => string;
   serverTime: unknown;
 }): RecordPlan {
@@ -137,7 +146,33 @@ export function planRecordPastHistory(input: {
     return { result: { ...stored, alreadyApplied: true }, writes: [] };
   }
 
-  const clash = monthsAlreadyCharged(existingLedger, request.charges);
+  // Entries already on the ledger the owner chose to replace. Each must be
+  // this tenant's, still posted, and not from another history entry (that
+  // one has its own undo).
+  const byId = new Map<string, LedgerRow>();
+  for (const row of existingLedger) if (row.id) byId.set(row.id, row);
+  const toVoid: LedgerRow[] = [];
+  for (const id of request.voidLedgerEntryIds) {
+    const row = byId.get(id);
+    if (!row || row.tenantId !== request.tenantId) {
+      throw new PastHistoryRefusal('invalid-argument', 'An entry to void is not on this tenant\'s ledger. Reload and try again.');
+    }
+    if (row.status !== 'posted') {
+      throw new PastHistoryRefusal('failed-precondition', 'An entry to void is already voided. Reload and try again.');
+    }
+    const meta = (row.metadata || {}) as Record<string, unknown>;
+    if (meta.source === PAST_HISTORY_SOURCE || (row as Record<string, unknown>).source === PAST_HISTORY_SOURCE) {
+      throw new PastHistoryRefusal(
+        'failed-precondition',
+        'An entry to void came from another past-history entry. Use "Undo this history entry" on the Ledger for that one.',
+      );
+    }
+    toVoid.push(row);
+  }
+  const voiding = new Set(request.voidLedgerEntryIds);
+  const keptLedger = existingLedger.filter((row) => !(row.id && voiding.has(row.id)));
+
+  const clash = monthsAlreadyCharged(keptLedger, request.charges);
   if (clash.length > 0) {
     throw new PastHistoryRefusal(
       'already-exists',
@@ -147,7 +182,7 @@ export function planRecordPastHistory(input: {
   }
 
   const outcome: HistoryOutcome = computeHistoryOutcome({
-    existing: existingLedger,
+    existing: keptLedger,
     charges: request.charges,
     payments: request.payments,
   });
@@ -227,6 +262,7 @@ export function planRecordPastHistory(input: {
         method: p.method,
         ...(p.reference ? { reference: p.reference } : {}),
         ...(p.note ? { notes: p.note } : {}),
+        ...(p.monthOnly ? { dateIsMonthOnly: true } : {}),
         paidAt: at,
         paidDate: at,
         dueDate: at,
@@ -252,6 +288,7 @@ export function planRecordPastHistory(input: {
         metadata: {
           paymentMethod: p.method,
           paymentId,
+          ...(p.monthOnly ? { dateIsMonthOnly: true } : {}),
           ...(p.reference ? { reference: p.reference } : {}),
           source: PAST_HISTORY_SOURCE,
           historyRequestId: requestId,
@@ -260,12 +297,64 @@ export function planRecordPastHistory(input: {
     });
   }
 
-  if (decision.write) {
+  // The hand-entered entries this history replaces, tagged so Undo can put
+  // them back.
+  for (const row of toVoid) {
+    writes.push({
+      collection: 'ledgers',
+      id: row.id!,
+      kind: 'update',
+      data: {
+        status: 'voided',
+        voidedAt: serverTime,
+        voidedBy: caller.uid,
+        metadata: {
+          ...((row.metadata as Record<string, unknown>) || {}),
+          voidReason: 'Replaced by past history',
+          voidedByHistoryRequestId: requestId,
+        },
+      },
+    });
+  }
+  const voidedExistingPayments: Array<{ id: string; status: unknown; isActive: unknown }> = [];
+  const linkedIds = new Set(
+    toVoid
+      .map((row) => (row.metadata as Record<string, unknown> | undefined)?.paymentId)
+      .filter((v): v is string => typeof v === 'string' && v !== ''),
+  );
+  for (const pay of input.linkedPayments ?? []) {
+    if (!linkedIds.has(pay.id) || !pay.data) continue;
+    if (pay.data.tenantId !== tenantId || pay.data.status === 'voided') continue;
+    voidedExistingPayments.push({ id: pay.id, status: pay.data.status ?? null, isActive: pay.data.isActive ?? null });
+    writes.push({
+      collection: 'payments',
+      id: pay.id,
+      kind: 'update',
+      data: {
+        status: 'voided',
+        isActive: false,
+        voidedAt: serverTime,
+        voidedBy: caller.uid,
+        voidedByHistoryRequestId: requestId,
+        updatedAt: serverTime,
+      },
+    });
+  }
+
+  // The move-in date the owner gave, kept on the tenant when it has none.
+  const previousMoveIn = toDate(tenant.moveInDate);
+  const moveInToSet = request.moveInDate && !previousMoveIn ? historyInstant(request.moveInDate) : null;
+
+  if (decision.write || moveInToSet) {
     writes.push({
       collection: 'tenants',
       id: tenantId,
       kind: 'update',
-      data: { paidThrough: decision.write, updatedAt: serverTime },
+      data: {
+        ...(decision.write ? { paidThrough: decision.write } : {}),
+        ...(moveInToSet ? { moveInDate: moveInToSet } : {}),
+        updatedAt: serverTime,
+      },
     });
   }
 
@@ -280,6 +369,8 @@ export function planRecordPastHistory(input: {
     paidThrough: isoDay(resultingPaidThrough),
     paidThroughChanged: decision.write !== null,
     credit: outcome.unappliedCredit,
+    existingVoided: toVoid.length,
+    moveInDateSaved: moveInToSet !== null,
     warnings,
   };
 
@@ -296,6 +387,9 @@ export function planRecordPastHistory(input: {
       paymentIds,
       previousPaidThrough: previousPaidThrough ?? null,
       newPaidThrough: decision.write ?? null,
+      voidedExistingLedgerIds: toVoid.map((row) => row.id!),
+      voidedExistingPayments,
+      moveInDateSet: moveInToSet,
       result,
       createdAt: serverTime,
       createdBy: caller.uid,
@@ -323,6 +417,8 @@ export function planRecordPastHistory(input: {
         totalPayments: outcome.totalPayments,
         previousPaidThrough: isoDay(previousPaidThrough),
         newPaidThrough: isoDay(decision.write),
+        existingVoided: toVoid.map((row) => row.id!),
+        moveInDateSet: isoDay(moveInToSet),
       },
     },
   });
@@ -335,6 +431,8 @@ export interface UndoResult {
   alreadyUndone: boolean;
   entriesVoided: number;
   paymentsVoided: number;
+  /** Hand-entered entries the history had replaced, posted again. */
+  entriesRestored: number;
   paidThrough: string | null;
   paidThroughRestored: boolean;
   warnings: string[];
@@ -357,6 +455,9 @@ export function planUndoPastHistory(input: {
   batch: Record<string, unknown> | null;
   ledgerEntries: ReadonlyArray<{ id: string; data: Record<string, unknown> | null }>;
   payments: ReadonlyArray<{ id: string; data: Record<string, unknown> | null }>;
+  /** The entries (and their payment docs) the history voided, to restore. */
+  replacedEntries?: ReadonlyArray<{ id: string; data: Record<string, unknown> | null }>;
+  replacedPayments?: ReadonlyArray<{ id: string; data: Record<string, unknown> | null }>;
   newId: () => string;
   serverTime: unknown;
 }): { result: UndoResult; writes: PlannedWrite[] } {
@@ -402,20 +503,59 @@ export function planUndoPastHistory(input: {
     paymentsVoided += 1;
   }
 
+  // Put back what the history replaced, if it is still voided by it.
+  let entriesRestored = 0;
+  for (const e of input.replacedEntries ?? []) {
+    const meta = { ...((e.data?.metadata as Record<string, unknown>) || {}) };
+    if (!e.data || e.data.status !== 'voided' || meta.voidedByHistoryRequestId !== requestId) continue;
+    delete meta.voidReason;
+    delete meta.voidedByHistoryRequestId;
+    writes.push({
+      collection: 'ledgers',
+      id: e.id,
+      kind: 'update',
+      data: { status: 'posted', voidedAt: null, voidedBy: null, metadata: meta },
+    });
+    entriesRestored += 1;
+  }
+  const previousPayments = new Map<string, { status: unknown; isActive: unknown }>();
+  for (const p of (batch.voidedExistingPayments as Array<{ id: string; status: unknown; isActive: unknown }>) || []) {
+    previousPayments.set(p.id, p);
+  }
+  for (const p of input.replacedPayments ?? []) {
+    const before = previousPayments.get(p.id);
+    if (!before || !p.data || p.data.status !== 'voided' || p.data.voidedByHistoryRequestId !== requestId) continue;
+    writes.push({
+      collection: 'payments',
+      id: p.id,
+      kind: 'update',
+      data: {
+        status: before.status ?? 'completed',
+        isActive: before.isActive ?? true,
+        voidedAt: null,
+        voidedBy: null,
+        voidedByHistoryRequestId: null,
+        updatedAt: serverTime,
+      },
+    });
+  }
+
   const warnings: string[] = [];
   const setTo = toDate(batch.newPaidThrough);
   const before = toDate(batch.previousPaidThrough);
   const current = toDate(tenant.paidThrough);
   let paidThroughRestored = false;
   let resulting = current;
+  const tenantUpdate: Record<string, unknown> = {};
+  // The move-in date it filled in comes off again, unless changed since.
+  const moveInSet = toDate(batch.moveInDateSet);
+  const moveInNow = toDate(tenant.moveInDate);
+  if (moveInSet && moveInNow && moveInNow.getTime() === moveInSet.getTime()) {
+    tenantUpdate.moveInDate = null;
+  }
   if (setTo) {
     if (current && current.getTime() === setTo.getTime()) {
-      writes.push({
-        collection: 'tenants',
-        id: tenantId,
-        kind: 'update',
-        data: { paidThrough: before ?? null, updatedAt: serverTime },
-      });
+      tenantUpdate.paidThrough = before ?? null;
       paidThroughRestored = true;
       resulting = before;
     } else {
@@ -426,11 +566,21 @@ export function planUndoPastHistory(input: {
     }
   }
 
+  if (Object.keys(tenantUpdate).length > 0) {
+    writes.push({
+      collection: 'tenants',
+      id: tenantId,
+      kind: 'update',
+      data: { ...tenantUpdate, updatedAt: serverTime },
+    });
+  }
+
   const result: UndoResult = {
     requestId,
     alreadyUndone: false,
     entriesVoided,
     paymentsVoided,
+    entriesRestored,
     paidThrough: isoDay(resulting),
     paidThroughRestored,
     warnings,
@@ -455,7 +605,7 @@ export function planUndoPastHistory(input: {
       targetId: tenantId,
       tenantId,
       timestamp: serverTime,
-      metadata: { requestId, entriesVoided, paymentsVoided, paidThroughRestored },
+      metadata: { requestId, entriesVoided, paymentsVoided, entriesRestored, paidThroughRestored },
     },
   });
 
