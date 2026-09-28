@@ -213,6 +213,10 @@ export function formatDueDate(due: CalendarDate | Date): string {
  * registered with carriers do (the shared-number send path adds the name only
  * when it is missing, so it is never doubled). The STOP/HELP footer is
  * appended by the send path, so it does not belong here.
+ *
+ * [amount] is the month's rent. A tenant who already owes money is told the
+ * current posted balance as well, so the text is not read as "$130 settles
+ * it" by someone who is $260 behind.
  */
 export function buildRentReminderMessage(params: {
   facilityName?: string | null;
@@ -220,16 +224,79 @@ export function buildRentReminderMessage(params: {
   amount: number;
   dueDate: CalendarDate | Date;
   unitNumber?: string | null;
+  balance?: number | null;
 }): string {
-  const { facilityName, tenantName, amount, dueDate, unitNumber } = params;
+  const { facilityName, tenantName, amount, dueDate, unitNumber, balance } = params;
   const prefix = facilityName && facilityName.trim() ? `${facilityName.trim()}: ` : '';
   const firstName = (tenantName || '').trim().split(/\s+/)[0];
   const greeting = firstName ? `Hi ${firstName}, ` : '';
   const unit = unitNumber && unitNumber.trim() ? ` for unit ${unitNumber.trim()}` : '';
+  const owing =
+    typeof balance === 'number' && Number.isFinite(balance) && balance >= 0.005
+      ? ` Balance now: $${balance.toFixed(2)}.`
+      : '';
   return (
     `${prefix}${greeting}a reminder that rent${unit} of $${amount.toFixed(2)} ` +
-    `is due ${formatDueDate(dueDate)}.`
+    `is due ${formatDueDate(dueDate)}.${owing}`
   );
+}
+
+/**
+ * The lead time the job can honour. The reminder is for the next 1st, and
+ * every month has at least 28 days, so 1..27 days ahead always lands in the
+ * month before that 1st. 28 or more would, in short months, fall before the
+ * previous 1st and never match. Out-of-range values are clamped rather than
+ * dropped, so an old setting of 30 becomes 27 instead of switching reminders
+ * off.
+ */
+export const MIN_REMINDER_DAYS = 1;
+export const MAX_REMINDER_DAYS = 27;
+
+export function clampReminderDays(value: unknown, fallback = 3): number {
+  const n = Number(value);
+  if (value === null || value === undefined || value === '' || !Number.isFinite(n)) return fallback;
+  return Math.min(MAX_REMINDER_DAYS, Math.max(MIN_REMINDER_DAYS, Math.round(n)));
+}
+
+/**
+ * What to do with a reminder's claim once the send attempt is over.
+ *
+ * The claim exists so a text is never sent twice. Holding it is only right
+ * when the text may have gone out. An error before the Twilio request was
+ * made (a Firestore read, the platform quota refusing) means nothing went
+ * out, so the claim is released; otherwise that tenant silently gets no
+ * reminder this month.
+ */
+export type ReminderAttemptOutcome =
+  | 'sent'
+  | 'blocked'
+  | 'failed'
+  | 'error-before-request'
+  | 'error-after-request';
+
+export function claimActionFor(outcome: ReminderAttemptOutcome): 'mark-sent' | 'release' | 'keep' {
+  if (outcome === 'sent') return 'mark-sent';
+  if (outcome === 'error-after-request') return 'keep';
+  return 'release';
+}
+
+/**
+ * Runs [fn], recording whether it reached the provider request (fn calls
+ * markRequestStarted() just before it). Errors are returned, not thrown, with
+ * that flag, so the caller can tell "certainly not sent" from "maybe sent".
+ */
+export async function runSendAttempt<T extends 'sent' | 'blocked' | 'failed'>(
+  fn: (markRequestStarted: () => void) => Promise<T>,
+): Promise<{ outcome: ReminderAttemptOutcome; error?: unknown }> {
+  let requestStarted = false;
+  try {
+    const result = await fn(() => {
+      requestStarted = true;
+    });
+    return { outcome: result };
+  } catch (error) {
+    return { outcome: requestStarted ? 'error-after-request' : 'error-before-request', error };
+  }
 }
 
 /**

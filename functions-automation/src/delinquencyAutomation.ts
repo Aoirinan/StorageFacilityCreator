@@ -9,6 +9,13 @@ import { sendFacilityEmailWithCompliance } from '@sfc/functions-shared';
 import { writeAuditLog } from './guardrails';
 import { sumLedgerBalance } from './autopayScheduledHelpers';
 import { SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME, SENDGRID_SECRETS } from './secrets';
+import {
+  delinquencyEpisodeKey,
+  isDelinquencyEligibleTenant,
+  noticeStageFor,
+  readDelinquencyNoticeSettings,
+  shouldSendDelinquencyNotice,
+} from './delinquencyNoticePolicy';
 
 /**
  * Scheduled function to process delinquency automation daily
@@ -221,6 +228,10 @@ async function processDelinquencyForFacility(
 
     const facilityData = facilityDoc.data();
     const billingSettings = facilityData?.billingSettings || {};
+    // Tenant notices are off unless the operator switched them on, honour the
+    // Notification Settings switch and channel, and only go by email here.
+    // See delinquencyNoticePolicy.ts.
+    const noticeSettings = readDelinquencyNoticeSettings(billingSettings);
 
     // Get delinquency rules
     const rules = {
@@ -241,7 +252,7 @@ async function processDelinquencyForFacility(
       lienDays: billingSettings.lienDays || 30,
       lockoutDays: billingSettings.lockoutDays || 45,
       enableAutoLateFees: billingSettings.enableAutoLateFees !== false,
-      enableAutoNotices: billingSettings.enableAutoNotices !== false,
+      enableAutoNotices: noticeSettings.enabled && noticeSettings.email,
       enableAutoLockout: billingSettings.enableAutoLockout === true,
     };
 
@@ -253,15 +264,10 @@ async function processDelinquencyForFacility(
       .where('isActive', '==', true)
       .get();
 
-    // Filter out moved-out tenants
-    const eligibleTenants = tenantsSnapshot.docs.filter(doc => {
-      const data = doc.data();
-      // Skip if moved out
-      if (data.moveOutDate) {
-        return false;
-      }
-      return true;
-    });
+    // Filter out moved-out tenants. The loop below used to walk
+    // tenantsSnapshot instead, so this filter did nothing and a tenant with a
+    // move-out date still got late fees, notices and lockout.
+    const eligibleTenants = tenantsSnapshot.docs.filter((doc) => isDelinquencyEligibleTenant(doc.data()));
 
     let processedCount = 0;
     let lateFeeAppliedCount = 0;
@@ -272,7 +278,7 @@ async function processDelinquencyForFacility(
     const estimatedNotices = 0;
     let estimatedLockouts = 0;
 
-    for (const tenantDoc of tenantsSnapshot.docs) {
+    for (const tenantDoc of eligibleTenants) {
       try {
         const tenantData = tenantDoc.data();
         const tenantId = tenantDoc.id;
@@ -397,39 +403,32 @@ async function processDelinquencyForFacility(
 
         // Send notices if needed
         if (rules.enableAutoNotices) {
-          let shouldSendNotice = false;
-          let noticeType = '';
-          
-          if (daysLate >= rules.finalNoticeDays) {
-            shouldSendNotice = true;
-            noticeType = 'final';
-          } else if (daysLate >= rules.noticeDays) {
-            shouldSendNotice = true;
-            noticeType = 'late';
-          }
+          const noticeStage = noticeStageFor(daysLate, rules);
+          const noticeType: string = noticeStage ?? '';
+          const episode = delinquencyEpisodeKey(paidThrough);
 
-          if (shouldSendNotice) {
+          if (noticeStage) {
             try {
               // Get tenant contact info for notices
               const tenantEmail = tenantData?.email;
               const tenantPhone = tenantData?.phone;
               const tenantName = tenantData?.name || 'Tenant';
               
-              // Check if notice was already sent today
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-              const noticesSnapshot = await admin.firestore()
-                .collection('facilities')
-                .doc(facilityId)
-                .collection('tenants')
-                .doc(tenantId)
-                .collection('notices')
-                .where('type', '==', noticeType)
-                .where('sentDate', '>=', admin.firestore.Timestamp.fromDate(today))
-                .limit(1)
-                .get();
+              // Each stage once per delinquency episode, not once a day. The
+              // old check ("already sent today") emailed the same notice every
+              // morning until the tenant paid.
+              const sendNotice = shouldSendDelinquencyNotice({
+                stage: noticeStage,
+                episode,
+                last: {
+                  stage: (tenantData.lastDelinquencyNoticeStage as string | undefined) ?? null,
+                  episode: (tenantData.lastDelinquencyNoticeEpisode as string | undefined) ?? null,
+                  at: tenantData.lastDelinquencyNoticeAt?.toDate?.() ?? null,
+                },
+                now,
+              });
 
-              if (noticesSnapshot.empty) {
+              if (sendNotice) {
                 let emailDelinquencyNoticeSent = false;
                 // Send email notice
                 if (tenantEmail && tenantEmail.trim() !== '') {
@@ -476,6 +475,11 @@ ${facilityData?.name || 'Management Team'}
 
                     if (sendResult.sent) {
                       emailDelinquencyNoticeSent = true;
+                      await tenantDoc.ref.update({
+                        lastDelinquencyNoticeAt: admin.firestore.FieldValue.serverTimestamp(),
+                        lastDelinquencyNoticeStage: noticeStage,
+                        lastDelinquencyNoticeEpisode: episode,
+                      });
                       await admin.firestore()
                         .collection('facilities')
                         .doc(facilityId)
@@ -492,7 +496,11 @@ ${facilityData?.name || 'Management Team'}
                           createdAt: admin.firestore.FieldValue.serverTimestamp(),
                         });
                     } else {
-                      functions.logger.info(`Delinquency email skipped (unsubscribed): ${tenantEmail}`);
+                      functions.logger.info('Delinquency email not sent (gate or unsubscribed)', {
+                        facilityId,
+                        tenantId,
+                        blocked: sendResult.blocked ?? null,
+                      });
                     }
                   } catch (emailError: any) {
                     functions.logger.error(`Failed to send email notice to ${tenantEmail}:`, emailError);

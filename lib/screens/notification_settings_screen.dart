@@ -235,8 +235,11 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
                                     return 'Please enter number of days';
                                   }
                                   final days = int.tryParse(value);
-                                  if (days == null || days < 1 || days > 30) {
-                                    return 'Must be between 1 and 30 days';
+                                  if (days == null || days < 1 || days > 27) {
+                                    // The reminder goes out before the 1st;
+                                    // more than 27 days would land in the
+                                    // previous month's cycle.
+                                    return 'Must be between 1 and 27 days';
                                   }
                                   return null;
                                 },

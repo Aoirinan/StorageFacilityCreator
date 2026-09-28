@@ -7,6 +7,7 @@ import {
   OutboundGateConfig,
   OutboundTarget,
   parseOutboundGateConfig,
+  parseOutboundGateConfigWithProblems,
 } from '../email/customerOutboundGate';
 
 const admins = new Set(['russell_forsyth_1992@outlook.com']);
@@ -114,13 +115,13 @@ test('the block list matches whole ids only, trimmed', () => {
   assert.equal(isCustomerRecipientAllowed('t@example.com', email(KEEPSAKE.slice(0, 10)), c, isAdmin), true);
 });
 
-test('config parsing defaults closed and ignores junk', () => {
+test('config parsing defaults closed and ignores junk in the allowlist', () => {
   assert.deepEqual(parseOutboundGateConfig(undefined), DEFAULT_OUTBOUND_GATE);
   assert.deepEqual(
     parseOutboundGateConfig({
       customerEmailsEnabled: 'true',
       allowedTestRecipients: ['a@b.com', 5, null],
-      blockedFacilityIds: [` ${KEEPSAKE} `, '', 7],
+      blockedFacilityIds: [` ${KEEPSAKE} `],
     }),
     { customerEmailsEnabled: false, allowedTestRecipients: ['a@b.com'], blockedFacilityIds: [KEEPSAKE] },
   );
@@ -128,4 +129,42 @@ test('config parsing defaults closed and ignores junk', () => {
     parseOutboundGateConfig({ customerEmailsEnabled: true, blockedFacilityIds: [KEEPSAKE] }),
     { customerEmailsEnabled: true, allowedTestRecipients: [], blockedFacilityIds: [KEEPSAKE] },
   );
+  // Absent means nothing is blocked; an empty list says the same.
+  for (const data of [{ customerEmailsEnabled: true }, { customerEmailsEnabled: true, blockedFacilityIds: [] }]) {
+    const parsed = parseOutboundGateConfigWithProblems(data);
+    assert.deepEqual(parsed.problems, []);
+    assert.equal(parsed.config.customerEmailsEnabled, true);
+  }
+});
+
+// A damaged block list must close the gate, not quietly unblock Keepsake.
+test('a malformed blockedFacilityIds turns customer contact off for everyone', () => {
+  const malformed: unknown[] = [
+    KEEPSAKE, // a string, not a list
+    null,
+    {},
+    5,
+    [KEEPSAKE, 7],
+    [KEEPSAKE, ''],
+    [KEEPSAKE, '   '],
+    [KEEPSAKE, null],
+  ];
+  for (const blockedFacilityIds of malformed) {
+    const label = JSON.stringify(blockedFacilityIds);
+    const parsed = parseOutboundGateConfigWithProblems({
+      customerEmailsEnabled: true,
+      allowedTestRecipients: ['+19035551234'],
+      blockedFacilityIds,
+    });
+    assert.equal(parsed.problems.length, 1, label);
+    assert.equal(parsed.config.customerEmailsEnabled, false, label);
+    for (const f of [KEEPSAKE, OTHER]) {
+      assert.equal(isCustomerRecipientAllowed('tenant@example.com', email(f), parsed.config, isAdmin), false, label);
+      assert.equal(isCustomerRecipientAllowed('+19035550000', sms(f), parsed.config, isAdmin), false, label);
+    }
+    // The team can still test end to end.
+    assert.equal(isCustomerRecipientAllowed('+19035551234', sms(OTHER), parsed.config, isAdmin), true, label);
+    // Whatever valid ids were readable stay blocked.
+    if (Array.isArray(blockedFacilityIds)) assert.ok(parsed.config.blockedFacilityIds.includes(KEEPSAKE), label);
+  }
 });

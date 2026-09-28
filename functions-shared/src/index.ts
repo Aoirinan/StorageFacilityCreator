@@ -64,6 +64,7 @@ export {
   isCustomerContactAllowed,
   decideCustomerRecipient,
   parseOutboundGateConfig,
+  parseOutboundGateConfigWithProblems,
   getOutboundGateConfig,
   resetOutboundGateCache,
   DEFAULT_OUTBOUND_GATE,

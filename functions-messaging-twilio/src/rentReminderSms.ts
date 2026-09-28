@@ -15,7 +15,7 @@ import {
   TWILIO_SECRETS,
 } from './secrets';
 import { createOrUpdateMessageLog } from './messageLog';
-import { reservePlatformOutgoing } from './platformOutgoing';
+import { releasePlatformOutgoing, reservePlatformOutgoing } from './platformOutgoing';
 import { addOptOutFooter, checkPerTenantRateLimit, checkQuietHours } from './smsComplianceHelpers';
 import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkAndIncrementSMSUsage } from './smsUsage';
@@ -23,10 +23,13 @@ import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumber
 import { isFeatureFlagEnabled } from './featureFlags';
 import {
   buildRentReminderMessage,
+  claimActionFor,
+  clampReminderDays,
   creditCoversRent,
   decideRentReminder,
   localDateTimeIn,
   RentReminderTenant,
+  runSendAttempt,
   selectReminderFromNumber,
 } from './rentReminderHelpers';
 
@@ -67,11 +70,10 @@ interface FacilityReminderSettings {
 export function readReminderSettings(facilityData: Record<string, any>): FacilityReminderSettings {
   const billing = (facilityData?.billingSettings ?? {}) as Record<string, any>;
   const channel = String(billing.paymentReminderChannel ?? 'email').toLowerCase();
-  const days = Number(billing.paymentReminderDays);
   const hour = Number(billing.sendTimeHour);
   return {
     enabled: billing.enablePaymentReminders !== false && (channel === 'sms' || channel === 'both'),
-    reminderDays: Number.isFinite(days) && days >= 0 && days <= 30 ? days : DEFAULT_REMINDER_DAYS,
+    reminderDays: clampReminderDays(billing.paymentReminderDays, DEFAULT_REMINDER_DAYS),
     sendHour: Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_SEND_HOUR,
   };
 }
@@ -119,6 +121,8 @@ async function sendReminderSms(params: {
   tenantEmail: string | null;
   toPhone: string;
   message: string;
+  /** Called just before the Twilio request, so the caller knows it may have gone out. */
+  markRequestStarted?: () => void;
 }): Promise<'sent' | 'blocked' | 'failed'> {
   const { facilityId, facilityData, tenantId, tenantName, tenantEmail, toPhone, message } = params;
 
@@ -240,6 +244,8 @@ async function sendReminderSms(params: {
   form.append('From', fromNumber);
   form.append('Body', body);
 
+  params.markRequestStarted?.();
+
   const response = await fetch(
     `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
     {
@@ -260,6 +266,8 @@ async function sendReminderSms(params: {
       status: response.status,
       detail: detail.substring(0, 300),
     });
+    // Twilio refused it, so nothing went out: give the platform quota back.
+    await releasePlatformOutgoing('sms').catch(() => undefined);
     await writeLog('failed', {
       errorCode: String(response.status),
       errorMessage: detail.substring(0, 300),
@@ -393,16 +401,28 @@ export const processRentDueTextReminders = functions
           facilityName: (facilityData?.name as string | undefined) ?? null,
           tenantName: tenant.name,
           amount: monthlyRate,
+          balance,
           dueDate: decision.dueDate,
           // "12 (Complex 2)" once the facility numbers units per area; the
           // stored number, untouched, until then.
           unitNumber: tenantUnitLabel(data, facilityData),
         });
 
+        let claimed = false;
         try {
-          const claimed = await claimReminder(facilityId, tenantDoc.id, decision.dueKey);
-          if (!claimed) continue;
-          const result = await sendReminderSms({
+          claimed = await claimReminder(facilityId, tenantDoc.id, decision.dueKey);
+        } catch (error: any) {
+          functions.logger.error('[rentReminderSms] could not claim reminder', {
+            facilityId,
+            tenantId: tenantDoc.id,
+            error: error?.message ?? String(error),
+          });
+          continue;
+        }
+        if (!claimed) continue;
+
+        const attempt = await runSendAttempt((markRequestStarted) =>
+          sendReminderSms({
             facilityId,
             facilityData,
             tenantId: tenantDoc.id,
@@ -410,28 +430,46 @@ export const processRentDueTextReminders = functions
             tenantEmail: (data.email as string | undefined)?.trim() || null,
             toPhone: String(data.phone ?? ''),
             message,
+            markRequestStarted,
+          }),
+        );
+        if (attempt.error) {
+          functions.logger.error('[rentReminderSms] send failed', {
+            facilityId,
+            tenantId: tenantDoc.id,
+            outcome: attempt.outcome,
+            error: (attempt.error as any)?.message ?? String(attempt.error),
           });
-          if (result === 'sent') {
+        }
+
+        const claimRef = reminderClaimRef(facilityId, tenantDoc.id, decision.dueKey);
+        const action = claimActionFor(attempt.outcome);
+        try {
+          if (action === 'mark-sent') {
             sent += 1;
-            await reminderClaimRef(facilityId, tenantDoc.id, decision.dueKey)
+            await claimRef
               .update({ status: 'sent', sentAt: admin.firestore.FieldValue.serverTimestamp() })
               .catch(() => undefined);
             await tenantDoc.ref.update({
               lastSmsPaymentReminderDate: admin.firestore.Timestamp.fromDate(now),
               lastSmsPaymentReminderDueDate: decision.dueKey,
             });
+          } else if (action === 'release') {
+            // Certainly not sent (blocked, refused, or failed before the
+            // request): free the claim so a retry this hour can send.
+            await claimRef.delete();
           } else {
-            // Nothing went out (quiet hours, allowance, gate): free the claim.
-            await reminderClaimRef(facilityId, tenantDoc.id, decision.dueKey).delete().catch(() => undefined);
+            // The request may have reached Twilio: keep the claim so a retry
+            // never texts twice, and say so for whoever reads the log.
+            await claimRef.update({ status: 'unknown' }).catch(() => undefined);
           }
         } catch (error: any) {
-          functions.logger.error('[rentReminderSms] send failed', {
+          functions.logger.error('[rentReminderSms] could not settle reminder claim', {
             facilityId,
             tenantId: tenantDoc.id,
+            action,
             error: error?.message ?? String(error),
           });
-          // The claim stays when the outcome is unknown (the text may have
-          // gone out), so a retry never sends it twice.
         }
       }
     }

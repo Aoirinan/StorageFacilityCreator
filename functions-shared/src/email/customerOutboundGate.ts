@@ -115,16 +115,52 @@ function stringList(value: unknown): string[] {
   return value.filter((x: unknown): x is string => typeof x === 'string');
 }
 
+/**
+ * Reads a raw appConfig/outbound document into a config, and says what was
+ * wrong with it.
+ *
+ * blockedFacilityIds is the one field whose damage opens the gate rather
+ * than closing it: read loosely, a string where the list should be (or a list
+ * with a number in it) became [] and, with customerEmailsEnabled on, every
+ * blocked facility could contact customers. So when the field is present but
+ * is not a list of non-empty strings, customer contact is switched off for
+ * everyone until it is fixed. Absent means "no facilities blocked".
+ */
+export function parseOutboundGateConfigWithProblems(
+  data: Record<string, unknown> | undefined,
+): { config: OutboundGateConfig; problems: string[] } {
+  const d = data ?? {};
+  const problems: string[] = [];
+  let blockedFacilityIds: string[] = [];
+  const rawBlocked = d.blockedFacilityIds;
+  if (rawBlocked !== undefined) {
+    const valid =
+      Array.isArray(rawBlocked) &&
+      rawBlocked.every((x: unknown) => typeof x === 'string' && x.trim().length > 0);
+    if (valid) {
+      blockedFacilityIds = (rawBlocked as string[]).map((id) => id.trim());
+    } else {
+      problems.push(
+        'blockedFacilityIds must be an array of non-empty strings; customer contact is off until it is fixed',
+      );
+      blockedFacilityIds = stringList(rawBlocked)
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+    }
+  }
+  return {
+    config: {
+      customerEmailsEnabled: problems.length === 0 && d.customerEmailsEnabled === true,
+      allowedTestRecipients: stringList(d.allowedTestRecipients),
+      blockedFacilityIds,
+    },
+    problems,
+  };
+}
+
 /** Reads a raw appConfig/outbound document into a config, defaulting closed. */
 export function parseOutboundGateConfig(data: Record<string, unknown> | undefined): OutboundGateConfig {
-  const d = data ?? {};
-  return {
-    customerEmailsEnabled: d.customerEmailsEnabled === true,
-    allowedTestRecipients: stringList(d.allowedTestRecipients),
-    blockedFacilityIds: stringList(d.blockedFacilityIds)
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0),
-  };
+  return parseOutboundGateConfigWithProblems(data).config;
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -137,7 +173,13 @@ export async function getOutboundGateConfig(): Promise<OutboundGateConfig> {
   try {
     const snap = await admin.firestore().collection('appConfig').doc('outbound').get();
     if (snap.exists) {
-      config = parseOutboundGateConfig(snap.data());
+      const parsed = parseOutboundGateConfigWithProblems(snap.data());
+      config = parsed.config;
+      if (parsed.problems.length > 0) {
+        functions.logger.error('appConfig/outbound is malformed; customer sends are off', {
+          problems: parsed.problems,
+        });
+      }
     }
   } catch (error) {
     // Fail closed: a config read error must not turn into customer email.

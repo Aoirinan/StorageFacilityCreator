@@ -39,6 +39,7 @@ import { isSMSComplianceFeatureEnabled } from './smsCompliance';
 import { checkQuietHours, checkPerTenantRateLimit, addOptOutFooter } from './smsComplianceHelpers';
 import { SMSUsageState, checkAndIncrementSMSUsage } from './smsUsage';
 import { evaluateSharedNumberSend, recordSharedNumberSend } from './sharedNumberGuard';
+import { decideTenantRecipientConsent, findFacilityTenantsForNumber, tenantOptedOut } from './tenantSmsConsent';
 
 interface SMSRequest {
   to: string;
@@ -154,52 +155,47 @@ export const sendSMS = functions.runWith({
       );
     }
 
-    // SMS Compliance Checks (if enabled)
-    const complianceEnabled = await isSMSComplianceFeatureEnabled('enhancedOptOut', facilityId);
-    
-    if ((complianceEnabled || textingOnboardingEnabled) && tenantInfo.tenantId) {
-      // Check if tenant is opted out
-      const tenantDoc = await admin.firestore()
+    // Tenant opt-out and consent, enforced for every facility. Any tenant of
+    // this facility whose phone is the recipient number (matched on digits,
+    // as the inbound STOP handler matches) is checked, and neither the
+    // facility's feature settings nor forceSend turn it off: a tenant who
+    // replied STOP, or never consented, is not texted. A number that belongs
+    // to no tenant (staff, a prospect) is not decided here.
+    const numberTenants = await findFacilityTenantsForNumber(facilityId, phoneNumber, tenantInfo.tenantId);
+    const tenantConsent = decideTenantRecipientConsent(numberTenants, tenantInfo.tenantId);
+    let targetOptedOut = false;
+    if (tenantInfo.tenantId && !numberTenants.some((t) => t.id === tenantInfo.tenantId)) {
+      // The client named a tenant whose stored phone is not this number. Their
+      // STOP still counts, as it always did.
+      const targetDoc = await admin.firestore()
         .collection('facilities')
         .doc(facilityId)
         .collection('tenants')
         .doc(tenantInfo.tenantId)
         .get();
-      
-      const tenantData = tenantDoc.data() as Record<string, any> | undefined;
-      if (tenantData?.smsOptOut === true || tenantData?.smsConsentStatus === 'opted_out') {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
-        );
-      }
-      // Consent is recorded two ways: the public move-in form and the inbound
-      // START handler write smsConsentStatus 'opted_in', while the operator
-      // screens (tenant create/edit, contact quick-edit) record the same
-      // consent as an smsOptInDate with smsOptOut false. Both are the tenant
-      // ticking the consent box; honour both, or every tenant a facility
-      // signed up in the office is untextable.
-      const consentRecorded =
-        tenantData?.smsConsentStatus === 'opted_in' ||
-        (tenantData?.smsConsentStatus !== 'opted_out' &&
-          tenantData?.smsOptOut !== true &&
-          Boolean(tenantData?.smsOptInDate));
-      if (textingOnboardingEnabled && !consentRecorded && !forceSend) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'Tenant SMS consent is required before sending messages.',
-        );
-      }
+      targetOptedOut = targetDoc.exists && tenantOptedOut({ id: targetDoc.id, ...targetDoc.data() });
+    }
+    if (targetOptedOut || tenantConsent.refusal === 'opted_out') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Tenant has opted out of SMS messages. Cannot send SMS to this number.',
+      );
+    }
+    if (tenantConsent.refusal === 'no_consent') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Tenant SMS consent is required before sending messages.',
+      );
+    }
 
-      // Check facility block list
-      const smsSettings = facilityData?.smsSettings as Record<string, any> | undefined;
-      const blockList = smsSettings?.blockList as string[] | undefined;
-      if (blockList && blockList.includes(phoneNumber)) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          'This phone number is on the facility SMS block list. Cannot send SMS.',
-        );
-      }
+    // Facility block list (STOP adds to it when enhancedOptOut is on).
+    const smsSettings = facilityData?.smsSettings as Record<string, any> | undefined;
+    const blockList = smsSettings?.blockList as string[] | undefined;
+    if (Array.isArray(blockList) && blockList.includes(phoneNumber)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'This phone number is on the facility SMS block list. Cannot send SMS.',
+      );
     }
 
     // Check quiet hours (if enabled)

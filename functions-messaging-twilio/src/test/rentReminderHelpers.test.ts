@@ -5,13 +5,18 @@ import {
   buildRentReminderMessage,
   CalendarDate,
   calendarDateIn,
+  claimActionFor,
+  clampReminderDays,
   creditCoversRent,
   daysBetween,
   decideRentReminder,
   dueDateKey,
   hasSmsConsent,
   localDateTimeIn,
+  MAX_REMINDER_DAYS,
+  MIN_REMINDER_DAYS,
   RentReminderTenant,
+  runSendAttempt,
   selectReminderFromNumber,
   upcomingDueDate,
 } from '../rentReminderHelpers';
@@ -316,4 +321,102 @@ test('reminders use the facility number only with the same approvals sendSMS req
   assert.equal(pick({ ...approved, a2pStatus: 'draft' }), platformNumber);
   assert.equal(pick(approved, true, null), platformNumber);
   assert.equal(pick(approved, true, '  '), platformNumber);
+});
+
+test('a tenant in arrears is told the rent and the current balance', () => {
+  const body = buildRentReminderMessage({
+    facilityName: 'Caprock Storage',
+    tenantName: 'Doug Devoy',
+    amount: 130,
+    balance: 130,
+    dueDate: { year: 2026, month: 10, day: 1 },
+    unitNumber: '2',
+  });
+  assert.equal(
+    body,
+    'Caprock Storage: Hi Doug, a reminder that rent for unit 2 of $130.00 is due Oct 1. Balance now: $130.00.',
+  );
+  const footer = '\n\nReply STOP to opt out. Reply HELP for help.';
+  assert.ok((body + footer).length <= 306, 'two segments at most');
+});
+
+test('no balance line when nothing is owed', () => {
+  for (const balance of [0, -50, null, undefined, Number.NaN, 0.001]) {
+    const body = buildRentReminderMessage({
+      facilityName: 'Caprock Storage',
+      tenantName: 'Doug',
+      amount: 130,
+      balance,
+      dueDate: { year: 2026, month: 10, day: 1 },
+      unitNumber: '2',
+    });
+    assert.ok(!body.includes('Balance'), String(balance));
+  }
+});
+
+test('the longest plausible reminder stays within two segments', () => {
+  const body = buildRentReminderMessage({
+    facilityName: 'A Very Long Facility Name Self Storage And RV',
+    tenantName: 'Bartholomew Longname',
+    amount: 1234.56,
+    balance: 98765.43,
+    dueDate: { year: 2026, month: 12, day: 1 },
+    unitNumber: 'B-1024 (Complex 12)',
+  });
+  assert.ok((body + '\n\nReply STOP to opt out. Reply HELP for help.').length <= 306);
+});
+
+test('the lead time is clamped to 1..27 so every month is reachable', () => {
+  assert.equal(clampReminderDays(3), 3);
+  assert.equal(clampReminderDays(27), 27);
+  assert.equal(clampReminderDays(28), 27);
+  assert.equal(clampReminderDays(30), 27);
+  assert.equal(clampReminderDays(0), 1);
+  assert.equal(clampReminderDays(-4), 1);
+  assert.equal(clampReminderDays('5'), 5);
+  assert.equal(clampReminderDays(undefined), 3);
+  assert.equal(clampReminderDays('x'), 3);
+  assert.equal(
+    readReminderSettings({ billingSettings: { paymentReminderChannel: 'sms', paymentReminderDays: 30 } }).reminderDays,
+    27,
+  );
+});
+
+test('27 days ahead reaches the 1st after even the shortest month', () => {
+  // 1 Mar 2027 is 28 days after 1 Feb; 27 days before it is 2 Feb.
+  const decision = decide(tenant({ paidThrough: null }), { year: 2027, month: 2, day: 2 }, 27);
+  assert.equal(decision.send, true);
+  assert.equal(decision.dueKey, '2027-03-01');
+  // Every lead time from 1 to 27 lands on exactly one day of February.
+  for (let days = MIN_REMINDER_DAYS; days <= MAX_REMINDER_DAYS; days++) {
+    let hits = 0;
+    for (let d = 1; d <= 28; d++) {
+      if (decide(tenant({ paidThrough: null }), { year: 2027, month: 2, day: d }, days).send) hits += 1;
+    }
+    assert.equal(hits, 1, `days=${days}`);
+  }
+});
+
+test('the claim is released unless the text may have gone out', () => {
+  assert.equal(claimActionFor('sent'), 'mark-sent');
+  assert.equal(claimActionFor('blocked'), 'release');
+  assert.equal(claimActionFor('failed'), 'release');
+  assert.equal(claimActionFor('error-before-request'), 'release');
+  assert.equal(claimActionFor('error-after-request'), 'keep');
+});
+
+test('a send attempt reports whether it reached the provider before failing', async () => {
+  assert.deepEqual(await runSendAttempt(async () => 'sent' as const), { outcome: 'sent' });
+  const quota = await runSendAttempt(async () => {
+    // reservePlatformOutgoing refusing, before any request is made.
+    throw new Error('resource-exhausted');
+  });
+  assert.equal(quota.outcome, 'error-before-request');
+  assert.equal(claimActionFor(quota.outcome), 'release');
+  const network = await runSendAttempt(async (markRequestStarted) => {
+    markRequestStarted();
+    throw new Error('socket hang up');
+  });
+  assert.equal(network.outcome, 'error-after-request');
+  assert.equal(claimActionFor(network.outcome), 'keep');
 });

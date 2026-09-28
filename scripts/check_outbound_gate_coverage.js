@@ -16,13 +16,29 @@
 const fs = require('fs');
 const path = require('path');
 
-const repoRoot = path.resolve(__dirname, '..');
+// OUTBOUND_GATE_ROOT points the check at another tree, e.g. a fixture of a
+// deliberately ungated send, to prove the check still catches it.
+const repoRoot = process.env.OUTBOUND_GATE_ROOT
+  ? path.resolve(process.env.OUTBOUND_GATE_ROOT)
+  : path.resolve(__dirname, '..');
+
+// Stands in for a string literal that names Twilio's Messages REST endpoint.
+//
+// Three send paths (sendSMS, the rent reminder job, the inbound keyword
+// replies) POST to .../Messages.json with fetch() rather than the Twilio SDK.
+// The URL lives in a string, and strings are blanked before matching (see
+// stripCommentsAndStrings), so none of them registered as a send path: a new
+// fetch-based send with no gate would have passed. The stripper now leaves
+// this marker in place of any string that mentions the endpoint.
+const TWILIO_REST_SENTINEL = '__TWILIO_MESSAGES_REST__';
+const TWILIO_REST_URL = /Messages\.json/;
 
 // Direct provider handoffs. A file matching any of these is a send path.
 const SEND_PATTERNS = [
   /getSgMail\(\)[\s\S]{0,120}?\.send\(/,
   /sgMail\s*\.\s*send\(/,
   /\.messages\s*\.\s*create\(/,
+  new RegExp(TWILIO_REST_SENTINEL),
 ];
 
 // A client bound once and used further down. orphanedSubscriptionSweep.ts does
@@ -81,7 +97,17 @@ const GATE_PATTERNS = GATE_NAMES.map(
 
 // Send paths that legitimately skip the customer gate. Each needs a reason,
 // and the reason has to survive someone reading it a year from now.
+//
+// A key is a file, which exempts every send in it, or `file::exportName`,
+// which exempts only that exported symbol's region and still checks the rest
+// of the file. Prefer the narrow form.
 const ALLOWLIST = new Map([
+  [
+    'functions-messaging-twilio/src/incomingSmsWebhook.ts::handleIncomingSMS',
+    'Replies to the STOP, START and HELP keywords, sent only to the number that ' +
+      'just texted us. Carriers require these answers whatever our launch state, ' +
+      'and withholding a STOP confirmation is the non-compliant outcome.',
+  ],
   [
     'functions-account-security/src/otp.ts',
     'Login verification code. Gating it locks people out of their own accounts, ' +
@@ -186,6 +212,7 @@ function stripCommentsAndStrings(source) {
 
     if (char === "'" || char === '"' || char === BACKTICK) {
       const quote = char;
+      const start = i;
       i++;
       while (i < source.length) {
         if (source[i] === BACKSLASH) {
@@ -198,7 +225,9 @@ function stripCommentsAndStrings(source) {
         }
         i++;
       }
+      const literal = source.slice(start, i);
       out += quote + quote;
+      if (TWILIO_REST_URL.test(literal)) out += ' ' + TWILIO_REST_SENTINEL + ' ';
       lastSignificant = quote;
       continue;
     }
@@ -301,6 +330,11 @@ for (const src of packages) {
     for (const region of regionsOf(text)) {
       const body = text.slice(region.start, region.end);
       if (!sendsIn(body, clientNames)) continue;
+      const regionKey = rel + '::' + region.name;
+      if (ALLOWLIST.has(regionKey)) {
+        staleAllowlist.delete(regionKey);
+        continue;
+      }
       if (GATE_PATTERNS.some((re) => re.test(body))) continue;
       ungated.push(rel + '  (' + region.name + ')');
     }
