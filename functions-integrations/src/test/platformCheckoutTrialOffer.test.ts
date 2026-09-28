@@ -276,6 +276,29 @@ test('facility: subscribe, cancel, resubscribe -> no trial and no coupon the sec
   assert.deepEqual(offerOf(second), { trial_end: undefined, trial_period_days: undefined, coupon: [] });
 });
 
+test('facility: second facility during a running app trial -> same trial_end, no second coupon', async () => {
+  const end = NOW + 20 * DAY;
+  const w = world(runningAppTrial(end), { fac_fake_1: {}, fac_fake_2: {} });
+
+  // Facility 1: aligned trial + coupon, then the webhook mirrors the subscription.
+  const first = await facilityCheckout(w, 'fac_fake_1');
+  assert.deepEqual(offerOf(first), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: COUPON });
+  w.subscriptions.set('sub_fake_fac1', {
+    id: 'sub_fake_fac1',
+    status: 'trialing',
+    trial_end: Math.floor(end / 1000),
+    cancel_at_period_end: false,
+    metadata: { ...(first.subscription_data?.metadata as Record<string, string>) },
+    discounts: ['di_fake_1'],
+  });
+  await updateFacilityFromPlatformSubscription('fac_fake_1', 'sub_fake_fac1', { db: w.deps.db, stripe: w.stripe });
+  assert.equal(w.db.read('facilities/fac_fake_1')!.platformSubscriptionStatus, 'trialing');
+
+  // Facility 2, still inside the app trial: not charged now, trial ends with the app trial.
+  const second = await facilityCheckout(w, 'fac_fake_2');
+  assert.deepEqual(offerOf(second), { trial_end: Math.floor(end / 1000), trial_period_days: undefined, coupon: [] });
+});
+
 // --- Webhook writers ---------------------------------------------------------------------
 
 test('webhook: a subscription with no trial never nulls an existing subscriptionTrialEnd', async () => {

@@ -7,6 +7,7 @@ import 'package:sfcapp/models/sms_usage_model.dart';
 import 'package:sfcapp/models/user_model.dart';
 import 'package:sfcapp/services/email_usage_service.dart';
 import 'package:sfcapp/services/facility_stats_service.dart';
+import 'package:sfcapp/services/platform_trial_markers.dart';
 import 'package:sfcapp/services/sms_usage_service.dart';
 
 // ---------------------------------------------------------------------------
@@ -1380,12 +1381,15 @@ class SuperAdminDataService {
   }
 
   /// Revoke an active trial — sets status back to cancelled and clears trial end.
+  /// Records `platformTrialUsedAt` (if missing) so the revoked trial still counts.
   static Future<void> revokeTrial(String accountId) async {
-    await _db.collection('facilityCreatorAccounts').doc(accountId).update({
-      'subscriptionStatus': 'cancelled',
-      'subscriptionTrialEnd': null,
-      'subscriptionCurrentPeriodEnd': null,
-      'updatedAt': FieldValue.serverTimestamp(),
+    final ref = _db.collection('facilityCreatorAccounts').doc(accountId);
+    await _db.runTransaction((transaction) async {
+      final snap = await transaction.get(ref);
+      transaction.update(
+        ref,
+        revokeTrialFields(snap.data(), stamp: FieldValue.serverTimestamp()),
+      );
     });
   }
 

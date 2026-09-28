@@ -188,6 +188,19 @@ test('pastDue account with an old trial end: no fresh trial, no coupon', () => {
   assert.equal(offer.attachFirstMonthFree, false);
 });
 
+test('running app trial wins over subscription history: aligned trial, but no second coupon', () => {
+  const end = NOW + 15 * DAY;
+  const offer = decidePlatformCheckoutOffer(
+    input(
+      { ...runningAppTrial(end), platformFirstMonthFreeUsedAt: ts(NOW - DAY) },
+      [{ stripePlatformSubscriptionId: 'sub_fake_fac1', platformSubscriptionStatus: 'trialing', platformSubscriptionTrialEnd: ts(end) }],
+    ),
+  );
+  assert.equal(offer.history.hadPlatformSubscription, true);
+  assert.deepEqual(platformCheckoutTrialSubscriptionData(offer.trial), { trial_end: Math.floor(end / 1000) });
+  assert.equal(offer.attachFirstMonthFree, false);
+});
+
 test('coupon marker alone blocks the coupon but not a first trial', () => {
   const offer = decidePlatformCheckoutOffer(input({ platformFirstMonthFreeUsedAt: ts(NOW - DAY) }));
   assert.equal(offer.trial.kind, 'default_trial');

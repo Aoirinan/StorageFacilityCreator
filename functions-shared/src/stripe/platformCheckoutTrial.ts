@@ -193,8 +193,28 @@ export type PlatformCheckoutOfferInput = PlatformOfferHistoryInput & {
 /**
  * The only trial after the first one has started is the rest of a running app trial:
  * the Stripe trial then ends exactly when the app trial does, so no time is added.
+ *
+ * A running app trial is checked first, before any subscription history: an owner
+ * mid-trial who subscribes facility 1 and then facility 2 must get the same trial end
+ * on facility 2 rather than being charged at once. Aligning adds no free time.
  */
 function decideTrial(input: PlatformCheckoutOfferInput, history: PlatformOfferHistory): PlatformCheckoutTrialDecision {
+  const status = str(input.account.subscriptionStatus);
+  const appTrialEndMs = trialEndToMillis(input.account.subscriptionTrialEnd);
+  const remainingMs = appTrialEndMs === null ? -1 : appTrialEndMs - input.nowMs;
+  const appTrialRunning = status === 'trialing' && appTrialEndMs !== null && remainingMs > 0;
+
+  if (appTrialRunning && remainingMs >= STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS + TRIAL_END_SAFETY_MARGIN_MS) {
+    return {
+      kind: 'align_to_app_trial',
+      trialEndSeconds: Math.floor(appTrialEndMs! / 1000),
+      reason: 'app trial still running; Stripe trial ends when it does',
+    };
+  }
+  if (appTrialRunning) {
+    // Stripe cannot hold a trial this short. The owner loses under two days of trial.
+    return { kind: 'no_trial', reason: 'app trial ends in under 48 hours' };
+  }
   if (history.hadPlatformSubscription) {
     return { kind: 'no_trial', reason: 'owner already had a platform subscription' };
   }
@@ -205,22 +225,7 @@ function decideTrial(input: PlatformCheckoutOfferInput, history: PlatformOfferHi
       reason: 'no trial record at all',
     };
   }
-
-  const status = str(input.account.subscriptionStatus);
-  const appTrialEndMs = trialEndToMillis(input.account.subscriptionTrialEnd);
-  const remainingMs = appTrialEndMs === null ? -1 : appTrialEndMs - input.nowMs;
-  if (status !== 'trialing' || appTrialEndMs === null || remainingMs <= 0) {
-    return { kind: 'no_trial', reason: 'trial already used and ended' };
-  }
-  if (remainingMs < STRIPE_CHECKOUT_MIN_TRIAL_END_LEAD_MS + TRIAL_END_SAFETY_MARGIN_MS) {
-    // Stripe cannot hold a trial this short. The owner loses under two days of trial.
-    return { kind: 'no_trial', reason: 'app trial ends in under 48 hours' };
-  }
-  return {
-    kind: 'align_to_app_trial',
-    trialEndSeconds: Math.floor(appTrialEndMs / 1000),
-    reason: 'app trial still running; Stripe trial ends when it does',
-  };
+  return { kind: 'no_trial', reason: 'trial already used and ended' };
 }
 
 export function decidePlatformCheckoutOffer(input: PlatformCheckoutOfferInput): PlatformCheckoutOffer {
