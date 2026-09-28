@@ -25,6 +25,7 @@ import '../providers/payment_provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
 import 'package:sfcapp/providers/unit_label_provider.dart';
+import 'package:sfcapp/utils/paid_through.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
@@ -1388,6 +1389,8 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+              _buildContactLogSection(context, tenant),
+              const SizedBox(height: 16),
               _buildContractsSection(context, tenant),
               const SizedBox(height: 16),
               _buildInsuranceSection(context, tenant),
@@ -1591,8 +1594,15 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   }
 
   Future<void> _showEditPaidThroughDialog(TenantModel tenant) async {
-    DateTime tempDate = tenant.paidThrough ?? DateTime.now();
-    
+    // The month and year picked. What is saved is the last day of that
+    // month (paidThroughMonthEnd): "paid through July" is paid to July 31,
+    // as a payment records it. The 1st used to be saved, a month short.
+    final start = tenant.paidThrough ?? DateTime.now();
+    var year = start.year;
+    var month = start.month;
+    final thisYear = DateTime.now().year;
+    final years = {for (var i = 0; i < 5; i++) thisYear - 1 + i, year}.toList()..sort();
+
     final result = await showDialog<DateTime?>(
       context: context,
       builder: (dialogContext) {
@@ -1605,13 +1615,13 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Set the month through which rent is paid:'),
+                    const Text('Rent is paid up to and including the end of this month:'),
                     const SizedBox(height: 16),
                     Row(
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: tempDate.month,
+                            value: month,
                             decoration: const InputDecoration(
                               labelText: 'Month',
                               border: OutlineInputBorder(),
@@ -1623,9 +1633,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                setDialogState(() {
-                                  tempDate = DateTime(tempDate.year, value, 1);
-                                });
+                                setDialogState(() => month = value);
                               }
                             },
                           ),
@@ -1633,24 +1641,28 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: tempDate.year,
+                            value: year,
                             decoration: const InputDecoration(
                               labelText: 'Year',
                               border: OutlineInputBorder(),
                             ),
-                            items: List.generate(5, (i) => DateTime.now().year - 1 + i)
-                                .map((year) => DropdownMenuItem(value: year, child: Text('$year')))
+                            items: years
+                                .map((y) => DropdownMenuItem(value: y, child: Text('$y')))
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                setDialogState(() {
-                                  tempDate = DateTime(value, tempDate.month, 1);
-                                });
+                                setDialogState(() => year = value);
                               }
                             },
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      paidThroughEndLabel(year, month),
+                      key: const Key('paid-through-label'),
+                      style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),
@@ -1665,7 +1677,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                   child: const Text('Clear (Not Paid)'),
                 ),
                 ElevatedButton(
-                  onPressed: () => Navigator.pop(dialogContext, tempDate),
+                  onPressed: () => Navigator.pop(dialogContext, paidThroughMonthEnd(year, month)),
                   child: const Text('Save'),
                 ),
               ],
@@ -1691,7 +1703,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         // Refresh tenant list
         ref.invalidate(facilityTenantsProvider(tenant.facilityId));
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(dateToSet == null ? 'Paid Through cleared' : 'Paid Through updated'), backgroundColor: AppTheme.success),
+          SnackBar(content: Text(dateToSet == null ? 'Paid Through cleared' : 'Saved: ${paidThroughEndLabel(dateToSet.year, dateToSet.month)}'), backgroundColor: AppTheme.success),
         );
       }
     } catch (e) {
@@ -2588,6 +2600,35 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
         ),
       );
     }
+  }
+
+  /// Calls, texts, emails, letters and notes recorded for this tenant. The
+  /// contact log screen was only reachable by typing its URL.
+  Widget _buildContactLogSection(BuildContext context, TenantModel tenant) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildSectionHeader(context, Icons.forum_outlined, 'Contact log'),
+            const SizedBox(height: 8),
+            const Text(
+              'Record calls, texts, emails, in-person visits and letters, '
+              'such as a final notice you mailed, with the date they happened.',
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('tenant-contact-log'),
+              icon: const Icon(Icons.history),
+              label: const Text('Open contact log'),
+              onPressed: () => context.push(AppRoute.contactLogsFor(
+                  tenantId: tenant.id, facilityId: tenant.facilityId)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSectionHeader(BuildContext context, IconData icon, String title, {VoidCallback? onEdit}) {

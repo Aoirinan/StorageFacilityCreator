@@ -133,6 +133,27 @@ void main() {
       expect(rules.lateFeeType, isNull);
       expect(rules.lateFeeAmount, isNull);
       expect(rules.maxLateFee, isNull);
+      expect(rules.autoLateFees, isFalse);
+    });
+
+    test('automatic late fees are off unless switched on', () {
+      // Matches autoLateFeesEnabled in functions-automation: a facility with
+      // a fee amount but no enableAutoLateFees field is not charged.
+      expect(
+          LateFeeRules.fromBillingSettings(
+              {'lateFeeAmount': 10, 'gracePeriodDays': 10}).autoLateFees,
+          isFalse);
+      expect(
+          LateFeeRules.fromBillingSettings({'enableAutoLateFees': false})
+              .autoLateFees,
+          isFalse);
+      expect(
+          LateFeeRules.fromBillingSettings({'enableAutoLateFees': true})
+              .autoLateFees,
+          isTrue);
+      expect(LateFeeRules.autoLateFeesEnabled(null), isFalse);
+      expect(LateFeeRules.autoLateFeesEnabled({'enableAutoLateFees': 'true'}),
+          isFalse);
     });
 
     test('coerces the shapes Firestore actually returns', () {

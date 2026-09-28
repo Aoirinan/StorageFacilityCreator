@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../router/app_route.dart';
 import '../services/facility_service.dart';
+import 'package:sfcapp/services/late_logic_service.dart';
 import 'package:sfcapp/models/document_logo_layout.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
@@ -57,6 +58,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
 
   String? _selectedTimeZone;
   String _lateFeeType = 'flat';
+
+  /// billingSettings.enableAutoLateFees. Off when the field is missing, as
+  /// the delinquency job reads it: the fee above is only charged
+  /// automatically once this is on.
+  late bool _autoLateFees;
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -111,6 +117,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
 
     // Initialize billing settings
     final billingSettings = widget.facility.billingSettings;
+    _autoLateFees = LateFeeRules.autoLateFeesEnabled(billingSettings);
     if (billingSettings != null) {
       _gracePeriodController = TextEditingController(
         text: (billingSettings['gracePeriodDays'] ?? 5).toString(),
@@ -451,6 +458,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
           'gracePeriodDays': gracePeriod,
           'lateFeeType': _lateFeeType,
           'lateFeeAmount': lateFeeAmount,
+          'enableAutoLateFees': _autoLateFees,
         };
       } catch (e) {
         if (kDebugMode) {
@@ -845,6 +853,23 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                       }
                       return null;
                     },
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    key: const Key('facility-auto-late-fees'),
+                    contentPadding: EdgeInsets.zero,
+                    value: _autoLateFees,
+                    onChanged: (value) =>
+                        setState(() => _autoLateFees = value),
+                    title: const Text('Charge late fees automatically'),
+                    subtitle: Text(_autoLateFees
+                        ? 'Each night, tenants who owe a balance and are past '
+                            'the grace period get this late fee on their '
+                            'ledger, once a month. Only tenants with a '
+                            '"paid through" date set are charged.'
+                        : 'Off: no late fee is added to any tenant\'s ledger '
+                            'automatically. When on, fees only apply to '
+                            'tenants with a "paid through" date set.'),
                   ),
                   const SizedBox(height: 24),
 
