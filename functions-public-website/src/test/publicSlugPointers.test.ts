@@ -19,6 +19,9 @@ function seed(): InMemoryFirestore {
   // billingExempt: served without the add-on (hasActiveWebsiteSubscription).
   inMemory.seed(`facilities/${FACILITY}`, { name: 'Keepsake', billingExempt: true });
   inMemory.seed(`facilities/${FACILITY}/mapEngine/meta`, { publicSlug: LIVE });
+  // Online rentals on, so the page renders its rent links (the rent links and
+  // rentUrl are only offered while the hold would take a rental, 0216e7e).
+  inMemory.seed(`facilities/${FACILITY}/settings/public`, { enabled: true, publicRentalsEnabled: true });
   inMemory.seed(`publicFacilityMaps/${LIVE}`, {
     facilityId: FACILITY,
     facilitySlug: LIVE,
