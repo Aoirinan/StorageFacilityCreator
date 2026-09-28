@@ -73,8 +73,12 @@ final _tenants = [
   FakeDoc('al', {'name': 'Al', 'isActive': true, 'unitNumber': '101'}),
 ];
 
-/// What the last good publish listed.
+/// What the last good publish listed. A published map names its facility
+/// (the snapshot writes facilityId), and the refresh leaves a doc that names
+/// another facility, or none, alone (fix/public-slug-pointers), so without it
+/// both refresh tests below passed without reading a tenant.
 const Map<String, dynamic> _published = {
+  'facilityId': 'fac1',
   'units': [
     {'unitId': 'u101', 'isRentable': false, 'status': 'rented'},
     {'unitId': 'u102', 'isRentable': true, 'status': 'available'},
