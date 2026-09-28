@@ -76,6 +76,8 @@ type FakeSession = {
   amount_total: number;
   expires_at: number;
   metadata: Record<string, string>;
+  /** The PaymentIntent it was paid with, once paid. */
+  payment_intent?: string;
 };
 
 type CheckoutResult = { checkoutUrl: string; sessionId: string };
@@ -252,6 +254,55 @@ test('a paid session is not reused, and no second one is made to pay again', asy
   assert.deepEqual(calls, ['create', `retrieve ${first.sessionId}`]);
   assert.equal(sessions.size, 1);
   assert.equal(recordedSession(inMemory), first.sessionId);
+});
+
+test('a paid session whose payment moved the renter in is still not followed by another', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory);
+  const { checkout, sessions, calls } = loadPublicMoveIn(inMemory);
+  const first = await checkout();
+  Object.assign(sessions.get(first.sessionId)!, { status: 'complete', payment_status: 'paid', payment_intent: 'pi_used' });
+  // Its one-use record, as a completed move-in writes it: no refund on it.
+  inMemory.seed('publicMoveInPayments/pi_used', {
+    paymentIntentId: 'pi_used',
+    facilityId: FACILITY,
+    reservationId: RESERVATION,
+    tenantId: 'tenant-1',
+    contractId: 'contract-1',
+  });
+
+  await assert.rejects(checkout, refusedWith('failed-precondition', CHECKOUT_ALREADY_PAID_MESSAGE));
+
+  assert.deepEqual(calls, ['create', `retrieve ${first.sessionId}`]);
+  assert.equal(sessions.size, 1);
+  assert.equal(recordedSession(inMemory), first.sessionId);
+});
+
+test('a paid session whose payment completion refunded is followed by a new one, in any refund state', async () => {
+  for (const status of ['pending', 'refunded', 'failed']) {
+    const inMemory = new InMemoryFirestore();
+    seed(inMemory);
+    const { checkout, sessions, calls } = loadPublicMoveIn(inMemory);
+    const first = await checkout();
+    Object.assign(sessions.get(first.sessionId)!, { status: 'complete', payment_status: 'paid', payment_intent: 'pi_refunded' });
+    // As completion writes it on refusing the payment for changed charges,
+    // which leaves the reservation open to pay the new amount.
+    inMemory.seed('publicMoveInPayments/pi_refunded', {
+      paymentIntentId: 'pi_refunded',
+      facilityId: FACILITY,
+      reservationId: RESERVATION,
+      tenantId: null,
+      contractId: null,
+      refund: { status, refusal: 'charges-changed', unitId: UNIT, unitNumber: 'R1', renterName: 'Rita Renter' },
+    });
+
+    const second = await checkout();
+
+    assert.notEqual(second.sessionId, first.sessionId, status);
+    assert.deepEqual(calls, ['create', `retrieve ${first.sessionId}`, 'create'], status);
+    assert.deepEqual(openSessions(sessions), [second.sessionId], status);
+    assert.equal(recordedSession(inMemory), second.sessionId, status);
+  }
 });
 
 test('an expired session is not reused: a new one is made and recorded', async () => {

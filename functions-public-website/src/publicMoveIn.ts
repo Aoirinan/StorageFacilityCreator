@@ -61,7 +61,9 @@ import {
 import type { MoveInReviewReason, MoveInUnitChanges } from './onlineMoveInReview';
 import {
   PAYMENT_ALREADY_USED_MESSAGE,
+  PAYMENT_REFUNDED_MESSAGE,
   PUBLIC_MOVE_IN_PAYMENTS_COLLECTION,
+  isRefundedMoveInPayment,
   refusePaidMoveIn,
   resumePaidMoveInRefund,
 } from './paidMoveInRefund';
@@ -1104,6 +1106,14 @@ export const confirmPublicMoveInCheckout = functions
     : paymentIntentRaw?.id;
   if (!paymentIntentId) {
     throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+  // Refused at completion and refunded (changed charges leave the
+  // reservation open to pay again): it can never move anyone in. Handed
+  // back, the page offered it as the payment to finish with, completion
+  // refused it again, and each look held the unit an hour for it.
+  if (await isRefundedMoveInPayment(paymentIntentId)) {
+    if (!sessionId) return notPaid;
+    throw new functions.https.HttpsError('failed-precondition', PAYMENT_REFUNDED_MESSAGE);
   }
   if (!sessionId) {
     functions.logger.info('confirmPublicMoveInCheckout: found a paid session no redirect confirmed', {

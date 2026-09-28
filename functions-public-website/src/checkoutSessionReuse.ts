@@ -13,14 +13,17 @@
  * call hands back that session while Stripe still offers it for the amount
  * due. A recorded session that is open but for another amount, about to
  * close, or on the facility's previous Stripe account, is expired before a
- * new one is made. A paid one is never followed by another. And when checkout
- * refuses because the move-in cannot go ahead, the recorded session is
- * expired too: paid, it would take money for a move-in that is then refused.
+ * new one is made. A paid one is never followed by another, unless completion
+ * refused its payment and refunded it (isRefundedMoveInPayment). And when
+ * checkout refuses because the move-in cannot go ahead, the recorded session
+ * is expired too: paid, it would take money for a move-in that is then
+ * refused.
  */
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions/v1';
 import type Stripe from 'stripe';
 import { getStripeClient } from '@sfc/functions-shared';
+import { isRefundedMoveInPayment } from './paidMoveInRefund';
 
 /** On the reservation: the Checkout Session its checkout made last. */
 export const CHECKOUT_SESSION_ID_FIELD = 'checkoutSessionId';
@@ -83,6 +86,12 @@ function textOf(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** The PaymentIntent [session] was paid with, expanded or not; '' for none. */
+export function paymentIntentIdOf(session: Pick<Stripe.Checkout.Session, 'payment_intent'>): string {
+  const raw = session.payment_intent;
+  return typeof raw === 'string' ? raw.trim() : textOf(raw?.id);
+}
+
 /** The session recorded on [reservation], if any. */
 export function recordedCheckoutSession(reservation: Record<string, unknown> | undefined): RecordedSession | null {
   const id = textOf(reservation?.[CHECKOUT_SESSION_ID_FIELD]);
@@ -124,6 +133,12 @@ export async function reusableCheckoutSession(
   // not this reservation's to reuse or expire.
   if (session.metadata?.reservationId !== lookup.reservationId) return null;
   if (session.status === 'complete' || session.payment_status === 'paid') {
+    // Unless completion refused that payment and refunded it: the charges
+    // changed while the renter paid, which leaves the reservation open to
+    // pay the new amount. Refused as already paid, the renter was refunded
+    // and told to pay again, with no way to.
+    const paidWith = paymentIntentIdOf(session);
+    if (paidWith && await isRefundedMoveInPayment(paidWith)) return null;
     throw new functions.https.HttpsError('failed-precondition', CHECKOUT_ALREADY_PAID_MESSAGE);
   }
   if (session.status !== 'open') return null;

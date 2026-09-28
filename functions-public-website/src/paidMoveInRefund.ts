@@ -15,6 +15,10 @@ export const PUBLIC_MOVE_IN_PAYMENTS_COLLECTION = 'publicMoveInPayments';
 export const PAYMENT_ALREADY_USED_MESSAGE =
   'This payment has already been used to complete a move-in. Contact the facility.';
 
+/** For a paid Checkout Session whose payment completion refused and refunded. */
+export const PAYMENT_REFUNDED_MESSAGE =
+  'This payment was refunded, as the move-in could not be completed with it. To move in, pay the amount now due.';
+
 /**
  * Why a renter who has paid is not moved in. Each is a state no move-in can
  * safely overwrite: someone else has the unit, it is gone, the owner will not
@@ -102,6 +106,17 @@ function dollars(cents: number): string {
 
 function paymentUseRef(paymentIntentId: string): admin.firestore.DocumentReference {
   return admin.firestore().collection(PUBLIC_MOVE_IN_PAYMENTS_COLLECTION).doc(paymentIntentId);
+}
+
+/**
+ * Whether completion refused [paymentIntentId] and refunded it: its one-use
+ * record holds a refund, in whatever state. Such a payment can never
+ * complete a move-in. A refusal for changed charges leaves the reservation
+ * open to pay the new amount, and its Checkout Session still shows paid.
+ */
+export async function isRefundedMoveInPayment(paymentIntentId: string): Promise<boolean> {
+  const snap = await paymentUseRef(paymentIntentId).get();
+  return Boolean(snap.exists && (snap.data() || {}).refund);
 }
 
 function alertRef(facilityId: string, alertId: string): admin.firestore.DocumentReference {
