@@ -1,0 +1,135 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import * as functions from 'firebase-functions/v1';
+import * as admin from 'firebase-admin';
+
+import { recordTenantPastHistory, undoTenantPastHistory } from '../../tenantPastHistoryCallable';
+import { clearEmulator, emulatorDb, skipWithoutEmulator } from './firestoreEmulator';
+
+/**
+ * The deployed callables against real Firestore (the emulator): the wrapper
+ * (sign-in, App Check, who may call, error mapping), the transaction that
+ * reads the tenant's ledger and writes the lot, and undo. The unit tests
+ * (tenantPastHistory.test.ts) cover the same rules through the plan alone.
+ * All names are made up.
+ */
+
+const FACILITY = 'fac-1';
+const OWNER = 'owner-1';
+const TENANT = 't1';
+
+type Callable = {
+  run: (data: unknown, context: functions.https.CallableContext) => Promise<Record<string, any>>;
+};
+const record = recordTenantPastHistory as unknown as Callable;
+const undo = undoTenantPastHistory as unknown as Callable;
+
+function context(uid: string | null, opts: { appCheck?: boolean } = {}) {
+  return {
+    ...(uid ? { auth: { uid, token: { email: `${uid}@example.com` } } } : {}),
+    ...(opts.appCheck === false ? {} : { app: { appId: 'test-app', token: {} } }),
+    rawRequest: {},
+  } as unknown as functions.https.CallableContext;
+}
+
+const fac = () => emulatorDb().collection('facilities').doc(FACILITY);
+
+async function seed(): Promise<void> {
+  await fac().set({ name: 'Demo Storage', ownerUid: OWNER, roles: { [OWNER]: 'owner', 'emp-1': 'employee' } });
+  await fac().collection('tenants').doc(TENANT).set({ name: 'Pat Example', unitNumber: 'A1', monthlyRate: 80, isActive: true });
+}
+
+function example(requestId = 'req-emulator-1') {
+  const charges = [];
+  for (let month = 2; month <= 9; month += 1) {
+    charges.push({ year: 2026, month, day: month === 2 ? 10 : 1, amount: 80 });
+  }
+  const venmo = (date: string, amount: number) => ({ date, amount, method: 'venmo' });
+  return {
+    facilityId: FACILITY,
+    tenantId: TENANT,
+    requestId,
+    charges,
+    payments: [
+      venmo('2026-02-10', 80),
+      venmo('2026-03-20', 80),
+      venmo('2026-04-19', 80),
+      venmo('2026-05-31', 80),
+      venmo('2026-06-01', 160),
+    ],
+  };
+}
+
+async function ledger() {
+  const snap = await fac().collection('ledgers').where('tenantId', '==', TENANT).get();
+  return snap.docs.map((d) => d.data());
+}
+
+async function balance() {
+  const rows = await ledger();
+  return Math.round(rows.filter((r) => r.status === 'posted').reduce((s, r) => s + r.amount, 0) * 100) / 100;
+}
+
+async function rejectsWith(promise: Promise<unknown>, code: string, message?: RegExp) {
+  await assert.rejects(promise, (err: unknown) => {
+    const e = err as functions.https.HttpsError;
+    assert.equal(e.code, code, `${e.code}: ${e.message}`);
+    if (message) assert.match(e.message, message);
+    return true;
+  });
+}
+
+test.beforeEach(async () => {
+  if (!skipWithoutEmulator) await clearEmulator();
+});
+
+test('wrapper: signed out, no App Check, employee, bad input', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await rejectsWith(record.run(example(), context(null)), 'unauthenticated');
+  await rejectsWith(record.run(example(), context(OWNER, { appCheck: false })), 'failed-precondition', /App Check/);
+  await rejectsWith(record.run(example(), context('emp-1')), 'permission-denied');
+  await rejectsWith(record.run({ ...example(), payments: [{ date: '2030-01-01', amount: 5, method: 'venmo' }] }, context(OWNER)), 'invalid-argument', /future/);
+  assert.deepEqual(await ledger(), []);
+});
+
+test('the owner example, a double press, and undo', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  const result = await record.run(example(), context(OWNER));
+  assert.equal(result.balance, 160);
+  assert.equal(result.paidThrough, '2026-07-31');
+  assert.equal(await balance(), 160);
+  const tenant = (await fac().collection('tenants').doc(TENANT).get()).data()!;
+  assert.equal((tenant.paidThrough as admin.firestore.Timestamp).toDate().toISOString(), '2026-07-31T12:00:00.000Z');
+  const payments = await fac().collection('payments').get();
+  assert.equal(payments.size, 5);
+
+  const again = await record.run(example(), context(OWNER));
+  assert.equal(again.alreadyApplied, true);
+  assert.equal((await ledger()).length, 13);
+
+  // A rent charge now exists for every month, so a fresh entry is refused.
+  await rejectsWith(record.run(example('req-emulator-2'), context(OWNER)), 'already-exists', /February 2026/);
+
+  const undone = await undo.run({ facilityId: FACILITY, tenantId: TENANT, requestId: 'req-emulator-1' }, context(OWNER));
+  assert.equal(undone.entriesVoided, 13);
+  assert.equal(undone.paidThroughRestored, true);
+  assert.equal(await balance(), 0);
+  const after = (await fac().collection('tenants').doc(TENANT).get()).data()!;
+  assert.equal(after.paidThrough, null);
+  const voided = await fac().collection('payments').where('status', '==', 'voided').get();
+  assert.equal(voided.size, 5);
+
+  // Undone months are free again.
+  const redo = await record.run(example('req-emulator-3'), context(OWNER));
+  assert.equal(redo.balance, 160);
+});
+
+test('undo: an employee is refused', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  await record.run(example(), context(OWNER));
+  await rejectsWith(
+    undo.run({ facilityId: FACILITY, tenantId: TENANT, requestId: 'req-emulator-1' }, context('emp-1')),
+    'permission-denied',
+  );
+  assert.equal(await balance(), 160);
+});

@@ -248,6 +248,8 @@ jobs:
           - functions-admin
           - functions-integrations
           - functions-tenant-lifecycle
+          # recordTenantPastHistory / undoTenantPastHistory transactions.
+          - functions-automation
           # 20 parallel bookings of the same nights: exactly one may win.
           - functions-stays
     defaults:
