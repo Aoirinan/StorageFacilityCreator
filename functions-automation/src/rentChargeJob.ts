@@ -8,14 +8,14 @@ import {
   jobRunDate,
 } from './facilityJobHelpers';
 import {
+  buildReducedRentChargeDescription,
   buildRentChargeDescription,
-  hasRentChargeForMonth,
   rentChargeDateFor,
-  rentChargeDuplicateWindow,
   rentChargeMonthAt,
   rentChargeMonthFromInput,
   shouldChargeTenant,
 } from './rentChargeHelpers';
+import { planTenantRentCharge } from './rentChargeReads';
 
 export const RENT_CHARGE_JOBS_COLLECTION = 'rentChargeJobs';
 
@@ -110,13 +110,20 @@ export const processFacilityRentChargeJob = functions
     }
   });
 
-async function generateFacilityRentCharges(
+/**
+ * This month's rent charges for one facility. Exported for the emulator tests;
+ * index.ts exports only the two triggers, so it is not deployed on its own.
+ */
+export async function generateFacilityRentCharges(
   facilityId: string,
   runDate: string | undefined,
 ): Promise<{
   successCount: number;
   skippedCount: number;
   errorCount: number;
+  coveredAtMoveInCount: number;
+  reducedCount: number;
+  flaggedCount: number;
 }> {
   // The month comes from the job's run date (UTC, written by the scheduler) so
   // a job processed late still bills the month it was enqueued for; the clock
@@ -126,13 +133,6 @@ async function generateFacilityRentCharges(
   // Dated at noon UTC on the 1st, not at the run instant (00:00 UTC), which
   // the app showed as the last day of the previous month in US time zones.
   const targetDate = rentChargeDateFor(targetYear, targetMonth);
-
-  // Half-open window for the duplicate check: the month plus a day either
-  // side, so an older charge dated 00:00 UTC or at a local midnight is found.
-  const { start: windowStart, end: windowEnd } = rentChargeDuplicateWindow(
-    targetYear,
-    targetMonth,
-  );
 
   const tenantsSnapshot = await admin
     .firestore()
@@ -145,6 +145,12 @@ async function generateFacilityRentCharges(
   let successCount = 0;
   let skippedCount = 0;
   let errorCount = 0;
+  // Of those skipped, the tenants whose move-in rent already charged the
+  // month; of those charged, the ones charged less for it; and tenants left
+  // uncharged for the owner to check (see planMonthlyRentCharge).
+  let coveredAtMoveInCount = 0;
+  let reducedCount = 0;
+  let flaggedCount = 0;
 
   for (const tenantDoc of tenantsSnapshot.docs) {
     const tenantData = tenantDoc.data();
@@ -156,35 +162,71 @@ async function generateFacilityRentCharges(
     }
 
     try {
-      const ledgerSnapshot = await admin
-        .firestore()
-        .collection('facilities')
-        .doc(facilityId)
-        .collection('ledgers')
-        .where('tenantId', '==', tenantId)
-        .where('type', '==', 'rentCharge')
-        .where('status', '==', 'posted')
-        // Bounded to the target month (plus a day either side, see
-        // rentChargeDuplicateWindow). The duplicate check only cares whether
-        // *this* month's charge exists, so reading a tenant's entire rent
-        // history is wasted work that grows every month they stay — by year
-        // five that is ~60 documents per tenant, every tenant, every run.
-        .where('entryDate', '>=', admin.firestore.Timestamp.fromDate(windowStart))
-        .where('entryDate', '<', admin.firestore.Timestamp.fromDate(windowEnd))
-        .get();
-
-      if (
-        hasRentChargeForMonth(
-          ledgerSnapshot.docs.map((doc) => doc.data()),
-          targetMonth,
-          targetYear,
-        )
-      ) {
+      const monthlyRate = tenantData.monthlyRate as number;
+      const decision = await planTenantRentCharge({
+        facilityId,
+        tenantId,
+        monthlyRate,
+        year: targetYear,
+        month: targetMonth,
+      });
+      if (decision.existingChargeId !== null) {
         skippedCount += 1;
         continue;
       }
+      const { plan } = decision;
+      const coveredBy = plan.covers.map((c) => ({
+        contractId: c.contractId,
+        monthlyShare: c.monthlyShare,
+        ledgerEntryIds: c.entryIds,
+      }));
 
-      const monthlyRate = tenantData.monthlyRate as number;
+      if (plan.action === 'skip') {
+        skippedCount += 1;
+        coveredAtMoveInCount += 1;
+        functions.logger.info(
+          `Rent for ${targetYear}-${targetMonth} already charged at move-in for tenant ${tenantId} in facility ${facilityId}`,
+          { coveredBy },
+        );
+        continue;
+      }
+
+      if (plan.action === 'review') {
+        skippedCount += 1;
+        flaggedCount += 1;
+        functions.logger.warn(
+          `Rent for ${targetYear}-${targetMonth} not charged to tenant ${tenantId} in facility ${facilityId}: ${plan.reason}`,
+          { monthlyRate, coveredBy },
+        );
+        await admin
+          .firestore()
+          .collection('facilities')
+          .doc(facilityId)
+          .collection('auditLogs')
+          .add({
+            action: 'recurringCharge.needsReview',
+            actorUid: 'system',
+            actorEmail: 'system@scheduled-job',
+            targetId: tenantId,
+            entityType: 'tenant',
+            entityId: tenantId,
+            tenantId,
+            details: {
+              reason: plan.reason,
+              monthlyRate,
+              coveredAtMoveIn: coveredBy,
+              chargeType: 'monthlyRent',
+              month: targetMonth,
+              year: targetYear,
+              scheduled: true,
+            },
+            at: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        continue;
+      }
+
+      const reduced = plan.lessCoveredAtMoveIn > 0;
+      const amount = plan.amount;
       const ledgerEntryRef = admin
         .firestore()
         .collection('facilities')
@@ -196,8 +238,10 @@ async function generateFacilityRentCharges(
         tenantId,
         facilityId,
         type: 'rentCharge',
-        amount: monthlyRate,
-        description: buildRentChargeDescription(targetYear, targetMonth),
+        amount,
+        description: reduced
+          ? buildReducedRentChargeDescription(targetYear, targetMonth, plan.lessCoveredAtMoveIn)
+          : buildRentChargeDescription(targetYear, targetMonth),
         entryDate: admin.firestore.Timestamp.fromDate(targetDate),
         dueDate: admin.firestore.Timestamp.fromDate(targetDate),
         status: 'posted',
@@ -206,6 +250,9 @@ async function generateFacilityRentCharges(
           chargeType: 'monthlyRent',
           month: targetMonth,
           year: targetYear,
+          ...(reduced
+            ? { monthlyRate, lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn, coveredAtMoveIn: coveredBy }
+            : {}),
           generatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -226,16 +273,20 @@ async function generateFacilityRentCharges(
           entityId: ledgerEntryRef.id,
           tenantId,
           details: {
-            amount: monthlyRate,
+            amount,
             chargeType: 'monthlyRent',
             month: targetMonth,
             year: targetYear,
             scheduled: true,
+            ...(reduced
+              ? { monthlyRate, lessCoveredAtMoveIn: plan.lessCoveredAtMoveIn, coveredAtMoveIn: coveredBy }
+              : {}),
           },
           at: admin.firestore.FieldValue.serverTimestamp(),
         });
 
       successCount += 1;
+      if (reduced) reducedCount += 1;
     } catch (error: any) {
       errorCount += 1;
       functions.logger.error(
@@ -245,5 +296,5 @@ async function generateFacilityRentCharges(
     }
   }
 
-  return { successCount, skippedCount, errorCount };
+  return { successCount, skippedCount, errorCount, coveredAtMoveInCount, reducedCount, flaggedCount };
 }

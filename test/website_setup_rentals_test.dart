@@ -12,6 +12,7 @@ import 'package:sfcapp/models/facility_model.dart';
 import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/router/app_route.dart';
 import 'package:sfcapp/screens/facility_website_setup_screen.dart';
+import 'package:sfcapp/services/facility_map_v2_service.dart';
 import 'package:sfcapp/services/facility_public_service.dart';
 
 import 'support/fake_firestore_store.dart';
@@ -199,11 +200,14 @@ void main() {
     FacilityPublicService.firestoreForTesting = _StoreFirestore(store);
     FacilityPublicService.authForTesting =
         MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner-1'));
+    // Save asks it whether the URL name is free before saving.
+    FacilityMapV2Service.firestoreForTesting = _StoreFirestore(store);
   });
 
   tearDown(() {
     FacilityPublicService.firestoreForTesting = null;
     FacilityPublicService.authForTesting = null;
+    FacilityMapV2Service.firestoreForTesting = null;
   });
 
   test('a website save leaves online rentals off when the owner turned them off',
@@ -431,6 +435,31 @@ void main() {
       await _roundTripThroughEditFacility(tester);
       expect(_slugField(tester), 'new-name');
       expect(find.textContaining('replaced "typed-here"'), findsOneWidget);
+    });
+
+    testWidgets("another facility's URL name saves nothing", (tester) async {
+      store.put(_settingsPath, {
+        'facilityId': 'fac1',
+        'publicRentalsEnabled': false,
+        'publicRentalSlug': 'main-street',
+      });
+      store.put('publicFacilityMaps/rival', {'facilityId': 'rival-facility'});
+      final actions = _FakeActions(_facility('Main Street Storage'));
+      await _openWebsiteSetup(tester, actions);
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Website URL Name'), 'Rival');
+      store.writes.clear();
+
+      await _tapSaveWebsite(tester);
+
+      expect(
+          find.textContaining(
+              '"rival" is already used by another facility. Choose a different one.'),
+          findsOneWidget);
+      expect(find.text('Website settings saved and published.'), findsNothing);
+      expect(store.writes, isEmpty);
+      expect(store.data(_settingsPath)!['publicRentalSlug'], 'main-street');
+      expect(actions.published, isEmpty);
     });
 
     testWidgets('a failed re-read after Edit Facility turns Save off',
