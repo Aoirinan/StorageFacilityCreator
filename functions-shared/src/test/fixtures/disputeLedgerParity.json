@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared by functions-shared/src/test/disputeLedgerEntries.test.ts and test/dispute_ledger_parity_test.dart. Which ledger rows are card-dispute rows, and how a posted balance splits into what automation may collect and what staff collect by hand.",
+  "_comment": "Shared by functions-shared/src/test/disputeLedgerEntries.test.ts and test/dispute_ledger_parity_test.dart. Which ledger rows are card-dispute rows, how a posted balance splits into what automation may collect and what staff collect by hand, and what one dispute still has out (the most a payment for it may be).",
   "rows": [
     { "name": "dispute charge", "row": { "type": "dispute", "amount": 42, "metadata": { "disputeId": "du_1" } }, "isDispute": true },
     { "name": "dispute reversal", "row": { "type": "dispute_reversal", "amount": -42, "metadata": { "disputeId": "du_1", "reversesEntryId": "dispute_du_1" } }, "isDispute": true },
@@ -37,6 +37,19 @@
       "collectible": 0
     },
     {
+      "name": "lost dispute paid by hand as a dispute payment, next month's rent due",
+      "rows": [
+        { "type": "rentCharge", "amount": 100 },
+        { "type": "payment", "amount": -100 },
+        { "type": "dispute", "amount": 100, "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "metadata": { "paymentMethod": "cash", "paymentId": "p_hand", "disputeId": "du_1" } },
+        { "type": "rentCharge", "amount": 100 }
+      ],
+      "total": 100,
+      "disputed": 0,
+      "collectible": 100
+    },
+    {
       "name": "cents are kept",
       "rows": [
         { "type": "rentCharge", "amount": 33.3349 },
@@ -45,6 +58,48 @@
       "total": 45.43,
       "disputed": 12.1,
       "collectible": 33.33
+    }
+  ],
+  "outstanding": [
+    {
+      "name": "lost dispute nobody has paid",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "payment", "amount": -100, "status": "posted", "metadata": { "paymentIntentId": "pi_march" } },
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } }
+      ],
+      "outstanding": 100
+    },
+    {
+      "name": "part paid by hand; a voided payment and another dispute's rows do not count",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -40, "status": "posted", "metadata": { "paymentMethod": "cash", "disputeId": "du_1" } },
+        { "type": "payment", "amount": -60, "status": "voided", "metadata": { "paymentMethod": "cash", "disputeId": "du_1" } },
+        { "type": "dispute", "amount": 25, "status": "posted", "metadata": { "disputeId": "du_2" } },
+        { "type": "rentCharge", "amount": 100, "status": "posted" }
+      ],
+      "outstanding": 60
+    },
+    {
+      "name": "won: the reversal leaves nothing",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } }
+      ],
+      "outstanding": 0
+    },
+    {
+      "name": "paid by hand and then won: a credit, not an amount to collect",
+      "disputeId": "du_1",
+      "rows": [
+        { "type": "dispute", "amount": 100, "status": "posted", "metadata": { "disputeId": "du_1" } },
+        { "type": "payment", "amount": -100, "status": "posted", "metadata": { "paymentMethod": "cash", "disputeId": "du_1" } },
+        { "type": "dispute_reversal", "amount": -100, "status": "posted", "metadata": { "disputeId": "du_1" } }
+      ],
+      "outstanding": -100
     }
   ]
 }

@@ -83,6 +83,8 @@ export function buildPublicLinkCheckoutSessionParams(input: {
   tenantEmail?: string | null;
   appUrl: string;
   expiresAtSeconds: number;
+  /** The card dispute this link collects, when staff sent it for one. */
+  disputeId?: string | null;
 }): Stripe.Checkout.SessionCreateParams {
   const facilityName = input.facilityName || 'Facility';
   const email = typeof input.tenantEmail === 'string' ? input.tenantEmail.trim() : '';
@@ -122,7 +124,7 @@ export function buildPublicLinkCheckoutSessionParams(input: {
     // payment_intent.succeeded handler keys on the PaymentIntent's. Without
     // this, a paid link was never recorded on the tenant ledger.
     payment_intent_data: {
-      metadata: buildPublicLinkPaymentIntentMetadata(input.facilityId, input.tenantId, input.token),
+      metadata: buildPublicLinkPaymentIntentMetadata(input.facilityId, input.tenantId, input.token, input.disputeId),
     },
   };
 }
@@ -138,6 +140,7 @@ type LinkState = {
   checkoutAttempt: number;
   checkoutExpiresAtMs: number | null;
   checkoutSessionIds: string[];
+  disputeId: string | null;
 };
 
 function readLinkState(data: Record<string, unknown>): LinkState {
@@ -160,6 +163,7 @@ function readLinkState(data: Record<string, unknown>): LinkState {
     checkoutSessionIds: Array.isArray(data.checkoutSessionIds)
       ? (data.checkoutSessionIds as unknown[]).filter((id): id is string => typeof id === 'string')
       : [],
+    disputeId: typeof data.disputeId === 'string' && data.disputeId ? data.disputeId : null,
   };
 }
 
@@ -352,6 +356,7 @@ export async function getOrCreatePublicLinkCheckout(
       tenantEmail: typeof tenantEmail === 'string' ? tenantEmail : null,
       appUrl: deps.appUrl,
       expiresAtSeconds: reservation.expiresAtSeconds,
+      disputeId: link.disputeId,
     });
 
     let created: Stripe.Checkout.Session;

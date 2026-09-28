@@ -745,6 +745,27 @@ class StripeService {
     }
   }
 
+  /// What [chargeTenantOffSession] sends. [disputeId] (the Ledger's "Record
+  /// payment for this dispute") goes onto the PaymentIntent and the ledger
+  /// row, so the charge nets against that card dispute instead of counting
+  /// as rent; the callable checks it is the tenant's open dispute.
+  static Map<String, dynamic> chargeTenantOffSessionPayload({
+    required String facilityId,
+    required String tenantId,
+    required String paymentMethodId,
+    required double amount,
+    String? description,
+    String? disputeId,
+  }) =>
+      <String, dynamic>{
+        'facilityId': facilityId,
+        'tenantId': tenantId,
+        'paymentMethodId': paymentMethodId,
+        'amount': amount,
+        'description': description,
+        if (disputeId != null && disputeId.isNotEmpty) 'disputeId': disputeId,
+      };
+
   /// Charge a tenant off-session using a stored payment method on a connected account
   /// Feature-flagged: Requires tenantAutopayEnabledGlobal OR facilityId in allowlist
   static Future<Map<String, dynamic>> chargeTenantOffSession({
@@ -753,6 +774,7 @@ class StripeService {
     required String paymentMethodId,
     required double amount,
     String? description,
+    String? disputeId,
   }) async {
     try {
       if (kDebugMode) {
@@ -760,13 +782,14 @@ class StripeService {
       }
 
       final callable = _functions.httpsCallable('chargeTenantOffSession');
-      final result = await callable.call(<String, dynamic>{
-        'facilityId': facilityId,
-        'tenantId': tenantId,
-        'paymentMethodId': paymentMethodId,
-        'amount': amount,
-        'description': description,
-      });
+      final result = await callable.call(chargeTenantOffSessionPayload(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        paymentMethodId: paymentMethodId,
+        amount: amount,
+        description: description,
+        disputeId: disputeId,
+      ));
 
       final data = Map<String, dynamic>.from(result.data as Map);
       final success = data['success'] as bool? ?? false;

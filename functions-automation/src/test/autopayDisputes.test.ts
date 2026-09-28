@@ -275,3 +275,61 @@ test('the payment reminder email quotes the balance without the disputed amount'
 
   assert.equal(await reminderBalance('f1', 't1'), 100);
 });
+
+/**
+ * The row the app's "Record payment for this dispute" posts
+ * (PaymentService.recordManualPayment with a disputeId): an ordinary payment
+ * row carrying the dispute's id, so it nets against the dispute.
+ */
+const disputeHandPayment = (amount = 100): Row => ({
+  type: 'payment',
+  amount: -amount,
+  metadata: { paymentMethod: 'cash', paymentId: 'p_hand', disputeId: 'du_1' },
+});
+
+test('a lost dispute collected by hand as a dispute payment leaves April for autopay to charge', async () => {
+  const fake = setup([
+    ['march', rent()],
+    ['payment_pi_march', paid()],
+    ['dispute_du_1', disputeRow()],
+    ['hand_du_1', disputeHandPayment()],
+    ['april', rent()],
+  ]);
+
+  await runAutopay(fake);
+
+  // Untagged, the hand payment counted as rent and autopay charged nothing:
+  // April went unpaid while the ledger blamed the dispute already collected.
+  assert.deepEqual(charged, [100]);
+  assert.equal(ledgerTotal(fake), 0);
+});
+
+test('and the delinquency job still sees April owed after the dispute is paid by hand', async () => {
+  const fake = setup([
+    ['march', rent()],
+    ['payment_pi_march', paid()],
+    ['dispute_du_1', disputeRow()],
+    ['hand_du_1', disputeHandPayment()],
+    ['april', rent()],
+  ]);
+  fake.seed('facilities/f1', {
+    ...fake.read('facilities/f1')!,
+    billingSettings: { enableAutoLateFees: true, lateFeeType: 'percentage', lateFeeAmount: 10, enableAutoNotices: false },
+  });
+  fake.seed('facilities/f1/tenants/t1', {
+    ...fake.read('facilities/f1/tenants/t1')!,
+    paidThrough: admin.firestore.Timestamp.fromDate(new Date(Date.now() - 90 * 24 * 3600 * 1000)),
+  });
+
+  const result = await processDelinquencyForFacility('f1', false);
+
+  assert.equal(result.success, true);
+  assert.equal(result.processedCount, 1);
+  const fees = fake
+    .list(LEDGERS)
+    .map((id) => fake.read(`${LEDGERS}/${id}`)!)
+    .filter((row) => row.type === 'lateFee');
+  // 10% of April's $100. Untagged, the job skipped the tenant: no fee at all.
+  assert.deepEqual(fees.map((row) => row.amount), [10]);
+  assert.equal(await reminderBalance('f1', 't1'), 110);
+});

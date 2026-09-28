@@ -339,6 +339,8 @@ export {
   isDisputeLedgerRow,
   splitLedgerBalance,
 } from './ledger/disputeEntries';
+export type { DisputePaymentCheck, DisputePaymentRefusal } from './ledger/disputePayment';
+export { checkDisputeForPayment, disputeLedgerEntryId, disputeOutstanding } from './ledger/disputePayment';
 
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {

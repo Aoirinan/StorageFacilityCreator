@@ -1,6 +1,11 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { canAccessFacility, getStripeClient, mapStripeErrorToUserMessage } from '@sfc/functions-shared';
+import {
+  canAccessFacility,
+  checkDisputeForPayment,
+  getStripeClient,
+  mapStripeErrorToUserMessage,
+} from '@sfc/functions-shared';
 import { STRIPE_SECRETS } from './secrets';
 import { isTenantAutopayAllowedForFacility } from './stripeFacilityFeatureFlags';
 import { persistOffSessionChargeRecords } from './stripeFacilityOffSessionChargePersistence';
@@ -75,6 +80,15 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
     }
 
     const tenantData = tenantDoc.data();
+
+    // "Record payment for this dispute" on the Ledger charges the card for a
+    // card dispute: the charge is booked against the dispute, not as rent.
+    const dispute = await checkDisputeForPayment(admin.firestore(), facilityId, tenantId, data?.disputeId, amountNum);
+    if (!dispute.ok) {
+      throw new functions.https.HttpsError('failed-precondition', dispute.message);
+    }
+    const disputeId = dispute.disputeId;
+
     const stripe = getStripeClient();
 
     const customerId = tenantData?.stripeConnectedCustomerId as string | undefined;
@@ -96,6 +110,7 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
         tenantId,
         userId: context.auth.uid,
         chargeType: 'tenant_one_time_card_on_file',
+        ...(disputeId ? { disputeId } : {}),
       },
     }, {
       stripeAccount: connectAccountId,
@@ -103,7 +118,9 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
       // two real charges for the same amount. Keyed on facility, tenant, amount
       // and the current minute, so a rapid second press reuses the first
       // charge while a deliberate repeat later still goes through.
-      idempotencyKey: `offsession_${facilityId}_${tenantId}_${Math.round(amountNum * 100)}_${Math.floor(Date.now() / 60000)}`,
+      // The dispute is in the key so a dispute payment and a rent charge of
+      // the same amount in the same minute stay two charges.
+      idempotencyKey: `offsession_${facilityId}_${tenantId}_${Math.round(amountNum * 100)}_${Math.floor(Date.now() / 60000)}${disputeId ? `_${disputeId}` : ''}`,
     });
 
     if (paymentIntent.status !== 'succeeded') {
@@ -125,6 +142,7 @@ export const chargeTenantOffSession = functions.runWith({ secrets: STRIPE_SECRET
       connectAccountId,
       description,
       actorUid: context.auth.uid,
+      disputeId,
     });
 
     return {

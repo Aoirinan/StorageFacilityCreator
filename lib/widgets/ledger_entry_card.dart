@@ -7,10 +7,15 @@ class LedgerEntryCard extends StatelessWidget {
   final LedgerEntry entry;
   final VoidCallback? onVoid;
 
+  /// Set on a card dispute's row that still has money out: "Record payment
+  /// for this dispute" books a payment against the dispute, not as rent.
+  final VoidCallback? onRecordDisputePayment;
+
   const LedgerEntryCard({
     super.key,
     required this.entry,
     this.onVoid,
+    this.onRecordDisputePayment,
   });
 
   @override
@@ -133,6 +138,18 @@ class LedgerEntryCard extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+                  ],
+                  if (onRecordDisputePayment != null) ...[
+                    const SizedBox(height: 4),
+                    TextButton.icon(
+                      onPressed: onRecordDisputePayment,
+                      icon: const Icon(Icons.payments_outlined, size: 18),
+                      label: const Text('Record payment for this dispute'),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                      ),
                     ),
                   ],
                 ],

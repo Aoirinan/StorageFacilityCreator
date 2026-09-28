@@ -58,6 +58,18 @@ void main() {
         expect(split.collectible, (c['collectible'] as num).toDouble(), reason: '${c['name']}');
       }
     });
+
+    // The server refuses a card charge or payment link for more than this;
+    // the app's dialog applies the same cap to cash and the other methods.
+    test('what one dispute still has out', () {
+      final cases = maps(parity['outstanding']);
+      expect(cases, isNotEmpty);
+      for (final c in cases) {
+        expect(disputeOutstanding(maps(c['rows']), c['disputeId'] as String),
+            (c['outstanding'] as num).toDouble(),
+            reason: '${c['name']}');
+      }
+    });
   });
 
   test('entries read from Firestore split by their stored type, posted only', () {

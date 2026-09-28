@@ -619,6 +619,10 @@ class PaymentService {
   /// The payment is dated now: past payments go through Enter past history
   /// (the recordTenantPastHistory callable), which does not move paidThrough
   /// from today.
+  ///
+  /// [disputeId] is set by the Ledger's "Record payment for this dispute":
+  /// the money pays back a lost card dispute (see [manualPaymentLedgerMetadata]),
+  /// so it is not rent and never moves paidThrough.
   static Future<String> recordManualPayment({
     required String facilityId,
     required String tenantId,
@@ -627,6 +631,7 @@ class PaymentService {
     String? notes,
     String? reference,
     bool appliesToRent = true,
+    String? disputeId,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -652,11 +657,15 @@ class PaymentService {
       final snapshotName = (tenantData['name'] as String?)?.trim() ?? '';
       final snapshotUnit = (tenantData['unitNumber'] as String?)?.trim() ?? '';
       final cleanReference = reference?.trim() ?? '';
-      final ledgerLine = receivedPaymentDescription(
-        method,
-        reference: cleanReference,
-        notes: notes,
-      );
+      final cleanDisputeId = disputeId?.trim() ?? '';
+      final forDispute = cleanDisputeId.isNotEmpty;
+      final ledgerLine = forDispute
+          ? disputePaymentDescription(method, reference: cleanReference, notes: notes)
+          : receivedPaymentDescription(
+              method,
+              reference: cleanReference,
+              notes: notes,
+            );
 
       // 1. Create facility-level payment (shows in main Payments screen)
       final facilityPaymentRef = await _firestore
@@ -698,10 +707,14 @@ class PaymentService {
         'currency': 'usd',
         'chargeType': 'manual_${method.name}',
         'status': 'succeeded',
-        'description': notes ??
-            (cleanReference.isNotEmpty
-                ? '${method.displayName} payment #$cleanReference'
-                : '${method.displayName} payment'),
+        // A dispute payment says so in the panel's Payment History too, so
+        // it is not read as that month's rent.
+        'description': forDispute
+            ? ledgerLine
+            : notes ??
+                (cleanReference.isNotEmpty
+                    ? '${method.displayName} payment #$cleanReference'
+                    : '${method.displayName} payment'),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
@@ -722,11 +735,12 @@ class PaymentService {
           referenceId: facilityPaymentRef.id,
           entryDate: DateTime.now(),
           status: LedgerEntryStatus.posted,
-          metadata: {
-            'paymentMethod': method.name,
-            'paymentId': facilityPaymentRef.id,
-            if (cleanReference.isNotEmpty) 'reference': cleanReference,
-          },
+          metadata: manualPaymentLedgerMetadata(
+            method: method,
+            paymentId: facilityPaymentRef.id,
+            reference: cleanReference,
+            disputeId: cleanDisputeId,
+          ),
         );
       } catch (e) {
         if (kDebugMode) print('⚠️ Ledger entry failed: $e');
@@ -740,7 +754,9 @@ class PaymentService {
       // kept accruing on rent they had already paid, and the lien sequence sits
       // downstream of that. The third of three paths to write this date, and
       // the only one that never wrote it at all.
-      if (appliesToRent) {
+      //
+      // Not for a card-dispute payment: see [manualPaymentBuysRent].
+      if (manualPaymentBuysRent(appliesToRent: appliesToRent, disputeId: cleanDisputeId)) {
         final newPaidThrough = advancePaidThrough(
           amountPaid: amount,
           monthlyRate: (tenantData['monthlyRate'] as num?)?.toDouble() ?? 0.0,
@@ -765,6 +781,39 @@ class PaymentService {
       rethrow;
     }
   }
+
+  /// Whether money recorded by hand moves paidThrough.
+  ///
+  /// Not a dispute payment: the disputed month already counted as paid when
+  /// the original card payment was made, and the dispute never moved
+  /// paidThrough back, so this money buying a month would mark next month's
+  /// rent paid when it is not.
+  static bool manualPaymentBuysRent({
+    required bool appliesToRent,
+    String disputeId = '',
+  }) =>
+      appliesToRent && disputeId.trim().isEmpty;
+
+  /// The ledger metadata for money recorded by hand.
+  ///
+  /// A non-empty [disputeId] books the payment against that card dispute:
+  /// the row then counts in the disputed part of the balance
+  /// (isDisputeLedgerRow), netting the dispute out. As an ordinary payment
+  /// it counted as rent while the dispute stayed disputed, so autopay and
+  /// the delinquency job treated next month's rent as already paid, and the
+  /// Ledger kept asking staff to collect the dispute again.
+  static Map<String, dynamic> manualPaymentLedgerMetadata({
+    required PaymentMethod method,
+    required String paymentId,
+    String reference = '',
+    String disputeId = '',
+  }) =>
+      {
+        'paymentMethod': method.name,
+        'paymentId': paymentId,
+        if (reference.isNotEmpty) 'reference': reference,
+        if (disputeId.isNotEmpty) 'disputeId': disputeId,
+      };
 
   /// Mark Paid: record the tenant's payment as received today.
   ///

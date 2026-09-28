@@ -10,6 +10,27 @@ class PublicPaymentLinkService {
   static final FirebaseFunctions _functions = FirebaseFunctions.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  /// What [createPaymentLink] sends. [disputeId] (the Ledger's "Record
+  /// payment for this dispute") rides on the link to the PaymentIntent, so
+  /// the webhook books the payment against that card dispute instead of as
+  /// rent; the callable checks it is the tenant's open dispute.
+  static Map<String, dynamic> createPaymentLinkPayload({
+    required String facilityId,
+    required String tenantId,
+    required double amount,
+    String? description,
+    required DateTime expiresAt,
+    String? disputeId,
+  }) =>
+      <String, dynamic>{
+        'facilityId': facilityId,
+        'tenantId': tenantId,
+        'amount': amount,
+        'description': description ?? 'Payment',
+        'expiresAt': expiresAt.toUtc().toIso8601String(),
+        if (disputeId != null && disputeId.isNotEmpty) 'disputeId': disputeId,
+      };
+
   /// Create a public payment link for a tenant
   /// Returns a secure token that can be used in a public URL
   static Future<String> createPaymentLink({
@@ -18,6 +39,7 @@ class PublicPaymentLinkService {
     required double amount,
     String? description,
     DateTime? expiresAt,
+    String? disputeId,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -27,13 +49,14 @@ class PublicPaymentLinkService {
       final expiration =
           expiresAt ?? DateTime.now().add(const Duration(days: 30));
       final callable = _functions.httpsCallable('createPublicPaymentLink');
-      final result = await callable.call(<String, dynamic>{
-        'facilityId': facilityId,
-        'tenantId': tenantId,
-        'amount': amount,
-        'description': description ?? 'Payment',
-        'expiresAt': expiration.toUtc().toIso8601String(),
-      });
+      final result = await callable.call(createPaymentLinkPayload(
+        facilityId: facilityId,
+        tenantId: tenantId,
+        amount: amount,
+        description: description,
+        expiresAt: expiration,
+        disputeId: disputeId,
+      ));
       final payload = Map<String, dynamic>.from(result.data as Map);
       final token = payload['token']?.toString() ?? '';
       if (token.isEmpty) {

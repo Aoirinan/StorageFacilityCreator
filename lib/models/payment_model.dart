@@ -91,6 +91,21 @@ String receivedPaymentDescription(
       '${note.isNotEmpty ? ': $note' : ''}';
 }
 
+/// "Card dispute payment - Cash #1234": the ledger line for money taken by
+/// hand for a lost card dispute (the Ledger's "Record payment for this
+/// dispute"), so it does not read as rent.
+String disputePaymentDescription(
+  PaymentMethod method, {
+  String? reference,
+  String? notes,
+}) {
+  final ref = reference?.trim() ?? '';
+  final note = notes?.trim() ?? '';
+  return 'Card dispute payment - ${method.displayName}'
+      '${ref.isNotEmpty ? ' #$ref' : ''}'
+      '${note.isNotEmpty ? ': $note' : ''}';
+}
+
 enum BillingCycle {
   monthly,
   quarterly,

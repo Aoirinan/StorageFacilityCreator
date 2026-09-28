@@ -2,6 +2,7 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import {
+  checkDisputeForPayment,
   enforceAppCheckOrThrow,
   enforceUserRateLimit,
   extractCallableClientIp,
@@ -162,6 +163,20 @@ export const createPublicPaymentLink = functions.https.onCall(async (data: any, 
     throw new functions.https.HttpsError('not-found', 'Tenant not found');
   }
 
+  // A link sent to collect a card dispute by hand (the Ledger's "Record
+  // payment for this dispute") names it, so its payment is booked against
+  // the dispute rather than as rent.
+  const dispute = await checkDisputeForPayment(
+    admin.firestore(),
+    facilityId,
+    tenantId,
+    data?.disputeId,
+    Math.round(amount * 100) / 100,
+  );
+  if (!dispute.ok) {
+    throw new functions.https.HttpsError('failed-precondition', dispute.message);
+  }
+
   const now = new Date();
   const defaultExpiration = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const requestedExpiration = data?.expiresAt ? new Date(String(data.expiresAt)) : defaultExpiration;
@@ -190,6 +205,7 @@ export const createPublicPaymentLink = functions.https.onCall(async (data: any, 
     createdBy: context.auth.uid,
     paymentIntentId: null,
     paidAt: null,
+    ...(dispute.disputeId ? { disputeId: dispute.disputeId } : {}),
   });
 
   return { success: true, token };

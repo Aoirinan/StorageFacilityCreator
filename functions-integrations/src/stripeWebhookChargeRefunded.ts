@@ -40,6 +40,11 @@ export async function handleChargeRefunded(
 
     const facilityId = paymentIntent.metadata?.facilityId;
     const tenantId = paymentIntent.metadata?.tenantId;
+    // A refund of a payment staff took for a card dispute (the charge or
+    // link carried the dispute's id) reopens that dispute, not rent. Untagged,
+    // its +amount landed in what autopay collects, and autopay charged the
+    // refunded money straight back to the card.
+    const disputeId = paymentIntent.metadata?.disputeId || null;
 
     if (!facilityId) {
       functions.logger.warn('Charge refunded but missing facilityId metadata');
@@ -110,6 +115,7 @@ export async function handleChargeRefunded(
             paymentIntentId,
             refundId: refund.id,
             connectedAccountId: connectedAccountId || null,
+            ...(disputeId ? { disputeId } : {}),
           },
         },
         { merge: true },

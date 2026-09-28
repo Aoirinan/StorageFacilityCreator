@@ -129,6 +129,10 @@ export const processRefund = functions.runWith({ secrets: STRIPE_SECRETS }).http
               stripeRefundId: refund.id,
               stripeChargeId: chargeId,
               refundMethod,
+              // Refunding a card-dispute payment reopens the dispute; kept
+              // out of what autopay collects, as the charge.refunded webhook
+              // writing this same row does.
+              ...(paymentIntent.metadata?.disputeId ? { disputeId: paymentIntent.metadata.disputeId } : {}),
             },
           });
 

@@ -36,11 +36,16 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{24,128}$/;
  * session's metadata onto the PaymentIntent, and the payment handler keys on
  * the PaymentIntent's `facilityId`/`tenantId`: without these a paid link is
  * never recorded (the bug this module exists to fix).
+ *
+ * [disputeId] is set on a link staff sent to collect a card dispute: the
+ * payment handler copies it onto the ledger row, so the payment nets against
+ * the dispute instead of counting as rent (ledger/disputePayment.ts).
  */
 export function buildPublicLinkPaymentIntentMetadata(
   facilityId: string,
   tenantId: string,
   token: string,
+  disputeId?: string | null,
 ): Record<string, string> {
   return {
     facilityId,
@@ -48,6 +53,7 @@ export function buildPublicLinkPaymentIntentMetadata(
     type: PUBLIC_LINK_PAYMENT_TYPE,
     paymentLinkToken: token,
     sfcKind: PUBLIC_LINK_SFC_KIND,
+    ...(disputeId ? { disputeId } : {}),
   };
 }
 

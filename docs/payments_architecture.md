@@ -328,6 +328,15 @@ All new functions check feature flags before processing:
   tenant portal's balance and Pay now count only payments still owed (no status, `pending`, `failed`), not
   `disputed` ones. Charging a disputed amount back to the same card is re-billing without consent; staff
   collect it by hand.
+- A lost dispute is collected with **Record payment for this dispute** on its ledger row (cash, check, Venmo,
+  Zelle, bank transfer, other, the card on file, or a payment link). Every one of these puts the dispute's id on
+  the payment's ledger row (`metadata.disputeId`), so the payment nets against the dispute and stays out of what
+  automation collects; as an ordinary payment it counted as rent, and autopay and the delinquency job then saw
+  the next month's rent as paid. By hand it goes through `PaymentService.recordManualPayment` (and does not move
+  paid-through); the card and the link carry `disputeId` to the PaymentIntent (`chargeTenantOffSession`,
+  `createPublicPaymentLink`), which check it is the tenant's open dispute and that the amount is no more than it
+  still has out (`functions-shared/src/ledger/disputePayment.ts`). Enter past history counts dispute rows in the
+  balance only, never as rent paid.
 
 Connected-account events (`event.account` set) for `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `setup_intent.succeeded`, `charge.refunded`, `charge.dispute.*`, link `checkout.session.completed` and

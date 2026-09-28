@@ -95,6 +95,24 @@ LedgerBalanceSplit splitLedgerBalance(Iterable<Map<String, dynamic>> rows) {
   );
 }
 
+/// What dispute [disputeId] still has out: its posted rows (the dispute, a
+/// reversal, payments already taken for it) summed. The most a payment for
+/// it may be: more would sit in the disputed part as a credit no rent is
+/// ever set against. Same rule as functions-shared ledger/disputePayment.ts
+/// disputeOutstanding, which the charge-card and payment-link callables
+/// apply; both run the fixture's `outstanding` cases.
+double disputeOutstanding(Iterable<Map<String, dynamic>> rows, String disputeId) {
+  var total = 0.0;
+  for (final row in rows) {
+    if (row['status'] != 'posted') continue;
+    final metadata = row['metadata'];
+    if (metadata is! Map || metadata['disputeId'] != disputeId) continue;
+    final raw = row['amount'];
+    if (raw is num && raw.isFinite) total += raw.toDouble();
+  }
+  return _cents(total);
+}
+
 class LedgerEntry {
   final String id;
   final String tenantId;
@@ -231,6 +249,13 @@ class LedgerEntry {
   /// A card dispute's row (see [isDisputeLedgerRow]).
   bool get isCardDispute =>
       isDisputeLedgerRow({'type': storedType, 'metadata': metadata});
+
+  /// The Stripe dispute id the webhook (or a payment taken for the dispute)
+  /// stamped on this row, or null.
+  String? get disputeId {
+    final id = metadata?['disputeId'];
+    return id is String && id.trim().isNotEmpty ? id.trim() : null;
+  }
   bool get isPayment => amount < 0;
   bool get isActive => status == LedgerEntryStatus.posted;
   

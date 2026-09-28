@@ -26,6 +26,9 @@ export async function handlePaymentIntentSucceeded(
     const tenantId = paymentIntent.metadata?.tenantId;
     const invoiceId = paymentIntent.metadata?.invoiceId;
     const paymentDocId = paymentIntent.metadata?.paymentDocId;
+    // Set on a public link staff sent to collect a card dispute
+    // (createPublicPaymentLink checked it is this tenant's open dispute).
+    const disputeId = paymentIntent.metadata?.disputeId || null;
 
     if (!facilityId || !tenantId) {
       functions.logger.warn('Payment intent missing facilityId or tenantId metadata');
@@ -155,7 +158,9 @@ export async function handlePaymentIntentSucceeded(
         facilityId: facilityId,
         type: 'payment',
         amount: -(paymentIntent.amount / 100), // Negative for payments
-        description: `Payment via Stripe - ${paymentIntent.id}`,
+        description: disputeId
+          ? `Card dispute payment via Stripe - ${paymentIntent.id}`
+          : `Payment via Stripe - ${paymentIntent.id}`,
         referenceId: paymentRecordId,
         entryDate: admin.firestore.FieldValue.serverTimestamp(),
         status: 'posted',
@@ -164,6 +169,9 @@ export async function handlePaymentIntentSucceeded(
         metadata: {
           paymentIntentId: paymentIntent.id,
           invoiceId: invoiceId || null,
+          // Nets the payment against the dispute instead of counting it as
+          // rent: autopay and the delinquency job read only the rest.
+          ...(disputeId ? { disputeId } : {}),
         },
       });
     }

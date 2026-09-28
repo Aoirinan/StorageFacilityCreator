@@ -58,6 +58,25 @@ LedgerBalanceSplit splitPostedLedgerEntries(List<LedgerEntry> entries) {
   ]);
 }
 
+/// How much [dispute] (the webhook's `dispute` row) still has out, when staff
+/// can take a payment for it: a posted, unsettled dispute row with money
+/// left on it in [entries]. Null for any other row, and once it is won,
+/// voided or paid.
+double? openDisputeOutstanding(LedgerEntry dispute, List<LedgerEntry> entries) {
+  final disputeId = dispute.disputeId;
+  if (dispute.storedType != disputeLedgerType ||
+      dispute.status != LedgerEntryStatus.posted ||
+      disputeId == null ||
+      dispute.metadata?['settledByEntryId'] != null) {
+    return null;
+  }
+  final outstanding = disputeOutstanding([
+    for (final entry in entries)
+      {'status': entry.status.name, 'amount': entry.amount, 'metadata': entry.metadata},
+  ], disputeId);
+  return outstanding > 0 ? outstanding : null;
+}
+
 /// Provider for ledger entries by date range
 final ledgerEntriesByDateRangeProvider = FutureProvider.family<List<LedgerEntry>, LedgerDateRangeParams>((ref, params) {
   return LedgerService.getLedgerEntriesByDateRange(
