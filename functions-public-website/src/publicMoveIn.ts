@@ -1007,10 +1007,10 @@ export const confirmPublicMoveInCheckout = functions
     sessionId,
   } = data || {};
 
-  if (!reservationId || !token || !sessionId) {
+  if (!reservationId || !token) {
     throw new functions.https.HttpsError(
       'invalid-argument',
-      'reservationId, token, and sessionId are required',
+      'reservationId and token are required',
     );
   }
 
@@ -1046,18 +1046,46 @@ export const confirmPublicMoveInCheckout = functions
     throw new functions.https.HttpsError('failed-precondition', 'Stripe is not enabled for this facility');
   }
 
+  // With no sessionId, the session checkout recorded for this reservation
+  // (checkoutSessionReuse.ts). A renter who paid in Stripe's tab and closed it
+  // before its redirect, or who came back on the link without it, had no
+  // session_id: the page never confirmed the payment, paying again was refused
+  // as already paid, and nothing let them finish. The move-in page asks this
+  // way on opening and before starting a checkout, so nothing recorded, nothing
+  // paid, or Stripe not answering is 'not paid', not an error: checkout makes
+  // its own check of the recorded session before it makes another.
+  const notPaid = { success: false, paid: false };
+  const recorded = sessionId ? null : recordedCheckoutSession(reservation);
+  if (!sessionId && !recorded) return notPaid;
+  // Completion verifies the payment on the facility's account now; checkout
+  // expires a session left on a previous one, or refuses it as already paid.
+  if (recorded?.accountId && recorded.accountId !== connectAccountId) return notPaid;
+
   const stripe = getStripeClient();
-  const session = await stripe.checkout.sessions.retrieve(
-    String(sessionId),
-    {
-      expand: ['payment_intent'],
-    },
-    {
-      stripeAccount: connectAccountId,
-    },
-  );
+  let session: Awaited<ReturnType<typeof stripe.checkout.sessions.retrieve>>;
+  try {
+    session = await stripe.checkout.sessions.retrieve(
+      String(sessionId || recorded?.id),
+      {
+        expand: ['payment_intent'],
+      },
+      {
+        stripeAccount: connectAccountId,
+      },
+    );
+  } catch (err: unknown) {
+    if (sessionId) throw err;
+    functions.logger.warn('confirmPublicMoveInCheckout: recorded session could not be read', {
+      facilityId,
+      reservationId: String(reservationId),
+      sessionId: recorded?.id,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return notPaid;
+  }
 
   if (session.payment_status !== 'paid') {
+    if (!sessionId) return notPaid;
     throw new functions.https.HttpsError(
       'failed-precondition',
       `Checkout is not paid (status: ${session.payment_status || 'unknown'})`,
@@ -1076,6 +1104,14 @@ export const confirmPublicMoveInCheckout = functions
     : paymentIntentRaw?.id;
   if (!paymentIntentId) {
     throw new functions.https.HttpsError('failed-precondition', 'No payment intent found on checkout session');
+  }
+  if (!sessionId) {
+    functions.logger.info('confirmPublicMoveInCheckout: found a paid session no redirect confirmed', {
+      facilityId,
+      reservationId: String(reservationId),
+      sessionId: session.id,
+      paymentIntentId,
+    });
   }
 
   // Paid: the renter now re-enters the whole form (Stripe's redirect reloads
@@ -1108,6 +1144,7 @@ export const confirmPublicMoveInCheckout = functions
 
   return {
     success: true,
+    paid: true,
     paymentIntentId,
     amountPaid: (session.amount_total || 0) / 100,
     currency: session.currency || 'usd',

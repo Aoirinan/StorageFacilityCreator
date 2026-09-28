@@ -136,11 +136,12 @@ function loadPublicMoveIn(inMemory: InMemoryFirestore, stub: StripeStub = {}) {
         { ...as, amount: checkoutQuoteCents(inMemory) / 100 },
         callableContext,
       ) as Promise<{ checkoutUrl?: string; sessionId?: string }>,
-    confirm: (sessionId: string) =>
+    /** Confirms [sessionId], or with none, the session checkout recorded (a return with no session_id). */
+    confirm: (sessionId?: string) =>
       testEnv.wrap(moveIn.confirmPublicMoveInCheckout)(
-        { reservationId: RESERVATION, token: TOKEN, sessionId },
+        { reservationId: RESERVATION, token: TOKEN, ...(sessionId ? { sessionId } : {}) },
         callableContext,
-      ) as Promise<{ success?: boolean; paymentIntentId?: string }>,
+      ) as Promise<{ success?: boolean; paid?: boolean; paymentIntentId?: string }>,
     complete: (overrides: Record<string, unknown> = {}) =>
       testEnv.wrap(moveIn.completePublicMoveIn)(
         {
@@ -592,6 +593,85 @@ test('confirming a paid session of a completed reservation holds nothing', async
   await confirm('cs_paid');
 
   assert.equal(inMemory.read(HOLD_PATH), undefined);
+});
+
+// Coming back with no session_id
+
+/** The session checkout recorded on the reservation (checkoutSessionReuse.ts). */
+const RECORDED = { checkoutSessionId: 'cs_paid', checkoutSessionAccountId: ACCOUNT };
+
+test('a renter who paid and closed Stripe\'s tab finds the payment on reopening the link, and moves in', async () => {
+  const inMemory = new InMemoryFirestore();
+  // Paid, but Stripe's redirect never ran: the hold lapsed with no session_id.
+  seed(inMemory, { expiresInMinutes: -20, reservedMinutesAgo: 60, checkoutStarted: true, reservation: RECORDED });
+  const { confirm, complete, stripeCalls } = loadPublicMoveIn(inMemory, {
+    sessions: { cs_paid: paidSession() },
+    paymentMetadata: TAGGED,
+  });
+
+  // Before: refused as 'reservationId, token, and sessionId are required',
+  // and a second checkout was refused as already paid.
+  const found = await confirm();
+
+  assert.equal(found.paid, true);
+  assert.equal(found.paymentIntentId, 'pi_hold');
+  assert.deepEqual(stripeCalls.map((c) => [c.method, c.id, c.options?.stripeAccount]), [
+    ['checkout.sessions.retrieve', 'cs_paid', ACCOUNT],
+  ]);
+  // Held again for them to fill in the form, as a redirect's confirmation does.
+  assert.equal(inMemory.read(HOLD_PATH)?.reservationId, RESERVATION);
+  assert.ok(expiryOf(inMemory, HOLD_PATH) > Date.now() + 59 * MINUTE);
+
+  const result = await complete({ paymentIntentId: found.paymentIntentId });
+
+  assert.equal(result.success, true);
+  assert.equal(inMemory.read(UNIT_PATH)?.tenantId, result.tenantId);
+});
+
+test('with no session recorded, confirming without one reports nothing paid and asks Stripe nothing', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, { expiresInMinutes: 5 });
+  const heldUntil = expiryOf(inMemory, HOLD_PATH);
+  const { confirm, stripeCalls } = loadPublicMoveIn(inMemory);
+
+  assert.deepEqual(await confirm(), { success: false, paid: false });
+
+  assert.deepEqual(stripeCalls, []);
+  assert.equal(expiryOf(inMemory, HOLD_PATH), heldUntil);
+});
+
+for (const [why, sessions] of [
+  ['is not paid', { cs_paid: { ...paidSession(), status: 'open', payment_status: 'unpaid' } }],
+  ['is one Stripe does not have', {}],
+] as Array<[string, Record<string, FakeSession>]>) {
+  test(`a recorded session that ${why} is reported not paid, and holds nothing`, async () => {
+    const inMemory = new InMemoryFirestore();
+    seed(inMemory, { expiresInMinutes: 5, checkoutStarted: true, reservation: RECORDED });
+    const heldUntil = expiryOf(inMemory, HOLD_PATH);
+    const { confirm } = loadPublicMoveIn(inMemory, { sessions });
+
+    // Not an error: the page goes on to checkout, which checks the session again.
+    assert.deepEqual(await confirm(), { success: false, paid: false });
+
+    assert.equal(expiryOf(inMemory, HOLD_PATH), heldUntil);
+    assert.equal(expiryOf(inMemory, RESERVATION_PATH), heldUntil);
+  });
+}
+
+test('a session recorded on the facility\'s previous Stripe account is left to checkout', async () => {
+  const inMemory = new InMemoryFirestore();
+  seed(inMemory, {
+    expiresInMinutes: 5,
+    checkoutStarted: true,
+    reservation: { ...RECORDED, checkoutSessionAccountId: 'acct_before' },
+  });
+  const { confirm, stripeCalls } = loadPublicMoveIn(inMemory, { sessions: { cs_paid: paidSession() } });
+
+  // Completion could not verify a payment there; checkout refuses it as
+  // already paid, telling the renter to contact the facility.
+  assert.deepEqual(await confirm(), { success: false, paid: false });
+
+  assert.deepEqual(stripeCalls, []);
 });
 
 // Reopening the move-in link

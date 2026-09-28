@@ -17,6 +17,7 @@ import '../models/invoice_line_item_model.dart';
 import '../theme/app_theme.dart';
 import '../widgets/keyboard_scrollable.dart';
 import '../router/app_router.dart';
+import 'package:sfcapp/utils/move_in_checkout_return.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
@@ -331,29 +332,28 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
       final queryPart = fragment.split('?').last;
       qp.addAll(Uri.splitQueryString(queryPart));
     }
-    final checkoutState = qp['checkout'];
-    final sessionId = qp['session_id'];
-    final reservationIdParam = qp['reservationId'];
-    if (reservationIdParam != null &&
-        reservationIdParam.isNotEmpty &&
-        reservationIdParam != reservation.id) {
-      return;
-    }
-    if (checkoutState == 'cancel') {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Payment was canceled. You can try again.'),
-            backgroundColor: AppTheme.warning,
-          ),
-        );
-      }
-      return;
-    }
-    if (checkoutState != 'success' ||
-        sessionId == null ||
-        sessionId.trim().isEmpty) {
-      return;
+    final checkoutReturn =
+        MoveInCheckoutReturn.fromQuery(qp, reservationId: reservation.id);
+    final String sessionId;
+    switch (checkoutReturn.check) {
+      case MoveInPaymentCheck.none:
+        return;
+      case MoveInPaymentCheck.cancelled:
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Payment was canceled. You can try again.'),
+              backgroundColor: AppTheme.warning,
+            ),
+          );
+        }
+        return;
+      case MoveInPaymentCheck.askRecorded:
+        // Paid, but back without Stripe's redirect (move_in_checkout_return.dart).
+        if (_stripePaymentRequired) await _findRecordedPayment();
+        return;
+      case MoveInPaymentCheck.confirmSession:
+        sessionId = checkoutReturn.sessionId!;
     }
     try {
       setState(() => _isVerifyingCheckout = true);
@@ -384,6 +384,45 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
           backgroundColor: AppTheme.error,
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _isVerifyingCheckout = false);
+      }
+    }
+  }
+
+  /// Takes up a payment made for this reservation that no Stripe redirect
+  /// confirmed: the server checks the session checkout recorded for it. True
+  /// when one was paid and is now this page's payment. [announce] says so.
+  Future<bool> _findRecordedPayment({bool announce = true}) async {
+    final reservation = _reservation;
+    final token = widget.token;
+    if (reservation == null || token == null || token.isEmpty) return false;
+    try {
+      setState(() => _isVerifyingCheckout = true);
+      final result = await PublicRentalService.confirmPublicMoveInCheckout(
+        reservationId: reservation.id,
+        token: token,
+      );
+      final paymentIntentId = paidPaymentIntentId(result);
+      if (paymentIntentId == null || !mounted) return false;
+      setState(() => _paymentIntentId = paymentIntentId);
+      if (announce) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('We found your payment. You can now submit move-in.'),
+            backgroundColor: AppTheme.success,
+          ),
+        );
+      }
+      return true;
+    } catch (e) {
+      // Not known to be paid. Checkout checks the recorded session again and
+      // does not take a second payment for it.
+      if (kDebugMode) {
+        print('❌ Error looking up an earlier payment: $e');
+      }
+      return false;
     } finally {
       if (mounted) {
         setState(() => _isVerifyingCheckout = false);
@@ -498,8 +537,12 @@ class _PublicMoveInScreenState extends ConsumerState<PublicMoveInScreen> {
     if (_stripePaymentRequired &&
         _totalAmount > 0 &&
         _paymentIntentId == null) {
-      await _startCheckout();
-      return;
+      // Paid in a tab since closed: finish with that payment rather than
+      // start a checkout, which refuses it as already paid.
+      if (!await _findRecordedPayment(announce: false)) {
+        await _startCheckout();
+        return;
+      }
     }
 
     setState(() {

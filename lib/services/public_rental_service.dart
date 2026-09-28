@@ -355,10 +355,15 @@ class PublicRentalService {
   }
 
   /// Validate a Stripe Checkout session for a public move-in and return payment details.
+  ///
+  /// With no [sessionId], the server checks the session checkout recorded
+  /// for the reservation, for a renter who paid but came back without
+  /// Stripe's redirect; nothing paid then answers `paid: false`
+  /// ([paidPaymentIntentId]).
   static Future<Map<String, dynamic>> confirmPublicMoveInCheckout({
     required String reservationId,
     required String token,
-    required String sessionId,
+    String? sessionId,
   }) async {
     try {
       final callable = FirebaseFunctions.instance
@@ -366,7 +371,7 @@ class PublicRentalService {
       final result = await callable.call(<String, dynamic>{
         'reservationId': reservationId,
         'token': token,
-        'sessionId': sessionId,
+        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
       }).timeout(
         const Duration(seconds: 60),
         onTimeout: () =>
