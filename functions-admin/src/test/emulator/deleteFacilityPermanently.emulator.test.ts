@@ -145,6 +145,7 @@ async function seedFacility(): Promise<void> {
  * up as rows left behind.
  */
 const SEEDED_KEYED_COLLECTIONS = [
+  'publicFacilityMaps',
   'user_roles',
   'publicReservations',
   'publicPaymentLinks',
