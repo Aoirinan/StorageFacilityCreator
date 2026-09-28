@@ -541,7 +541,12 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
                               label: Text('Email invites (${_selectedTenantIds.length})'),
                             ),
                             _smsConsentMenu(),
-                            _paidThroughButton(),
+                            // Owners and managers: the tenants rule
+                            // refuses an employee's write.
+                            if (ref
+                                .watch(canBulkUpdateTenantsAtFacilityProvider(permFacilityId))
+                                .maybeWhen(data: (v) => v, orElse: () => false))
+                              _paidThroughButton(),
                             ElevatedButton.icon(
                               onPressed: (_selectedTenantIds.isEmpty || !canDeleteTenant)
                                   ? null
@@ -1233,8 +1238,9 @@ class _ClientListScreenState extends ConsumerState<ClientListScreen> {
     );
   }
 
-  /// Selection bar > Paid through (N). One facility at a time, like SMS
-  /// consent: under All Facilities it is disabled and says why.
+  /// Selection bar > Paid through (N). Shown to owners and managers only.
+  /// One facility at a time, like SMS consent: under All Facilities it is
+  /// disabled and says why.
   Widget _paidThroughButton() {
     final facilityId = _selectedFacilityId;
     final oneFacility = bulkSmsConsentAvailable(facilityId);

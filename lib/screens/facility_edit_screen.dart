@@ -865,9 +865,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
                     subtitle: Text(_autoLateFees
                         ? 'Each night, tenants who owe a balance and are past '
                             'the grace period get this late fee on their '
-                            'ledger, once a month.'
+                            'ledger, once a month. Only tenants with a '
+                            '"paid through" date set are charged.'
                         : 'Off: no late fee is added to any tenant\'s ledger '
-                            'automatically.'),
+                            'automatically. When on, fees only apply to '
+                            'tenants with a "paid through" date set.'),
                   ),
                   const SizedBox(height: 24),
 
