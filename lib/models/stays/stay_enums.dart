@@ -183,6 +183,9 @@ enum ExportTargetProvider implements WireEnum {
   vrbo('vrbo'),
   booking('booking'),
   google('google'),
+  // Its own target, so a Hipcamp link leaves out Hipcamp's own bookings while an
+  // 'other' link keeps every channel's (functions-shared/src/stays/icsWriter.ts).
+  hipcamp('hipcamp'),
   other('other'),
   unknown('unknown');
 

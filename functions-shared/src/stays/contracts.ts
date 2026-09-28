@@ -124,7 +124,12 @@ export const CHANNEL_SYNC_STATUSES = [
 ] as const;
 export type ChannelSyncStatus = (typeof CHANNEL_SYNC_STATUSES)[number];
 
-export const EXPORT_TARGET_PROVIDERS = ['airbnb', 'vrbo', 'booking', 'google', 'other'] as const;
+/**
+ * Who imports an export link. Hipcamp has its own target so a Hipcamp link can
+ * leave out Hipcamp's own bookings while an 'other' link (any other site)
+ * still sends every channel's.
+ */
+export const EXPORT_TARGET_PROVIDERS = ['airbnb', 'vrbo', 'booking', 'google', 'hipcamp', 'other'] as const;
 export type ExportTargetProvider = (typeof EXPORT_TARGET_PROVIDERS)[number];
 
 export const EXPORT_SCOPES = ['blocks_only', 'sfc', 'all'] as const;
@@ -1592,6 +1597,8 @@ export interface StaysCreateExportLinkRequest extends FacilityScopedRequest {
   label: string;
   /** Defaults to 'blocks_only'. */
   scope?: ExportScope;
+  /** Optional (null is the same as leaving it out); the link becomes `xl_{requestId}`, so a double tap or retry returns the link it made. */
+  requestId?: string | null;
 }
 export interface StaysCreateExportLinkResponse {
   linkId: string;
