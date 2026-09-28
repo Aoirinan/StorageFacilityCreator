@@ -5,6 +5,7 @@ import {
   resolveHeroHeadline,
   resolveLocationLabel,
 } from './websiteSeo';
+import { readPublicFacilityMap } from '@sfc/functions-shared';
 
 function normalizeDomain(raw: string): string {
   return raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
@@ -1521,17 +1522,18 @@ export const getPublicWebsiteConfig = functions.runWith({ minInstances: 1 }).htt
     return;
   }
   try {
-    const slug = await resolveSlug(String(req.query.slug || ''), String(req.query.domain || ''), String(req.headers.host || ''));
-    if (!slug) {
+    const requestedSlug = await resolveSlug(
+      String(req.query.slug || ''),
+      String(req.query.domain || ''),
+      String(req.headers.host || ''),
+    );
+    // An old slug is a pointer to the current one: serve that, under its slug.
+    const map = requestedSlug ? await readPublicFacilityMap(admin.firestore(), requestedSlug) : null;
+    if (!map) {
       res.status(404).json({ error: 'Website not found.' });
       return;
     }
-    const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
-    if (!snap.exists) {
-      res.status(404).json({ error: 'Website not found.' });
-      return;
-    }
-    const data = snap.data() || {};
+    const { slug, data } = map;
     const facilityName = String(data.facilityName || 'Storage Facility');
     const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
     const facilityId = String(data.facilityId || '');
@@ -1605,12 +1607,12 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
   const routeFromPath = extractWebsiteRouteFromPath(req.path || req.originalUrl || '');
   const slugFromPath = routeFromPath.slug;
   const categoryFromPath = routeFromPath.categorySlug;
-  const slug = await resolveSlug(
+  const requestedSlug = await resolveSlug(
     String(req.query.slug || slugFromPath || ''),
     String(req.query.domain || ''),
     String(req.headers.host || ''),
   );
-  if (!slug) {
+  if (!requestedSlug) {
     res.status(404).type('text/html').send(toHtml({
       title: 'Website not found',
       description: 'No published facility website exists for this link.',
@@ -1650,8 +1652,10 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
     }));
     return;
   }
-  const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
-  if (!snap.exists) {
+  // An old slug is a pointer to the current one: serve that, and build every
+  // link and the canonical URL from the current slug.
+  const map = await readPublicFacilityMap(admin.firestore(), requestedSlug);
+  if (!map) {
     res.status(404).type('text/html').send(toHtml({
       title: 'Website not found',
       description: 'No published facility website exists for this link.',
@@ -1691,7 +1695,7 @@ export const renderPublicWebsite = functions.runWith({ minInstances: 1 }).https.
     }));
     return;
   }
-  const data = snap.data() || {};
+  const { slug, data } = map;
   const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
   const facilityId = String(data.facilityId || '');
   if (publicSettings.enabled !== true || !(await facilityWebsiteIsEntitled(facilityId))) {
@@ -2019,12 +2023,12 @@ export const sitemapXml = functions.https.onRequest(async (req, res) => {
       res.status(200).type('application/xml').send(emptySitemap);
       return;
     }
-    const snap = await admin.firestore().collection('publicFacilityMaps').doc(slug).get();
-    if (!snap.exists) {
+    const map = await readPublicFacilityMap(admin.firestore(), slug);
+    if (!map) {
       res.status(200).type('application/xml').send(emptySitemap);
       return;
     }
-    const data = snap.data() || {};
+    const data = map.data;
     const publicSettings = (data.publicSettings || {}) as Record<string, unknown>;
     if (publicSettings.enabled !== true) {
       res.status(200).type('application/xml').send(emptySitemap);
