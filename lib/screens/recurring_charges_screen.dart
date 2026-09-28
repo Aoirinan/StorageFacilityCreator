@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/facility_model.dart';
 import '../providers/facility_provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/facility_creator_account_service.dart';
 import '../services/recurring_charges_service.dart';
+import 'package:sfcapp/services/rent_generation_history.dart';
 import '../widgets/modern_page_wrapper.dart';
 import '../theme/app_theme.dart';
 import '../services/modern_navigation_service.dart';
@@ -25,6 +25,8 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
   String _selectedFacilityId = '';
   bool _isGenerating = false;
   DateTime? _selectedDate;
+  Stream<RentGenerationHistoryView>? _history;
+  String? _historyFacilityId;
 
   @override
   void initState() {
@@ -288,15 +290,8 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
               ),
               const SizedBox(height: 16),
               Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('facilities')
-                      .doc(_selectedFacilityId)
-                      .collection('auditLogs')
-                      .where('action', isEqualTo: 'recurringcharge.generated')
-                      .orderBy('at', descending: true)
-                      .limit(50)
-                      .snapshots(),
+                child: StreamBuilder<RentGenerationHistoryView>(
+                  stream: _historyFor(_selectedFacilityId),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
@@ -311,7 +306,8 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
                       );
                     }
 
-                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                    final view = snapshot.data;
+                    if (view == null || view.runs.isEmpty) {
                       return Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -324,38 +320,20 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
                                 color: AppTheme.textSecondary,
                               ),
                             ),
+                            if (view != null && view.olderHistoryUnavailable)
+                              _olderHistoryNote(context),
                           ],
                         ),
                       );
                     }
 
-                    // Group by date (group runs together)
-                    final logs = snapshot.data!.docs;
-                    final groupedLogs = <String, List<DocumentSnapshot>>{};
-                    
-                    for (final log in logs) {
-                      final timestamp = log.data() as Map<String, dynamic>;
-                      final at = timestamp['at'] as Timestamp?;
-                      if (at != null) {
-                        final dateKey = DateFormat('yyyy-MM-dd').format(at.toDate());
-                        groupedLogs.putIfAbsent(dateKey, () => []).add(log);
-                      }
-                    }
-
+                    final runs = view.runs;
                     return ListView.builder(
-                      itemCount: groupedLogs.length,
+                      itemCount: runs.length + (view.olderHistoryUnavailable ? 1 : 0),
                       itemBuilder: (context, index) {
-                        final dateKey = groupedLogs.keys.elementAt(index);
-                        final dateLogs = groupedLogs[dateKey]!;
-                        final firstLog = dateLogs.first;
-                        final timestamp = firstLog.data() as Map<String, dynamic>;
-                        final at = timestamp['at'] as Timestamp?;
-                        final details = timestamp['details'] as Map<String, dynamic>?;
-                        final chargeType = details?['chargeType'] as String? ?? 'unknown';
-                        final amount = (details?['amount'] as num?)?.toDouble() ?? 0.0;
-                        final month = details?['month'] as int?;
-                        final year = details?['year'] as int?;
-                        final actorEmail = timestamp['actorEmail'] as String? ?? 'System';
+                        if (index == runs.length) return _olderHistoryNote(context);
+                        final run = runs[index];
+                        final monthLabel = run.monthLabel;
 
                         return Card(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -365,21 +343,20 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
                               child: Icon(Icons.repeat, color: AppTheme.primaryBlue),
                             ),
                             title: Text(
-                              '${chargeType == 'monthlyRent' ? 'Monthly Rent' : chargeType == 'insurance' ? 'Insurance' : chargeType} Charges',
+                              run.title,
                               style: const TextStyle(fontWeight: FontWeight.bold),
                             ),
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (month != null && year != null)
-                                  Text('For: ${_getMonthName(month)} $year'),
-                                Text('Generated: ${at != null ? DateFormat('MMM d, yyyy h:mm a').format(at.toDate()) : 'Unknown'}'),
-                                Text('By: $actorEmail'),
-                                Text('${dateLogs.length} charge${dateLogs.length == 1 ? '' : 's'} generated'),
+                                if (monthLabel != null) Text('For: $monthLabel'),
+                                Text('Generated: ${DateFormat('MMM d, yyyy h:mm a').format(run.generatedAt)}'),
+                                Text('By: ${run.actor}'),
+                                Text(run.countLabel),
                               ],
                             ),
                             trailing: Text(
-                              '\$${amount.toStringAsFixed(2)}',
+                              '\$${run.total.toStringAsFixed(2)}',
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 color: AppTheme.primaryBlue,
@@ -399,12 +376,27 @@ class _RecurringChargesScreenState extends ConsumerState<RecurringChargesScreen>
     );
   }
 
-  String _getMonthName(int month) {
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    return months[month - 1];
+  Widget _olderHistoryNote(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Text(
+        'Older history could not be loaded.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: AppTheme.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  /// Kept per facility so a rebuild (a setState while generating) doesn't
+  /// reload the history.
+  Stream<RentGenerationHistoryView> _historyFor(String facilityId) {
+    if (_history == null || _historyFacilityId != facilityId) {
+      _historyFacilityId = facilityId;
+      _history = RentGenerationHistory.watch(facilityId);
+    }
+    return _history!;
   }
 
   bool _dryRun = false;
