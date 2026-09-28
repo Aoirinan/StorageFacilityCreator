@@ -43,12 +43,11 @@ export class FacilityBillingNotStoppedError extends Error {
 }
 
 /**
- * Stops the facility's billing, then deletes its public map entry (when it
- * points here), takes it off its creator account (and realigns that
- * account's legacy subscription), deletes the top-level rows keyed by it
- * (roles, public reservations and payment links, domain claims), removes
- * its Storage files and exports best effort, and finally its whole
- * Firestore subtree. [accountId] is the creator account to take it off, or
+ * Stops the facility's billing, then takes it off its creator account (and
+ * realigns that account's legacy subscription), deletes the top-level rows
+ * keyed by it (roles, public reservations and payment links, domain claims,
+ * public map docs), removes its Storage files and exports best effort, and
+ * finally its whole Firestore subtree. [accountId] is the creator account to take it off, or
  * null.
  */
 export async function purgeFacility(
@@ -69,18 +68,6 @@ export async function purgeFacility(
   );
   if (anyCancelFailed(subscriptionOutcomes)) {
     throw new FacilityBillingNotStoppedError(subscriptionOutcomes);
-  }
-
-  const metaSnap = await facilityRef.collection('mapEngine').doc('meta').get();
-  const publicSlug = metaSnap.exists
-    ? String(metaSnap.get('publicSlug') || '').trim().toLowerCase()
-    : '';
-  if (publicSlug) {
-    const pubRef = db.collection('publicFacilityMaps').doc(publicSlug);
-    const pubSnap = await pubRef.get();
-    if (pubSnap.exists && String(pubSnap.get('facilityId') || '') === facilityId) {
-      await db.recursiveDelete(pubRef);
-    }
   }
 
   if (accountId) {
@@ -123,12 +110,16 @@ export async function purgeFacility(
 /**
  * Top-level collections whose rows each name one facility in `facilityId`:
  * a staff role at it, a public reservation or payment link for it, a
- * custom domain it claimed. Outside the facility's subtree, so the
- * recursiveDelete missed them: roles kept pointing former staff at a
- * facility that no longer existed, payment links kept tenants' names and
- * amounts, and a claimed hostname could never be claimed again.
+ * custom domain it claimed, a public map doc (one per slug it has had).
+ * Outside the facility's subtree, so the recursiveDelete missed them: roles
+ * kept pointing former staff at a facility that no longer existed, payment
+ * links kept tenants' names and amounts, and a claimed hostname could never
+ * be claimed again. Public map docs went only for the current slug (from
+ * mapEngine/meta), so every slug the facility had moved away from stayed
+ * world readable, name, units and prices, and stayed reserved.
  */
 export const FACILITY_KEYED_COLLECTIONS = [
+  'publicFacilityMaps',
   'user_roles',
   'publicReservations',
   'publicPaymentLinks',

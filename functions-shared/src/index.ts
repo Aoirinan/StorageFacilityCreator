@@ -193,6 +193,14 @@ export type { AccountDocLike, OwnerAccountStanding, OwnerStandingSyncDeps } from
 export { registerTwilioConfigProvider } from './twilio/configRegistry';
 export { registerHostingConfigProvider } from './hosting/hostingConfigRegistry';
 export type { HostingConfig } from './hosting/hostingConfigRegistry';
+export {
+  PUBLIC_FACILITY_MAPS,
+  movedToSlugOf,
+  planPublicSlugPointers,
+  publicMapPointer,
+  readPublicFacilityMap,
+} from './hosting/publicFacilityMapSlug';
+export type { PublicFacilityMap, SlugPointerChange, SlugPointerPlan } from './hosting/publicFacilityMapSlug';
 export { getTwilioClient, isTwilioDryRunEnabled } from './twilio/client';
 export { verifyTwilioWebhookSignature, twilioWebhookUrl } from './twilio/webhooks';
 export type { A2PStatus } from './twilio/textingOnboardingHelpers';

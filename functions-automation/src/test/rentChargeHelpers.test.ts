@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MoveInRentCover,
+  RENT_CHARGE_LEDGER_TYPES,
+  buildReducedRentChargeDescription,
   buildRentChargeDescription,
   hasRentChargeForMonth,
   isRentChargeForMonth,
+  moveInRentCoversForMonth,
+  planMonthlyRentCharge,
   rentChargeDateFor,
   rentChargeDuplicateWindow,
+  rentChargeLedgerWindow,
   rentChargeMonthAt,
   rentChargeMonthFromInput,
   shouldChargeTenant,
@@ -227,4 +233,323 @@ test('buildRentChargeDescription names the month and year', () => {
   assert.equal(buildRentChargeDescription(2026, 3), 'Monthly Rent - March 2026');
   assert.equal(buildRentChargeDescription(2026, 12), 'Monthly Rent - December 2026');
   assert.equal(buildRentChargeDescription(2027, 1), 'Monthly Rent - January 2027');
+});
+
+// --- rent already charged at move-in -----------------------------------------
+
+/** The online move-in's rows: type 'proratedRent' or 'rent', dated UTC midnight. */
+const online = (type: 'proratedRent' | 'rent', iso: string, amount: number, extra: Record<string, any> = {}) => ({
+  id: `${type}-${iso}`,
+  type,
+  status: 'posted',
+  referenceId: 'c1',
+  amount,
+  entryDate: ts(new Date(iso)),
+  metadata: { lineItemId: null, isProrated: type === 'proratedRent' },
+  ...extra,
+});
+
+/**
+ * The app wizard's rows: type 'rentCharge' with metadata.lineItemType, the
+ * date picked in metadata.moveInDate, and an entryDate that keeps the
+ * wizard's time of day.
+ */
+const app = (
+  lineItemType: 'proratedRent' | 'rent',
+  moveInDate: string,
+  entryIso: string,
+  amount: number,
+  extra: Record<string, any> = {},
+) => ({
+  id: `app-${lineItemType}-${moveInDate}`,
+  type: 'rentCharge',
+  status: 'posted',
+  referenceId: 'c1',
+  amount,
+  entryDate: ts(new Date(entryIso)),
+  metadata: { lineItemType, isProrated: lineItemType === 'proratedRent', moveInDate: `${moveInDate}T00:00:00.000` },
+  ...extra,
+});
+
+const covered = (rows: ReadonlyArray<Record<string, any>>, month: number, year: number) =>
+  moveInRentCoversForMonth(rows, month, year);
+
+test('Keepsake: an online move-in dated 1 Oct, charged all of October at move-in, covers October', () => {
+  // Unit TEST-1, $1 a month, moved in online in September for a tenancy
+  // starting 1 Oct. The job posted "Monthly Rent - October 2026" on top.
+  const rows = [
+    online('proratedRent', '2026-10-01T00:00:00Z', 1),
+    { type: 'payment', status: 'posted', referenceId: 'pi_1', amount: -1, entryDate: ts(new Date('2026-09-23T18:12:00Z')) },
+  ];
+  assert.equal(hasRentChargeForMonth(rows, 10, 2026), false, 'the old check saw no October charge');
+  const covers = covered(rows, 10, 2026);
+  assert.deepEqual(covers, [{ contractId: 'c1', monthlyShare: 1, entryIds: ['proratedRent-2026-10-01T00:00:00Z'] }]);
+  assert.deepEqual(planMonthlyRentCharge({ monthlyRate: 1, covers, heldUnitCount: 1 }), { action: 'skip', covers });
+});
+
+test("the app's prorated rent for a move-in dated the 1st covers that month", () => {
+  // Central time: a midnight move-in on 1 Oct is 05:00 UTC.
+  const rows = [app('proratedRent', '2026-10-01', '2026-10-01T05:00:00Z', 1)];
+  assert.deepEqual(covered(rows, 10, 2026).map((c) => c.monthlyShare), [1]);
+  // It does not reach into November.
+  assert.deepEqual(covered(rows, 11, 2026), []);
+});
+
+test("the app's full month at move-in covers the move-in month", () => {
+  const onTheFirst = [app('rent', '2026-10-01', '2026-10-01T05:00:00Z', 120)];
+  assert.deepEqual(covered(onTheFirst, 10, 2026).map((c) => c.monthlyShare), [120]);
+  // A full month charged for a mid-September move-in is September's, as at
+  // move-out: October is still the job's to charge.
+  const midSeptember = [app('rent', '2026-09-15', '2026-09-15T14:30:00Z', 120)];
+  assert.deepEqual(covered(midSeptember, 10, 2026), []);
+});
+
+test('the online "Next Month Rent" covers the month after the move-in', () => {
+  const rows = [
+    online('proratedRent', '2026-09-20T00:00:00Z', 44),
+    online('rent', '2026-09-20T00:00:00Z', 120, { description: 'Next Month Rent' }),
+  ];
+  const october = covered(rows, 10, 2026);
+  assert.deepEqual(october, [{ contractId: 'c1', monthlyShare: 120, entryIds: ['rent-2026-09-20T00:00:00Z'] }]);
+  assert.equal(planMonthlyRentCharge({ monthlyRate: 120, covers: october, heldUnitCount: 1 }).action, 'skip');
+  // November is not covered: the job charges it.
+  assert.deepEqual(covered(rows, 11, 2026), []);
+});
+
+test('a December "Next Month Rent" covers January of the next year', () => {
+  const rows = [online('rent', '2026-12-20T00:00:00Z', 90)];
+  assert.equal(covered(rows, 1, 2027).length, 1);
+  assert.deepEqual(covered(rows, 12, 2026), []);
+});
+
+test("a mid-month move-in's prorated rent covers only its own month; the job charges the next", () => {
+  const onlineRows = [online('proratedRent', '2026-09-15T00:00:00Z', 64)];
+  const appRows = [app('proratedRent', '2026-09-15', '2026-09-15T14:30:00Z', 64)];
+  assert.deepEqual(covered(onlineRows, 10, 2026), []);
+  assert.deepEqual(covered(appRows, 10, 2026), []);
+  const plan = planMonthlyRentCharge({ monthlyRate: 120, covers: covered(appRows, 10, 2026), heldUnitCount: 1 });
+  assert.deepEqual(plan, { action: 'charge', amount: 120, lessCoveredAtMoveIn: 0, covers: [] });
+});
+
+test("an evening move-in on 30 Sep in the app is September's, though its entryDate is 1 Oct in UTC", () => {
+  // 30 Sep at 21:00 Central is 02:00 UTC on 1 Oct. Read as an instant, its one
+  // prorated day would cover all of October and October would go unbilled.
+  const rows = [app('proratedRent', '2026-09-30', '2026-10-01T02:00:00Z', 4)];
+  assert.deepEqual(covered(rows, 10, 2026), []);
+});
+
+test('a move-in dated later in the month and posted before the 1st covers that month from the move-in', () => {
+  // Recorded in September for a tenancy starting 15 Oct. The days before it
+  // are not the tenancy's, as at move-out, and 15-31 Oct are charged: a full
+  // October from the job charged both again.
+  const rows = [app('proratedRent', '2026-10-15', '2026-10-15T14:00:00Z', 54.84)];
+  const covers = covered(rows, 10, 2026);
+  // Scaled up to the month: 54.84 for 17 of 31 days is $100.00 a month.
+  assert.deepEqual(covers.map((c) => c.monthlyShare), [100]);
+  assert.equal(planMonthlyRentCharge({ monthlyRate: 100, covers, heldUnitCount: 1 }).action, 'skip');
+});
+
+test('a tenancy that starts after the month is not a cover for it', () => {
+  // Dated 1 Nov: inside the ledger window's extra day, but November's rent.
+  const rows = [online('proratedRent', '2026-11-01T00:00:00Z', 100)];
+  assert.deepEqual(covered(rows, 10, 2026), []);
+});
+
+test('only posted move-in rent counts', () => {
+  const voided = [{ ...online('proratedRent', '2026-10-01T00:00:00Z', 1), status: 'voided' }];
+  const pending = [{ ...app('rent', '2026-10-01', '2026-10-01T05:00:00Z', 1), status: 'pending' }];
+  assert.deepEqual(covered(voided, 10, 2026), []);
+  assert.deepEqual(covered(pending, 10, 2026), []);
+});
+
+test('the monthly charge and other ledger rows are not move-in rent', () => {
+  const rows = [
+    { ...recurring(new Date('2026-10-01T12:00:00Z'), 10, 2026), type: 'rentCharge', status: 'posted', amount: 120 },
+    {
+      type: 'rentCharge',
+      status: 'posted',
+      referenceId: 'c1',
+      amount: 120,
+      entryDate: ts(new Date('2026-10-01T12:00:00Z')),
+      metadata: {},
+    },
+    {
+      type: 'insuranceCharge',
+      status: 'posted',
+      referenceId: 'c1',
+      amount: 12,
+      entryDate: ts(new Date('2026-10-01T05:00:00Z')),
+      metadata: { lineItemType: 'insurance', moveInDate: '2026-10-01T00:00:00.000' },
+    },
+  ];
+  assert.deepEqual(covered(rows, 10, 2026), []);
+});
+
+test('a free-month discount at move-in does not make the month uncharged', () => {
+  // +120 rent, -120 coupon: the month was charged at move-in and discounted.
+  // Charging it again on the 1st would take back the coupon.
+  const rows = [
+    app('rent', '2026-10-01', '2026-10-01T05:00:00Z', 120),
+    {
+      type: 'credit',
+      status: 'posted',
+      referenceId: 'c1',
+      amount: -120,
+      entryDate: ts(new Date('2026-10-01T05:00:00Z')),
+      metadata: { lineItemType: 'discount' },
+    },
+  ];
+  assert.deepEqual(covered(rows, 10, 2026).map((c) => c.monthlyShare), [120]);
+});
+
+test('each contract is its own unit', () => {
+  const rows = [
+    online('proratedRent', '2026-10-01T00:00:00Z', 50, { referenceId: 'c1' }),
+    app('rent', '2026-10-01', '2026-10-01T05:00:00Z', 75, { referenceId: 'c2' }),
+  ];
+  assert.deepEqual(
+    covered(rows, 10, 2026).map((c) => [c.contractId, c.monthlyShare]),
+    [
+      ['c1', 50],
+      ['c2', 75],
+    ],
+  );
+});
+
+test("a covering row with no amount leaves the unit's share unknown", () => {
+  const rows = [{ ...online('proratedRent', '2026-10-01T00:00:00Z', 0), amount: undefined }];
+  assert.deepEqual(covered(rows, 10, 2026).map((c) => c.monthlyShare), [null]);
+});
+
+test('February: a move-in on the 1st covers the 28 days', () => {
+  const rows = [online('proratedRent', '2027-02-01T00:00:00Z', 80)];
+  assert.deepEqual(covered(rows, 2, 2027).map((c) => c.monthlyShare), [80]);
+});
+
+// --- what the job charges -----------------------------------------------------
+
+const cover = (contractId: string, monthlyShare: number | null): MoveInRentCover => ({
+  contractId,
+  monthlyShare,
+  entryIds: [],
+});
+
+test('no move-in rent for the month: the full rate', () => {
+  assert.deepEqual(planMonthlyRentCharge({ monthlyRate: 150, covers: [], heldUnitCount: 2 }), {
+    action: 'charge',
+    amount: 150,
+    lessCoveredAtMoveIn: 0,
+    covers: [],
+  });
+});
+
+test('one unit, charged at move-in: nothing, whatever the amounts', () => {
+  for (const share of [150, 120, null]) {
+    const plan = planMonthlyRentCharge({ monthlyRate: 150, covers: [cover('c1', share)], heldUnitCount: 1 });
+    assert.equal(plan.action, 'skip', `share ${share}`);
+  }
+  // A tenant whose unit is not linked to them rents one unit.
+  assert.equal(planMonthlyRentCharge({ monthlyRate: 150, covers: [cover('c1', 150)], heldUnitCount: 0 }).action, 'skip');
+});
+
+test("a unit added to one already rented: the rate less the new unit's rent", () => {
+  // Unit A at $50 for months; unit B at $100 moved in dated 1 Oct, with
+  // October charged at move-in. The rate is $150 for both; B's October is
+  // paid, A's is not.
+  const plan = planMonthlyRentCharge({ monthlyRate: 150, covers: [cover('cB', 100)], heldUnitCount: 2 });
+  assert.equal(plan.action, 'charge');
+  assert.equal(plan.action === 'charge' && plan.amount, 50);
+  assert.equal(plan.action === 'charge' && plan.lessCoveredAtMoveIn, 100);
+});
+
+test('every unit charged at move-in: nothing', () => {
+  const plan = planMonthlyRentCharge({
+    monthlyRate: 150,
+    covers: [cover('cA', 50), cover('cB', 100)],
+    heldUnitCount: 2,
+  });
+  assert.equal(plan.action, 'skip');
+});
+
+test('a covering unit already moved out does not reduce the charge', () => {
+  // B moved in dated 1 Oct and moved out before it; the rate is A's alone.
+  const plan = planMonthlyRentCharge({
+    monthlyRate: 50,
+    covers: [cover('cB', 100)],
+    heldUnitCount: 1,
+    movedOutContractIds: new Set(['cB']),
+  });
+  assert.deepEqual(plan, { action: 'charge', amount: 50, lessCoveredAtMoveIn: 0, covers: [] });
+});
+
+test('several units and a split that does not add up: nothing posted, flagged', () => {
+  // The rate does not cover the other unit: it was never raised when B was
+  // added, or B's rent went down. Charging a guess, or the whole rate on top
+  // of B's move-in rent, would bill the tenant wrongly either way.
+  const short = planMonthlyRentCharge({ monthlyRate: 100, covers: [cover('cB', 100)], heldUnitCount: 2 });
+  assert.equal(short.action, 'review');
+  const unknown = planMonthlyRentCharge({ monthlyRate: 150, covers: [cover('cB', null)], heldUnitCount: 2 });
+  assert.equal(unknown.action, 'review');
+});
+
+test('the reduced charge rounds to the cent', () => {
+  const plan = planMonthlyRentCharge({ monthlyRate: 150.1, covers: [cover('cB', 100.03)], heldUnitCount: 2 });
+  assert.equal(plan.action === 'charge' && plan.amount, 50.07);
+});
+
+test('a reduced charge says why it is under the rate', () => {
+  assert.equal(
+    buildReducedRentChargeDescription(2026, 10, 100),
+    'Monthly Rent - October 2026 (less $100.00 charged at move-in)',
+  );
+});
+
+// --- what the job reads -------------------------------------------------------
+
+test("the job reads its own charges and both move-ins' rent", () => {
+  assert.deepEqual([...RENT_CHARGE_LEDGER_TYPES].sort(), ['proratedRent', 'rent', 'rentCharge']);
+});
+
+test('the ledger window reaches back to "Next Month Rent" dated in the month before', () => {
+  const { start, end } = rentChargeLedgerWindow(2026, 10);
+  assert.equal(start.toISOString(), '2026-08-31T00:00:00.000Z');
+  assert.equal(end.toISOString(), '2026-11-02T00:00:00.000Z');
+  const inside = (iso: string) => {
+    const at = new Date(iso);
+    return at >= start && at < end;
+  };
+  assert.equal(inside('2026-09-01T00:00:00Z'), true, 'Next Month Rent for a move-in on 1 Sep');
+  assert.equal(inside('2026-09-30T22:00:00Z'), true, 'app move-in at a local midnight east of UTC');
+  assert.equal(inside('2026-11-01T02:00:00Z'), true, 'app move-in on the evening of 31 Oct in the US');
+  // Every row the duplicate check needs is inside it.
+  const dup = rentChargeDuplicateWindow(2026, 10);
+  assert.ok(start <= dup.start && dup.end <= end);
+});
+
+test('the ledger window rolls back over the year start', () => {
+  const { start, end } = rentChargeLedgerWindow(2027, 1);
+  assert.equal(start.toISOString(), '2026-11-30T00:00:00.000Z');
+  assert.equal(end.toISOString(), '2027-02-02T00:00:00.000Z');
+});
+
+test('a run on 2026-10-01 skips a tenant whose move-in charged October, and charges one whose did not', () => {
+  // End to end through the helpers the job uses, on the rows its query reads.
+  const { year, month } = rentChargeMonthFromInput('2026-10-01') as { year: number; month: number };
+  const decide = (rows: ReadonlyArray<Record<string, any>>, monthlyRate: number) =>
+    hasRentChargeForMonth(rows, month, year)
+      ? 'already charged'
+      : planMonthlyRentCharge({ monthlyRate, covers: moveInRentCoversForMonth(rows, month, year), heldUnitCount: 1 })
+          .action;
+
+  assert.equal(decide([online('proratedRent', '2026-10-01T00:00:00Z', 1)], 1), 'skip');
+  assert.equal(decide([online('rent', '2026-09-25T00:00:00Z', 120)], 120), 'skip');
+  assert.equal(decide([online('proratedRent', '2026-09-25T00:00:00Z', 24)], 120), 'charge');
+  // A retry after the job posted October still finds that charge first.
+  assert.equal(
+    decide(
+      [online('proratedRent', '2026-09-25T00:00:00Z', 24), recurring(rentChargeDateFor(2026, 10), 10, 2026)],
+      120,
+    ),
+    'already charged',
+  );
 });
