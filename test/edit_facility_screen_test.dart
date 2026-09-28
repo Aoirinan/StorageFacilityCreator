@@ -327,6 +327,11 @@ void main() {
       }
       await _openEditFacility(
           tester, _FakeEditActions(_facility(entitled: entitled)));
+      // The tile sits below the sections above it (late fees, logo), past
+      // what the test view builds without scrolling.
+      await tester.scrollUntilVisible(
+          find.text('Change in Website Setup'), 300,
+          scrollable: find.byType(Scrollable).first);
     }
 
     testWidgets('on when the published map has it on', (tester) async {
