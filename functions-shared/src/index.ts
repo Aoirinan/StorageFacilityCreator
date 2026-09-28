@@ -305,11 +305,16 @@ export {
 export type { UnitNotOfferedReason } from './units/onlineRental';
 export {
   enabledOnlineUnitTypes,
+  hasTenantLink,
   isArchivedForOnlineRental,
   isInternalUseUnit,
+  isUnitClaimedByActiveTenant,
+  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  readUnitNumbersClaimedByActiveTenants,
   unitNotOfferedOnlineReason,
+  unitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from './units/onlineRental';

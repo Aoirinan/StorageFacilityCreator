@@ -4,7 +4,8 @@
     "The app side runs each case through the public map's unit and tenant reads and FacilityMapV2Service.buildPublicUnitInventoryMaps (test/public_map_units_parity_test.dart).",
     "The server side runs each case through syncPublicFacilityMapInventoryForFacility (functions-public-website/src/test/publicFacilityMapInventorySync.test.ts).",
     "expected is keyed by unit doc id and lists every unit that is published; a unit left out of it must not be published. Each entry names the published fields compared for that unit.",
-    "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down."
+    "isRentable must be false for any unit the online rental callables refuse (isUnitOfferedOnline in functions-shared, and a status that lower-cases to 'available' or 'reserved'), or the site offers a unit the hold then turns down.",
+    "The online rental holds run each case too (functions-public-website/src/test/unitClaimedByTenant.test.ts): a hold is taken for exactly the units published with isRentable true, so a unit the map shows rented (a tenant link, or an active tenant's unitNumber) cannot be rented by a direct call."
   ],
   "cases": [
     {
@@ -94,6 +95,48 @@
         "a2": { "isRentable": true, "status": "available" },
         "a3": { "isRentable": true, "status": "available" },
         "a4": { "isRentable": false, "status": "rented" }
+      }
+    },
+    {
+      "name": "an active tenant's unit number claims the unit whatever its case or spacing, on either side",
+      "units": [
+        { "id": "c1", "data": { "unitNumber": "C1", "status": "available", "unitType": "standard" } },
+        { "id": "padded", "data": { "unitNumber": " d2 ", "status": "available", "unitType": "standard" } },
+        { "id": "mixed", "data": { "unitNumber": "Row-E3", "status": "reserved", "unitType": "standard" } },
+        { "id": "moved-out", "data": { "unitNumber": "F4", "status": "available", "unitType": "standard" } },
+        { "id": "text-flag", "data": { "unitNumber": "G5", "status": "available", "unitType": "standard" } },
+        { "id": "free", "data": { "unitNumber": "H6", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "\tc1  " } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": true, "unitNumber": "D2" } },
+        { "id": "t3", "data": { "name": "Cy", "isActive": true, "unitNumber": " rOW-e3" } },
+        { "id": "t4", "data": { "name": "Di", "isActive": false, "unitNumber": "F4" } },
+        { "id": "t5", "data": { "name": "Ed", "isActive": "true", "unitNumber": "G5" } },
+        { "id": "t6", "data": { "name": "Fy", "isActive": true, "unitNumber": "   " } }
+      ],
+      "expected": {
+        "c1": { "isRentable": false, "status": "rented" },
+        "padded": { "isRentable": false, "status": "rented" },
+        "mixed": { "isRentable": false, "status": "rented" },
+        "moved-out": { "isRentable": true, "status": "available" },
+        "text-flag": { "isRentable": true, "status": "available" },
+        "free": { "isRentable": true, "status": "available" }
+      }
+    },
+    {
+      "name": "a unit two active tenants claim by number, with status available and no tenant link, is rented (a shared parking space, as found in production)",
+      "units": [
+        { "id": "uncovered", "data": { "unitNumber": "Uncovered", "status": "available", "unitType": "standard" } },
+        { "id": "covered", "data": { "unitNumber": "Covered", "status": "available", "unitType": "standard" } }
+      ],
+      "tenants": [
+        { "id": "t1", "data": { "name": "Al", "isActive": true, "unitNumber": "Uncovered" } },
+        { "id": "t2", "data": { "name": "Bo", "isActive": true, "unitNumber": "Uncovered" } }
+      ],
+      "expected": {
+        "uncovered": { "isRentable": false, "status": "rented" },
+        "covered": { "isRentable": true, "status": "available" }
       }
     },
     {

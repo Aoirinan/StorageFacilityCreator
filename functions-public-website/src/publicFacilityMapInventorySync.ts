@@ -2,10 +2,13 @@ import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import {
   enabledOnlineUnitTypes,
+  hasTenantLink,
   isArchivedForOnlineRental,
+  isUnitClaimedByActiveTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
   isUnlistedUnit,
+  unitNumbersClaimedByActiveTenants,
   unitTypeOf,
 } from '@sfc/functions-shared';
 
@@ -131,18 +134,13 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
 
   // Every tenant, not a sample: one missing tenant is one unit advertised as free that is not.
   const tenantDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/tenants`));
-  const tenantClaimed = new Set<string>();
-  for (const tdoc of tenantDocs) {
-    const td = tdoc.data();
-    // Active means `isActive` exactly true, as in the app's TenantModel, the
-    // stats function and every server job. This skipped only `=== false`, so
-    // a doc with no isActive claimed its unit here but not in the app's own
-    // publish (FacilityMapV2Service), and the two writers of this list
-    // disagreed about that unit.
-    if (td.isActive !== true) continue;
-    const n = String(td.unitNumber || '').trim().toLowerCase();
-    if (n.length > 0) tenantClaimed.add(n);
-  }
+  // Active means `isActive` exactly true, as in the app's TenantModel, the
+  // stats function and every server job. This skipped only `=== false`, so
+  // a doc with no isActive claimed its unit here but not in the app's own
+  // publish (FacilityMapV2Service), and the two writers of this list
+  // disagreed about that unit. Shared with the online rental callables,
+  // which refuse a unit this marks rented.
+  const tenantClaimed = unitNumbersClaimedByActiveTenants(tenantDocs.map((tdoc) => tdoc.data()));
 
   const unitDocs = await readEveryDoc(db.collection(`facilities/${facilityId}/units`));
   const units: Record<string, any>[] = [];
@@ -171,10 +169,8 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     // published the stored value, so an imported 101 went out as a number here and as '101' from
     // the app's publish, and a missing one as undefined, which Firestore rejects.
     const unum = String(d.unitNumber ?? '');
-    const unitNumNorm = unum.trim().toLowerCase();
-    const hasTenantLink =
-      typeof d.tenantId === 'string' && String(d.tenantId).trim() !== '';
-    const claimedByActiveTenant = tenantClaimed.has(unitNumNorm);
+    const linkedToTenant = hasTenantLink(d);
+    const claimedByActiveTenant = isUnitClaimedByActiveTenant(d, tenantClaimed);
     const statusAllowsRental = st === 'available' || st === 'reserved';
     const publicListingEnabled = !isUnlistedUnit(d);
     // The online rental callables rent only what isUnitOfferedOnline allows:
@@ -184,13 +180,13 @@ export async function syncPublicFacilityMapInventoryForFacility(facilityId: stri
     const offeredOnline = isUnitOfferedOnline(d);
     const isRentable =
       statusAllowsRental &&
-      !hasTenantLink &&
+      !linkedToTenant &&
       !claimedByActiveTenant &&
       isPubliclyEnabledType &&
       offeredOnline;
     const publicStatus = !offeredOnline
       ? 'unavailable'
-      : hasTenantLink || claimedByActiveTenant
+      : linkedToTenant || claimedByActiveTenant
       ? 'rented'
       : statusToPublicStatus(st);
 

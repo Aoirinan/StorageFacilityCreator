@@ -10,8 +10,10 @@ import {
   getStripeClient,
   isArchivedForOnlineRental,
   isInternalUseUnit,
+  isUnitHeldByTenant,
   isUnitOfferedOnline,
   isUnitTypeOfferedOnline,
+  readUnitNumbersClaimedByActiveTenants,
   sendFacilityEmailWithCompliance,
   unitNotOfferedOnlineReason,
   unitTypeOf,
@@ -287,14 +289,33 @@ async function assertFacilityTakesOnlineRentals(facilityId: string): Promise<Rec
 /**
  * Someone else has the unit, or the owner has it out of service: a status
  * other than available or reserved (a missing one is let through, as move-in
- * always has), or a link to a tenant, which the public map shows as rented.
- * Renting it would overwrite that tenant or that status, so it is refused
+ * always has), a link to a tenant, or an active tenant whose unit number is
+ * this unit's ([claimed], from readUnitNumbersClaimedByActiveTenants). The
+ * public map shows the last two as rented. Renting it would overwrite that
+ * tenant or that status, or put a second tenant in the unit, so it is refused
  * before payment and refunded after.
  */
-function unitIsTaken(unit: Record<string, unknown>): boolean {
+function unitIsTaken(unit: Record<string, unknown>, claimed: ReadonlySet<string>): boolean {
   const status = String(unit.status || '').toLowerCase();
   if (status && status !== 'available' && status !== 'reserved') return true;
-  return typeof unit.tenantId === 'string' && unit.tenantId.trim() !== '';
+  return isUnitHeldByTenant(unit, claimed);
+}
+
+function facilityTenants(facilityId: string): admin.firestore.CollectionReference {
+  return admin.firestore().collection('facilities').doc(facilityId).collection('tenants');
+}
+
+/**
+ * Whether [hold] (a unit's activeHolds doc) is another reservation's and has
+ * not run out: someone else is in checkout for the unit.
+ */
+function heldForAnotherReservation(
+  hold: Record<string, unknown> | null,
+  reservationId: string,
+  now: Date,
+): boolean {
+  const expiresAt = hold?.expiresAt as admin.firestore.Timestamp | undefined;
+  return Boolean(hold && hold.reservationId !== reservationId && expiresAt && expiresAt.toDate() > now);
 }
 
 /**
@@ -427,11 +448,15 @@ export const createPublicReservationHold = functions.https.onCall(async (data: a
     // One refusal for all of these, so a caller cannot tell an unlisted or
     // internal-use unit from a rented one. The unit type too: the public map
     // marks a type the owner turned off not rentable, but a direct call held
-    // it.
+    // it. And a unit a tenant has, by link or by an active tenant's unit
+    // number: the map shows it rented, but a stale map or a direct call with
+    // its published id held it, and a second tenant moved in. The tenants are
+    // read only for a unit that passes the rest.
     if (
       (unitStatus !== 'available' && unitStatus !== 'reserved') ||
       !isUnitOfferedOnline(unitData) ||
-      !isUnitTypeOfferedOnline(unitData, enabledUnitTypes)
+      !isUnitTypeOfferedOnline(unitData, enabledUnitTypes) ||
+      unitIsTaken(unitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(String(facilityId)), tx))
     ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
@@ -654,9 +679,9 @@ export const createPublicMoveInCheckout = functions
   // its type taken off online rental while it is held (up to 15 minutes for a
   // public hold, 60 for a tenant-portal one). completePublicMoveIn has to
   // refund or move in such a renter once they have paid, so checkout refuses
-  // them first. Same test and refusal as both holds, plus the tenant link the
-  // public map shows as rented; trimmed as loadPublicMoveInChargeQuote does,
-  // so the unit checked is the unit priced.
+  // them first. Same test and refusal as both holds, including a tenant's
+  // link or unit number, which the public map shows as rented; trimmed as
+  // loadPublicMoveInChargeQuote does, so the unit checked is the unit priced.
   const reservedUnitId = String(reservation.unitId || '').trim();
   if (reservedUnitId) {
     const [unitSnap, publicSettings] = await Promise.all([
@@ -673,9 +698,9 @@ export const createPublicMoveInCheckout = functions
     if (
       !unitData ||
       (unitStatus !== 'available' && unitStatus !== 'reserved') ||
-      unitIsTaken(unitData) ||
       !isUnitOfferedOnline(unitData) ||
-      !isUnitTypeOfferedOnline(unitData, enabledOnlineUnitTypes(publicSettings))
+      !isUnitTypeOfferedOnline(unitData, enabledOnlineUnitTypes(publicSettings)) ||
+      unitIsTaken(unitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(facilityId)))
     ) {
       throw new functions.https.HttpsError('failed-precondition', 'Unit is not currently available');
     }
@@ -1185,7 +1210,7 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       refuseUnlessPaid('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
     } else {
       preloadedUnitData = unitSnap.data() as Record<string, any>;
-      if (unitIsTaken(preloadedUnitData)) {
+      if (unitIsTaken(preloadedUnitData, await readUnitNumbersClaimedByActiveTenants(facilityTenants(facilityId)))) {
         refuseUnlessPaid(
           'unit-taken',
           new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),
@@ -1543,6 +1568,16 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
     const facilitySnap = await tx.get(facilityDocRef);
     const unitRef = unitId ? facilityDocRef.collection('units').doc(unitId) : null;
     const unitSnap = unitRef ? await tx.get(unitRef) : null;
+    // Who else has the unit: an active tenant with its number, or another
+    // reservation checking out for it after this one's hold ran out. Read
+    // here, so a tenant added or a unit held since the reads above is seen.
+    const claimedUnitNumbers = unitRef
+      ? await readUnitNumbersClaimedByActiveTenants(facilityDocRef.collection('tenants'), tx)
+      : new Set<string>();
+    const holdRef = unitId
+      ? facilityDocRef.collection('mapEngine').doc('activeHolds').collection('items').doc(unitId)
+      : null;
+    const holdSnap = holdRef ? await tx.get(holdRef) : null;
 
     const freshData = (freshReservation.data() || {}) as Record<string, any>;
     if (freshReservation.exists && freshData.moveInToken !== token) {
@@ -1584,7 +1619,11 @@ export const completePublicMoveIn = functions.runWith({ secrets: [...STRIPE_SECR
       return refuse('unit-missing', new functions.https.HttpsError('not-found', 'Reserved unit not found'));
     }
     const freshUnit = (unitSnap?.data() || null) as Record<string, any> | null;
-    if (freshUnit && unitIsTaken(freshUnit)) {
+    const freshHold = holdSnap?.exists ? (holdSnap.data() as Record<string, unknown>) : null;
+    if (
+      (freshUnit && unitIsTaken(freshUnit, claimedUnitNumbers)) ||
+      heldForAnotherReservation(freshHold, String(reservationId), new Date())
+    ) {
       return refuse(
         'unit-taken',
         new functions.https.HttpsError('failed-precondition', 'Unit is no longer available'),

@@ -1,7 +1,8 @@
 /**
  * A small in-memory Firestore for callable tests, modelled on the one in
  * functions-public-website/src/test/support. Only what the tests here use:
- * doc get/set/update, a whole-collection get, and transactions.
+ * doc get/set/update, a collection get with equality filters, and
+ * transactions.
  */
 import * as admin from 'firebase-admin';
 
@@ -74,15 +75,30 @@ export class InMemoryFirestore {
       }
     }
 
+    /** A collection, or a query on one; only equality (`==`) filters are applied. */
     class CollectionRef {
-      constructor(readonly path: string) {}
+      constructor(
+        readonly path: string,
+        private readonly equals: Array<[string, unknown]> = [],
+      ) {}
 
       doc(id?: string): DocRef {
         return new DocRef(`${this.path}/${id || `auto_${store.size + 1}`}`);
       }
 
+      where(field: string, op: string, value: unknown): CollectionRef {
+        if (op !== '==') throw new Error(`in-memory Firestore: unsupported where op ${op}`);
+        return new CollectionRef(this.path, [...this.equals, [field, value]]);
+      }
+
       async get() {
-        const docs = owner.listCollection(this.path).map((key) => new DocSnapshot(new DocRef(key)));
+        const docs = owner
+          .listCollection(this.path)
+          .filter((key) => {
+            const data = store.get(key) || {};
+            return this.equals.every(([field, value]) => field in data && data[field] === value);
+          })
+          .map((key) => new DocSnapshot(new DocRef(key)));
         return {
           empty: docs.length === 0,
           size: docs.length,

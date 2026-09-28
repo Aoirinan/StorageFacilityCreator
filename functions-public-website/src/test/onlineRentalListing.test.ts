@@ -276,10 +276,16 @@ test('a unit with no type is standard, so it can be held and moved into when sta
 
   // Before: read as '' here and 'standard' by the app, so the public map
   // offered the unit and the hold refused it.
-  assert.equal(((await hold(holdRequest)) as { success?: boolean }).success, true);
+  const held = (await hold(holdRequest)) as { success?: boolean; reservationId?: string; moveInToken?: string };
+  assert.equal(held.success, true);
 
-  seedReservation(inMemory);
-  const result = (await complete(completeRequest)) as { success?: boolean };
+  // The reservation that hold made: completing another one while this hold
+  // is live is refused, as someone else is in checkout for the unit.
+  const result = (await complete({
+    ...completeRequest,
+    reservationId: held.reservationId,
+    token: held.moveInToken,
+  })) as { success?: boolean };
   assert.equal(result.success, true);
   assert.equal(inMemory.read(UNIT_PATH)?.status, 'occupied');
 });
