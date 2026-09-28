@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,10 +11,13 @@ import 'package:sfcapp/models/tenant_model.dart';
 import 'package:sfcapp/providers/ledger_provider.dart';
 import 'package:sfcapp/providers/payment_provider.dart';
 import 'package:sfcapp/screens/ledger_screen.dart';
+import 'package:sfcapp/services/ledger_service.dart';
 import 'package:sfcapp/services/payment_service.dart';
 import 'package:sfcapp/services/public_payment_link_service.dart';
 import 'package:sfcapp/services/stripe_service.dart';
 import 'package:sfcapp/widgets/dispute_payment_dialog.dart';
+
+import 'support/fake_firestore_store.dart';
 
 // Made-up names and ids only: this repo is public.
 
@@ -114,7 +119,117 @@ Future<(StreamController<List<LedgerEntry>>, _RecordingOperations)> _pumpLedger(
 
 const _action = 'Record payment for this dispute';
 
+/// PaymentService and LedgerService writing to a [FakeStore].
+class _StoreFirestore extends Fake implements FirebaseFirestore {
+  _StoreFirestore(this.store);
+
+  final FakeStore store;
+
+  @override
+  CollectionReference<Map<String, dynamic>> collection(String collectionPath) =>
+      store.collection(collectionPath);
+}
+
+/// The app's own services on a store holding tenant t1, paid through March.
+FakeStore _useStore() {
+  final store = FakeStore()
+    ..put('facilities/f1/tenants/t1', {
+      'name': 'Pat Tenant',
+      'unitNumber': 'A1',
+      'monthlyRate': 100,
+      'paidThrough': Timestamp.fromDate(DateTime(2026, 3, 31)),
+    });
+  final firestore = _StoreFirestore(store);
+  final auth = MockFirebaseAuth(signedIn: true, mockUser: MockUser(uid: 'owner'));
+  PaymentService.firestoreForTesting = firestore;
+  PaymentService.authForTesting = auth;
+  LedgerService.firestoreForTesting = firestore;
+  LedgerService.authForTesting = auth;
+  addTearDown(() {
+    PaymentService.firestoreForTesting = null;
+    PaymentService.authForTesting = null;
+    LedgerService.firestoreForTesting = null;
+    LedgerService.authForTesting = null;
+  });
+  return store;
+}
+
+List<Map<String, dynamic>> _ledgerRows(FakeStore store) => [
+      for (final id in store.idsIn('facilities/f1/ledgers')) store.data('facilities/f1/ledgers/$id')!,
+    ];
+
+DateTime? _paidThrough(FakeStore store) =>
+    (store.data('facilities/f1/tenants/t1')!['paidThrough'] as Timestamp?)?.toDate();
+
 void main() {
+  group("with the app's own payment and ledger services", () {
+    testWidgets('cash for a lost dispute, taken from its row, is booked against it and buys no month',
+        (tester) async {
+      final store = _useStore();
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      const params = LedgerParams(tenantId: 't1', facilityId: 'f1');
+      final source = StreamController<List<LedgerEntry>>.broadcast();
+      addTearDown(source.close);
+      // The real PaymentOperationsNotifier: the tap runs all the way to the writes.
+      await tester.pumpWidget(ProviderScope(
+        overrides: [ledgerStreamProvider(params).overrideWith((ref) => source.stream)],
+        child: MaterialApp(home: Scaffold(body: LedgerScreen(tenant: _tenant))),
+      ));
+      source.add(_lostDispute());
+      await tester.pump();
+      await tester.pump();
+
+      await tester.tap(find.text(_action));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.descendant(of: find.byType(DisputePaymentDialog), matching: find.byType(TextField)).at(1), '0042');
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Record payment'));
+      await tester.pumpAndSettle();
+
+      final rows = _ledgerRows(store);
+      expect(rows, hasLength(1));
+      expect(rows.single['amount'], -100);
+      expect(rows.single['type'], 'payment');
+      expect(rows.single['description'], 'Card dispute payment - ${PaymentMethod.cash.displayName} #0042');
+      expect((rows.single['metadata'] as Map)['disputeId'], 'du_1');
+      expect((rows.single['metadata'] as Map)['reference'], '0042');
+      // Before: an untagged payment that bought April as well.
+      expect(_paidThrough(store), DateTime(2026, 3, 31));
+      expect(store.idsIn('facilities/f1/payments'), hasLength(1));
+
+      // The row the store now holds, back on the ledger: the dispute is
+      // settled and April's $100 is what is owed and collectible.
+      final entries = [
+        ..._lostDispute(),
+        _entry('hand_du_1', -100, storedType: 'payment', metadata: Map<String, dynamic>.from(rows.single['metadata'] as Map)),
+      ];
+      source.add(entries);
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('from card disputes'), findsNothing);
+      expect(find.text(_action), findsNothing);
+      expect(splitPostedLedgerEntries(entries).collectible, 100);
+      expect(splitPostedLedgerEntries(entries).disputed, 0);
+    });
+
+    test('rent recorded by hand still moves paid-through and carries no dispute id', () async {
+      final store = _useStore();
+
+      await PaymentService.recordManualPayment(
+        facilityId: 'f1',
+        tenantId: 't1',
+        amount: 100,
+        method: PaymentMethod.check,
+        reference: '1234',
+      );
+
+      expect((_ledgerRows(store).single['metadata'] as Map).containsKey('disputeId'), isFalse);
+      expect(_paidThrough(store), DateTime(2026, 4, 30));
+    });
+  });
+
   testWidgets(
       'a lost dispute paid in cash from its ledger row is booked against the dispute, and the note goes',
       (tester) async {

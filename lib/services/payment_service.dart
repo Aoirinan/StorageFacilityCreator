@@ -49,7 +49,15 @@ String? paymentNotProcessableReason(Object? status) {
 }
 
 class PaymentService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // A getter, not a final field, so a test can run recordManualPayment's
+  // real writes (see firestoreForTesting), as LedgerService allows.
+  static FirebaseFirestore get _firestore =>
+      _firestoreForTesting ?? FirebaseFirestore.instance;
+  static FirebaseFirestore? _firestoreForTesting;
+
+  @visibleForTesting
+  static set firestoreForTesting(FirebaseFirestore? firestore) =>
+      _firestoreForTesting = firestore;
   // A getter, not a final field, so tests can sign a fake user in and run
   // markPaymentAsPaid's real transaction (see authForTesting).
   static FirebaseAuth get _auth => _authForTesting ?? FirebaseAuth.instance;
