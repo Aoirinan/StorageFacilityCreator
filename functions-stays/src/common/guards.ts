@@ -69,7 +69,7 @@ export function staysCallable<Res>(
     } catch (error) {
       if (error instanceof functions.https.HttpsError) throw error;
       functions.logger.error(`${name} failed`, {
-        message: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
       });
       throw staysError('internal', 'internal', 'Something went wrong on our side. Try again.');
     }
@@ -261,34 +261,41 @@ export async function runStaysGuards(
   // 8. Rate limits: facility-wide, then per user.
   const limit = options.rateLimit;
   if (limit) {
-    try {
-      if (limit.perFacility !== undefined) {
-        await deps.enforceRateLimit({
-          facilityId,
-          key: limit.key,
-          limit: limit.perFacility,
-          windowSeconds: limit.windowSeconds,
-          userId: uid,
-        });
-      }
-      if (limit.perUser !== undefined) {
-        await deps.enforceRateLimit({
-          facilityId,
-          key: `${limit.key}_u_${uid}`,
-          limit: limit.perUser,
-          windowSeconds: limit.windowSeconds,
-          userId: uid,
-        });
-      }
-    } catch (error) {
-      if (error instanceof functions.https.HttpsError && error.code === 'resource-exhausted') {
-        throw staysError('resource-exhausted', 'rate_limited', 'Too many requests. Wait a moment and try again.');
-      }
-      throw error;
+    if (limit.perFacility !== undefined) {
+      await enforceStaysRateLimit(deps, { facilityId, key: limit.key, limit: limit.perFacility, windowSeconds: limit.windowSeconds, userId: uid });
+    }
+    if (limit.perUser !== undefined) {
+      await enforceUserRateLimit({ uid, facilityId, deps }, limit.key, limit.perUser, limit.windowSeconds);
     }
   }
 
   return { uid, facilityId, role, controls, gate, facilityTimeZone: access.facilityTimeZone, data, db, deps, nowMs };
+}
+
+/** One rate limit, refused as `rate_limited`. */
+async function enforceStaysRateLimit(deps: StaysDeps, config: RateLimitConfig): Promise<void> {
+  try {
+    await deps.enforceRateLimit(config);
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError && error.code === 'resource-exhausted') {
+      throw staysError('resource-exhausted', 'rate_limited', 'Too many requests. Wait a moment and try again.');
+    }
+    throw error;
+  }
+}
+
+/**
+ * A per-user limit (`${key}_u_${uid}`): step 8's, or a callable's own on
+ * something narrower than the whole call, such as an employee's phone-number
+ * lookups in guest search.
+ */
+export async function enforceUserRateLimit(
+  ctx: Pick<StaysCallContext, 'uid' | 'facilityId' | 'deps'>,
+  key: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<void> {
+  await enforceStaysRateLimit(ctx.deps, { facilityId: ctx.facilityId, key: `${key}_u_${ctx.uid}`, limit, windowSeconds, userId: ctx.uid });
 }
 
 /**
@@ -315,7 +322,7 @@ export async function auditStays(ctx: StaysCallContext, entry: Omit<StaysAuditEn
   } catch (error) {
     functions.logger.warn('stays: audit write failed', {
       eventType: entry.eventType,
-      message: error instanceof Error ? error.message : String(error),
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 }

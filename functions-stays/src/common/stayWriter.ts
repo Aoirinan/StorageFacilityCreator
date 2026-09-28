@@ -595,7 +595,9 @@ export async function applyStayMutations(input: ApplyStayMutationsInput): Promis
       const outcome = outcomes[m.stayId];
       if (isActiveStatus(next.status)) {
         if (outcome && fullyRebuilt(next)) {
-          next = { ...next, status: outcome.status, conflict: conflictFor(outcome, old?.conflict, now) };
+          // An acknowledgement the write adds (staysReviewStay) is kept when the conflict itself is unchanged.
+          const acked = next.conflict?.acknowledgedAt ? next.conflict : old?.conflict;
+          next = { ...next, status: outcome.status, conflict: conflictFor(outcome, acked, now) };
         }
       } else if (next.conflict) {
         next = { ...next, conflict: null };

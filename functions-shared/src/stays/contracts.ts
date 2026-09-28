@@ -631,6 +631,13 @@ export interface StayFolioAirbnb {
   expectedOnly?: boolean;
 }
 
+/** The party a folio's lines were priced for. */
+export interface StayFolioParty {
+  adults: number;
+  children: number;
+  pets: number;
+}
+
 /** stayFolios/{stayId}: owner/manager read, callables write. */
 export interface StayFolioDoc {
   facilityId: string;
@@ -647,6 +654,18 @@ export interface StayFolioDoc {
   quotedAt: StayTimestamp;
   adjustment: StayFolioAdjustment | null;
   airbnb: StayFolioAirbnb | null;
+  /**
+   * Staff may change a stay's party on the stay doc directly (the rules'
+   * quick fields), which prices nothing, so this can differ from the stay's.
+   * staysModifyStay never re-prices that difference on its own: only with
+   * `repriceParty: true` or a count that `changes.guest` changes on the
+   * stay (owner or manager; a count sent as it already is decides nothing),
+   * and it asks (`party_reprice_required`) before pricing new dates for a
+   * party that changed. A booking that no longer holds its nights is never
+   * re-priced for its party. Absent on a folio no quote made (an Airbnb CSV
+   * match).
+   */
+  party?: StayFolioParty | null;
   updatedAt: StayTimestamp;
 }
 
@@ -1120,6 +1139,7 @@ export const STAYS_ERROR_REASONS = [
   'soft_block',
   'short_lead_ack_required',
   'do_not_rent',
+  'party_reprice_required',
   // Ownership and concurrency
   'feed_owned_dates',
   'version_mismatch',
@@ -1418,6 +1438,15 @@ export interface StaysModifyStayRequest extends FacilityScopedRequest {
   payment?: StayPaymentInput;
   /** Required with `payment`: the income row is `man_{requestId}`. */
   requestId?: string;
+  /**
+   * Owner or manager only, when the stay's party differs from the one its
+   * folio was priced for (`folio.party`): true prices the stay's party now,
+   * false keeps the price for the party it was priced for. Without it such
+   * a difference is never priced, and new dates are refused with
+   * `party_reprice_required` (details `{pricedParty, party}`), unless
+   * `changes.guest` changes a count (then the new party is priced).
+   */
+  repriceParty?: boolean;
 }
 export interface StaysModifyStayResponse {
   stay: Wire<StayDoc>;

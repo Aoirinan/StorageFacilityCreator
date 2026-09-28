@@ -143,6 +143,7 @@ enum StaysErrorReason implements WireEnum {
   softBlock('soft_block'),
   shortLeadAckRequired('short_lead_ack_required'),
   doNotRent('do_not_rent'),
+  partyRepriceRequired('party_reprice_required'),
   feedOwnedDates('feed_owned_dates'),
   versionMismatch('version_mismatch'),
   contention('contention'),
@@ -710,6 +711,41 @@ class StaysCreateStayResult {
   final List<StaysWarning> warnings;
 }
 
+/// The guest fields a staysModifyStay changes; only what is set is sent.
+/// Not [StayGuestInput]: its create-form defaults (1 adult, no children or
+/// pets) would turn a rename into a party change, which an owner's or
+/// manager's edit prices.
+class StayGuestPatch {
+  const StayGuestPatch({
+    this.displayName,
+    this.adults,
+    this.children,
+    this.pets,
+    this.rvLengthFt,
+    this.clearRvLength = false,
+  });
+
+  final String? displayName;
+  final int? adults;
+  final int? children;
+  final int? pets;
+  final int? rvLengthFt;
+
+  /// Sends `rvLengthFt: null`, clearing the rig length ([rvLengthFt] unset).
+  final bool clearRvLength;
+
+  Map<String, dynamic> toJson() => {
+        ..._withoutNulls({
+          'displayName': displayName,
+          'adults': adults,
+          'children': children,
+          'pets': pets,
+          'rvLengthFt': rvLengthFt,
+        }),
+        if (clearRvLength && rvLengthFt == null) 'rvLengthFt': null,
+      };
+}
+
 class StaysModifyStayChanges {
   const StaysModifyStayChanges({
     this.checkIn,
@@ -725,7 +761,7 @@ class StaysModifyStayChanges {
   final String? listingId;
   final String? checkInTime;
   final String? checkOutTime;
-  final StayGuestInput? guest;
+  final StayGuestPatch? guest;
 
   Map<String, dynamic> toJson() => _withoutNulls({
         'checkIn': checkIn,
@@ -747,6 +783,7 @@ class StaysModifyStayRequest {
     this.acknowledgeShortLead,
     this.payment,
     this.requestId,
+    this.repriceParty,
   });
 
   final String facilityId;
@@ -760,6 +797,13 @@ class StaysModifyStayRequest {
   /// Required with [payment]: the income row is man_{requestId}.
   final String? requestId;
 
+  /// Owner or manager, when the stay's party differs from the folio's: true
+  /// prices the party now on the stay, false keeps the price for the party
+  /// it was priced for. Unset, new dates fail with
+  /// [StaysErrorReason.partyRepriceRequired] unless [changes] sets a new
+  /// count, which is priced.
+  final bool? repriceParty;
+
   Map<String, dynamic> toJson() => _withoutNulls({
         'facilityId': facilityId,
         'stayId': stayId,
@@ -769,6 +813,7 @@ class StaysModifyStayRequest {
         'acknowledgeShortLead': acknowledgeShortLead,
         'payment': payment?.toJson(),
         'requestId': requestId,
+        'repriceParty': repriceParty,
       });
 }
 

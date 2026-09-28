@@ -339,8 +339,41 @@ void main() {
         },
       ));
       expect(soft.softBlockDates, ['2026-10-04']);
+      final party = staysExceptionFrom(FirebaseFunctionsException(
+        code: 'failed-precondition',
+        message: 'The number of guests changed since this booking was priced.',
+        details: {
+          'reason': 'party_reprice_required',
+          'pricedParty': {'adults': 2, 'children': 0, 'pets': 0},
+          'party': {'adults': 3, 'children': 1, 'pets': 1},
+        },
+      ));
+      expect(party.reason, StaysErrorReason.partyRepriceRequired);
       expect(staysExceptionFrom(Exception('offline')).reason, StaysErrorReason.unknown);
       expect(staysExceptionFrom(FirebaseFunctionsException(code: 'internal', message: 'x')).reason, StaysErrorReason.unknown);
+    });
+
+    test('a modify sends repriceParty only when a choice was made', () {
+      const base = StaysModifyStayRequest(facilityId: 'f1', stayId: 'man_1', expectedVersion: 3, changes: StaysModifyStayChanges(checkOut: '2026-10-09'));
+      expect(base.toJson().containsKey('repriceParty'), isFalse);
+      const keep = StaysModifyStayRequest(
+        facilityId: 'f1',
+        stayId: 'man_1',
+        expectedVersion: 3,
+        changes: StaysModifyStayChanges(checkOut: '2026-10-09'),
+        repriceParty: false,
+      );
+      expect(keep.toJson()['repriceParty'], isFalse);
+    });
+
+    test('a modify sends only the guest fields it changes, never a party it did not set', () {
+      const rename = StaysModifyStayChanges(guest: StayGuestPatch(displayName: 'Ann B.'));
+      expect(rename.toJson(), {
+        'guest': {'displayName': 'Ann B.'},
+      });
+      expect(const StayGuestPatch(adults: 3).toJson(), {'adults': 3});
+      expect(const StayGuestPatch(clearRvLength: true).toJson(), {'rvLengthFt': null});
+      expect(const StayGuestPatch(rvLengthFt: 32, clearRvLength: true).toJson(), {'rvLengthFt': 32});
     });
   });
   group('guest consent', () {

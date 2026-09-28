@@ -77,7 +77,7 @@ export async function loadStaysGate(db: Firestore, nowMs: number): Promise<Stays
     return gate;
   } catch (error) {
     functions.logger.error('stays: could not read staysServerConfig/current; failing closed', {
-      message: error instanceof Error ? error.message : String(error),
+      error: error instanceof Error ? error.message : String(error),
     });
     return closedGate('error');
   }
