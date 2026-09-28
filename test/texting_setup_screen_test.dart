@@ -1,5 +1,6 @@
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -224,6 +225,30 @@ TextingOnboardingSnapshot _atReview({
       bundleIssues: bundleIssues,
     );
 
+/// Submitted, with a DBA, no support email and two consent methods.
+const _submittedWithDbaSnapshot = TextingOnboardingSnapshot(
+  status: TextingRegistrationStatus.pending,
+  platformApproved: false,
+  phoneNumber: '+15125550100',
+  businessDetails: TextingBusinessDetails(
+    legalBusinessName: 'Example Storage LLC',
+    dba: 'Example Storage Co',
+    businessType: 'LLC',
+    addressLine1: '100 Main Street',
+    city: 'Austin',
+    state: 'TX',
+    postalCode: '78701',
+    website: 'https://storage.example',
+    supportEmail: '',
+    supportPhone: '',
+    representativeFirstName: 'Dana',
+    representativeLastName: 'Reyes',
+  ),
+  useCases: ['Payment reminders'],
+  consentMethods: ['verbal_recorded', 'lease_clause'],
+  hasTrustProfile: true,
+);
+
 const _rejectedSnapshot = TextingOnboardingSnapshot(
   status: TextingRegistrationStatus.rejected,
   platformApproved: false,
@@ -276,6 +301,95 @@ void main() {
       expect(repository.resetCount, 1);
       expect(controller.showDashboard, isFalse);
       controller.dispose();
+    });
+  });
+
+  group('Website wording card', () {
+    testWidgets('fills in the saved details and chosen methods, and copies',
+        (tester) async {
+      final copied = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null));
+
+      await _pumpScreen(
+          tester, _FakeRepository({'facility-1': _oneUseCaseSnapshot}));
+
+      expect(find.text('Wording for your website'), findsOneWidget);
+      expect(
+        find.text('Ask whoever manages your website to add this to your '
+            'privacy policy, or post it as its own page linked from the '
+            'footer. Twilio checks for it.'),
+        findsOneWidget,
+      );
+      final wording = tester
+          .widget<SelectableText>(find.byKey(const Key('website-wording-text')))
+          .data!;
+      expect(wording, startsWith('Text Messages (SMS)\n\nExample Self Storage '));
+      expect(
+        wording,
+        contains('after you have agreed to receive texts on our online rental '
+            'form.'),
+      );
+      expect(
+        wording,
+        contains('reach us at (512) 555-0100 or help@storage.example.'),
+      );
+      expect(wording, isNot(contains('START')));
+
+      // The card sits under the setup card, below the fold.
+      final list = tester.state<ScrollableState>(find.byType(Scrollable).first);
+      list.position.jumpTo(list.position.maxScrollExtent);
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('website-wording-copy')));
+      await tester.pump();
+
+      expect(find.text('Website wording copied'), findsOneWidget);
+      expect(copied, [wording]);
+    });
+
+    testWidgets('on the dashboard, uses the DBA and the facility email',
+        (tester) async {
+      await _pumpScreen(
+        tester,
+        _FakeRepository({'facility-1': _submittedWithDbaSnapshot}),
+        facilityEmail: 'office@storage.example',
+      );
+
+      expect(find.byKey(const Key('status-pending')), findsOneWidget);
+      final wording = tester
+          .widget<SelectableText>(find.byKey(const Key('website-wording-text')))
+          .data!;
+      expect(wording, contains('\n\nExample Storage Co sends text messages'));
+      expect(
+        wording,
+        contains('agreed to receive texts in your rental agreement or in '
+            'person.'),
+      );
+      expect(wording, contains('reach us at office@storage.example.'));
+    });
+
+    testWidgets('uses the generic consent list before any method is chosen',
+        (tester) async {
+      await _pumpScreen(
+          tester, _FakeRepository({'facility-1': _savedDraftSnapshot}));
+
+      final wording = tester
+          .widget<SelectableText>(find.byKey(const Key('website-wording-text')))
+          .data!;
+      expect(
+        wording,
+        contains('agreed to receive texts, for example in your rental '
+            'agreement, on a signed form, or in person.'),
+      );
     });
   });
 
@@ -581,6 +695,7 @@ Future<void> _pumpScreen(
   WidgetTester tester,
   TextingOnboardingRepository repository, {
   bool isSuperAdmin = false,
+  String? facilityEmail,
 }) async {
   tester.view.physicalSize = const Size(1200, 900);
   tester.view.devicePixelRatio = 1;
@@ -592,6 +707,7 @@ Future<void> _pumpScreen(
   final facility = FacilityModel(
     id: 'facility-1',
     name: 'Example Self Storage',
+    email: facilityEmail,
     ownerUid: user.uid,
     createdAt: DateTime(2025),
   );

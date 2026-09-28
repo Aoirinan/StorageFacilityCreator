@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' show min;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -13,6 +14,7 @@ import 'package:sfcapp/providers/facility_provider.dart';
 import 'package:sfcapp/services/superadmin_service.dart';
 import 'package:sfcapp/services/texting_onboarding_service.dart';
 import 'package:sfcapp/theme/app_theme.dart';
+import 'package:sfcapp/utils/sms_privacy_wording.dart';
 import 'package:sfcapp/widgets/keyboard_scrollable.dart';
 
 /// Why "Reserve number & submit" is locked: Twilio's pre-check flagged the
@@ -307,6 +309,10 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
                     _buildStatusDashboard()
                   else
                     _buildGuidedSetup(),
+                  const SizedBox(height: 18),
+                  _WebsiteWordingCard(
+                    wording: _websiteWording(facilities),
+                  ),
                 ],
               ),
             ),
@@ -1180,6 +1186,26 @@ class _TextingSetupScreenState extends ConsumerState<TextingSetupScreen> {
         .toList(growable: false);
   }
 
+  /// The SMS privacy wording for the owner's website, from the saved
+  /// business details. Consent methods come from the plan on screen: it is
+  /// loaded from the saved ones and is what gets filed with the carriers.
+  String _websiteWording(List<FacilityModel> facilities) {
+    final facilityId = _controller.facilityId;
+    FacilityModel? facility;
+    for (final f in facilities) {
+      if (f.id == facilityId) facility = f;
+    }
+    final details = _controller.snapshot?.businessDetails;
+    return buildSmsPrivacyWording(
+      dba: details?.dba,
+      facilityName: facility?.name ?? '',
+      supportPhone: details?.supportPhone,
+      supportEmail: details?.supportEmail,
+      facilityEmail: facility?.email,
+      consentMethods: _consentMethods,
+    );
+  }
+
   String _brandName() {
     // The server's sender name is what live texts open with; samples must
     // match it.
@@ -1969,6 +1995,74 @@ class _RegistrationDetails extends StatelessWidget {
                 value:
                     DateFormat.yMMMd().format(snapshot.approvedAt!.toLocal()),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// SMS privacy wording the owner adds to their own website; carriers check
+/// for it when reviewing the facility's registration.
+class _WebsiteWordingCard extends StatelessWidget {
+  final String wording;
+
+  const _WebsiteWordingCard({required this.wording});
+
+  Future<void> _copy(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: wording));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Website wording copied')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Card(
+      key: const Key('website-wording-card'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(child: _SectionLabel('Wording for your website')),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  key: const Key('website-wording-copy'),
+                  onPressed: () => _copy(context),
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('Copy'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Ask whoever manages your website to add this to your privacy '
+              'policy, or post it as its own page linked from the footer. '
+              'Twilio checks for it.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: cs.outlineVariant),
+              ),
+              child: SelectableText(
+                wording,
+                key: const Key('website-wording-text'),
+                style: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
+              ),
+            ),
           ],
         ),
       ),
