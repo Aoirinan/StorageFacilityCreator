@@ -8,7 +8,6 @@ import 'package:sfcapp/screens/public_facility_page_screen.dart';
 import 'package:sfcapp/screens/public_rental_portal_screen.dart';
 import 'package:sfcapp/utils/renter_account_message.dart';
 import 'package:sfcapp/widgets/unit_availability_widget.dart';
-import 'package:sfcapp/widgets/website_style_hub_preview.dart';
 
 /// Public pages offer a rental only when the reservation hold would take one.
 ///
@@ -25,6 +24,8 @@ const _switches = <String, Map<String, dynamic>>{
 };
 
 bool _isOn(String name) => name == 'on';
+
+const _phone = '(806) 555-0100';
 
 /// A published, rentable unit, as the inventory sync writes it.
 const _rentableUnit = <String, dynamic>{
@@ -43,6 +44,7 @@ PublicFacilityMapSnapshot _snapshot(
   Map<String, dynamic> rentalSwitch, {
   List<Map<String, dynamic>> units = const [_rentableUnit],
   List<FacilityMapElement> elements = const [],
+  Map<String, dynamic> contact = const {'facilityPhone': _phone},
 }) =>
     PublicFacilityMapSnapshot(
       facilityId: 'fac1',
@@ -52,7 +54,7 @@ PublicFacilityMapSnapshot _snapshot(
       publicSettings: {
         'enabled': true,
         'facilityName': 'Caprock Storage',
-        'facilityPhone': '(806) 555-0100',
+        ...contact,
         ...rentalSwitch,
       },
       elements: elements,
@@ -138,7 +140,8 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.text('Rent Now'), _isOn(entry.key) ? findsOneWidget : findsNothing);
-        expect(find.text('Call to rent'), _isOn(entry.key) ? findsNothing : findsOneWidget);
+        expect(find.text('Call $_phone to rent'),
+            _isOn(entry.key) ? findsNothing : findsOneWidget);
       });
     }
 
@@ -173,21 +176,142 @@ void main() {
   });
 
   group('public rental portal', () {
+    late List<Uri> opened;
+    late bool openSucceeds;
+
+    setUp(() {
+      opened = [];
+      openSucceeds = true;
+    });
+
     Future<void> pumpPortal(
       WidgetTester tester,
       Map<String, dynamic> rentalSwitch, {
       Map<String, String> query = const {},
+      PublicFacilityMapSnapshot? snapshot,
     }) async {
       await _useTallView(tester);
       await tester.pumpWidget(MaterialApp(
         home: PublicRentalPortalScreen(
           facilitySlug: 'caprock',
-          loadSnapshot: (_) async => _snapshot(rentalSwitch),
+          loadSnapshot: (_) async => snapshot ?? _snapshot(rentalSwitch),
           queryParamsForTesting: query,
+          openUrl: (uri) async {
+            opened.add(uri);
+            return openSucceeds;
+          },
         ),
       ));
       await tester.pumpAndSettle();
     }
+
+    /// Every card button, as (label, enabled).
+    List<(String, bool)> cardButtons(WidgetTester tester) => [
+          for (final button
+              in tester.widgetList<ElevatedButton>(find.byType(ElevatedButton)))
+            (
+              ((button.child! as Text).data)!,
+              button.onPressed != null,
+            ),
+        ];
+
+    // Caprock: website not live, online rentals off. Every unit a renter can
+    // take must offer a way to rent it that works, not a greyed-out
+    // "Reserve" with no reason.
+    testWidgets('with rentals off, every available unit type offers a call',
+        (tester) async {
+      await pumpPortal(
+        tester,
+        _switches['off']!,
+        snapshot: _snapshot(_switches['off']!, units: [
+          _rentableUnit,
+          {
+            ..._rentableUnit,
+            'unitId': 'u2',
+            'unitNumber': 'B7',
+            'unitLabel': 'B7',
+            'unitType': 'climateControlled',
+            'categorySlug': 'climatecontrolled',
+            'size': '5x10',
+          },
+        ]),
+      );
+
+      expect(cardButtons(tester), [
+        ('Call $_phone to rent', true),
+        ('Call $_phone to rent', true),
+      ]);
+      await tester.tap(find.text('Call $_phone to rent').first);
+      await tester.pumpAndSettle();
+      expect(opened, [Uri(scheme: 'tel', path: '8065550100')]);
+    });
+
+    testWidgets('a call that nothing opens still gives the number',
+        (tester) async {
+      openSucceeds = false;
+      await pumpPortal(tester, _switches['off']!);
+
+      await tester.tap(find.text('Call $_phone to rent'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Call $_phone to rent.'), findsOneWidget);
+    });
+
+    testWidgets("the website's phone number is the one offered, as on /w/",
+        (tester) async {
+      await pumpPortal(
+        tester,
+        _switches['off']!,
+        snapshot: _snapshot(_switches['off']!, contact: {
+          'facilityPhone': _phone,
+          'websiteConfig': {'phoneNumber': '806-555-0199'},
+        }),
+      );
+
+      expect(cardButtons(tester), [('Call 806-555-0199 to rent', true)]);
+    });
+
+    testWidgets('with no phone, the email is offered', (tester) async {
+      await pumpPortal(
+        tester,
+        _switches['off']!,
+        snapshot: _snapshot(_switches['off']!, contact: {
+          'websiteConfig': {'contactEmail': 'office@caprock.example'},
+        }),
+      );
+
+      expect(cardButtons(tester),
+          [('Email office@caprock.example to rent', true)]);
+      await tester.tap(find.text('Email office@caprock.example to rent'));
+      await tester.pumpAndSettle();
+      expect(opened, [Uri(scheme: 'mailto', path: 'office@caprock.example')]);
+    });
+
+    testWidgets('with no phone or email, the card says why instead of a dead '
+        'button', (tester) async {
+      await pumpPortal(
+        tester,
+        _switches['off']!,
+        snapshot: _snapshot(_switches['off']!, contact: const {}),
+      );
+
+      expect(cardButtons(tester), isEmpty);
+      expect(
+          find.text(
+              'Not available online. Contact the facility to rent this unit.'),
+          findsOneWidget);
+    });
+
+    testWidgets('with rentals on but no way to pick a unit, it offers a call',
+        (tester) async {
+      await pumpPortal(tester, const {
+        'publicRentalsEnabled': true,
+        'allowAutoAssign': false,
+        'allowUnitSelection': false,
+      });
+
+      expect(cardButtons(tester), [('Call $_phone to rent', true)]);
+    });
 
     for (final entry in _switches.entries) {
       testWidgets('with rentals ${entry.key}', (tester) async {
@@ -199,7 +323,7 @@ void main() {
         if (on) {
           expect(tester.widget<ElevatedButton>(reserve).onPressed, isNotNull);
         }
-        final call = find.widgetWithText(ElevatedButton, 'Call to rent');
+        final call = find.widgetWithText(ElevatedButton, 'Call $_phone to rent');
         expect(call, on ? findsNothing : findsOneWidget);
         if (!on) {
           expect(tester.widget<ElevatedButton>(call).onPressed, isNotNull);
@@ -221,7 +345,8 @@ void main() {
 
       expect(find.text('Completing your reservation...'), findsNothing);
       expect(find.text(onlineRentalsOffMessage), findsOneWidget);
-      expect(find.widgetWithText(ElevatedButton, 'Call to rent'), findsOneWidget);
+      expect(find.widgetWithText(ElevatedButton, 'Call $_phone to rent'),
+          findsOneWidget);
       expect(find.text('Reserve this unit'), findsNothing);
     });
   });
@@ -271,30 +396,6 @@ void main() {
         );
         // The map is not a rental; it stays either way.
         expect(find.text('View Facility Map'), findsOneWidget);
-      });
-    }
-  });
-
-  group('online rentals preview', () {
-    for (final on in [true, false]) {
-      testWidgets('with rentals ${on ? 'on' : 'off'}', (tester) async {
-        await tester.pumpWidget(MaterialApp(
-          home: Scaffold(
-            body: WebsiteStyleHubPreview(
-              facilityName: 'Caprock Storage',
-              marketingText: '',
-              logoUrl: '',
-              rentalsEnabled: on,
-              onViewUnits: () {},
-              onViewMap: () {},
-              onRentNow: () {},
-            ),
-          ),
-        ));
-
-        expect(find.text('Rent Now'), on ? findsOneWidget : findsNothing);
-        expect(find.text('Reserve storage online in minutes'), on ? findsOneWidget : findsNothing);
-        expect(find.text('Call to rent'), on ? findsNothing : findsOneWidget);
       });
     }
   });

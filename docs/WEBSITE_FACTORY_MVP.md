@@ -20,6 +20,11 @@ This MVP adds a website layer without changing existing renter or operator flows
   rent/reserve button, and `/api/public-website` returns `onlineRentalsEnabled: false` and
   `rentUrl: null`. The app's public pages read the published copy of the switch
   (`facilityTakesOnlineRentals` in `lib/models/facility_map_v2_models.dart`).
+- The app's rental portal (`/f/<slug>/rent`) then gives every available unit "Call <phone> to rent"
+  (the website's phone number, else the facility's, as `/w/<slug>` picks it; `publishedRentalPhone`),
+  else "Email <address> to rent", else says to contact the facility. It never shows a greyed-out
+  reserve button. The phone is the copy the last publish made, so a facility whose phone changed
+  needs a republish (Edit Facility's Save Public Rental Settings) before the portal shows it.
 
 ## Domain mapping support
 

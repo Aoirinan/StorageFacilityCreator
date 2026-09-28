@@ -37,6 +37,11 @@ class PublicRentalPortalScreen extends StatefulWidget {
   @visibleForTesting
   final Map<String, String>? queryParamsForTesting;
 
+  /// Replaces url_launcher's launchUrl for the call and email links, for
+  /// tests.
+  @visibleForTesting
+  final Future<bool> Function(Uri uri)? openUrl;
+
   const PublicRentalPortalScreen({
     super.key,
     this.facilityId,
@@ -47,6 +52,7 @@ class PublicRentalPortalScreen extends StatefulWidget {
     this.websiteIsLive,
     this.loadSnapshot,
     this.queryParamsForTesting,
+    this.openUrl,
   });
 
   @override
@@ -83,6 +89,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   String _facilityName = 'Rent Online';
   String? _facilityDescription;
   String? _facilityPhone;
+  String? _contactEmail;
   String? _facilityLogoUrl;
   String? _customDomain;
   Color _heroGradientStart = const Color(0xFF0C1E4D);
@@ -186,7 +193,10 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                 ? settings['facilityName'].toString()
                 : 'Rent Online';
         _facilityDescription = settings['facilityDescription']?.toString();
-        _facilityPhone = settings['facilityPhone']?.toString();
+        // As /w/{slug} picks it: the website's phone, else the facility's.
+        _facilityPhone = publishedRentalPhone(settings);
+        final email = websiteConfig['contactEmail']?.toString().trim();
+        _contactEmail = (email != null && email.contains('@')) ? email : null;
         _facilityLogoUrl = settings['facilityLogoUrl']?.toString();
         _customDomain = settings['customDomain']?.toString();
         _heroGradientStart = _parseColor(
@@ -280,8 +290,8 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
       (widget.loadSnapshot ?? FacilityMapV2Service.getPublicSnapshotBySlug)(
           slug);
 
-  bool get _hasFacilityPhone =>
-      _facilityPhone != null && _facilityPhone!.trim().isNotEmpty;
+  // publishedRentalPhone answers only a number with a digit to dial.
+  bool get _hasFacilityPhone => _facilityPhone != null;
 
   String? _getSlugFromPath() {
     final segments = Uri.base.pathSegments;
@@ -301,14 +311,34 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     if (raw == null || raw.isEmpty) return;
     final normalized = raw.replaceAll(RegExp(r'[^\d+]'), '');
     if (normalized.isEmpty) return;
-    final uri = Uri(scheme: 'tel', path: normalized);
+    await _openContact(
+      Uri(scheme: 'tel', path: normalized),
+      fallback: 'Call $raw to rent.',
+    );
+  }
+
+  Future<void> _emailFacility() async {
+    final email = _contactEmail;
+    if (email == null) return;
+    await _openContact(
+      Uri(scheme: 'mailto', path: email),
+      fallback: 'Email $email to rent.',
+    );
+  }
+
+  /// Opens a tel: or mailto: link. Where nothing opens it (a desktop
+  /// browser with no dialer), says [fallback] instead, so the button still
+  /// gives the renter a way to reach the facility.
+  Future<void> _openContact(Uri uri, {required String fallback}) async {
+    var opened = false;
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri);
-      }
+      opened = await (widget.openUrl ?? launchUrl)(uri);
     } catch (_) {
-      /* ignore launch failures on unsupported platforms */
+      opened = false;
     }
+    if (opened || !mounted) return;
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(SnackBar(content: Text(fallback)));
   }
 
   // Not Uri.base.origin directly: that throws when the page has no http(s)
@@ -831,7 +861,6 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     final availableCount = group.availableUnits.length;
     final unavailable = availableCount == 0;
     final monthlyRate = group.lowestRate;
-    final action = _cardAction(group, reserveLabel: 'Reserve this unit');
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -907,20 +936,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
             ),
           ],
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _ctaButtonColor,
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(44),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              onPressed: action.onPressed,
-              child: Text(action.label),
-            ),
+          _buildCardAction(
+            group,
+            reserveLabel: 'Reserve this unit',
+            height: 44,
+            radius: 10,
           ),
         ],
       ),
@@ -1025,7 +1045,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
                   letterSpacing: 0.15,
                 ),
               ),
-              if (_facilityPhone != null && _facilityPhone!.trim().isNotEmpty) ...[
+              if (_hasFacilityPhone) ...[
                 const SizedBox(height: 14),
                 Material(
                   color: Colors.transparent,
@@ -1230,7 +1250,6 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   Widget _buildGroupCard(_UnitTypeGroup group) {
     final availableCount = group.availableUnits.length;
     final monthlyRate = group.lowestRate;
-    final action = _cardAction(group, reserveLabel: 'Reserve This Unit');
 
     final imageUrl = _unitTypeImageUrls[_normalizeUnitTypeKey(group.unitType)];
 
@@ -1334,20 +1353,11 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               ),
             ],
             const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _ctaButtonColor,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(48),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                onPressed: action.onPressed,
-                child: Text(action.label),
-              ),
+            _buildCardAction(
+              group,
+              reserveLabel: 'Reserve This Unit',
+              height: 48,
+              radius: 12,
             ),
           ],
         ),
@@ -1515,24 +1525,65 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
     );
   }
 
-  /// A group card's button: reserve while the hold would take a rental; with
-  /// online rentals off, a call to the facility rather than a dead "Reserve".
-  ({String label, VoidCallback? onPressed}) _cardAction(
+  /// A group card's action: reserve while the hold would take a rental.
+  /// Otherwise the facility's phone ("Call {phone} to rent"), else its
+  /// email: with online rentals off, cards showed a greyed-out "Reserve"
+  /// that said nothing about why. Null when the page has neither, and the
+  /// card says to contact the facility instead of showing a dead button.
+  ({String label, VoidCallback? onPressed})? _cardAction(
     _UnitTypeGroup group, {
     required String reserveLabel,
   }) {
     if (group.availableUnits.isEmpty) {
       return (label: 'Unavailable', onPressed: null);
     }
-    if (!_publicRentalsEnabled) {
-      return _hasFacilityPhone
-          ? (label: 'Call to rent', onPressed: _dialFacilityPhone)
-          : (label: 'Not available online', onPressed: null);
+    // With both off there is no way to pick a unit online, so this too
+    // was a greyed-out "Reserve".
+    if (_publicRentalsEnabled && (_allowAutoAssign || _allowUnitSelection)) {
+      return (label: reserveLabel, onPressed: () => _handleRentNow(group));
     }
-    final canRent = _allowAutoAssign || _allowUnitSelection;
-    return (
-      label: reserveLabel,
-      onPressed: canRent ? () => _handleRentNow(group) : null,
+    if (_hasFacilityPhone) {
+      return (
+        label: 'Call $_facilityPhone to rent',
+        onPressed: _dialFacilityPhone,
+      );
+    }
+    if (_contactEmail != null) {
+      return (label: 'Email $_contactEmail to rent', onPressed: _emailFacility);
+    }
+    return null;
+  }
+
+  Widget _buildCardAction(
+    _UnitTypeGroup group, {
+    required String reserveLabel,
+    required double height,
+    required double radius,
+  }) {
+    final action = _cardAction(group, reserveLabel: reserveLabel);
+    if (action == null) {
+      return const Text(
+        'Not available online. Contact the facility to rent this unit.',
+        style: TextStyle(
+          color: AppTheme.textSecondary,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _ctaButtonColor,
+          foregroundColor: Colors.white,
+          minimumSize: Size.fromHeight(height),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radius),
+          ),
+        ),
+        onPressed: action.onPressed,
+        child: Text(action.label, textAlign: TextAlign.center),
+      ),
     );
   }
 
@@ -1562,6 +1613,13 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
               icon: const Icon(Icons.call_rounded, size: 20),
               label: Text('Call $_facilityPhone'),
             ),
+          ] else if (_contactEmail != null) ...[
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: _emailFacility,
+              icon: const Icon(Icons.email_outlined, size: 20),
+              label: Text('Email $_contactEmail'),
+            ),
           ],
         ],
       ),
@@ -1569,8 +1627,7 @@ class _PublicRentalPortalScreenState extends State<PublicRentalPortalScreen> {
   }
 
   Widget _buildEmptyState() {
-    final hasPhone =
-        _facilityPhone != null && _facilityPhone!.trim().isNotEmpty;
+    final hasPhone = _hasFacilityPhone;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),

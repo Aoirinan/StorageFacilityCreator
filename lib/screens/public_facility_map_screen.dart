@@ -263,7 +263,7 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
                 child: OutlinedButton.icon(
                   onPressed: _callFacility,
                   icon: const Icon(Icons.call),
-                  label: const Text('Call to rent'),
+                  label: Text('Call $_facilityPhone to rent'),
                 ),
               ),
             ],
@@ -277,10 +277,11 @@ class _PublicFacilityMapScreenState extends State<PublicFacilityMapScreen> {
     );
   }
 
-  /// The facility's phone as published, or null when it has none.
+  /// The phone as published, picked as the rental portal and /w/{slug} pick
+  /// it, or null when there is none.
   String? get _facilityPhone {
-    final raw = _snapshot?.publicSettings['facilityPhone']?.toString().trim();
-    return (raw == null || raw.isEmpty) ? null : raw;
+    final settings = _snapshot?.publicSettings;
+    return settings == null ? null : publishedRentalPhone(settings);
   }
 
   Future<void> _callFacility() async {

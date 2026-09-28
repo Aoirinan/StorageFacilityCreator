@@ -26,6 +26,23 @@ class _StoreFirestore extends Fake implements FirebaseFirestore {
 class _UnreadableCollection extends Fake
     implements CollectionReference<Map<String, dynamic>> {
   @override
+  Query<Map<String, dynamic>> where(
+    Object field, {
+    Object? isEqualTo,
+    Object? isNotEqualTo,
+    Object? isLessThan,
+    Object? isLessThanOrEqualTo,
+    Object? isGreaterThan,
+    Object? isGreaterThanOrEqualTo,
+    Object? arrayContains,
+    Iterable<Object?>? arrayContainsAny,
+    Iterable<Object?>? whereIn,
+    Iterable<Object?>? whereNotIn,
+    bool? isNull,
+  }) =>
+      this;
+
+  @override
   Query<Map<String, dynamic>> limit(int limit) => this;
 
   @override
@@ -139,6 +156,48 @@ void main() {
         throwsA(isA<FirebaseException>()),
       );
     });
+  });
+
+  group('when the facility has more active tenants than one read returns', () {
+    setUp(() => serveTenants(FakeCollection([
+          for (var i = 0; i < FacilitySubcollections.readLimit; i++)
+            FakeDoc('t$i', {'isActive': true, 'unitNumber': 'Z$i'}),
+        ])));
+
+    test('a publish fails and writes nothing', () async {
+      // Past the cap a tenant holding unit 101 could be missing, and the
+      // publish would list 101 as rentable.
+      await expectLater(
+        FacilityMapV2Service.publishCurrentDraft(facilityId: 'fac1'),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(store.writes, isEmpty);
+    });
+
+    test('the live-units refresh leaves the published units alone', () async {
+      store.put(_metaPath, {
+        'facilityId': 'fac1',
+        'publicSlug': 'main-street-storage',
+      });
+      store.put(_publicMapPath, _published);
+
+      await FacilityMapV2Service.refreshPublicMapInventoryFromLiveUnits(
+          'fac1');
+
+      expect(store.writes, isEmpty);
+      expect(store.data(_publicMapPath), _published);
+    });
+  });
+
+  test('only active tenants are read for claims, as the server counts them',
+      () async {
+    final log = FakeQueryLog();
+    serveTenants(FakeCollection(_tenants, log: log));
+
+    await FacilityMapV2Service.readTenantClaimedUnitNumbersOrThrow('fac1');
+
+    expect(log.equalityFilters, [('isActive', true)]);
   });
 
   test('the refresh lists a unit taken by a tenant\'s unit number as rented',

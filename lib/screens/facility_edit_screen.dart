@@ -12,12 +12,46 @@ import '../router/app_route.dart';
 import '../services/facility_service.dart';
 import '../models/facility_model.dart';
 import '../models/unit_model.dart';
+import 'package:sfcapp/models/facility_public_settings_model.dart';
 import '../theme/app_theme.dart';
 import '../services/facility_map_v2_service.dart';
 import '../services/facility_public_service.dart';
 import '../utils/error_message_helper.dart';
 import '../utils/time_zone_helper.dart';
 import '../constants/facility_capacity.dart';
+import 'package:sfcapp/utils/save_then_publish.dart';
+
+/// What Edit Facility reads and publishes besides the public settings doc,
+/// which it reads and saves through [FacilityPublicService]. A provider, as
+/// WebsiteSetupActions is for Website Setup, so widget tests can open the
+/// real screen and run its real settings save against a fake Firestore.
+class FacilityEditActions {
+  const FacilityEditActions();
+
+  Future<FacilityModel?> facility(String facilityId) =>
+      FacilityService.getFacility(facilityId);
+
+  /// The slug of the facility's published public map, if it has one.
+  Future<String?> publishedSlug(String facilityId) =>
+      FacilityMapV2Service.getPublicSlugForFacility(facilityId);
+
+  /// Points the public map at [slug] and republishes it, which copies the
+  /// saved settings into publicFacilityMaps/{slug}.
+  Future<void> publish({
+    required String facilityId,
+    required String slug,
+  }) async {
+    await FacilityMapV2Service.setPublicSlug(facilityId: facilityId, slug: slug);
+    await FacilityMapV2Service.publishCurrentDraft(facilityId: facilityId);
+  }
+
+  /// Whether the map published at [slug] has the website on.
+  Future<bool> publishedWebsiteEnabled(String slug) =>
+      FacilityMapV2Service.publishedWebsiteEnabled(slug);
+}
+
+final facilityEditActionsProvider =
+    Provider<FacilityEditActions>((ref) => const FacilityEditActions());
 
 class FacilityEditScreen extends ConsumerStatefulWidget {
   final FacilityModel facility;
@@ -71,6 +105,11 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   // The slug as last read from the saved settings, so a return from Website
   // Setup can tell whether the slug was changed there.
   String? _savedSlug;
+  // Whether the map published at [_savedSlug] has the website on: what
+  // /w/{slug} serves, with the add-on. Null until read, or when the read
+  // failed. The saved setting alone said "on" after a publish that failed.
+  bool? _publishedWebsiteOn;
+  bool _publishedWebsiteReadFailed = false;
   bool _publicPricingEnabled = true;
   bool _publicUnitNumbersEnabled = true;
   bool _allowAutoAssign = true;
@@ -156,8 +195,9 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
       // also listens to both, so a failure in either lands in the catch below.
       final settingsFuture =
           FacilityPublicService.getPublicSettingsOrThrow(widget.facility.id);
-      final mapSlugFuture =
-          FacilityMapV2Service.getPublicSlugForFacility(widget.facility.id);
+      final mapSlugFuture = ref
+          .read(facilityEditActionsProvider)
+          .publishedSlug(widget.facility.id);
       await Future.wait([settingsFuture, mapSlugFuture]);
       final settings = await settingsFuture;
       final slug = settings.publicRentalSlug?.trim();
@@ -181,13 +221,34 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _publicSettingsLoaded = true;
         _isLoadingPublicSettings = false;
       });
+      unawaited(_readPublishedWebsite());
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _publicSettingsError = ErrorMessageHelper.getUserFriendlyMessage(e);
+        _publicSettingsError = publicSettingsLoadErrorText(e);
         _isLoadingPublicSettings = false;
       });
     }
+  }
+
+  /// Reads whether the map published at [_savedSlug] has the website on, for
+  /// [_buildWebsiteStatus].
+  Future<void> _readPublishedWebsite() async {
+    final slug = _savedSlug;
+    if (slug == null) return;
+    bool? on;
+    try {
+      on = await ref
+          .read(facilityEditActionsProvider)
+          .publishedWebsiteEnabled(slug);
+    } catch (_) {
+      on = null;
+    }
+    if (!mounted || _savedSlug != slug) return;
+    setState(() {
+      _publishedWebsiteOn = on;
+      _publishedWebsiteReadFailed = on == null;
+    });
   }
 
   Future<void> _savePublicRentalSettings() async {
@@ -217,25 +278,25 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     });
 
     try {
-      await FacilityPublicService.updateRentalSettings(
-        facilityId: widget.facility.id,
-        publicRentalsEnabled: _publicRentalsEnabled,
-        publicPricingEnabled: _publicPricingEnabled,
-        publicUnitNumbersEnabled: _publicUnitNumbersEnabled,
-        allowAutoAssign: _allowAutoAssign,
-        allowUnitSelection: _allowUnitSelection,
-        showAvailabilityCount: _showAvailabilityCount,
-        hideUnavailableTypes: _hideUnavailableTypes,
-        enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
-        publicRentalSlug: slug,
+      // As Website Setup saves: a failed publish says the settings were
+      // saved, so the owner retries the publish rather than re-entering them.
+      await saveThenPublish(
+        save: () => FacilityPublicService.updateRentalSettings(
+          facilityId: widget.facility.id,
+          publicRentalsEnabled: _publicRentalsEnabled,
+          publicPricingEnabled: _publicPricingEnabled,
+          publicUnitNumbersEnabled: _publicUnitNumbersEnabled,
+          allowAutoAssign: _allowAutoAssign,
+          allowUnitSelection: _allowUnitSelection,
+          showAvailabilityCount: _showAvailabilityCount,
+          hideUnavailableTypes: _hideUnavailableTypes,
+          enabledPublicUnitTypes: _enabledPublicUnitTypes.toList(),
+          publicRentalSlug: slug,
+        ),
+        publish: () => ref
+            .read(facilityEditActionsProvider)
+            .publish(facilityId: widget.facility.id, slug: slug),
       );
-
-      await FacilityMapV2Service.setPublicSlug(
-        facilityId: widget.facility.id,
-        slug: slug,
-      );
-      await FacilityMapV2Service.publishCurrentDraft(
-          facilityId: widget.facility.id);
 
       if (!mounted) return;
       setState(() {
@@ -243,6 +304,7 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _savedSlug = slug;
         _isSavingPublicSettings = false;
       });
+      unawaited(_readPublishedWebsite());
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Public rental links saved and published.'),
@@ -252,9 +314,16 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        if (e is PublishAfterSaveException) {
+          // Saved under this URL name; only the publish needs retrying.
+          _publicRentalSlugController.text = slug;
+          _savedSlug = slug;
+        }
         _isSavingPublicSettings = false;
-        _publicSettingsError = ErrorMessageHelper.getUserFriendlyMessage(e);
+        _publicSettingsError = saveThenPublishErrorText(e,
+            saveFailed: 'Failed to save public rental settings');
       });
+      unawaited(_readPublishedWebsite());
     }
   }
 
@@ -267,18 +336,34 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
   Future<void> _openWebsiteSetup() async {
     await context
         .push('${AppRoute.websiteSetup}?facilityId=${widget.facility.id}');
-    final settingsFuture =
-        FacilityPublicService.getPublicSettings(widget.facility.id);
-    final facilityFuture = FacilityService.getFacility(widget.facility.id)
+    if (!mounted) return;
+    final facilityFuture = ref
+        .read(facilityEditActionsProvider)
+        .facility(widget.facility.id)
         .then<FacilityModel?>((f) => f, onError: (_) => null);
-    final settings = await settingsFuture;
+    final FacilityPublicSettings settings;
+    try {
+      // Throws on a failed read, as the first load does. This read returned
+      // null then, which kept the old URL name here, and the next save here
+      // wrote it back and republished under it.
+      settings = await FacilityPublicService.getPublicSettingsOrThrow(
+          widget.facility.id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _publicSettingsLoaded = false;
+        _publicSettingsError = '${publicSettingsLoadErrorText(e)} Saving '
+            'here is off until they load, so it cannot undo changes made in '
+            'Website Setup.';
+      });
+      return;
+    }
     final facility = await facilityFuture;
     if (!mounted) return;
     setState(() {
       if (facility != null) {
         _websiteEntitled = facility.hasActiveWebsiteSubscription;
       }
-      if (settings == null) return;
       _websiteEnabled = settings.enabled;
       final storedSlug = settings.publicRentalSlug?.trim();
       // Take a URL name changed in Website Setup, unless the owner has
@@ -291,30 +376,52 @@ class _FacilityEditScreenState extends ConsumerState<FacilityEditScreen> {
         _savedSlug = storedSlug;
       }
     });
+    unawaited(_readPublishedWebsite());
   }
 
   /// Shown, not switched: the website is switched in Website Setup, and
   /// saving this section leaves it as it is (it used to turn it on). The
   /// Main Rent Link, All Available Units link and Preview go through
   /// /f/{slug}/rent (PublicRentEntryPage), which opens the website's unit
-  /// list when the website is live (on, and the facility has the website
-  /// add-on) and the rental portal otherwise. Category links always open
-  /// the rental portal.
+  /// list when the website is live and the rental portal otherwise. Live is
+  /// what renderPublicWebsite checks: the published map has the website on
+  /// and the facility has the add-on. This read the saved setting instead,
+  /// so after a publish that failed it said "on" while /w/ answered
+  /// "Website not found".
   Widget _buildWebsiteStatus() {
-    final websiteLive = _websiteEnabled && _websiteEntitled;
+    const toWebsite = 'The Main Rent Link, All Available Units link and '
+        "Preview Public Page open your website's unit list.";
+    const toRentalPage = 'The Main Rent Link, All Available Units link and '
+        'Preview Public Page open your online rental page. Once your '
+        "website is live, they open your website's unit list instead.";
+    final published = _publishedWebsiteOn;
+    final websiteLive = published == true && _websiteEntitled;
     final String title;
     final String subtitle;
-    if (websiteLive) {
+    if (published == null) {
+      title = _publishedWebsiteReadFailed
+          ? 'Could not check your website'
+          : 'Checking your website...';
+      subtitle = 'The Main Rent Link, All Available Units link and Preview '
+          "Public Page open your website's unit list while it is live, and "
+          'your online rental page otherwise.';
+    } else if (websiteLive) {
       title = 'Your website is on';
-      subtitle = 'The Main Rent Link, All Available Units link and Preview '
-          'Public Page open your website\'s unit list.';
+      // The next publish copies the saved setting, off, over the live one.
+      subtitle = _websiteEnabled
+          ? toWebsite
+          : '$toWebsite Website Setup has it switched off, so the next save '
+              'here or there takes it down. Turn it on there to keep it.';
+    } else if (!_websiteEntitled && (published || _websiteEnabled)) {
+      title = 'Your website needs the website add-on';
+      subtitle = toRentalPage;
+    } else if (_websiteEnabled) {
+      title = 'Your website is not published';
+      subtitle = 'It is switched on in Website Setup, but the last publish '
+          'did not go through. Save there to publish it. $toRentalPage';
     } else {
-      title = _websiteEnabled
-          ? 'Your website needs the website add-on'
-          : 'Your website is off';
-      subtitle = 'The Main Rent Link, All Available Units link and Preview '
-          'Public Page open your online rental page. Once your website is '
-          'live, they open your website\'s unit list instead.';
+      title = 'Your website is off';
+      subtitle = toRentalPage;
     }
     return ListTile(
       contentPadding: EdgeInsets.zero,

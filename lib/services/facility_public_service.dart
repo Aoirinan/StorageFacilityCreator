@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -5,6 +7,24 @@ import '../models/facility_public_settings_model.dart';
 import '../models/facility_model.dart';
 import '../utils/renter_account_message.dart' show normalizeCustomDomain;
 import 'package:sfcapp/utils/error_message_helper.dart';
+
+/// Whether [error], from reading a facility's public settings, is the read
+/// itself failing (offline, a timeout, permission), which trying again can
+/// fix. Anything else is the saved settings holding something the app
+/// cannot read, which only support can fix.
+bool publicSettingsReadFailed(Object error) =>
+    error is FirebaseException || error is TimeoutException;
+
+/// What a screen that loads a facility's public settings says when the load
+/// throws [error]. A value the app cannot read used to get "check your
+/// connection", and trying again never helped.
+String publicSettingsLoadErrorText(Object error) =>
+    publicSettingsReadFailed(error)
+        ? "This facility's website and rental settings could not be loaded. "
+            'Check your connection and try again.'
+        : "This facility's saved website and rental settings could not be "
+            'read correctly. Contact support; saving here could overwrite '
+            'them.';
 
 /// A save refused because the facility's saved public settings could not be
 /// read. [FacilityPublicService.updatePublicSettings] keeps every field it is
@@ -18,9 +38,11 @@ class PublicSettingsNotReadException implements UserFacingException {
   final Object cause;
 
   @override
-  String get message =>
-      "This facility's saved website and rental settings could not be "
-      'loaded, so nothing was saved. Check your connection and try again.';
+  String get message => publicSettingsReadFailed(cause)
+      ? "This facility's saved website and rental settings could not be "
+          'loaded, so nothing was saved. Check your connection and try again.'
+      : "This facility's saved website and rental settings could not be "
+          'read correctly, so nothing was saved. Contact support.';
 
   @override
   String toString() => message;

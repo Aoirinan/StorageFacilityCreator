@@ -621,10 +621,14 @@ class _FacilityWebsiteSetupScreenState
         _isLoading = false;
       });
     } catch (e) {
+      debugPrint('Website Setup load failed: $e');
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to load website settings: $e\n'
-            'Saving is off until they load. Press Refresh to try again.';
+        // A value this page cannot read will not load on a retry either.
+        _error = publicSettingsReadFailed(e)
+            ? '${publicSettingsLoadErrorText(e)}\n'
+                'Saving is off until they load. Press Refresh to try again.'
+            : '${publicSettingsLoadErrorText(e)}\nSaving is off.';
         _isLoading = false;
       });
     }
@@ -791,8 +795,12 @@ class _FacilityWebsiteSetupScreenState
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _error = 'Could not re-read the settings Edit Facility saves. Tap '
-            'Refresh before saving, or saving may undo changes made there.';
+        // Saving now would write back what this page loaded before Edit
+        // Facility, undoing its URL name and republishing under the old one.
+        _settingsLoaded = false;
+        _error = 'Could not re-read the settings Edit Facility saves, so '
+            'saving is off: it could undo changes made there. Tap Refresh '
+            'to load them again.';
       });
     }
   }
@@ -995,10 +1003,6 @@ class _FacilityWebsiteSetupScreenState
         throw Exception(httpsValidationMessages.join('\n'));
       }
 
-      final currentSettings =
-          await FacilityPublicService.getPublicSettings(widget.facilityId);
-      final currentWidgets =
-          currentSettings?.widgets ?? const <String, dynamic>{};
       final sanitizedUnitCategories = _unitCategories
           .map((entry) => <String, dynamic>{
                 'slug': (entry['slug'] ?? '').toString().trim(),
@@ -1054,8 +1058,10 @@ class _FacilityWebsiteSetupScreenState
         'instagram': _instagramUrlController.text.trim(),
         'google': _googleUrlController.text.trim(),
       };
+      // Only what this page edits. The save merges it into the stored
+      // widgets (set with merge), so other widget keys stay as they are;
+      // they were read here too, a second time, only to be written back.
       final mergedWidgets = <String, dynamic>{
-        ...currentWidgets,
         'websiteTemplate': 'cookie-cutter-v2',
         'websiteConfig': <String, dynamic>{
           'heroHeadline': _heroHeadlineController.text.trim(),

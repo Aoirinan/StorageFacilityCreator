@@ -297,6 +297,22 @@ class PublicFacilityMapSnapshot {
 bool facilityTakesOnlineRentals(Map<String, dynamic>? publicSettings) =>
     publicSettings?['publicRentalsEnabled'] == true;
 
+/// The phone number a public page offers renters, from a publicFacilityMaps
+/// doc's publicSettings, picked as /w/{slug} (renderPublicWebsite) picks it:
+/// the website's own phone number, else the facility's. Null when neither
+/// holds a digit to dial.
+String? publishedRentalPhone(Map<String, dynamic> publicSettings) {
+  final websiteConfig = publicSettings['websiteConfig'];
+  for (final raw in [
+    websiteConfig is Map ? websiteConfig['phoneNumber'] : null,
+    publicSettings['facilityPhone'],
+  ]) {
+    final phone = raw is String ? raw.trim() : '';
+    if (phone.contains(RegExp(r'\d'))) return phone;
+  }
+  return null;
+}
+
 /// What the hold says while a facility's online rentals are off
 /// (ONLINE_RENTALS_OFF_MESSAGE in functions-public-website publicMoveIn.ts),
 /// shown where a public page would otherwise offer a rental.

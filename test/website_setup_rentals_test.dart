@@ -142,6 +142,31 @@ Future<void> _openWebsiteSetup(
   await tester.pumpAndSettle();
 }
 
+/// What Edit Facility's Save Public Rental Settings writes
+/// (FacilityEditScreen._savePublicRentalSettings), with rentals on.
+Future<void> _saveInEditFacility({required String slug}) =>
+    FacilityPublicService.updateRentalSettings(
+      facilityId: 'fac1',
+      publicRentalsEnabled: true,
+      publicPricingEnabled: true,
+      publicUnitNumbersEnabled: true,
+      allowAutoAssign: true,
+      allowUnitSelection: true,
+      showAvailabilityCount: true,
+      hideUnavailableTypes: true,
+      enabledPublicUnitTypes: const [],
+      publicRentalSlug: slug,
+    );
+
+/// The Save Website button, scrolled into view.
+Future<ButtonStyleButton> _saveWebsiteButton(WidgetTester tester) async {
+  final label = find.text('Save Website');
+  await tester.scrollUntilVisible(label, 300,
+      scrollable: find.byType(Scrollable).first);
+  return tester.widget<ButtonStyleButton>(find.ancestor(
+      of: label, matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)));
+}
+
 Future<void> _tapSaveWebsite(WidgetTester tester) async {
   final save = find.text('Save Website');
   await tester.scrollUntilVisible(save, 300,
@@ -345,16 +370,12 @@ void main() {
         tester,
         actions,
         editFacilityOpenedFor: openedFor,
-        // What Edit Facility saves: its facility fields, then the public
-        // settings (rentals, URL name) and a publish under the new name.
+        // What Edit Facility saves: its facility fields, then the rental
+        // settings (rentals, URL name; never the website switch) and a
+        // publish under the new name.
         editFacilitySave: () async {
           actions.facilityDoc = _facility('Main Street Self Storage');
-          await FacilityPublicService.updatePublicSettings(
-            facilityId: 'fac1',
-            enabled: true,
-            publicRentalsEnabled: true,
-            publicRentalSlug: 'new-name',
-          );
+          await _saveInEditFacility(slug: 'new-name');
           actions.mapSlug = 'new-name';
         },
       );
@@ -396,12 +417,7 @@ void main() {
       await _openWebsiteSetup(
         tester,
         actions,
-        editFacilitySave: () => FacilityPublicService.updatePublicSettings(
-          facilityId: 'fac1',
-          enabled: true,
-          publicRentalsEnabled: true,
-          publicRentalSlug: editFacilitySlug,
-        ),
+        editFacilitySave: () => _saveInEditFacility(slug: editFacilitySlug),
       );
       await tester.enterText(
           find.widgetWithText(TextField, 'Website URL Name'), 'typed-here');
@@ -417,7 +433,32 @@ void main() {
       expect(find.textContaining('replaced "typed-here"'), findsOneWidget);
     });
 
-    testWidgets('a failed re-read after Edit Facility says to refresh first',
+    testWidgets('a failed re-read after Edit Facility turns Save off',
+        (tester) async {
+      store.put(_settingsPath, {
+        'facilityId': 'fac1',
+        'publicRentalsEnabled': false,
+        'publicRentalSlug': 'old-name',
+      });
+      final actions = _FakeActions(_facility('Main Street Storage'));
+      await _openWebsiteSetup(tester, actions, editFacilitySave: () async {
+        await _saveInEditFacility(slug: 'new-name');
+        store.refuseRead = (path) => path == _settingsPath;
+      });
+
+      await _roundTripThroughEditFacility(tester);
+
+      // Shown above Save Website, where the owner goes to save.
+      final warning = find.textContaining('so saving is off');
+      await tester.scrollUntilVisible(warning, 300,
+          scrollable: find.byType(Scrollable).first);
+      expect(warning, findsOneWidget);
+      // A save now would write old-name back over what Edit Facility saved.
+      expect((await _saveWebsiteButton(tester)).onPressed, isNull);
+      expect(store.data(_settingsPath)!['publicRentalSlug'], 'new-name');
+    });
+
+    testWidgets('a failed facility re-read after Edit Facility turns Save off',
         (tester) async {
       final actions = _FakeActions(_facility('Main Street Storage'));
       await _openWebsiteSetup(tester, actions,
@@ -425,11 +466,41 @@ void main() {
 
       await _roundTripThroughEditFacility(tester);
 
-      // Shown above Save Website, where the owner goes to save.
-      final warning = find.textContaining('Tap Refresh before saving');
-      await tester.scrollUntilVisible(warning, 300,
-          scrollable: find.byType(Scrollable).first);
-      expect(warning, findsOneWidget);
+      expect((await _saveWebsiteButton(tester)).onPressed, isNull);
+      expect(find.textContaining('so saving is off'), findsOneWidget);
+    });
+
+    testWidgets('settings the page cannot read say to contact support',
+        (tester) async {
+      store.put(_settingsPath, {
+        'facilityId': 'fac1',
+        'publicRentalSlug': 'main-street',
+        // Not text: the page cannot show it, and saving would overwrite it.
+        'widgets': {
+          'websiteConfig': {'address': 42},
+        },
+      });
+      final actions = _FakeActions(_facility('Main Street Storage'));
+      await _openWebsiteSetup(tester, actions);
+
+      // Shown above Save Website.
+      expect((await _saveWebsiteButton(tester)).onPressed, isNull);
+      expect(find.textContaining('could not be read correctly. Contact support'),
+          findsOneWidget);
+      // Not "check your connection": a retry reads the same value.
+      expect(find.textContaining('Check your connection'), findsNothing);
+    });
+
+    testWidgets('settings that could not be loaded say to try again',
+        (tester) async {
+      store.put(_settingsPath, {'facilityId': 'fac1'});
+      store.refuseRead = (path) => path == _settingsPath;
+      final actions = _FakeActions(_facility('Main Street Storage'));
+      await _openWebsiteSetup(tester, actions);
+
+      expect((await _saveWebsiteButton(tester)).onPressed, isNull);
+      expect(find.textContaining('Check your connection'), findsOneWidget);
+      expect(find.textContaining('Press Refresh'), findsOneWidget);
     });
 
     testWidgets('the rentals tile fits a phone-width screen', (tester) async {

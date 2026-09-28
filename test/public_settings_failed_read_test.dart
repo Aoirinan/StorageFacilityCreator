@@ -203,6 +203,56 @@ void main() {
     });
   });
 
+  test('odd values in the saved settings are read, and a save keeps the rest',
+      () async {
+    // Each of these failed the whole read, and with saves refusing on a
+    // failed read the owner could save nothing on either settings screen.
+    store.put(_settingsPath, {
+      'facilityId': 'fac1',
+      'enabled': true,
+      'publicRentalsEnabled': true,
+      'enabledPublicUnitTypes': ['standard', 7],
+      'unitTypeImageUrls': {
+        'standard': 'https://example.com/standard.png',
+        'climate': null,
+      },
+      'updatedAt': '2026-09-01',
+      'chargeInsuranceAtMoveIn': 'yes',
+      'publicInsuranceAmount': '12',
+      'onlineMoveInContractTemplateId': 'lease-2026',
+    });
+
+    final read = await FacilityPublicService.getPublicSettingsOrThrow('fac1');
+    expect(read.enabledPublicUnitTypes, ['standard']);
+    expect(read.unitTypeImageUrls,
+        {'standard': 'https://example.com/standard.png'});
+    expect(read.updatedAt, isNull);
+    // As the server reads them: only an exact true charges, and Number('12').
+    expect(read.chargeInsuranceAtMoveIn, isFalse);
+    expect(read.publicInsuranceAmount, 12);
+
+    await _saveWebsite();
+
+    final saved = store.data(_settingsPath)!;
+    expect(saved['publicRentalsEnabled'], isTrue);
+    expect(saved['onlineMoveInContractTemplateId'], 'lease-2026');
+    expect(saved['enabledPublicUnitTypes'], ['standard']);
+  });
+
+  test('a failed read and an unreadable value get different messages', () {
+    final offline =
+        FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
+    final unreadable = TypeError();
+
+    expect(PublicSettingsNotReadException(offline).message,
+        contains('Check your connection'));
+    expect(PublicSettingsNotReadException(unreadable).message,
+        contains('could not be read correctly'));
+    expect(publicSettingsLoadErrorText(offline),
+        contains('Check your connection'));
+    expect(publicSettingsLoadErrorText(unreadable), contains('Contact support'));
+  });
+
   test('settings the webhook created without a facilityId are read and kept',
       () async {
     // The website-subscription webhook and the custom-domain sync merge into
