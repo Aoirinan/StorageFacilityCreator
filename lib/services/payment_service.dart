@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -705,6 +707,8 @@ class PaymentService {
         'createdBy': user.uid,
         'failureCode': null,
         'failureMessage': null,
+        // Lets voiding the payment (Enter past history) find this copy.
+        'facilityPaymentId': facilityPaymentRef.id,
       });
 
       // 3. Ledger entry
@@ -1137,7 +1141,7 @@ class PaymentService {
                 ${unitNumber.isNotEmpty ? '<p><strong>Unit:</strong> $unitNumber</p>' : ''}
                 <p><strong>Amount:</strong> \$${amount.toStringAsFixed(2)}</p>
                 <p><strong>Payment Method:</strong> $method</p>
-                ${reference.isNotEmpty ? '<p><strong>Reference:</strong> $reference</p>' : ''}
+                ${reference.isNotEmpty ? '<p><strong>Reference:</strong> ${const HtmlEscape().convert(reference)}</p>' : ''}
                 <p><strong>Payment Date:</strong> $paymentDateStr</p>
                 <p><strong>Payment ID:</strong> $paymentId</p>
               </div>

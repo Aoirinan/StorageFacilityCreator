@@ -374,6 +374,25 @@ test('the ledger line and tenant payment row Record payment writes are allowed',
       createdBy: OWNER_UID,
       failureCode: null,
       failureMessage: null,
+      facilityPaymentId: 'p-venmo',
+    }),
+  );
+  await assertFails(
+    db.collection('facilities').doc(FACILITY_ID).collection('tenants').doc(TENANT_ID).collection('payments').doc('tp-2').set({
+      facilityId: FACILITY_ID,
+      tenantId: TENANT_ID,
+      type: 'manual',
+      amountCents: 8000,
+      currency: 'usd',
+      chargeType: 'manual_cash',
+      status: 'succeeded',
+      description: 'Cash payment',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: OWNER_UID,
+      failureCode: null,
+      failureMessage: null,
+      facilityPaymentId: 42,
     }),
   );
 });

@@ -156,6 +156,49 @@ test('hand-entered entries voided in the same save, move-in saved, and both put 
   assert.equal(after.moveInDate, null);
 });
 
+test('voiding Record-payment payments brings paidThrough back, voids the tenant rows, and undo restores both', { skip: skipWithoutEmulator }, async () => {
+  await seed();
+  const ts = (iso: string) => admin.firestore.Timestamp.fromDate(new Date(iso));
+  await fac().collection('tenants').doc(TENANT).update({ paidThrough: ts('2027-01-31T06:00:00Z') });
+  const handIds: string[] = [];
+  for (const [i, amount] of [160, 80, 80, 80].entries()) {
+    await fac().collection('payments').doc(`pay-${i}`).set({ tenantId: TENANT, amount, status: 'completed', isActive: true, method: 'venmo', createdAt: ts('2026-09-28T02:00:00Z') });
+    await fac().collection('tenants').doc(TENANT).collection('payments').doc(`row-${i}`).set({
+      type: 'manual',
+      status: 'succeeded',
+      amountCents: amount * 100,
+      facilityPaymentId: `pay-${i}`,
+      createdAt: ts('2026-09-28T02:00:01Z'),
+    });
+    await fac().collection('ledgers').doc(`led-${i}`).set({
+      tenantId: TENANT,
+      type: 'payment',
+      status: 'posted',
+      amount: -amount,
+      entryDate: ts('2026-09-28T02:00:00Z'),
+      metadata: { paymentId: `pay-${i}`, invoiceId: 'inv-9' },
+    });
+    handIds.push(`led-${i}`);
+  }
+  await fac().collection('invoices').doc('inv-9').set({ invoiceNumber: 'INV-0009' });
+
+  const result = await record.run({ ...example('req-emulator-5'), voidLedgerEntryIds: handIds }, context(OWNER));
+  assert.equal(result.paidThroughBefore, '2027-01-31');
+  assert.equal(result.paidThrough, '2026-07-31');
+  assert.deepEqual(result.invoicesToReview, [{ id: 'inv-9', number: 'INV-0009' }]);
+  const rows = await fac().collection('tenants').doc(TENANT).collection('payments').get();
+  assert.ok(rows.docs.every((d) => d.get('status') === 'voided'));
+
+  // A different request under the same id is refused.
+  await rejectsWith(record.run({ ...example('req-emulator-5'), payments: [] }, context(OWNER)), 'already-exists', /different details/);
+
+  await undo.run({ facilityId: FACILITY, tenantId: TENANT, requestId: 'req-emulator-5' }, context(OWNER));
+  const tenant = (await fac().collection('tenants').doc(TENANT).get()).data()!;
+  assert.equal((tenant.paidThrough as admin.firestore.Timestamp).toDate().toISOString(), '2027-01-31T06:00:00.000Z');
+  const restored = await fac().collection('tenants').doc(TENANT).collection('payments').get();
+  assert.ok(restored.docs.every((d) => d.get('status') === 'succeeded'));
+});
+
 test('undo: an employee is refused', { skip: skipWithoutEmulator }, async () => {
   await seed();
   await record.run(example(), context(OWNER));
