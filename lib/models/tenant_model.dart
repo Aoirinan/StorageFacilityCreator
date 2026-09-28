@@ -116,6 +116,11 @@ class TenantModel {
   final String? unitArea;
   final double monthlyRate;
   final DateTime? paidThrough;
+
+  /// The day the tenant moved in, when one was saved (Enter past history
+  /// sets it). Null for most tenants: the Payment History grid then starts
+  /// from [createdAt].
+  final DateTime? moveInDate;
   final DateTime createdAt;
   final DateTime? updatedAt;
   /// See [isActiveField].
@@ -198,6 +203,7 @@ class TenantModel {
     this.unitArea,
     required this.monthlyRate,
     this.paidThrough,
+    this.moveInDate,
     required this.createdAt,
     this.updatedAt,
     this.isActive = true,
@@ -319,6 +325,9 @@ class TenantModel {
       unitArea: textField(data?['unitArea']),
       monthlyRate: (data?['monthlyRate'] ?? 0.0).toDouble(),
       paidThrough: (data?['paidThrough'] as Timestamp?)?.toDate(),
+      moveInDate: data?['moveInDate'] is Timestamp
+          ? (data!['moveInDate'] as Timestamp).toDate()
+          : null,
       createdAt: (data?['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       updatedAt: (data?['updatedAt'] as Timestamp?)?.toDate(),
       isActive: isActiveField(data?['isActive']),
@@ -444,6 +453,7 @@ class TenantModel {
       'monthlyRate': monthlyRate,
       'paidThrough':
           paidThrough != null ? Timestamp.fromDate(paidThrough!) : null,
+      if (moveInDate != null) 'moveInDate': Timestamp.fromDate(moveInDate!),
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': updatedAt != null
           ? Timestamp.fromDate(updatedAt!)
@@ -551,6 +561,7 @@ class TenantModel {
     bool clearUnitArea = false,
     double? monthlyRate,
     DateTime? paidThrough,
+    DateTime? moveInDate,
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? isActive,
@@ -618,6 +629,7 @@ class TenantModel {
       unitArea: clearUnitArea ? null : (unitArea ?? this.unitArea),
       monthlyRate: monthlyRate ?? this.monthlyRate,
       paidThrough: paidThrough ?? this.paidThrough,
+      moveInDate: moveInDate ?? this.moveInDate,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       isActive: isActive ?? this.isActive,

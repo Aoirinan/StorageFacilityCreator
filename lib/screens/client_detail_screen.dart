@@ -26,6 +26,7 @@ import '../providers/tenant_provider.dart';
 import '../providers/ledger_provider.dart';
 import 'package:sfcapp/providers/unit_label_provider.dart';
 import 'package:sfcapp/utils/paid_through.dart';
+import 'package:sfcapp/utils/payment_month_status.dart';
 import 'package:sfcapp/utils/sms_consent.dart';
 import 'package:sfcapp/utils/unit_label.dart';
 import '../models/ledger_entry_model.dart';
@@ -42,6 +43,7 @@ import 'package:flutter/material.dart' as material;
 import 'package:intl/intl.dart';
 import 'package:sfcapp/widgets/confirm_units_freed_dialog.dart';
 import 'package:sfcapp/widgets/move_out_action.dart';
+import 'package:sfcapp/widgets/payment_history_summary.dart';
 import 'package:sfcapp/widgets/tenant_contact_edit_dialog.dart';
 import 'package:sfcapp/widgets/tenant_prev_next.dart';
 import 'package:sfcapp/screens/tenant_past_history_dialog.dart';
@@ -64,7 +66,6 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   bool _dnrOverride = false;
   GateAccessModel? _gateAccess;
   bool _isLoadingGateAccess = false;
-  TenantModel? _tenantOverride; // Local override after month status edit
   bool _isSavingMonthStatus = false;
   bool _isAutopayLoading = false;
 
@@ -1253,7 +1254,7 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                         value: tenant.isLate ? 'Late (${tenant.daysLate} days)' : 'Current',
                       ),
                       const SizedBox(height: 16),
-                      _buildPaymentHistorySummary(_tenantOverride ?? tenant),
+                      _buildPaymentHistorySummary(tenant),
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
@@ -1983,46 +1984,21 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     }
   }
 
-  String _getMonthStatus(TenantModel tenant, DateTime month) {
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
-    final override = tenant.monthStatusOverrides[yyyyMM];
-    if (override != null && override.isNotEmpty) return override;
-    final pt = tenant.paidThrough;
-    if (pt == null) return 'late';
-    final isPaid = month.year < pt.year || (month.year == pt.year && month.month <= pt.month);
-    return isPaid ? 'paid' : 'late';
-  }
-
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'paid': return AppTheme.success;
-      case 'late': return AppTheme.error;
-      case 'moved_out': return AppTheme.warning;
-      default: return AppTheme.textSecondary;
-    }
-  }
-
   Future<void> _setMonthStatus(TenantModel tenant, DateTime month, String? status) async {
     if (_isSavingMonthStatus) return;
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
     setState(() => _isSavingMonthStatus = true);
     try {
+      // The tenant list is a live stream, so the grid picks the change up
+      // from Firestore. It used to keep a copy of the tenant here instead,
+      // which then hid every later change (paidThrough, move-in date) until
+      // the page was reopened.
       await TenantService.updateTenantMonthStatus(
         facilityId: tenant.facilityId,
         tenantId: tenant.id,
-        yearMonth: yyyyMM,
+        yearMonth: paymentMonthKey(month),
         status: status,
       );
-      final newOverrides = Map<String, String>.from(tenant.monthStatusOverrides);
-      if (status != null) {
-        newOverrides[yyyyMM] = status;
-      } else {
-        newOverrides.remove(yyyyMM);
-      }
-      if (mounted) setState(() {
-        _tenantOverride = tenant.copyWith(monthStatusOverrides: newOverrides);
-        _isSavingMonthStatus = false;
-      });
+      if (mounted) setState(() => _isSavingMonthStatus = false);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2036,9 +2012,9 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     }
   }
 
-  void _showMonthStatusPicker(TenantModel tenant, DateTime month) {
-    final currentStatus = _getMonthStatus(tenant, month);
+  void _showMonthStatusPicker(TenantModel tenant, DateTime month, PaymentMonthStatus currentStatus) {
     final monthLabel = DateFormat('MMMM yyyy').format(month);
+    final hasOverride = tenant.monthStatusOverrides.containsKey(paymentMonthKey(month));
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -2053,11 +2029,11 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
                 style: Theme.of(ctx).textTheme.titleMedium,
               ),
               const SizedBox(height: 16),
-              _monthStatusOption(ctx, tenant, month, 'paid', 'Paid', Icons.check_circle, AppTheme.success, currentStatus),
-              _monthStatusOption(ctx, tenant, month, 'late', 'Late', Icons.warning, AppTheme.error, currentStatus),
-              _monthStatusOption(ctx, tenant, month, 'moved_out', 'Moved Out', Icons.exit_to_app, AppTheme.warning, currentStatus),
-              if (tenant.monthStatusOverrides.containsKey('${month.year}-${month.month.toString().padLeft(2, '0')}'))
-                _monthStatusOption(ctx, tenant, month, null, 'Clear override (use auto)', Icons.refresh, AppTheme.textSecondary, currentStatus),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.paid, Icons.check_circle, currentStatus, hasOverride),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.late, Icons.warning, currentStatus, hasOverride),
+              _monthStatusOption(ctx, tenant, month, PaymentMonthStatus.movedOut, Icons.exit_to_app, currentStatus, hasOverride),
+              if (hasOverride)
+                _monthStatusOption(ctx, tenant, month, null, Icons.refresh, currentStatus, hasOverride),
             ],
           ),
         ),
@@ -2065,17 +2041,19 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
     );
   }
 
-  Widget _monthStatusOption(BuildContext ctx, TenantModel tenant, DateTime month, String? status, String label, IconData icon, Color color, String currentStatus) {
-    final yyyyMM = '${month.year}-${month.month.toString().padLeft(2, '0')}';
-    final isOverride = tenant.monthStatusOverrides.containsKey(yyyyMM);
-    final isSelected = status == null ? !isOverride : (status == currentStatus);
+  /// One choice in the month picker; a null [status] clears the override.
+  Widget _monthStatusOption(BuildContext ctx, TenantModel tenant, DateTime month, PaymentMonthStatus? status, IconData icon, PaymentMonthStatus currentStatus, bool hasOverride) {
+    final isSelected = status == null ? !hasOverride : status == currentStatus;
     return ListTile(
-      leading: Icon(icon, color: color),
-      title: Text(label),
+      leading: Icon(
+        icon,
+        color: status == null ? AppTheme.textSecondary : PaymentHistorySummary.statusColor(status),
+      ),
+      title: Text(status == null ? 'Clear override (use auto)' : PaymentHistorySummary.statusLabel(status)),
       trailing: isSelected ? const Icon(Icons.check) : null,
       onTap: () async {
         Navigator.pop(ctx);
-        await _setMonthStatus(tenant, month, status);
+        await _setMonthStatus(tenant, month, status?.storedValue);
       },
     );
   }
@@ -2083,128 +2061,20 @@ class _ClientDetailScreenState extends ConsumerState<ClientDetailScreen> {
   Widget _buildPaymentHistorySummary(TenantModel tenant) {
     final ledgerParams = LedgerParams(tenantId: tenant.id!, facilityId: tenant.facilityId);
     final ledgerAsync = ref.watch(ledgerStreamProvider(ledgerParams));
-    final now = DateTime.now();
-    final months = List<DateTime>.generate(12, (i) {
-      final d = DateTime(now.year, now.month - (11 - i), 1);
-      return d;
-    });
     return ledgerAsync.when(
-      data: (entries) {
-        final paymentEntries = entries.where((e) =>
-          e.status != LedgerEntryStatus.voided &&
-          (e.type == LedgerEntryType.payment ||
-           e.type == LedgerEntryType.credit ||
-           e.type == LedgerEntryType.refund)).toList();
-        final paymentCount = paymentEntries.length;
-        var paidMonths = 0;
-        var lateMonths = 0;
-        var movedOutMonths = 0;
-        for (final m in months) {
-          final s = _getMonthStatus(tenant, m);
-          if (s == 'paid') paidMonths++;
-          else if (s == 'late') lateMonths++;
-          else if (s == 'moved_out') movedOutMonths++;
-        }
-        return Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppTheme.backgroundSecondary,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: AppTheme.borderLight),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.payment_outlined, size: 18, color: AppTheme.primaryBlue),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Payment History',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryBlue,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 16,
-                runSpacing: 8,
-                children: [
-                  _summaryChip('Payments made', '$paymentCount', Icons.check_circle_outline, AppTheme.success),
-                  _summaryChip('Paid', '$paidMonths', Icons.calendar_today, AppTheme.success),
-                  _summaryChip('Late', '$lateMonths', Icons.calendar_today, lateMonths > 0 ? AppTheme.error : AppTheme.textSecondary),
-                  _summaryChip('Moved out', '$movedOutMonths', Icons.exit_to_app, movedOutMonths > 0 ? AppTheme.warning : AppTheme.textSecondary),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Click a month to set status (${DateFormat('MMM yyyy').format(months.first)} – ${DateFormat('MMM yyyy').format(months.last)}):',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppTheme.textSecondary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: months.map((m) {
-                  final status = _getMonthStatus(tenant, m);
-                  final color = _statusColor(status);
-                  return Material(
-                    color: color.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(20),
-                    child: InkWell(
-                      onTap: _isSavingMonthStatus ? null : () => _showMonthStatusPicker(tenant, m),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Text(
-                          DateFormat('MMM yy').format(m),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: color,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-        );
-      },
+      data: (entries) => PaymentHistorySummary(
+        tenant: tenant,
+        entries: entries,
+        today: DateTime.now(),
+        onMonthTap: _isSavingMonthStatus
+            ? null
+            : (month, status) => _showMonthStatusPicker(tenant, month, status),
+      ),
       loading: () => const Padding(
         padding: EdgeInsets.symmetric(vertical: 8),
         child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
       ),
       error: (_, __) => const SizedBox.shrink(),
-    );
-  }
-
-  Widget _summaryChip(String label, String value, IconData icon, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 6),
-        Text(
-          '$label: ',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.textSecondary),
-        ),
-        Text(
-          value,
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
     );
   }
 
